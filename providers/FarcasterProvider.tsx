@@ -166,6 +166,7 @@ const SPLASH_READY_DEADLINE_MS = 6000
 // triggers (2nd open, 1st mint) each fire at most once, and a session-level
 // guard (addPromptShownRef) prevents both landing in the same session.
 const MINT_PROMPT_KEY = 'kismetart:miniapp-mint-prompt'
+const NOTIF_NUDGE_SEEN_KEY = 'kismet:notif-nudge-seen'
 
 function bumpAndReadOpenCount(): number {
   try {
@@ -253,6 +254,10 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
   // resolved (bootstrap imported it), so the dynamic import in onClick is
   // instant.
   const showAddKismetPrompt = useCallback((message: string) => {
+    // One add-prompt per session, enforced HERE (the choke point) — with
+    // both the 2nd-open trigger and the nudge campaign able to fire in the
+    // same bootstrap, a call-site-only guard would let them stack.
+    if (addPromptShownRef.current) return
     addPromptShownRef.current = true
     toast(message, {
       duration: 8000,
@@ -295,6 +300,36 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
       },
     })
   }, [])
+
+  // Once-per-campaign notification nudge (admin-triggered via
+  // /api/admin/notif-nudge; stamp rides /api/me). Farcaster hosts own the
+  // permission, so the only two moves are the sanctioned addMiniApp prompt
+  // (not-added users — adding enables notifications on Farcaster) and menu
+  // instructions (added-but-disabled users — no API exists to re-prompt).
+  // Users who already have push, or whose host context never resolved, see
+  // nothing; the seen-marker is stamped BEFORE showing so a device is
+  // nudged at most once per campaign even across failures.
+  const maybeRunNotifNudge = useCallback((stamp: number | null) => {
+    if (!stamp || !isInMiniAppRef.current) return
+    const { known, added, notificationsEnabled } = addEligibilityRef.current
+    if (!known || notificationsEnabled) return
+    try {
+      if (Number(localStorage.getItem(NOTIF_NUDGE_SEEN_KEY) ?? 0) >= stamp) return
+      localStorage.setItem(NOTIF_NUDGE_SEEN_KEY, String(stamp))
+    } catch {
+      return
+    }
+    if (!added) {
+      if (addPromptShownRef.current || !canAddMiniAppRef.current) return
+      showAddKismetPrompt('Turn on notifications for collects and download updates.')
+    } else {
+      toast('Enable Kismet notifications', {
+        description:
+          'Open the \u22ef menu on Kismet in your Farcaster app and turn notifications on \u2014 for collects and download updates.',
+        duration: 8000,
+      })
+    }
+  }, [showAddKismetPrompt])
 
   const maybePromptCollectNotifs = useCallback(() => {
     if (!isInMiniAppRef.current || addPromptShownRef.current) return
@@ -437,10 +472,12 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
         // a later retry, but name + avatar still visible).
         const ctxUser = ctx?.user
         let resolvedAddress: string | null = null
+        let notifNudgeAt: number | null = null
         if (meResponse?.ok) {
           try {
-            const body = (await meResponse.json()) as { address?: string }
+            const body = (await meResponse.json()) as { address?: string; notifNudgeAt?: number | null }
             if (body.address) resolvedAddress = body.address
+            if (typeof body.notifNudgeAt === 'number') notifNudgeAt = body.notifNudgeAt
           } catch {
             // /api/me malformed — fall through with no address.
           }
@@ -613,13 +650,21 @@ export function FarcasterProvider({ children }: { children: ReactNode }) {
           canAddMiniAppRef.current = capabilities.includes('actions.addMiniApp')
         }
 
+        // Admin notification-nudge campaign (lib/notifNudge): once per
+        // campaign stamp per device, prompt users WITHOUT push to enable it.
+        // Deliberately AFTER the capability probe — the not-added branch
+        // shows the addMiniApp sheet, which must not be offered on a host
+        // whose capability list excludes it (a dead action would still have
+        // consumed the device's one nudge for this campaign).
+        maybeRunNotifNudge(notifNudgeAt)
+
         // Count only opens where the prompt could actually have been
         // offered: eligibility confirmed (a null ctx is "unknown", not
         // "not added") on a host that can open the consent sheet.
         // Otherwise a flaky bridge or an addMiniApp-less host would
         // silently consume open #2 and the prompt would never fire
         // anywhere.
-        if (ctx && canAddMiniAppRef.current && !added && !notificationsEnabled) {
+        if (ctx && canAddMiniAppRef.current && !added && !notificationsEnabled && !addPromptShownRef.current) {
           const opens = bumpAndReadOpenCount()
           if (opens === PROMPT_TARGET_OPEN) {
             showAddKismetPrompt('Get pinged about collects, follows and more!')

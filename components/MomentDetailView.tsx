@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
-import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock } from 'lucide-react'
+import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock, Paperclip } from 'lucide-react'
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import { useQueryClient } from '@tanstack/react-query'
@@ -51,6 +51,10 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
 import { CollectedActions } from './CollectedActions'
+import { CollectorFileCard } from './CollectorFileCard'
+import { CollectorFileManagePanel } from './CollectorFileManagePanel'
+import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
+import type { CfilePublic } from '@/lib/collectorFileTypes'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
@@ -114,9 +118,18 @@ interface Props {
   // overlay mounts client-side (soft nav), where client detection already
   // handles it, so it leaves this false.
   ssrWebKit?: boolean
+  // SSR-hydrated collector-file descriptor (public facts only — never the
+  // storage pointer). undefined = unknown (overlay mount) and the card
+  // fetches its own status; null = known-absent, which lets the card skip
+  // that fetch entirely on the hot anonymous path.
+  initialCfile?: CfilePublic | null
+  // This token's live secondary listing (the page's React-cached
+  // getActiveListing) — informs the card's sold-out state. undefined =
+  // unknown (overlay), null = none listed.
+  initialListing?: { price: string; currency: 'eth' | 'usdc' } | null
 }
 
-export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit }: Props) {
+export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, initialTextContent, inOverlay, ssrWebKit, initialCfile, initialListing }: Props) {
   const router = useRouter()
   const { address: connectedAddress } = useAccount()
 
@@ -254,6 +267,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // never expires) — the prefill is minute-granular, so parsing it back would
   // drift by the dropped seconds and misread a no-op as an edit.
   const [editingSale, setEditingSale] = useState(false)
+  // Collector-file state: the page card's descriptor (SSR-hydrated, panel
+  // writes reflect into it) + whether the artist's manage panel is open —
+  // a third inline panel alongside editing/editingSale, same mutual
+  // exclusion so an open draft is never silently discarded.
+  const [cfile, setCfile] = useState<CfilePublic | null>(initialCfile ?? null)
+  const [managingFile, setManagingFile] = useState(false)
   const [saleStartInput, setSaleStartInput] = useState('')
   const [saleEndInput, setSaleEndInput] = useState('')
   const [saleStartDirty, setSaleStartDirty] = useState(false)
@@ -655,6 +674,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         creatorAddress: creatorAddress || null,
         creatorName,
       },
+      // Names the included download in the success toast — the moment of
+      // maximum delight should say the perk arrived (design §8.1).
+      ...(cfile ? { successDescription: 'Your download is ready below.' } : {}),
     })
     if (result && recipient) {
       // A gift is NOT a collect for the signer: they hold nothing, so the
@@ -669,6 +691,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     if (result) {
       setCollected(true)
       setCommentText('')
+      // Collect success gets the same native haptic the mint/follow/raffle
+      // successes already fire (pre-gated per lib/farcasterHaptics's contract).
+      if (isInMiniApp) hapticNotifySuccess()
       // Have the activity panel force past its cache so the just-added
       // comment lands (and its pagination resets to the newest page); 3s
       // lets inprocess index the collect.
@@ -1622,7 +1647,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     locality (you edit what you're looking at). Share +
                     send moved to a single row beneath the action panel
                     so secondary actions group together visually. */}
-                {(isCreator || canEditMeta) && !editing && !editingSale && detail && (
+                {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1630,6 +1655,22 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   >
                     <Pencil size={11} />
                     edit
+                  </button>
+                )}
+                {/* Collector-file manager — same authorization as the
+                    metadata pencil (the server re-checks the on-chain
+                    ADMIN|METADATA bits), but its OWN panel: the metadata
+                    editor's save path drags an Arweave wait + a second
+                    signature + a chain write, none of which a zip attach
+                    needs. Mutually exclusive with the sibling panels. */}
+                {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
+                  <button
+                    onClick={() => setManagingFile(true)}
+                    className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
+                    title="collector download"
+                  >
+                    <Paperclip size={11} />
+                    file
                   </button>
                 )}
                 {/* Edit sale — gated on the ADMIN|SALES bits (canEditSale),
@@ -1642,7 +1683,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     (openEditor re-seeds from detail) — so each affordance
                     hides while the sibling panel is open, and the openers'
                     mutual setX(false) lines stay as defense in depth. */}
-                {canEditSale && !editing && !editingSale && detail && saleConfig && !mintedOut && (
+                {canEditSale && !editing && !editingSale && !managingFile && detail && saleConfig && !mintedOut && (
                   <button
                     onClick={openSaleEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1837,6 +1878,34 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     />
                   </div>
                 </div>
+
+                {/* Discoverability cross-link: artists reach for the pencil to
+                    "edit the artwork", so the collector download is offered
+                    HERE too — but as a hand-off to its own panel, never as a
+                    field of this form: this form's save takes an Arweave
+                    propagation wait + a second wallet signature + an on-chain
+                    write, none of which a zip attach needs (or should appear
+                    to need). Swapping panels is safe — the file panel doesn't
+                    touch this draft's title/description state. */}
+                <div className="flex items-center justify-between gap-3 border border-line px-3 py-2">
+                  <p className="text-[10px] font-mono text-muted min-w-0 truncate">
+                    {cfile
+                      ? `collector download · ${cfile.name} · v${cfile.v}`
+                      : 'collector download · none attached'}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={savingMeta}
+                    onClick={() => {
+                      setEditing(false)
+                      setManagingFile(true)
+                    }}
+                    className="flex-shrink-0 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim transition-colors disabled:opacity-50"
+                  >
+                    {cfile ? 'manage' : 'attach'}
+                  </button>
+                </div>
+
                 <div className="flex gap-2">
                   <button
                     onClick={handleSaveMetadata}
@@ -1937,6 +2006,17 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   )}
                 </div>
               </div>
+            )}
+
+            {/* Collector-file manage panel — third inline panel, same spatial
+                pattern as the metadata/sale editors above. */}
+            {managingFile && detail && (
+              <CollectorFileManagePanel
+                collection={address}
+                tokenId={tokenId}
+                onClose={() => setManagingFile(false)}
+                onFileChange={setCfile}
+              />
             )}
             <div className="flex items-center gap-1.5">
               <Link
@@ -2179,6 +2259,23 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               />
             </div>
           )}
+
+          {/* Collector download card — the perk advertisement for non-holders
+              and the download surface for holders. Gated on the OPTIMISTIC
+              hasCollected (not alreadyOwned) so it flips the instant a collect
+              succeeds instead of waiting out the balanceOf refetch; the
+              server-side grace marker makes that first click actually work.
+              Renders nothing when no file is attached. */}
+          <CollectorFileCard
+            collection={address}
+            tokenId={tokenId}
+            initial={cfile}
+            descriptorKnown={initialCfile !== undefined}
+            hasCollected={hasCollected}
+            soldOut={mintedOut}
+            justCollected={collected}
+            listing={initialListing}
+          />
 
           {/* Mobile / mini-app: sale-window date centered under the action row.
               Its own full-width centered line — the detail label (date + time +

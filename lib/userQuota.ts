@@ -30,6 +30,9 @@ export type QuotaKind =
   | 'update-uri'
   | 'distribute'
   | 'transcode'
+  | 'cfile-upload'
+  | 'cfile-bytes'
+  | 'cfile-download'
 
 interface QuotaWindow {
   /** Cap per UTC calendar day. */
@@ -69,6 +72,18 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // Debited BEFORE the fetch/encode (see transcode-gif route), separate from
   // the post-encode upload-bytes debit that meters stored Arweave bytes.
   'transcode':    { day: 30,           week: 120            },
+  // Collector-file versions (app/api/collector-file). Counts and bytes get
+  // their OWN meters — debiting 'upload-bytes' would let 15 zip iterations
+  // lock an artist out of minting metadata for the day. These bound write
+  // CHURN and fail open like every kind here; the fail-CLOSED backstop on
+  // resident storage is the global ceiling check in the PUT route
+  // (CFILE_STORAGE_CEILING_BYTES, lib/collectorFile).
+  'cfile-upload':   { day: 15,                 week: 60                  },
+  'cfile-bytes':    { day: 256 * 1024 * 1024,  week: 1024 * 1024 * 1024  },
+  // Reassemble-and-send downloads: bounds a holder's session being farmed
+  // as a free CDN (each download ships ~1.33× the file out of the metered
+  // Upstash bandwidth); far above any human re-download cadence.
+  'cfile-download': { day: 100,                week: 400                 },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests

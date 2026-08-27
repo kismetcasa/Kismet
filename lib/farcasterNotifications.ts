@@ -100,10 +100,12 @@ const SEND_TIMEOUT_MS = 10_000
 // explicitly set in Kismet settings.
 type MasterState = 'on' | 'off' | null
 
-// On first notification grant, only 'collect' is on. Other types must be
-// opted into explicitly via settings. Keeps the post-add experience
-// matching what the prompt promised ("collect alerts").
-const DEFAULT_ENABLED_PUSH_TYPES: ReadonlySet<NotificationType> = new Set(['collect'])
+// On first notification grant, 'collect' is on (the prompt's promise) and so
+// is 'file_update' — the platform's one "a thing you paid for changed"
+// signal, which only exists to be delivered (COLLECTOR_DOWNLOADS_DESIGN.md
+// §6.3; seeding is one-shot per FID, so existing grantees keep their state
+// and opt in via settings). Every other type must be opted into explicitly.
+const DEFAULT_ENABLED_PUSH_TYPES: ReadonlySet<NotificationType> = new Set(['collect', 'file_update'])
 
 /**
  * Persist a notification token for an FID. Idempotent — duplicate (url, token)
@@ -535,6 +537,18 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       return {
         title: truncate('Raffle ended', TITLE_MAX),
         body: truncate(`${who} has won the physical edition of ${subject}!`, BODY_MAX),
+        targetUrl: momentUrl,
+      }
+    }
+    case 'file_update': {
+      // Collector-file replaced (lib/collectorFileFanout). The artist's
+      // release note rides along when present — same note the bell row shows.
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork you collected'
+      const who = actorName ?? 'the artist'
+      const noteSuffix = n.note?.trim() ? ` — ${n.note.trim()}` : ''
+      return {
+        title: truncate('Download updated', TITLE_MAX),
+        body: truncate(`${who} updated the file for ${subject}${noteSuffix}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }

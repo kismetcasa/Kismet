@@ -5,6 +5,7 @@ import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis, TRENDING_KEY, TRENDING_LATEST_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { recordCollected } from '@/lib/collected'
+import { grantDownloadGrace, recordCollectorAudience } from '@/lib/collectorFile'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
 import { readSalePricePerToken } from '@/lib/saleConfig'
@@ -416,6 +417,15 @@ export async function POST(req: NextRequest) {
       .exec()
       .catch(() => {}),
     recordCollected(account, collectionLower, tokenId).catch(() => {}),
+    // Collector-file audience + erasure indexes (COLLECTOR_DOWNLOADS_DESIGN.md
+    // §6.1 site 1) — the reverse of recordCollected, per-artwork instead of
+    // per-collector, so a file update can enumerate who to notify.
+    recordCollectorAudience(account, collectionLower, tokenId).catch(() => {}),
+    // Post-collect download grace: this exact (recipient, artwork) was
+    // receipt-verified above, so the download gate honors it for 15 minutes
+    // while the server RPC catches up — without it the "your download is
+    // ready" click 403s during read-replica lag (§5.1 path 3).
+    grantDownloadGrace(collectionLower, tokenId, account).catch(() => {}),
   ])
 
   // Derive price server-side so the notification reflects the on-chain

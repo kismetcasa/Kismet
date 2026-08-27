@@ -4,6 +4,7 @@ import { isAddress } from '@/lib/address'
 import { bestEffort } from '@/lib/bestEffort'
 import { getGateConfig } from '@/lib/gate'
 import { getListing, updateListingStatus } from '@/lib/listings'
+import { grantDownloadGrace, recordCollectorAudience } from '@/lib/collectorFile'
 import { clearKismetListed, creditValidityOnce, recordPlatformTx } from '@/lib/pass-validity'
 import { consumeNonce } from '@/lib/profile'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -259,6 +260,21 @@ export async function PATCH(
         currency: listing.currency,
         priceBaseUnits: listing.price,
       })
+    }
+
+    // Collector-file audience + grace for the receipt-verified secondary
+    // buyer (COLLECTOR_DOWNLOADS_DESIGN.md §6.1 site 3) — the one place a
+    // collector becomes known that no forward index ever covered, which is
+    // what makes secondary buyers reachable by file-update notifications
+    // and lets their first download click clear the gate during RPC lag.
+    if (buyer) {
+      const verifiedBuyer = buyer
+      after(() =>
+        Promise.all([
+          recordCollectorAudience(verifiedBuyer, listing.collectionAddress, listing.tokenId),
+          grantDownloadGrace(listing.collectionAddress, listing.tokenId, verifiedBuyer),
+        ]).catch(bestEffort('listings.filled.recordCollectorAudience', { id })),
+      )
     }
 
     after(() =>

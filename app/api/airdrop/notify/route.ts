@@ -6,6 +6,7 @@ import { consumeQuota } from '@/lib/airdrop-quota'
 import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
 import { recordCollected } from '@/lib/collected'
+import { grantDownloadGrace, recordCollectorAudience } from '@/lib/collectorFile'
 import { MAX_AIRDROP_RECIPIENTS } from '@/lib/config'
 import { getGateConfig } from '@/lib/gate'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
@@ -414,6 +415,13 @@ export async function POST(req: NextRequest) {
       await recordCollected(recipient, collectionAddress, tokenId, timestamp).catch(
         bestEffort('airdrop-notify.recordCollected', { recipient, collectionAddress, tokenId }),
       )
+      // Collector-file audience + post-airdrop download grace — recipients
+      // are on-chain-verified above, same trust as the collect route's site
+      // (COLLECTOR_DOWNLOADS_DESIGN.md §6.1 site 2).
+      await recordCollectorAudience(recipient, collectionAddress, tokenId, timestamp).catch(
+        bestEffort('airdrop-notify.recordCollectorAudience', { recipient, collectionAddress, tokenId }),
+      )
+      await grantDownloadGrace(collectionAddress, tokenId, recipient).catch(() => {})
       return ok
     }),
   )

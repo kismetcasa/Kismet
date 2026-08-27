@@ -29,6 +29,7 @@ const DRAGGABLE_FILTERS: NotificationType[] = [
   'payout',
   'authorized',
   'agent_collect',
+  'file_update',
 ]
 
 const FILTER_LABEL: Record<TypeFilter, string> = {
@@ -46,6 +47,7 @@ const FILTER_LABEL: Record<TypeFilter, string> = {
   agent_collect: 'agent',
   raffle_win: 'raffle',
   raffle_ended: 'raffle',
+  file_update: 'updates',
 }
 
 const ORDER_KEY = 'kismetart:notif-tab-order'

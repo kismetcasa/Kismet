@@ -25,6 +25,7 @@ const TYPE_LABELS: Record<string, string> = {
   agent_collect: 'Agent Collect',
   // raffle_win is non-muteable (never listed here); only the closure notice is.
   raffle_ended: 'Raffle results',
+  file_update: 'Download updates',
 }
 
 // Labels used in the FC push section. We surface every type here (the
@@ -44,6 +45,7 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   agent_collect: 'Agent Collect',
   raffle_win: 'Raffle wins',
   raffle_ended: 'Raffle results',
+  file_update: 'Downloads you own get updated',
 }
 
 type ModalTab = 'feed' | 'settings'

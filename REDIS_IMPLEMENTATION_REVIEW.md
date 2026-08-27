@@ -857,3 +857,52 @@ call site in the 57 importing modules is attributed above with `file:line`.
 External pricing/limit claims were verified against upstash.com and the
 canonical `upstash/docs` GitHub sources on 2026-07-13; per-plan throughput
 throttles could not be verified from primary sources and are flagged._
+
+---
+
+## Addendum (2026-08-26) — collector-file feature budget delta
+
+New keyspace (`kismetart:cfile*`, `kismetart:collectors:*` — see
+`COLLECTOR_DOWNLOADS_DESIGN.md` §4) and its command budget against the $20
+hard-stop cap this review established:
+
+| Path | Commands | Notes |
+|---|---|---|
+| Collect/airdrop/listing-fill mirror writes | +3/collect (ZADD NX + SADD refs + grace SET) | Rides existing write sites; at current collect volume this is noise. |
+| Artwork-page status read | +1–2/view (GET record, HGET dl) | `private, no-store`; only on pages with a file attached. |
+| Download (ticket mint + redeem) | ~8/download | Gate reads + ticket SET/GETDEL + HSET; quota-bounded per identity. |
+| **file_update fanout** | **~10–12 × recipients, ceiling-refused at 2,000 (≈ ≤24K ≈ ~4% of current monthly volume)** | One per artwork per 24h (SET NX lock). Raising `CFILE_FANOUT_CEILING` (lib/collectorFileFanout.ts) is an ops decision that must arrive WITH a raised budget cap. |
+
+Two new per-artwork unbounded-membership structures (`collectors` ZSET,
+`cfile-dl` HASH) are the same shape as the follower/raffle/collected sets —
+consistent with current practice, and added to §B3's eventual-Postgres
+migration list by reference.
+
+### Addendum update (2026-08-27) — storage pivot: file BYTES now live here
+
+The team moved the file bytes themselves into this database (design doc
+"Storage pivot"; premise: low artist adoption). What that changes for THIS
+review's budget model:
+
+- **Storage**: `kismetart:cfile-blob:*` chunk keys (4 MiB plaintext each,
+  'b'+base64 ≈ ×1.33) are the first multi-MB values in the database. Total
+  resident bytes are ledgered absolutely in the `kismetart:cfile-bytes`
+  hash and fail-closed capped at `CFILE_STORAGE_CEILING_BYTES` (default
+  512 MiB — inside the first free storage GB next to today's ~336 KB;
+  past 1 GB bills $0.25/GB-mo). Retention keeps bytes for 3 versions per
+  artwork; detach genuinely frees them.
+- **Bandwidth is the new open-ended axis**: each download ships ~1.33× the
+  file size out of Upstash (free ≤200 GB/mo, then $0.03/GB), bounded by the
+  per-identity `cfile-download` quota (100/day) and per-IP rate limits, NOT
+  by a hard platform meter — accepted knowingly on the low-adoption
+  premise. At real adoption this line is the first thing to re-examine
+  (R2 is the flagged next home; the design doc records the trade).
+- **The 10 MB request/reply cap now binds a hot path**: chunk I/O runs on a
+  DEDICATED non-auto-pipelining client (`lib/collectorFile.ts`) so every
+  chunk travels as its own bounded HTTP request. The shared client cannot
+  be used here: its auto-pipeline is client-global, so two CONCURRENT
+  requests' chunk GETs in the same tick would batch into one over-cap
+  reply. Do not "optimize" chunk I/O onto the shared client or into MGET.
+- Commands: +`chunks` (≤4) per upload/download — noise at any plausible
+  volume. The previous `cfile-global-bytes` day meter is deleted; the
+  fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.

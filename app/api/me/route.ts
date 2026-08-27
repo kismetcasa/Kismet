@@ -5,6 +5,7 @@ import {
   getVerifiedAddressesByFid,
 } from '@/lib/farcasterProfile'
 import { getPrimaryAddress } from '@/lib/farcasterAuth'
+import { getNotifNudgeAt } from '@/lib/notifNudge'
 
 export interface MyWallet {
   address: string
@@ -57,8 +58,13 @@ export async function GET(req: NextRequest) {
       isIdentity: a === lowerIdentity,
     }))
   }
+  // Notification-nudge campaign stamp (lib/notifNudge) — piggybacked here
+  // because the Mini App already fetches /api/me on every open, so the
+  // campaign costs zero extra client requests; the read is memoized 60s
+  // server-side (~1 Redis command/minute platform-wide).
+  const notifNudgeAt = await getNotifNudgeAt()
   return NextResponse.json(
-    { address, farcaster, wallets },
+    { address, farcaster, wallets, notifNudgeAt },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

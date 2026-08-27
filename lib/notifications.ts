@@ -24,6 +24,13 @@ export const ALL_NOTIFICATION_TYPES = [
   // raffle resolves with closure instead of buttons silently changing state.
   'raffle_win',
   'raffle_ended',
+  // Collector-file update fan-out (lib/collectorFileFanout): the artist
+  // replaced the downloadable attached to an artwork the recipient collected.
+  // Deliberately NOT in BURST_DEDUP_TYPES — that lock key has no tokenId, so
+  // membership would cross-suppress two artworks updated in the same
+  // collection within 60s; the per-artwork SET NX notify-lock (24h) in the
+  // fanout is the real dedup (COLLECTOR_DOWNLOADS_DESIGN.md §6.2).
+  'file_update',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
@@ -76,6 +83,9 @@ export interface Notification {
   currency?: 'eth' | 'usdc' // for $ vs ETH formatting; absent on legacy notifs
   listingId?: string
   comment?: string
+  /** file_update: the artist's release note ("added music!") — shown on the
+   *  bell row and appended to the push body. */
+  note?: string
 }
 
 type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {
@@ -83,6 +93,14 @@ type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'r
    *  Only set by fanoutToFollowers where recipients are proven followers
    *  of the actor, so isPriority always returns true. */
   _forcePriority?: true
+  /** Internal — AWAIT the Farcaster push dispatch instead of the default
+   *  fire-and-forget. Only set by paced bulk fanouts (the collector-file
+   *  update) so their batch boundaries actually bound in-flight push HTTP —
+   *  N detached push chains from one after() is the unbounded-fanout shape
+   *  behind the 2GB-heap OOM incident (OPS_RUNBOOK.md). Single-recipient
+   *  call sites keep the fire-and-forget default: push latency (host POST,
+   *  up to 10s timeout) must not sit on their response path. */
+  _awaitPush?: true
 }
 
 const MAX_PER_USER = 200
@@ -184,6 +202,9 @@ async function isPriority(
   // coordinator path this notification is the ONLY signal. Kept muteable (not in
   // NON_MUTEABLE_TYPES) like `collect`, so the bell badges it but it can be muted.
   if (type === 'agent_collect') return true
+  // The recipient PAID for the file that changed — this is the notification
+  // that re-delivers what they bought, the badge should surface it.
+  if (type === 'file_update') return true
   if (type === 'collect' && price && price !== '0') return true
   // listing_created stays non-priority — active sellers shouldn't dominate
   // the priority bell. The "all" tab still surfaces it for engaged followers.
@@ -196,14 +217,20 @@ async function isPriority(
   return following || isKnown
 }
 
-export async function writeNotification(input: NotificationInput): Promise<void> {
+/**
+ * Returns true iff the bell entry was actually WRITTEN (false on suppression
+ * — self-action, mute, dedup — and on any failure). Callers historically
+ * ignore the result; the collector-file fanout counts it so its 24h cooldown
+ * is only consumed when at least one notification really landed.
+ */
+export async function writeNotification(input: NotificationInput): Promise<boolean> {
   try {
-    if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return
+    if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return false
 
     // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
     if (!NON_MUTEABLE_TYPES.has(input.type)) {
       try {
-        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return
+        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return false
       } catch {}
     }
 
@@ -220,7 +247,7 @@ export async function writeNotification(input: NotificationInput): Promise<void>
           return false
         }
       })
-      if (dup) return
+      if (dup) return false
     }
 
     // Atomic SET NX lock keyed by (type, recipient, actor, tokenAddress).
@@ -232,16 +259,16 @@ export async function writeNotification(input: NotificationInput): Promise<void>
       try {
         acquired = (await redis.set(lockKey, '1', { nx: true, ex: BURST_DEDUP_WINDOW_SECS })) === 'OK'
       } catch {}
-      if (!acquired) return
+      if (!acquired) return false
     }
 
     const id = crypto.randomUUID()
     const timestamp = Math.floor(Date.now() / 1000)
     const priority = input._forcePriority || await isPriority(input.recipient, input.type, input.actor, input.price)
     const recipient = input.recipient.toLowerCase()
-    // Strip the internal routing field before persisting — _forcePriority
-    // is a call-site hint, not notification data.
-    const { _forcePriority: _, ...inputData } = input
+    // Strip the internal routing fields before persisting — they are
+    // call-site hints, not notification data.
+    const { _forcePriority: _, _awaitPush, ...inputData } = input
     const stored = {
       ...inputData,
       id,
@@ -272,14 +299,17 @@ export async function writeNotification(input: NotificationInput): Promise<void>
     // file and lib/farcasterNotifications (which imports our types).
     // Fire-and-forget — push is non-critical; the in-app bell already
     // succeeded above so the user will see it next time they open Kismet.
-    void import('./farcasterNotifications')
+    const dispatch = import('./farcasterNotifications')
       // `read` is a read-time computed field, never stored on the entry —
       // dispatch only cares about identity + payload fields, so the
       // false here is purely to satisfy the Notification type contract.
       .then(({ dispatchFarcasterPush }) => dispatchFarcasterPush({ ...stored, read: false }))
       .catch(() => {})
+    if (_awaitPush) await dispatch
+    return true
   } catch {
     // Notifications are non-critical — never let them break the parent operation
+    return false
   }
 }
 

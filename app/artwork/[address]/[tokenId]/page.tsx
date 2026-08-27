@@ -12,6 +12,7 @@ import { PLATFORM_COLLECTION } from '@/lib/config'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
+import { getCfileRecordForSSR, toPublicDescriptor } from '@/lib/collectorFile'
 import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { entriesOpen, isRaffleEnabled } from '@/lib/raffle'
@@ -259,13 +260,19 @@ export default async function MomentPage({ params }: Props) {
   const sessionToken = cookieStore.get(SESSION_COOKIE)?.value
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
-  const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, webKitOnly] = await Promise.all([
+  const [detail, fallbackMeta, initialCollectionMeta, kvCreatorAddress, webKitOnly, cfileRecord] = await Promise.all([
     fetchMomentDetail(address, tokenId),
     getFallbackMeta(address, tokenId),
     getInitialCollectionMeta(address),
     getKvCreatorAddress(address, tokenId),
     isWebKitOnlyUA(),
+    // Collector-file descriptor for first-paint (public facts only — the
+    // helper never returns the storage pointer). undefined-vs-null matters:
+    // a Redis blip must NOT read as "no file" (descriptorKnown) or the card
+    // would skip the client status fetch that recovers it.
+    getCfileRecordForSSR(address, tokenId),
   ])
+  const initialCfile = cfileRecord === undefined ? undefined : toPublicDescriptor(cfileRecord)
 
   // Prefer KV moment-meta (the EOA mint-proxy wrote at mint time) so
   // Kismet-minted moments resolve to the actual creator EOA. Inprocess
@@ -398,6 +405,10 @@ export default async function MomentPage({ params }: Props) {
         // <video src> is proxy-first for WebKit-only surfaces and matches
         // the preload target instead of emitting a doomed direct fetch.
         ssrWebKit={webKitOnly}
+        initialCfile={initialCfile}
+        // Same React-cached listing the embed button + Offer schema use —
+        // zero extra reads; drives the collector-file card's sold-out state.
+        initialListing={activeListing ? { price: activeListing.price, currency: activeListing.currency } : null}
       />
     </>
   )

@@ -76,6 +76,10 @@ export interface CollectArgs {
    * path and no provenance rule applies. See lib/gift.ts.
    */
   recipient?: Address
+  /** Optional line under the success toast (e.g. "Your download is ready
+   *  below." when the artwork carries a collector file). Rides both success
+   *  branches; the Mini App share branch keeps its Share action alongside. */
+  successDescription?: string
 }
 
 interface UseDirectCollectReturn {
@@ -405,7 +409,9 @@ export function useDirectCollect(): UseDirectCollectReturn {
         } else if (args.share && isInMiniApp) {
           toast.success('Collected!', {
             id: TOAST_ID,
-            description: 'Share it to /kismet?',
+            description: args.successDescription
+              ? `${args.successDescription} Share it to /kismet?`
+              : 'Share it to /kismet?',
             duration: 8000,
             action: collectShareToastAction({
               collectionAddress,
@@ -416,7 +422,10 @@ export function useDirectCollect(): UseDirectCollectReturn {
             }),
           })
         } else {
-          toast.success('Collected!', { id: TOAST_ID })
+          toast.success('Collected!', {
+            id: TOAST_ID,
+            ...(args.successDescription ? { description: args.successDescription } : {}),
+          })
         }
         ackSuccess()
         return { hash }
