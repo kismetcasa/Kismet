@@ -218,10 +218,12 @@ export async function PUT(req: NextRequest) {
       // debits: resident bytes are the one open-ended cost axis of
       // Redis-stored files, so a ledger-read failure refuses (503) rather
       // than waving the write through — and an artist retrying against a
-      // full platform must not burn their 15/day on 507s. The ledger
-      // rewrite in the commit below is absolute per artwork, so two racing
-      // PUTs on DIFFERENT artworks can overshoot by at most one file —
-      // accepted (the per-artwork lock serializes the rest).
+      // full platform must not burn their 15/day on 507s. Cross-artwork
+      // check/commit races can't happen today (MAX_CONCURRENT_PUTS = 1 in
+      // a single-process deployment serializes every PUT past the slot);
+      // if that slot or the pod count ever grows, the worst case is an
+      // overshoot of one file per extra concurrent PUT — the ledger
+      // rewrite itself stays absolute per artwork either way.
       let storedMap: Record<string, number>
       try {
         storedMap = await getCfileStoredBytesMap()
