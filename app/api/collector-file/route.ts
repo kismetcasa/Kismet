@@ -200,14 +200,6 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ file: toPublicDescriptor(record), unchanged: true })
       }
 
-      // Per-identity meters (fail open by platform convention)…
-      if (!(await consumeUserQuota('cfile-upload', caller, 1))) {
-        return errorResponse(429, 'Daily file-upload limit reached — try again tomorrow')
-      }
-      if (!(await consumeUserQuota('cfile-bytes', caller, plaintext.length))) {
-        return errorResponse(429, 'Daily file-upload size limit reached — try again tomorrow')
-      }
-
       const planned = planAttach(record, {
         size: plaintext.length,
         sha256,
@@ -222,12 +214,14 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ file: toPublicDescriptor(record), unchanged: true })
       }
 
-      // …and the fail-CLOSED global storage ceiling: resident bytes are the
-      // one open-ended cost axis of Redis-stored files, so a ledger-read
-      // failure refuses (503) rather than waving the write through. The
-      // ledger rewrite in the commit below is absolute per artwork, so two
-      // racing PUTs on DIFFERENT artworks can overshoot by at most one file
-      // — accepted (the per-artwork lock serializes the rest).
+      // The fail-CLOSED global storage ceiling, checked BEFORE the quota
+      // debits: resident bytes are the one open-ended cost axis of
+      // Redis-stored files, so a ledger-read failure refuses (503) rather
+      // than waving the write through — and an artist retrying against a
+      // full platform must not burn their 15/day on 507s. The ledger
+      // rewrite in the commit below is absolute per artwork, so two racing
+      // PUTs on DIFFERENT artworks can overshoot by at most one file —
+      // accepted (the per-artwork lock serializes the rest).
       let storedMap: Record<string, number>
       try {
         storedMap = await getCfileStoredBytesMap()
@@ -241,6 +235,15 @@ export async function PUT(req: NextRequest) {
       )
       if (othersBytes + recordStoredBytes(planned.record) > CFILE_STORAGE_CEILING_BYTES) {
         return errorResponse(507, 'Platform download storage is full — contact Kismet to raise it')
+      }
+
+      // Per-identity meters (fail open by platform convention), debited only
+      // once the write is actually going to be attempted.
+      if (!(await consumeUserQuota('cfile-upload', caller, 1))) {
+        return errorResponse(429, 'Daily file-upload limit reached — try again tomorrow')
+      }
+      if (!(await consumeUserQuota('cfile-bytes', caller, plaintext.length))) {
+        return errorResponse(429, 'Daily file-upload size limit reached — try again tomorrow')
       }
 
       // Chunks land with a self-expiring TTL; the commit MULTI persists them

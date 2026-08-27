@@ -4,6 +4,8 @@ import { redis } from './redis'
 import { strictRead, safeRead } from './redisRead'
 import { randomHex } from './random'
 import {
+  CFILE_MAX_BYTES,
+  cfileChunkCount,
   cfileRef,
   decodeCfileChunks,
   recordStoredBytes,
@@ -32,7 +34,7 @@ import type { CfilePublic } from './collectorFileTypes'
  *   collectors:<ref>         ZSET addr, score=first-seen ms  (no TTL)
  *   cfile-refs:<addr>        SET  "<ref>"                    (no TTL; erasure index)
  *   cfile-grace:<ref>:<addr> STR '1'                         (EX 900)
- *   cfile-ticket:<token>     STR JSON {ref,addr,v,name,share?} (EX 300/1800, single-use)
+ *   cfile-ticket:<token>     STR JSON {ref,addr,share?}      (EX 300/1800, single-use)
  *   cfile-lock:<ref>         SET NX (lib/redisLock)          (EX 180)
  *   cfile-notify-lock:<ref>  SET NX — IS the 24h cooldown    (EX 86400)
  *   cfile-blocked            SET  "<ref>" — admin kill-switch, checked on DOWNLOAD
@@ -50,7 +52,7 @@ export const cfileLockKey = (ref: string) => `kismetart:cfile-lock:${ref}`
 export const cfileNotifyLockKey = (ref: string) => `kismetart:cfile-notify-lock:${ref}`
 const KEY_BLOCKED = 'kismetart:cfile-blocked'
 
-export const CFILE_GRACE_TTL_SECS = 15 * 60
+const CFILE_GRACE_TTL_SECS = 15 * 60
 export const CFILE_TICKET_TTL_SECS = 5 * 60
 export const CFILE_SHARE_TICKET_TTL_SECS = 30 * 60
 export const CFILE_NOTIFY_COOLDOWN_SECS = 24 * 60 * 60
@@ -187,6 +189,19 @@ export async function readCfileBlob(
   tokenId: string,
   version: { blobSeq: number; chunks: number; size: number },
 ): Promise<Buffer> {
+  // Records are only ever written by this module, but they ARE mutable data:
+  // bound the loop by what a legal record can hold so a corrupted/hand-edited
+  // record degrades to a 500, not an unbounded fan-out of chunk reads.
+  if (
+    !Number.isInteger(version.chunks) ||
+    version.chunks < 1 ||
+    version.chunks > cfileChunkCount(CFILE_MAX_BYTES) ||
+    !Number.isInteger(version.size) ||
+    version.size < 1 ||
+    version.size > CFILE_MAX_BYTES
+  ) {
+    throw new CfileDataError(`implausible version shape (chunks=${version.chunks}, size=${version.size})`)
+  }
   const ref = cfileRef(collection, tokenId)
   const chunks = await Promise.all(
     Array.from({ length: version.chunks }, (_, i) =>
@@ -375,8 +390,6 @@ export async function hasDownloadGrace(collection: string, tokenId: string, addr
 export interface CfileTicket {
   ref: string
   addr: string
-  v: number
-  name: string
   /** Copy-link variant: the download route answers its bare GET with a
    *  confirmation page instead of bytes, so unfurl bots and URL-bar
    *  prefetchers can't redeem it (design §5.1). */
@@ -389,21 +402,20 @@ export interface CfileTicket {
  * token with no auth of its own — which is what lets a Mini App hand the URL
  * to the device browser via sdk.actions.openUrl, where no session exists
  * (design §5.1 path 4). 256-bit token, short TTL, deleted on first use.
+ * Deliberately carries NO version or name: a ticket authorizes `addr` to
+ * download this artwork's CURRENT file once — redemption re-reads the
+ * record, so a replace between mint and redeem serves the new version.
  */
 export async function mintCfileTicket(
   collection: string,
   tokenId: string,
   address: string,
-  v: number,
-  name: string,
   opts: { share?: boolean } = {},
 ): Promise<string> {
   const token = randomHex(32)
   const ticket: CfileTicket = {
     ref: cfileRef(collection, tokenId),
     addr: address.toLowerCase(),
-    v,
-    name,
     ...(opts.share ? { share: true as const } : {}),
   }
   await redis.set(keyTicket(token), JSON.stringify(ticket), {

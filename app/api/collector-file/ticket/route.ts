@@ -71,14 +71,7 @@ export async function POST(req: NextRequest) {
     const current = record?.current
     if (!current) return errorResponse(404, 'No file attached to this artwork')
 
-    const token = await mintCfileTicket(
-      params.collection,
-      params.tokenId,
-      address,
-      current.v,
-      current.name,
-      { share },
-    )
+    const token = await mintCfileTicket(params.collection, params.tokenId, address, { share })
     const url = `${SITE_URL}/api/collector-file/download?collection=${params.collection}&tokenId=${params.tokenId}&ticket=${token}`
     return NextResponse.json({
       url,
