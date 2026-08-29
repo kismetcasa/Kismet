@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeMomentComments, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
@@ -94,6 +94,33 @@ export async function GET(req: NextRequest) {
   if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
     const rows = (data as Record<string, unknown>).comments
     if (Array.isArray(rows)) upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
+  }
+
+  // Screen upstream's rows into the shape this route's own contract promises,
+  // AFTER upstreamHasMore has read the raw length (a shortened page must never
+  // read as feed-end — the same rule the hidden-user filter below observes) and
+  // BEFORE anything downstream indexes into a row. Without this the proxy
+  // relayed whatever arrived, and every consumer's `as MomentComment[]` was an
+  // unchecked claim; see normalizeMomentComments for what is repaired vs
+  // dropped. A drop is logged rather than silent: it means real on-chain
+  // activity is missing from the panel while the supply count still includes
+  // it, which is precisely the class of discrepancy that is invisible until
+  // someone reports it.
+  if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.comments)) {
+      const raw = obj.comments.length
+      obj.comments = normalizeMomentComments(obj.comments)
+      const dropped = raw - (obj.comments as MomentComment[]).length
+      if (dropped > 0) {
+        console.warn('[comments] dropped unrenderable upstream rows', {
+          collectionAddress,
+          tokenId,
+          dropped,
+          raw,
+        })
+      }
+    }
   }
 
   // No own-profile exception here: comments live in a public per-moment

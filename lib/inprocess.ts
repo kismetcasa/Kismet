@@ -226,18 +226,61 @@ export interface CreateMomentPayload {
 
 export interface MomentComment {
   sender: string
-  // Optional because the upstream feed can omit it — /api/moment/comments
-  // proxies rows through without reshaping them, so this must describe the
-  // WIRE, not the happy path. Every consumer therefore has to tolerate
-  // undefined; isPlatformCollectComment accepts it directly, and JSX renders
-  // it as nothing.
-  comment?: string
+  comment: string
   timestamp: number // may be ms or seconds — normalize before use
   // 'airdrop' marks a synthetic activity row the comments route folds in from
   // a Kismet airdrop record: `sender` is the RECIPIENT (the invited artist)
   // and the UI renders it as "invited to kismet". Absent/'collect' = an
   // on-chain collect comment from the inprocess feed.
   kind?: 'collect' | 'airdrop'
+}
+
+/**
+ * Parse an untrusted `comments` payload into rows that satisfy MomentComment.
+ *
+ * This is what makes the interface above a GUARANTEE rather than a hope. Every
+ * row is upstream data from In Process's Supabase-backed feed, and it reaches
+ * consumers across two boundaries — the /api/moment/comments proxy, which
+ * relays rows opaquely, and `res.json()` on the client, which is `any` and was
+ * being asserted straight into `MomentComment[]`. Neither boundary checked
+ * anything, so the declared types were claims nobody enforced:
+ *
+ *   - a null/absent `comment` (the natural encoding of an empty nullable text
+ *     column) threw in isPlatformCollectComment's `comment.trim()`,
+ *   - an absent `sender` threw in the activity list's row-key derivation —
+ *     before render, so the whole panel went down, not one row,
+ *   - and a `comments` value that was not an ARRAY at all defeated any
+ *     per-row guard, because `.filter` was the throw.
+ *
+ * Screening once here, wherever the payload enters, is the only version of
+ * this that a future consumer inherits for free.
+ *
+ * Rows are REPAIRED where the fault is cosmetic and DROPPED only where it is
+ * disqualifying: a missing comment becomes '' (which isPlatformCollectComment
+ * already reads as the platform default label, exactly as an empty on-chain
+ * comment does today), while a row with no sender or no finite timestamp is
+ * dropped — it cannot be attributed, keyed, ordered, or linked, and rendering
+ * it would print visible garbage. Unknown fields are preserved: the proxy
+ * relays upstream's newer columns (username, commentId, replies…) opaquely and
+ * this must not become the thing that strips them.
+ */
+export function normalizeMomentComments(rows: unknown): MomentComment[] {
+  if (!Array.isArray(rows)) return []
+  const out: MomentComment[] = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (typeof r.sender !== 'string' || r.sender.length === 0) continue
+    const timestamp = Number(r.timestamp)
+    if (!Number.isFinite(timestamp)) continue
+    out.push({
+      ...r,
+      sender: r.sender,
+      timestamp,
+      comment: typeof r.comment === 'string' ? r.comment : '',
+    } as MomentComment)
+  }
+  return out
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */

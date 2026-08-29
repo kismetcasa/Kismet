@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import Link from 'next/link'
-import { formatRelativeTime, isPlatformCollectComment, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
+import { formatRelativeTime, isPlatformCollectComment, normalizeMomentComments, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { getCachedComments, getCachedCommentsHasMore, setCachedComments } from '@/lib/momentCache'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -21,27 +21,17 @@ import { ProfileAvatar } from './ProfileAvatar'
 // activity rows. All props are primitives, so memo's shallow compare holds;
 // keep it that way — an object/callback prop would silently void it.
 
-// Every row here is upstream data: /api/moment/comments proxies In Process's
-// feed through without reshaping it, and types its own rows `sender?: string`
-// — it guards `typeof c.sender === 'string'` in its hidden-user filter for
-// exactly that reason. This side never did, so one row missing `sender` threw
-// inside activityRowKey (below) during dedupeActivity — BEFORE any render —
-// and took the whole activity panel down with it. Screen the rows once, at
-// every ingest point, instead of guarding each of the eight `c.sender` reads.
-// `timestamp` rides along for the same reason: it is not fatal (arithmetic on
-// undefined yields NaN rather than throwing), but it keys the row, orders the
-// feed and prints as "NaNd" — so a row that can't say WHEN is no more
-// renderable than one that can't say WHO.
-function isRenderableRow(c: MomentComment): boolean {
-  return typeof c.sender === 'string' && c.sender.length > 0 && Number.isFinite(c.timestamp)
-}
-
 // Stable identity for one activity row across paginated fetches. Collect
 // comments and the airdrop rows the route folds onto page 0 share the
 // sender+timestamp space, so `kind` disambiguates. Used as the React key AND
 // for cross-page dedup, so a new collect shifting the newest-first feed can't
-// surface a boundary row twice. Only ever called on rows that already passed
-// isRenderableRow.
+// surface a boundary row twice.
+//
+// Dereferences `sender` unguarded, which is safe for one reason only: every
+// path that turns a response into MomentComment[] goes through
+// normalizeMomentComments first. That is the invariant this file relies on —
+// `res.json()` is `any`, so without it the cast below is an unchecked claim
+// and this line is where a malformed row takes the whole panel down.
 function activityRowKey(c: MomentComment): string {
   return `${c.sender.toLowerCase()}:${c.timestamp}:${c.kind ?? 'collect'}`
 }
@@ -54,7 +44,6 @@ function activityRowKey(c: MomentComment): string {
 function dedupeActivity(rows: MomentComment[]): MomentComment[] {
   const seen = new Set<string>()
   return rows.filter((c) => {
-    if (!isRenderableRow(c)) return false
     const k = activityRowKey(c)
     if (seen.has(k)) return false
     seen.add(k)
@@ -114,7 +103,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const fetched: MomentComment[] = normalizeMomentComments(data.comments)
         const deduped = dedupeActivity(fetched)
         seenCommentsRef.current = new Set(deduped.map(activityRowKey))
         // Next page starts after page 0's real comments; airdrop rows live only
@@ -165,7 +154,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const page: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const page: MomentComment[] = normalizeMomentComments(data.comments)
         // Advance by the RAW page size before deduping so an all-duplicate
         // boundary page still moves the cursor forward.
         commentOffsetRef.current = startOffset + page.length
@@ -181,7 +170,6 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
         const nextHasMore = page.length > 0 && data.hasMore !== false
         setHasMoreComments(nextHasMore)
         const fresh = page.filter((c) => {
-          if (!isRenderableRow(c)) return false
           const k = activityRowKey(c)
           if (seen.has(k)) return false
           seen.add(k)

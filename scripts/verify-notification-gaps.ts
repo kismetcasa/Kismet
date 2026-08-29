@@ -13,8 +13,9 @@
 //   G2  a transient Farcaster failure re-resolved a user's identity, and
 //       permanently deleted their stored choice (lib/farcasterAuth)
 //   G3  writeNotification lost entries with no trace at all (lib/notifications)
-//   G4  an upstream activity row missing `comment`/`sender` threw and took the
-//       whole panel down (lib/inprocess + components/MomentActivity)
+//   G4  an upstream activity row missing `comment`/`sender` — or a `comments`
+//       value that was not an array at all — threw and took the whole panel
+//       down (lib/inprocess normalizeMomentComments, applied at every boundary)
 //   G5  notifications addressed to an inprocess per-creator smart wallet — an
 //       inbox nobody can sign in to — while stats folded the same alias onto
 //       its owner (lib/notifications resolveRecipient)
@@ -24,6 +25,7 @@
 
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import {
   decodeFunctionData,
   encodeAbiParameters,
@@ -360,6 +362,9 @@ console.log('\nG2  a Farcaster blip reassigned identity and deleted the choice')
 console.log('\nG4  a malformed activity row crashed the whole panel')
 {
   const f = inprocess.isPlatformCollectComment
+  // isPlatformCollectComment also answers for Notification.comment, which is
+  // genuinely optional in its own domain — so tolerating absence is its
+  // contract now, not a patch over this crash.
   check('undefined no longer throws', f(undefined) === true)
   check('null no longer throws', f(null) === true)
   check('empty is still platform-default (non-regression)', f('') === true)
@@ -368,14 +373,66 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
   check('a Zora frame comment still matches', f('Collecting from the frame by x') === true)
   check('a real comment is still a real comment', f('love this') === false)
 
-  // `sender` is the same class and the likelier one — the proxy route types it
-  // optional and guards it; the renderer must screen it at ingest, before
-  // activityRowKey. Asserted at source: the guard has to sit on BOTH ingest
-  // paths (page-0 dedupe and the load-more append), not just one.
-  const src = readFileSync(new URL('../components/MomentActivity.tsx', import.meta.url), 'utf8')
-  check('a sender screen exists', /function isRenderableRow/.test(src))
-  check('page-0 ingest screens before keying', /return rows\.filter\(\(c\) => \{\s*\n\s*if \(!isRenderableRow\(c\)\) return false/.test(src))
-  check('load-more ingest screens before keying', /const fresh = page\.filter\(\(c\) => \{\s*\n\s*if \(!isRenderableRow\(c\)\) return false/.test(src))
+  // The real fix is the boundary parse that makes MomentComment a guarantee.
+  // Behavioural, not a source grep: the previous version of these checks
+  // asserted on the SHAPE of the calling code, which passes for a screen
+  // sitting in the wrong place and breaks on reformatting.
+  const n = inprocess.normalizeMomentComments
+  const row = (o: Record<string, unknown>) => ({ sender: '0xabc', timestamp: 1, ...o })
+
+  // The container itself — the case a per-row guard can NEVER reach, because
+  // `.filter` is the throw. MomentCard cached `data.comments ?? []` unchecked.
+  check('a non-array payload yields no rows', n({}).length === 0)
+  check('null yields no rows', n(null).length === 0)
+  check('undefined yields no rows', n(undefined).length === 0)
+  check('a string yields no rows', n('nope').length === 0)
+
+  // Repaired: the fault is cosmetic and the event is real, so keep it.
+  check('a null comment is repaired, not dropped', n([row({ comment: null })])[0]?.comment === '')
+  check('an absent comment is repaired, not dropped', n([row({})])[0]?.comment === '')
+  check('a non-string comment is repaired', n([row({ comment: 42 })])[0]?.comment === '')
+  check('  …and reads as the platform default, exactly like an empty on-chain one',
+    f(n([row({ comment: null })])[0].comment) === true)
+  check('a numeric-string timestamp is coerced', n([row({ timestamp: '1700000000' })])[0]?.timestamp === 1700000000)
+
+  // Dropped: unattributable or unorderable, so rendering it prints garbage.
+  check('a row with no sender is dropped', n([row({ sender: undefined })]).length === 0)
+  check('a row with an empty sender is dropped', n([row({ sender: '' })]).length === 0)
+  check('a row with a non-finite timestamp is dropped', n([row({ timestamp: 'abc' })]).length === 0)
+  check('a non-object row is dropped', n([null, 7, 'x']).length === 0)
+
+  // Must not become the thing that strips upstream's newer columns.
+  const kept = n([row({ comment: 'hi', kind: 'airdrop', username: 'ada', commentId: null })])[0]
+  check('a good row survives intact', kept?.sender === '0xabc' && kept?.comment === 'hi')
+  check('opaque upstream fields are preserved', (kept as Record<string, unknown>)?.username === 'ada')
+  check('kind is preserved (airdrop rows key separately)', kept?.kind === 'airdrop')
+  check('one bad row no longer costs the good ones', n([row({}), null, row({ sender: '' })]).length === 1)
+
+  // The parse only helps where it is actually applied, and TypeScript cannot
+  // force it: `res.json()` is `any`, so assigning it to MomentComment[] type-
+  // checks with or without the call. Assert the invariant at source instead —
+  // on IMPORTS, not on statement shapes, so it survives reformatting: any file
+  // that reads this feed must also parse it. Mirrors the repo's other
+  // source-level gates (verify-a11y-text, check-resource-hint-cors).
+  const READERS = [
+    'components/MomentActivity.tsx',
+    'components/MomentCard.tsx',
+    'app/api/moment/comments/route.ts',
+  ]
+  for (const f of READERS) {
+    const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
+    check(`${f} parses the feed it reads`, src.includes('normalizeMomentComments'))
+  }
+  // And no OTHER file may quietly start reading it unparsed.
+  const unguarded = execSync(
+    `grep -rl "api/moment/comments" --include=*.ts --include=*.tsx components app lib hooks || true`,
+    { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8' },
+  )
+    .split('\n')
+    .filter(Boolean)
+    .filter((f) => !READERS.includes(f))
+    .filter((f) => !readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes('normalizeMomentComments'))
+  check('no unparsed reader of the comments feed exists', unguarded.length === 0, unguarded.join(', '))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
