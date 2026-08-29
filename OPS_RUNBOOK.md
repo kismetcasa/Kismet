@@ -255,3 +255,61 @@ Range → `206` with `Content-Range` · error path `no-store`.
   — removes the in-memory merge/sort entirely.
 - **Stream `/api/transcode-gif`** source→tempfile→ffmpeg→output instead of buffering, so
   the source cap can rise without an off-heap spike.
+
+---
+
+## 5. Collector files (gated downloads/views attached to artworks)
+
+Design + rationale: `COLLECTOR_DOWNLOADS_DESIGN.md`. Bytes live **in Upstash
+Redis** as 4 MiB base64 chunks (`kismetart:cfile-blob:*`); the record
+(`kismetart:cfile:*`) points at them. There is no second copy anywhere.
+
+### One-time / deploy
+
+- **No configuration required.** The feature has no secret and no env var.
+  Optional: `CFILE_STORAGE_CEILING_BYTES` (default 512 MiB) caps total
+  resident bytes across all artworks; PUT answers **507** when full.
+- **Backfill audiences for pre-feature artworks** (otherwise "notify
+  collectors" only reaches people who collected after launch):
+  `node scripts/backfill-collectors.mjs --address 0x… --token 1` (dry run;
+  add `--commit`).
+- **VERIFY THE EVICTION POLICY IN THE UPSTASH CONSOLE — `noeviction`.**
+  This is the one setting that can destroy collector files. Blob chunks are
+  now by far the largest values in the database, so under any LRU/LFU policy
+  they are the first things evicted: the record survives, its chunks vanish,
+  and every download/view 500s with `CfileDataError`. Nothing in the app can
+  detect or prevent this.
+
+### Incidents
+
+**"File could not be retrieved" (500) on download or view.**
+The record and the stored chunks disagree. Check eviction policy first (see
+above), then run the reconciler in report mode:
+`node scripts/reconcile-collector-files.mjs`. It lists records whose chunks
+are missing, blob chunks no record references (leaked storage), and any
+drift in the `kismetart:cfile-bytes` ledger. `--commit` deletes orphaned
+chunks and rewrites the ledger; it never deletes a chunk a record still
+points at. Recovery for a missing-chunk record is artist re-upload — say so
+plainly rather than implying the file is recoverable.
+
+**Takedown / DMCA on an attached file.**
+`POST /api/admin/cfile-block { collection, tokenId, blocked: true }` —
+blocks downloads AND views immediately, is reversible, and is audited
+through `recordAdminAction`. It does **not** delete bytes; the artist's own
+DELETE does (and frees storage). Note the view route caches responses for
+one hour (`private, max-age=3600`), so a viewer who already loaded the file
+keeps their cached copy for up to that long — bytes they had already
+received.
+
+**Storage full (507 on upload).**
+Check totals with the reconciler's report, then raise
+`CFILE_STORAGE_CEILING_BYTES` in Coolify. Storage past Upstash's first free
+GB bills $0.25/GB-month — a cost dial, not a cliff.
+
+**Bandwidth.** Every download ships ~1.33× the file out of the metered
+Upstash bandwidth (free ≤200 GB/mo, then $0.03/GB) and counts against the
+**$20 budget cap that hard-stops the whole database**. This is the feature's
+one demand-driven cost axis and it has **no alerting** — watch the Upstash
+usage graph after any artwork with a large file gets attention. Per-identity
+quotas (`cfile-download` 100/day, `cfile-view` 400/day) and the per-IP rate
+limits are the only automatic brakes.
