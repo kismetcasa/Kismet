@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto'
-import { CFILE_MAX_BYTES } from './collectorFileTypes.ts'
+import {
+  CFILE_KIND_META,
+  CFILE_MAX_BYTES,
+  CFILE_VIEWABLE_KINDS,
+  isViewableCfileKind,
+  type CfileKind,
+} from './collectorFileTypes.ts'
 
 /**
  * Pure core of the collector-file feature (COLLECTOR_DOWNLOADS_DESIGN.md):
@@ -112,21 +118,75 @@ export { CFILE_MAX_BYTES }
  *   glb  glTF                   (Binary glTF magic 0x46546C67 LE — the
  *                                12-byte header per the IANA
  *                                model/gltf-binary registration)
+ *   svg  <svg root element        (XML TEXT — no fixed signature; sniffed
+ *                                only after every binary matcher fails)
  */
-export type CfileKind = 'zip' | 'pdf' | 'glb'
+export type { CfileKind }
+export { CFILE_VIEWABLE_KINDS, isViewableCfileKind }
 
-export const CFILE_KINDS: Record<CfileKind, { ext: string; mime: string; magic: number[] }> = {
-  zip: { ext: '.zip', mime: 'application/zip', magic: [0x50, 0x4b, 0x03, 0x04] },
-  pdf: { ext: '.pdf', mime: 'application/pdf', magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
-  glb: { ext: '.glb', mime: 'model/gltf-binary', magic: [0x67, 0x6c, 0x54, 0x46] }, // glTF
+/** Identity (ext/mime) comes from the client-safe map; this adds the byte
+ *  signatures the server detects with. SVG has none — see sniffSvg. */
+export const CFILE_KINDS: Record<CfileKind, { ext: string; mime: string; magic?: number[] }> = {
+  zip: { ...CFILE_KIND_META.zip, magic: [0x50, 0x4b, 0x03, 0x04] },
+  pdf: { ...CFILE_KIND_META.pdf, magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
+  glb: { ...CFILE_KIND_META.glb, magic: [0x67, 0x6c, 0x54, 0x46] }, // glTF
+  svg: { ...CFILE_KIND_META.svg },
 }
 
-/** Detect the format from leading bytes; null = not an accepted format. */
+/** How far into the file the SVG sniff will look for the root element. Real
+ *  exporters put it within a few hundred bytes (declaration + generator
+ *  comment + DOCTYPE); the bound stops a crafted file from making us scan
+ *  megabytes of comments. */
+const SVG_SNIFF_BYTES = 4096
+
+/**
+ * Is this XML text whose root element is <svg? Skips, in order: a UTF-8 BOM,
+ * whitespace, XML processing instructions (`<?xml …?>`), comments, and a
+ * DOCTYPE — the exact preamble Illustrator/Inkscape/Figma emit — then
+ * requires a literal `<svg` (XML is case-sensitive, and the SVG element is
+ * lowercase, so an uppercase root would not parse in a browser either).
+ */
+function sniffSvg(head: Buffer): boolean {
+  let text = head.subarray(0, SVG_SNIFF_BYTES).toString('utf8')
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1) // BOM
+  let i = 0
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text.startsWith('<?', i)) {
+      const end = text.indexOf('?>', i)
+      if (end === -1) return false
+      i = end + 2
+      continue
+    }
+    if (text.startsWith('<!--', i)) {
+      const end = text.indexOf('-->', i)
+      if (end === -1) return false
+      i = end + 3
+      continue
+    }
+    if (text.startsWith('<!DOCTYPE', i)) {
+      const end = text.indexOf('>', i)
+      if (end === -1) return false
+      i = end + 1
+      continue
+    }
+    break
+  }
+  // The next character after the root delimiter must not make this a
+  // different element (e.g. <svgfoo).
+  return text.startsWith('<svg', i) && /[\s/>]/.test(text[i + 4] ?? '')
+}
+
+/** Detect the format from leading bytes; null = not an accepted format.
+ *  Binary magic matchers run FIRST and are exact; the SVG text sniff only
+ *  gets a look once every binary signature has failed, so a binary file can
+ *  never be mistaken for markup. */
 export function detectCfileKind(head: Buffer): CfileKind | null {
   for (const [kind, meta] of Object.entries(CFILE_KINDS) as [CfileKind, (typeof CFILE_KINDS)[CfileKind]][]) {
-    if (head.length >= meta.magic.length && meta.magic.every((b, i) => head[i] === b)) return kind
+    const magic = meta.magic
+    if (magic && head.length >= magic.length && magic.every((b, i) => head[i] === b)) return kind
   }
-  return null
+  return sniffSvg(head) ? 'svg' : null
 }
 
 /**

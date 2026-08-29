@@ -42,9 +42,9 @@ export const runtime = 'nodejs'
  * Artist-side management of an artwork's collector file
  * (COLLECTOR_DOWNLOADS_DESIGN.md §5):
  *
- *   PUT    — attach or replace (raw zip/PDF/GLB body ≤16 MiB — format
- *            detected from magic bytes — x-file-name header, ?note=
- *            release note, ?notify=1 to fan out after commit)
+ *   PUT    — attach or replace (raw zip/PDF/GLB/SVG body ≤16 MiB — format
+ *            detected from magic bytes, or a bounded text sniff for SVG —
+ *            x-file-name header, ?note= release note, ?notify=1 to fan out)
  *   GET    — manage view (descriptor + history + downloader count + notify state)
  *   PATCH  — { action: 'rollback', v } — re-activate a history version
  *   DELETE — detach (tombstones serving; history stays artist-visible)
@@ -136,7 +136,7 @@ export async function PUT(req: NextRequest) {
   // .glb) and both clients send explicit octet-stream anyway; this just
   // bounces obviously-wrong clients (HTML forms, JSON) before the body read.
   const contentType = (req.headers.get('content-type') ?? '').toLowerCase()
-  const CT_OK = ['application/octet-stream', 'application/zip', 'application/x-zip-compressed', 'application/pdf', 'model/gltf-binary']
+  const CT_OK = ['application/octet-stream', 'application/zip', 'application/x-zip-compressed', 'application/pdf', 'model/gltf-binary', 'image/svg+xml']
   if (contentType && !CT_OK.some((t) => contentType.includes(t))) {
     return errorResponse(415, 'Send the file as application/octet-stream')
   }
@@ -175,7 +175,7 @@ export async function PUT(req: NextRequest) {
     // Magic bytes decide the format; the claimed name/extension never does.
     const kind = detectCfileKind(plaintext)
     if (!kind) {
-      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, or GLB')
+      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, GLB or SVG')
     }
     const name = normalizeCfileName(decodedName, kind)
 

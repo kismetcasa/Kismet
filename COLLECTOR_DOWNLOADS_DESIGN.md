@@ -1174,6 +1174,45 @@ format-agnostic and unchanged; the 16 MiB cap stays uniform. Client pickers
 share one accept-list (`lib/collectorFileTypes.ts`) and upload as explicit
 `application/octet-stream`, leaving the magic bytes as the single authority.
 
+**Viewer + SVG (post-merge).** The feature accepts a fourth kind, **SVG**,
+and renders two of the four **in-page**. Rationale, in order: a zip can
+already carry any file, so first-class kinds buy convenience, not delivery —
+what creates new value is *viewing*. GLB earns a viewer because most
+collectors cannot open a `.glb` at all (iOS Quick Look is USDZ-only; macOS
+Preview and current Windows have no handler); SVG earns one because its
+viewer is free (`<img>`); PDF deliberately gets none, because it opens
+natively everywhere and honest in-page rendering on iOS would cost a pdf.js
+dependency (Safari renders iframe PDFs as a first-page-only image).
+**Everything stays downloadable** — viewing and downloading serve different
+needs (see it now vs. keep it), both sit behind the same collect gate, and
+since viewing transfers the same bytes, offering both costs nothing.
+
+`GET /api/collector-file/view` is a SEPARATE route from the download path
+because four of its properties are inverted: session-only (no tickets — a
+ticket exists so a Mini App can hand a URL to the device browser for
+*saving*), never stamps the download marker (seeing is not having: it would
+tell a v2 holder they are current on v3 and count lookers in the artist's
+downloader stat), cacheable (`private, max-age=3600` — a cached copy is a
+downloaded copy anyway, and it keeps repeat views off the metered bandwidth
+and the reassembly slot; the accepted cost is that a seller keeps cached
+viewing for the window), and viewable-kinds-only. Views debit their own
+looser `cfile-view` meter rather than rationing the download budget.
+
+Two format-specific facts drive the implementation. **SVG has no magic
+bytes** — it is XML text that may open with a BOM, whitespace, an XML
+declaration, comments, or a DOCTYPE — so it is detected by a *bounded* text
+sniff (4 KB) that runs only after every binary matcher fails; binary
+signatures therefore always win. **SVG is the only active-content kind we
+store**: it can carry `<script>`, event handlers and `foreignObject`, and
+blob: URLs inherit the creating origin, so navigating to one would execute
+artist script as kismet.art (the WhatsApp/Telegram Web XSS). Browsers
+disable scripting only in *image* contexts, so the rule — pinned in the
+viewer's comments and by the verify oracle's viewable-kind assertions — is:
+render SVG exclusively through `<img src={blobUrl}>`, never inline, never
+`<object>`/`<iframe>`, never opened; and the view route keeps `attachment`
++ `nosniff` so even a direct navigation saves rather than renders. Our CSP
+is Report-Only, so that discipline is the control, not a second line.
+
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived
 production here, adds no external dependency, and keeps the artist's three
