@@ -75,25 +75,15 @@ export function feedSampleDepth({ page, limit, sorted, thinned }: FeedSampleInpu
  */
 export function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
   const seen = new Set<string>()
-  let duplicate = false
-  for (const it of items) {
-    const k = keyOf(it)
-    if (seen.has(k)) {
-      duplicate = true
-      break
-    }
-    seen.add(k)
-  }
-  if (!duplicate) return items
+  for (const it of items) seen.add(keyOf(it))
+  if (seen.size === items.length) return items
   const kept = new Set<string>()
-  const out: T[] = []
-  for (const it of items) {
+  return items.filter((it) => {
     const k = keyOf(it)
-    if (kept.has(k)) continue
+    if (kept.has(k)) return false
     kept.add(k)
-    out.push(it)
-  }
-  return out
+    return true
+  })
 }
 
 /**

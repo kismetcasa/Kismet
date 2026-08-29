@@ -217,14 +217,10 @@ export function PaginatedGrid<T>({
       : []
     return [...firstPageItems, ...extraPages.flat()]
   }, [firstPage, itemsKey, extraPages])
-  // Offset pagination over a live, re-derived result set can hand back a row an
-  // earlier page already rendered, and this list is append-only — so the
-  // duplicate reaches React as a repeated key and one row is silently skipped.
-  // The feed route re-runs its whole merge per page, so on a SORTED feed a
-  // newly-sampled older row can outrank the previous page boundary; a mint
-  // landing between two page fetches does the same on any feed. Runs BEFORE the
-  // caller's filter so a consumer-supplied predicate always sees a clean list.
-  // See lib/feedPagination for the mechanism and its measured bound.
+  // This list is append-only, so a row an earlier page already rendered reaches
+  // React as a repeated key (and one row is silently skipped). Runs BEFORE the
+  // caller's filter, so a consumer-supplied predicate always sees a clean list.
+  // lib/feedPagination.dedupeByKey documents when the duplicate arises.
   const deduped = dedupeByKey(allItems, getKey)
   const visible = filter ? filter(deduped) : deduped
 
@@ -414,9 +410,12 @@ export function PaginatedGrid<T>({
           do exactly that. Nested, the button AND the infinite-scroll sentinel
           disappeared with the rows, stranding the reader on "nothing here" with
           pages still unread. Same `currentPage < totalPages` gate as before, so
-          an exhausted feed is unchanged; `!error` leaves the error branch's own
-          retry as the only control there. */}
-      {!loading && !error && currentPage < totalPages && (
+          an exhausted feed is unchanged. No `!error` guard: `totalPages` falls
+          back to 1 when there is no first page, so a cold failure hides this
+          anyway — while a background refetch that fails with cached rows still
+          on screen must keep its "load more", which is what the pre-existing
+          nesting did. */}
+      {!loading && currentPage < totalPages && (
         <div className="mt-8 text-center">
           {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
               observer's 600px rootMargin fires the auto-load well before the

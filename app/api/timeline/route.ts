@@ -339,35 +339,15 @@ export async function GET(req: NextRequest) {
     collections = Array.from(new Set([...trackedCollections, ...collectedCollections]))
   }
 
-  // Per-collection sample depth. Two distinct reasons to deviate from
-  // `page * limit`, and they pull in OPPOSITE directions on `page`:
+  // Which of THIS route's filters thin the merge, and which merely reorder it.
+  // lib/feedPagination owns the rule and the reason a thinning filter's sample
+  // must not scale with `page`; it is CI-locked by verify-feed-pagination.
   //
-  //  1. A cross-collection SORT reorders the whole merge (a recently-sold or
-  //     soon-ending moment can sit deep in its collection's newest-first
-  //     timeline), so it needs a floor — and it must keep growing with `page`,
-  //     because deeper pages are how a sorted feed reaches more content.
-  //
-  //  2. A filter that THINS the merge (featured curation, the creators
-  //     roster, and the personal creator=/collector=/airdroppable= feeds)
-  //     needs the sample to be independent of `page` entirely. `page` also
-  //     drives the slice offset — and the two walk DIFFERENT sets: the slice
-  //     walks the thinned result, the sample walks the upstream. Couple them
-  //     and a row deep enough to need page N to enter the sample is, at page
-  //     N, already past that page's window — unreachable at EVERY page, with
-  //     page 1 advertising `total_pages: 1` so a paginating client never even
-  //     asks. (Measured: an artist's mints at depth 101/341/396 of a 400-row
-  //     collection were returned by none of pages 1-25.) A fixed depth gives
-  //     one stable result set that pagination can actually slice.
-  //
-  // The three personal filters were previously absent from this list, which
-  // is what pinned them to `page * limit` — and, at limit=50, made the 2x
-  // MERGE_BUDGET below inert: `min(50, 10000/N)` is 50 for every N under 100,
-  // so the doubled allowance the comment there grants for exactly this reason
-  // could never be spent. Thinning wins when a request is both (the roster
-  // feed is `creators=` + `sort=trending`): the thinned set is what paginates.
-  // The rule itself is pure and CI-locked in lib/feedPagination (exercised by
-  // scripts/verify-feed-pagination), so the thinned/sorted invariants can't be
-  // re-coupled to `page` by a later edit without going red first.
+  // The three personal filters were absent from the old `needsLargerSample`
+  // list, which pinned them to `page * limit` — and at limit=50 that made the
+  // 2x MERGE_BUDGET below inert: `min(50, 10000/N)` is 50 for every N under
+  // 100, so the doubled allowance granted a few lines down for precisely this
+  // reason could never be spent.
   const baseSample = feedSampleDepth({
     page,
     limit,
