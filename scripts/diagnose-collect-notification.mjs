@@ -31,6 +31,14 @@
  *      lib/notifications.ts applies them
  * and prints a verdict naming the exact stage that dropped it.
  *
+ * ORIGIN IS DECIDED ON-CHAIN, NOT ON THE COMMENT. The activity row's wording is
+ * not evidence either way: isPlatformCollectComment('') is TRUE, so an EMPTY
+ * on-chain comment renders as the literal "collected on kismet" — and empty is
+ * produced BOTH by non-Kismet mints AND by Kismet's own agent paths, which pass
+ * comment: '' (lib/agent/scout/dropCoordinator.ts, serverExecutor.ts, and the
+ * prepare-collect routes' default). Only the interactive browser paths always
+ * stamp a non-empty comment. Hence the two calldata fingerprints below.
+ *
  * READ-ONLY. Writes nothing, to Redis or chain.
  *
  * Usage:
@@ -90,6 +98,17 @@ const NOTIF_TTL_SECONDS = 60 * 24 * 60 * 60    // lib/notifications.ts (60 days)
 const BURST_DEDUP_WINDOW_SECS = 60             // lib/notifications.ts
 const IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60 // app/api/collect/route.ts (30 days)
 const ERC8021_MARKER = '80218021802180218021802180218021' // lib/builderCode.ts
+
+/** Kismet's mint-referral recipient (lib/zoraMint.ts KISMET_REFERRAL). This is
+ *  the STRONGER of the two origin fingerprints: buildEthMintCall pins it as
+ *  `rewardsRecipients[0]` and buildUsdcMintCall as `mintReferral`, so it is an
+ *  ABI ARGUMENT on every mint Kismet issues — web, collect-all, and agent alike.
+ *  The builder-code suffix below can legitimately go missing (on the EIP-5792
+ *  path it rides as an `optional: true` wallet capability, which a wallet may
+ *  drop); the referral cannot, because Zora pays the mint-referral reward to it.
+ *  Matched as a substring of the calldata, where it appears zero-padded to a
+ *  32-byte word in both encodings. */
+const KISMET_REFERRAL = '0xc6021d9f09e145a6297f64551aa2eca6d66f8f75'
 
 /** ERC-8021 schema-0 suffix, byte-identical to lib/builderCode.ts's encoding:
  *  [code ASCII] ∥ [1-byte length] ∥ [schema 0x00] ∥ [16-byte marker]. */
@@ -236,9 +255,13 @@ for (const tx of new Set(mints.map((m) => m.txHash))) {
   try {
     const t = await rpc('eth_getTransactionByHash', [tx])
     const input = (t?.input || '').toLowerCase()
-    txCache.set(tx, { stamped: input.endsWith(BUILDER_SUFFIX), from: (t?.from || '').toLowerCase() })
+    txCache.set(tx, {
+      stamped: input.endsWith(BUILDER_SUFFIX),
+      referral: input.includes(KISMET_REFERRAL.slice(2)),
+      from: (t?.from || '').toLowerCase(),
+    })
   } catch {
-    txCache.set(tx, { stamped: null, from: '' })
+    txCache.set(tx, { stamped: null, referral: null, from: '' })
   }
 }
 
@@ -312,7 +335,15 @@ function burstSibling(m) {
 
 // ---------------------------------------------------------------- verdicts
 const rows = mints.map((m, i) => {
-  const tx = txCache.get(m.txHash) || { stamped: null, from: '' }
+  const tx = txCache.get(m.txHash) || { stamped: null, referral: null, from: '' }
+  // Kismet origin, strongest signal first. The referral is an ABI argument on
+  // every Kismet mint; the builder suffix is trailing calldata that the
+  // EIP-5792 path may legitimately omit. Either one present ⇒ Kismet-issued.
+  const kismetOrigin = tx.referral === true || tx.stamped === true
+    ? true
+    : tx.referral === null && tx.stamped === null
+      ? null
+      : false
   const notif = findNotif(m)
   const idem = idemByIdx[i]
   const ageSec = nowSec - m.tsSec
@@ -362,13 +393,16 @@ const rows = mints.map((m, i) => {
     status = 'MISSING'
     reason =
       `/api/collect NEVER completed for this mint (no idempotency key). ` +
-      (tx.stamped === true
-        ? `The tx DOES carry Kismet's builder code, so the mint started in Kismet's client and the ` +
-          `best-effort recording POST was lost (tab closed mid-flight, or 3 retries exhausted against ` +
-          `a lagging server RPC).`
-        : tx.stamped === false
-          ? `The tx carries NO Kismet builder code — this mint almost certainly did not originate in ` +
-            `Kismet's client, so nothing ever called /api/collect. Nothing backfills it.`
+      (kismetOrigin === true
+        ? `The tx DOES carry Kismet's attribution (${tx.referral ? 'mint referral' : ''}${tx.referral && tx.stamped ? ' + ' : ''}${tx.stamped ? 'builder code' : ''}), ` +
+          `so the mint was issued by Kismet and the best-effort recording POST was lost — tab closed ` +
+          `mid-flight (only useDirectCollect sends keepalive), or the retries were exhausted against a ` +
+          `lagging server RPC (useCollectAll does not retry at all).`
+        : kismetOrigin === false
+          ? `The tx carries NEITHER Kismet's mint referral NOR its builder code — this mint was not ` +
+            `issued by Kismet, so nothing ever called /api/collect. Nothing backfills it, which is why ` +
+            `the sale still counts in the artist's stats (those are read from the chain) while no ` +
+            `notification exists.`
           : `The tx could not be fetched, so origin is undetermined.`)
   } else {
     status = 'LOST'
@@ -382,6 +416,8 @@ const rows = mints.map((m, i) => {
     collector: m.collector,
     units: m.units,
     at: m.tsMs ? new Date(m.tsMs).toISOString() : null,
+    kismetOrigin,
+    kismetMintReferral: tx.referral,
     kismetBuilderCode: tx.stamped,
     payer: tx.from,
     collectRecorded: idem,
@@ -441,7 +477,7 @@ for (const r of scope) {
   console.log(`${label(r.status)}  ${r.at ?? 'unknown time'}  ${r.collector}  ${r.units}x`)
   console.log(`             tx ${r.txHash}`)
   console.log(
-    `             kismet-origin: ${r.kismetBuilderCode === null ? 'undetermined' : r.kismetBuilderCode ? 'yes (builder code stamped)' : 'NO (no builder code)'}` +
+    `             kismet-origin: ${r.kismetOrigin === null ? 'undetermined' : r.kismetOrigin ? `yes (referral:${r.kismetMintReferral ? 'y' : 'n'} builder-code:${r.kismetBuilderCode ? 'y' : 'n'})` : 'NO (neither referral nor builder code)'}` +
       ` | /api/collect ran: ${r.collectRecorded ? 'yes' : 'no'}` +
       ` | in collector list: ${r.inCollectedList ? 'yes' : 'no'}`,
   )
