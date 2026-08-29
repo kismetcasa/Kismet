@@ -15,6 +15,11 @@
  *   collected list -> POST /api/collect           (same; event-sourced)
  *   trending       -> POST /api/collect           (same)
  *
+ * PRIMARY MINTS ONLY. Secondary sales are a different path with its own
+ * source of truth: a Kismet listing is retired against Seaport's own
+ * getOrderStatus (lib/listings resolveTerminalStatuses), so an off-platform
+ * FILL is announced correctly and needs no diagnosis here.
+ *
  * So a mint that never went through Kismet's client — or whose best-effort
  * `/api/collect` POST was lost — is fully visible in activity and stats and
  * fully absent from the bell. Nothing reconciles the two: the only webhook is
@@ -22,8 +27,9 @@
  * pass-transfer), and no cron backfills notifications.
  *
  * For every on-chain mint of one token this reports, per mint:
- *   1. Kismet builder-code (ERC-8021) stamp on the tx calldata — did the mint
- *      originate in Kismet's client at all?
+ *   1. Kismet's attribution on the tx calldata — the mint referral first
+ *      (an ABI argument on every mint Kismet issues), then the ERC-8021
+ *      builder code — did the mint originate in Kismet's client at all?
  *   2. the /api/collect idempotency key — did the recording endpoint ever
  *      complete for this mint? (30-day retention; older mints read "unknown")
  *   3. a matching entry in the artist's notification ZSET

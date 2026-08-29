@@ -85,16 +85,12 @@ const LEGACY_DEFAULT_COLLECT_COMMENTS = [
 ] as const
 
 export function isPlatformCollectComment(comment: string | null | undefined): boolean {
-  // Absent is the same answer as empty — there is no human-written comment to
-  // surface. Accepting null/undefined is load-bearing, not defensive: the
-  // activity renderer (components/MomentActivity) feeds this straight from the
-  // /comments proxy, which passes upstream rows through OPAQUELY (its row type
-  // is `{ sender?: string; [k: string]: unknown }`), so an upstream row with no
-  // `comment` field arrives here as undefined. The previous `comment.trim()`
-  // threw a TypeError on it and took the whole activity panel down with it —
-  // while the three other call sites (NotificationRow, farcasterNotifications,
-  // /api/collect) all guarded truthiness first and never hit it. Absorbing it
-  // here fixes the class rather than that one call site.
+  // Absent is the same answer as empty — either way there is no human-written
+  // comment to surface. The wide signature is for Notification.comment, which
+  // is genuinely optional in its own domain: NotificationRow and
+  // farcasterNotifications both hold a possibly-absent value and had to guard
+  // truthiness before calling in. (Activity rows arrive already normalized —
+  // see normalizeMomentComments — so they are never the reason for this.)
   const c = comment?.trim().toLowerCase() ?? ''
   if (!c) return true
   if (c === DEFAULT_COLLECT_COMMENT) return true
@@ -238,12 +234,12 @@ export interface MomentComment {
 /**
  * Parse an untrusted `comments` payload into rows that satisfy MomentComment.
  *
- * This is what makes the interface above a GUARANTEE rather than a hope. Every
- * row is upstream data from In Process's Supabase-backed feed, and it reaches
- * consumers across two boundaries — the /api/moment/comments proxy, which
- * relays rows opaquely, and `res.json()` on the client, which is `any` and was
- * being asserted straight into `MomentComment[]`. Neither boundary checked
- * anything, so the declared types were claims nobody enforced:
+ * This is what makes the interface above a GUARANTEE rather than a hope. Rows
+ * are upstream data from In Process's Supabase-backed feed and cross two
+ * boundaries that checked nothing — the /api/moment/comments proxy, which
+ * relays them opaquely, and `res.json()` on the client, which is `any` and was
+ * asserted straight into `MomentComment[]`. So the declared types were claims
+ * nobody enforced, and three faults reached code that trusted them:
  *
  *   - a null/absent `comment` (the natural encoding of an empty nullable text
  *     column) threw in isPlatformCollectComment's `comment.trim()`,
@@ -251,9 +247,6 @@ export interface MomentComment {
  *     before render, so the whole panel went down, not one row,
  *   - and a `comments` value that was not an ARRAY at all defeated any
  *     per-row guard, because `.filter` was the throw.
- *
- * Screening once here, wherever the payload enters, is the only version of
- * this that a future consumer inherits for free.
  *
  * Rows are REPAIRED where the fault is cosmetic and DROPPED only where it is
  * disqualifying: a missing comment becomes '' (which isPlatformCollectComment

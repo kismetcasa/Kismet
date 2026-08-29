@@ -90,34 +90,31 @@ export async function GET(req: NextRequest) {
   // full page (INPROCESS_COMMENTS_PAGE_SIZE rows) is the only keep-paging
   // signal there is. Computed only for a well-formed 2xx body; anything else
   // passes through untouched, hasMore-free, like today.
+  //
+  // Screening happens in the SAME block, on the `rows` captured above, so the
+  // ordering is structural rather than a rule the next reader has to honour:
+  // hasMore is computed from the raw array, then the rows are replaced with the
+  // ones that satisfy MomentComment. Without that screen the proxy relayed
+  // whatever arrived and every consumer's `as MomentComment[]` was an unchecked
+  // claim — see normalizeMomentComments for what it repairs versus drops. A
+  // drop is logged rather than silent: it means real on-chain activity is
+  // missing from the panel while the supply count still includes it, which is
+  // exactly the kind of discrepancy nobody notices until an artist reports it.
   let upstreamHasMore: boolean | null = null
   if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
-    const rows = (data as Record<string, unknown>).comments
-    if (Array.isArray(rows)) upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
-  }
-
-  // Screen upstream's rows into the shape this route's own contract promises,
-  // AFTER upstreamHasMore has read the raw length (a shortened page must never
-  // read as feed-end — the same rule the hidden-user filter below observes) and
-  // BEFORE anything downstream indexes into a row. Without this the proxy
-  // relayed whatever arrived, and every consumer's `as MomentComment[]` was an
-  // unchecked claim; see normalizeMomentComments for what is repaired vs
-  // dropped. A drop is logged rather than silent: it means real on-chain
-  // activity is missing from the panel while the supply count still includes
-  // it, which is precisely the class of discrepancy that is invisible until
-  // someone reports it.
-  if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>
-    if (Array.isArray(obj.comments)) {
-      const raw = obj.comments.length
-      obj.comments = normalizeMomentComments(obj.comments)
-      const dropped = raw - (obj.comments as MomentComment[]).length
+    const rows = obj.comments
+    if (Array.isArray(rows)) {
+      upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
+      const normalized = normalizeMomentComments(rows)
+      obj.comments = normalized
+      const dropped = rows.length - normalized.length
       if (dropped > 0) {
         console.warn('[comments] dropped unrenderable upstream rows', {
           collectionAddress,
           tokenId,
           dropped,
-          raw,
+          raw: rows.length,
         })
       }
     }
