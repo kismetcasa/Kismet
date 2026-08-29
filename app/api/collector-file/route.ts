@@ -10,9 +10,9 @@ import { readBodyBounded } from '@/lib/boundedBody'
 import {
   CFILE_MAX_BYTES,
   cfileRef,
+  detectCfileKind,
   encodeCfileChunks,
   isCfileVersionRestorable,
-  looksLikeZip,
   normalizeCfileName,
   planAttach,
   planDetach,
@@ -42,8 +42,9 @@ export const runtime = 'nodejs'
  * Artist-side management of an artwork's collector file
  * (COLLECTOR_DOWNLOADS_DESIGN.md §5):
  *
- *   PUT    — attach or replace (raw zip body ≤16 MiB, x-file-name header,
- *            ?note= release note, ?notify=1 to fan out after commit)
+ *   PUT    — attach or replace (raw zip/PDF/GLB/SVG body ≤16 MiB — format
+ *            detected from magic bytes, or a bounded text sniff for SVG —
+ *            x-file-name header, ?note= release note, ?notify=1 to fan out)
  *   GET    — manage view (descriptor + history + downloader count + notify state)
  *   PATCH  — { action: 'rollback', v } — re-activate a history version
  *   DELETE — detach (tombstones serving; history stays artist-visible)
@@ -130,9 +131,14 @@ export async function PUT(req: NextRequest) {
     return errorResponse(403, 'Not available for this account')
   }
 
-  const contentType = req.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/zip') && !contentType.includes('application/octet-stream')) {
-    return errorResponse(415, 'Send the zip as application/zip')
+  // Loose header filter only — the magic-byte detection below is the real
+  // format gate. Empty is allowed (OS mime maps often have no entry for
+  // .glb) and both clients send explicit octet-stream anyway; this just
+  // bounces obviously-wrong clients (HTML forms, JSON) before the body read.
+  const contentType = (req.headers.get('content-type') ?? '').toLowerCase()
+  const CT_OK = ['application/octet-stream', 'application/zip', 'application/x-zip-compressed', 'application/pdf', 'model/gltf-binary', 'image/svg+xml']
+  if (contentType && !CT_OK.some((t) => contentType.includes(t))) {
+    return errorResponse(415, 'Send the file as application/octet-stream')
   }
   // Advisory pre-check; the bounded read below enforces on actual bytes.
   const declared = Number(req.headers.get('content-length') ?? 0)
@@ -151,7 +157,6 @@ export async function PUT(req: NextRequest) {
   } catch {
     // Malformed percent-encoding — normalize the raw value instead.
   }
-  const name = normalizeCfileName(decodedName)
   const rawNote = req.nextUrl.searchParams.get('note') ?? ''
   const note = rawNote.trim().slice(0, 140) || undefined
   const wantNotify = req.nextUrl.searchParams.get('notify') === '1'
@@ -167,9 +172,12 @@ export async function PUT(req: NextRequest) {
       return errorResponse(413, 'File too large — the limit is 16 MB')
     }
     const plaintext = read.buffer
-    if (!looksLikeZip(plaintext)) {
-      return errorResponse(415, 'That does not look like a zip file')
+    // Magic bytes decide the format; the claimed name/extension never does.
+    const kind = detectCfileKind(plaintext)
+    if (!kind) {
+      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, GLB or SVG')
     }
+    const name = normalizeCfileName(decodedName, kind)
 
     // Per-artwork mutual exclusion, acquired BEFORE the meters and the
     // chunk writes: a racing co-admin 409s without spending anything, and
@@ -203,6 +211,7 @@ export async function PUT(req: NextRequest) {
       const planned = planAttach(record, {
         size: plaintext.length,
         sha256,
+        kind,
         name,
         note,
         updatedBy: caller,

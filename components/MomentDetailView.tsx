@@ -1126,7 +1126,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           if (canTranscode(mediaFile)) {
             try {
               toast.loading('Optimizing animation for fast playback…', { id: 'edit-meta' })
-              const { mp4, poster } = await transcodeGifToMp4(mediaFile)
+              const { mp4, poster } = await transcodeGifToMp4(
+                mediaFile,
+                (pct) => toast.loading(`Optimizing animation… ${pct}%`, { id: 'edit-meta' }),
+                (pct) => toast.loading(`Preparing optimizer… ${pct}%`, { id: 'edit-meta' }),
+              )
               toast.loading('Uploading media…', { id: 'edit-meta' })
               const tp = generateThumbhash(poster)
               const [a, p] = await Promise.all([uploadToArweave(mp4), uploadToArweave(poster)])
@@ -1661,7 +1665,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     metadata pencil (the server re-checks the on-chain
                     ADMIN|METADATA bits), but its OWN panel: the metadata
                     editor's save path drags an Arweave wait + a second
-                    signature + a chain write, none of which a zip attach
+                    signature + a chain write, none of which a file attach
                     needs. Mutually exclusive with the sibling panels. */}
                 {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
                   <button
@@ -1884,7 +1888,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     HERE too — but as a hand-off to its own panel, never as a
                     field of this form: this form's save takes an Arweave
                     propagation wait + a second wallet signature + an on-chain
-                    write, none of which a zip attach needs (or should appear
+                    write, none of which a file attach needs (or should appear
                     to need). Swapping panels is safe — the file panel doesn't
                     touch this draft's title/description state. */}
                 <div className="flex items-center justify-between gap-3 border border-line px-3 py-2">

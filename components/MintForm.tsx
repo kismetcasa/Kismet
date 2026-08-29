@@ -39,7 +39,13 @@ import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
 import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
-import { CFILE_MAX_BYTES, formatCfileSize } from '@/lib/collectorFileTypes'
+import {
+  CFILE_ACCEPT_ATTR,
+  CFILE_KIND_LABEL,
+  CFILE_MAX_BYTES,
+  formatCfileSize,
+  hasAcceptedCfileExt,
+} from '@/lib/collectorFileTypes'
 import { isChainStalled } from '@/lib/chainHealth'
 import { beginCriticalOp, endCriticalOp } from '@/lib/chunkReload'
 import { useFarcaster } from '@/providers/FarcasterProvider'
@@ -371,7 +377,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       const res = await fetch(`/api/collector-file?${params.toString()}`, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/zip',
+          'Content-Type': 'application/octet-stream',
           'x-file-name': encodeURIComponent(file.name),
         },
         body: file,
@@ -1091,10 +1097,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setUploadProgress(0)
             toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
             try {
-              const { mp4, poster } = await transcodeGifToMp4(file!, (pct) => {
-                setUploadProgress(pct)
-                toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
-              })
+              const { mp4, poster } = await transcodeGifToMp4(
+                file!,
+                (pct) => {
+                  setUploadProgress(pct)
+                  toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
+                },
+                // The first GIF of a session pays a ~31MB ffmpeg-core download
+                // before a single frame is encoded. Reporting that phase
+                // separately keeps the toast moving: a motionless "Optimizing
+                // animation…" with no percentage is exactly how the stuck-mint
+                // reports arrived, and it read as a freeze rather than a wait.
+                (pct) => toast.loading(`Preparing optimizer… ${pct}%`, { id: 'mint' }),
+              )
               mediaFile = mp4
               posterFile = poster
             } catch (err) {
@@ -2236,9 +2251,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         </button>
       </div>
 
-      {/* Optional collector download — a zip only people who collect this
-          artwork can download (attached right after the mint succeeds;
-          replaceable later from the artwork page's `file` panel). */}
+      {/* Optional collector download — a file (zip/PDF/GLB) only people who
+          collect this artwork can download (attached right after the mint
+          succeeds; replaceable later from the artwork page's `file` panel). */}
       <div className="flex items-start justify-between gap-3 border border-line px-3 py-2.5">
         <div className="min-w-0">
           <label className="block text-xs font-mono text-dim uppercase tracking-wider">
@@ -2247,13 +2262,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <p className="text-xs text-muted font-mono mt-1 truncate">
             {cfileFile
               ? `${cfileFile.name} \u00b7 ${formatCfileSize(cfileFile.size)}`
-              : 'optional zip \u2014 only collectors can download it'}
+              : 'optional zip, pdf or glb \u2014 only collectors can download it'}
           </p>
         </div>
         <input
           ref={cfileInputRef}
           type="file"
-          accept=".zip,application/zip"
+          accept={CFILE_ACCEPT_ATTR}
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0] ?? null
@@ -2262,8 +2277,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               toast.error('File too large', { description: 'The limit is 16 MB' })
               return
             }
-            if (!f.name.toLowerCase().endsWith('.zip')) {
-              toast.error('Zip files only', { description: 'Package the download as a .zip' })
+            if (!hasAcceptedCfileExt(f.name)) {
+              toast.error('Unsupported file type', { description: `Use a ${CFILE_KIND_LABEL}` })
               return
             }
             setCfileFile(f)
@@ -2281,7 +2296,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }}
           className="flex-shrink-0 mt-0.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-line text-muted hover:text-ink transition-colors"
         >
-          {cfileFile ? 'clear' : 'choose zip'}
+          {cfileFile ? 'clear' : 'choose file'}
         </button>
       </div>
     </form>

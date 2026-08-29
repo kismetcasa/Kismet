@@ -3,7 +3,7 @@ import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
 import { consumeUserQuota } from '@/lib/userQuota'
-import { cfileRef, sha256Hex } from '@/lib/collectorFileCore'
+import { CFILE_KINDS, cfileRef, sha256Hex } from '@/lib/collectorFileCore'
 import { formatCfileSize } from '@/lib/collectorFileTypes'
 import {
   CfileDataError,
@@ -157,7 +157,9 @@ export async function GET(req: NextRequest) {
     return new NextResponse(new Uint8Array(plaintext), {
       status: 200,
       headers: {
-        'Content-Type': 'application/zip',
+        // kind is magic-detected at upload; records predating multi-format
+        // support carry no kind and are all zips.
+        'Content-Type': CFILE_KINDS[current.kind ?? 'zip'].mime,
         'Content-Length': String(plaintext.length),
         // name is server-normalized ASCII (normalizeCfileName) — quote-safe.
         'Content-Disposition': `attachment; filename="${current.name}"`,

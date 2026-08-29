@@ -276,6 +276,8 @@ kismetart:cfile:<collection>:<tokenId>             STRING (JSON), no TTL
       name: "Pixel Art Gallery - Sylvester.zip",   // normalized (§10.2)
       size: 365396,                    // plaintext bytes
       sha256: "79919fea…",             // plaintext hash — shown to collectors
+      kind: "zip",                     // magic-detected format (zip|pdf|glb);
+                                       // absent = pre-extension record = zip
       note: "added music!",            // optional artist release note, ≤140 chars
       updatedAt, updatedBy,
       stored: true                     // bytes exist (retention window)
@@ -1156,6 +1158,85 @@ fail-closed; rollback is offered only for `restorable` rows.
 chunk codec round-trip, the request-cap margin, JSON-unparseability of
 chunks, the storage math the ceiling ledger relies on, and the retention
 planner's prune/never-prune/detach invariants.
+
+**Format extension (post-merge).** The feature accepts **zip, PDF, and GLB**
+(Binary glTF). One registry in the core (`CFILE_KINDS`: extension, MIME,
+magic bytes) drives everything: the server detects the format from leading
+magic bytes only (`PK\x03\x04` / `%PDF-` / `glTF` per the IANA
+`model/gltf-binary` registration) — never from the claimed extension or
+Content-Type header — the normalizer forces the DETECTED kind's extension
+(a PDF named `model.glb` serves as `.pdf`), the download route serves the
+kind's MIME, and every file still ships as `attachment` + `nosniff` (a PDF
+is never rendered inline on the origin). `CfileVersion.kind` is optional —
+records written before the extension are all zips and read as such. The
+chunk store, gate, tickets, retention, ceiling and notifications are
+format-agnostic and unchanged; the 16 MiB cap stays uniform. Client pickers
+share one accept-list (`lib/collectorFileTypes.ts`) and upload as explicit
+`application/octet-stream`, leaving the magic bytes as the single authority.
+
+**Viewer + SVG (post-merge).** The feature accepts a fourth kind, **SVG**,
+and renders two of the four **in-page**. Rationale, in order: a zip can
+already carry any file, so first-class kinds buy convenience, not delivery —
+what creates new value is *viewing*. GLB earns a viewer because most
+collectors cannot open a `.glb` at all (iOS Quick Look is USDZ-only; macOS
+Preview and current Windows have no handler); SVG earns one because its
+viewer is free (`<img>`); PDF deliberately gets none, because it opens
+natively everywhere and honest in-page rendering on iOS would cost a pdf.js
+dependency (Safari renders iframe PDFs as a first-page-only image).
+**Everything stays downloadable** — viewing and downloading serve different
+needs (see it now vs. keep it), both sit behind the same collect gate, and
+since viewing transfers the same bytes, offering both costs nothing.
+
+`GET /api/collector-file/view` is a SEPARATE route from the download path
+because four of its properties are inverted: session-only (no tickets — a
+ticket exists so a Mini App can hand a URL to the device browser for
+*saving*), never stamps the download marker (seeing is not having: it would
+tell a v2 holder they are current on v3 and count lookers in the artist's
+downloader stat), cacheable (`private, max-age=3600` — a cached copy is a
+downloaded copy anyway, and it keeps repeat views off the metered bandwidth
+and the reassembly slot; the accepted cost is that a seller keeps cached
+viewing for the window), and viewable-kinds-only. Views debit their own
+looser `cfile-view` meter rather than rationing the download budget.
+
+Two format-specific facts drive the implementation. **SVG has no magic
+bytes** — it is XML text that may open with a BOM, whitespace, an XML
+declaration, comments, or a DOCTYPE — so it is detected by a *bounded* text
+sniff (4 KB) that runs only after every binary matcher fails; binary
+signatures therefore always win. **SVG is the only active-content kind we
+store**: it can carry `<script>`, event handlers and `foreignObject`, and
+blob: URLs inherit the creating origin, so navigating to one would execute
+artist script as kismet.art (the WhatsApp/Telegram Web XSS). Browsers
+disable scripting only in *image* contexts, so the rule — pinned in the
+viewer's comments and by the verify oracle's viewable-kind assertions — is:
+render SVG exclusively through `<img src={blobUrl}>`, never inline, never
+`<object>`/`<iframe>`, never opened; and the view route keeps `attachment`
++ `nosniff` so even a direct navigation saves rather than renders. Our CSP
+is Report-Only, so that discipline is the control, not a second line.
+
+## 14. Deviations and accepted risks (the audit register)
+
+Every entry below is a *deliberate* departure from a named standard or an
+*accepted* risk. They are recorded here rather than left in review threads
+because an auditor is satisfied by a documented, reasoned deviation and
+treats an undocumented one as a finding — and because the reasoning is
+otherwise unrecoverable six months from now. Scope: OWASP ASVS V12 (File
+and Resource Handling) at **L2** for this feature (it accepts and
+redistributes untrusted binaries) even though most of the app sits at L1.
+
+| # | Deviation / risk | Standard | Why we accept it | What would change it |
+|---|---|---|---|---|
+| 1 | **No antivirus/malware scanning** of uploads | ASVS V12 (L2) | Uploaders are on-chain-accountable artists holding ADMIN/METADATA on the token, not anonymous. Files are never executed or extracted server-side, always served `attachment` + `nosniff`, capped at 16 MiB, and revocable via the audited kill-switch. This is the standard indie-platform posture. | Opening artist onboarding beyond curated/known creators. Then: ClamAV or a VirusTotal lookup at upload, quarantining until clean. |
+| 2 | **Uploads keep a sanitized artist filename** instead of a random ID | ASVS V12 / OWASP file-upload guidance | Collectors should receive `Pixel Art Gallery - Sylvester.zip`, not a UUID. Compensating controls: `normalizeCfileName` is a strict `[A-Za-z0-9 ._-]` whitelist that forces the DETECTED kind's extension (verify-pinned against traversal, CRLF, bidi-override and double-extension cases), and storage keys are ref-derived, never filename-derived. | Nothing foreseeable; the compensating controls address every risk the rule targets. |
+| 3 | **RPO ≈ 24 h on a single copy**; restore never exercised | NIST SP 800-34 | Post-pivot the bytes exist only in Upstash (daily backup enabled). Blast radius is artist re-upload, not irrecoverable loss — artists hold their originals, and the reconciler reports exactly which records lost bytes. | Real adoption. Then: an exercised restore test, and R2 as a second copy at the CDN cutover. |
+| 4 | **Download bandwidth is metered and unalerted** | — (self-imposed) | Each download ships ~1.33× the file out of Upstash bandwidth, counting toward the $20 cap that hard-stops the database. Bounded by per-identity quotas and per-IP rate limits, not by a hard meter. Accepted on the low-adoption premise. | First sustained download traffic. Then: usage alerting, and R2 (zero egress fees) — the schema's opaque `uri`-free pointer makes that a `fetchSealedCfile`-shaped change. |
+| 5 | **View responses cached `private, max-age=3600`** | — | A cached copy is a downloaded copy; the bytes already reached that browser. It is what keeps repeat views off metered bandwidth and off the reassembly slot. Version is a cache key, so a replace is never masked. | — Cost accepted: a collector who sells the edition, or a file blocked by an admin, keeps cached viewing for up to an hour. |
+| 6 | **CSP is Report-Only** | OWASP A05 | Pre-existing platform posture; `next.config.mjs` documents it as step 1 of 2. Consequence for this feature: the SVG `<img>`-only rule is the control, not a second line — which is why it is stated in the viewer, the view route, and pinned by the oracle. | Promoting the CSP. Self-hosting the model decoders (done) removed one blocker. |
+| 7 | **`looksLikeZip`-class detection is a typo filter, not a content control** | OWASP file-upload | JAR/DOCX share the zip magic; a PDF's tail matters more than its head. Real controls are the forced extension, `attachment`, `nosniff`, and the kill-switch. | Extraction/preview of archive contents (§7), which would need real per-entry validation. |
+| 8 | **View is session-only; download also accepts a signed wallet proof** | — | Viewing happens inside our page where the patched `window.fetch` carries the session/JWT; a per-view wallet signature would be hostile. A holder without a session can still download, and the viewer says so explicitly instead of dead-ending. | A material number of sessionless holders. |
+| 9 | **The "update available" badge needs a prior download** | — | `downloadedV` is stamped by downloads only, because the view route must not tell a v2 holder they are current on v3, nor count lookers in the artist's downloader stat. View-only collectors still receive the push/bell notification. | Evidence that view-only collectors are missing updates. Then: a separate `viewedV` marker with the badge computed from `max(downloaded, viewed)`. |
+| 10 | **The 16 MiB cap is server-shaped, not device-shaped** | — | It was sized for Redis storage and server memory. A max-size GLB means ~32 MB of browser buffers plus GPU memory — rough on a low-end phone in a Mini App webview (practical mobile ceiling is nearer 5–10 MB). | Artist reports of failed mobile views. Then: a soft warning at upload for large models. |
+| 11 | **No focus trap → CLOSED** | WCAG 2.2 SC 2.1.1 / 2.4.3 | Was a real conformance gap, not polish: the repo's `verify:a11y` gate only checks text-contrast classes and gave false assurance. The viewer now moves focus in on open, cycles Tab within the dialog, and restores focus to the opener on close, with Escape and a labelled close button as the required exits. | — |
+| 12 | **Sunset promise is unresolved** | — (product) | The Arweave design promised per-file key release if Kismet wound down. Post-pivot there are no keys to publish and collector files cease to exist with the platform. Takedown got stronger; the wind-down story got weaker, and that fell out of the pivot rather than being decided. | **Open product decision** — an export path, or an explicit statement of what collectors keep. |
 
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived
