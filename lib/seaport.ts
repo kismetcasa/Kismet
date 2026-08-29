@@ -137,6 +137,24 @@ export const SEAPORT_ABI = [
     outputs: [{ name: 'counter', type: 'uint256' }],
   },
   {
+    // Seaport's own record of what happened to an order, keyed by its hash.
+    // The ONLY frontend-agnostic answer to "did this listing actually sell?":
+    // Seaport writes totalFilled/totalSize in _updateStatus on every
+    // fulfillment and flips isCancelled in cancel(), no matter which UI (or
+    // raw contract call) drove it. An off-chain signed order that nobody has
+    // touched reads back all-zero/false.
+    name: 'getOrderStatus',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'orderHash', type: 'bytes32' }],
+    outputs: [
+      { name: 'isValidated', type: 'bool' },
+      { name: 'isCancelled', type: 'bool' },
+      { name: 'totalFilled', type: 'uint256' },
+      { name: 'totalSize', type: 'uint256' },
+    ],
+  },
+  {
     name: 'fulfillOrder',
     type: 'function',
     stateMutability: 'payable',
@@ -501,6 +519,17 @@ const ORDER_FULFILLED_EVENT = parseAbiItem(
 
 interface ListingLike {
   orderComponents: SerializedOrderComponents
+}
+
+/**
+ * The Seaport order hash for a stored listing — the identifier Seaport itself
+ * keys order status by. Exported so the expiry path can ask the chain what
+ * became of an order (getOrderStatus) using exactly the hash
+ * findFulfillmentInLogs matches receipts against, rather than a second
+ * derivation that could drift from it.
+ */
+export function listingOrderHash(listing: ListingLike): Hex {
+  return deriveOrderHash(deserializeOrder(listing.orderComponents))
 }
 
 // One consideration item as actually paid on-chain, decoded from the

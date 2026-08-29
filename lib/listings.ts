@@ -1,7 +1,10 @@
 import { after } from 'next/server'
 import { redis } from './redis'
 import { bestEffort } from './bestEffort'
-import type { SerializedOrderComponents } from './seaport'
+import type { Hex } from 'viem'
+import { multicall } from 'viem/actions'
+import { SEAPORT_ABI, SEAPORT_ADDRESS, listingOrderHash, type SerializedOrderComponents } from './seaport'
+import { serverBaseClient } from './rpc'
 import { fanoutToFollowers, writeNotification, getMomentMetaBatch } from './notifications'
 import { getEthUsd } from './ethPrice'
 import { getListingVisibility } from './hiddenListings'
@@ -69,7 +72,11 @@ const keyByOwned = (collection: string, tokenId: string, seller: string) =>
   `kismetart:listings:owned:${collection.toLowerCase()}:${tokenId}:${seller.toLowerCase()}`
 const keyBySeller = (seller: string) =>
   `kismetart:listings:seller:${seller.toLowerCase()}`
-// Claim key prevents duplicate expiry notifications across concurrent requests
+// Claim key prevents duplicate TERMINAL notifications across concurrent
+// requests. Named for expiry because that was the only outcome it used to
+// gate; it now covers the sale/cancel outcomes resolveTerminalStatuses can
+// return too. The key string is deliberately unchanged — rotating it would
+// re-announce every listing already retired under the old name.
 const keyExpiredNotif = (id: string) => `kismetart:listing-notified:${id}`
 
 export async function createListing(
@@ -186,17 +193,108 @@ export async function sweepExpiredListings(): Promise<void> {
   if (expired.length > 0) await handleExpiredListings(expired)
 }
 
-// Mark expired listings as expired in Redis and fire a notification for each.
-// A claim key (NX) ensures exactly one notification per listing even under concurrency.
+/** What actually became of a listing whose clock ran out. */
+type TerminalStatus = 'filled' | 'cancelled' | 'expired'
+
+/**
+ * Ask Seaport what became of each order, instead of assuming the clock did.
+ *
+ * A Kismet listing is a signed Seaport order. Kismet learns it sold only when
+ * a buyer's client PATCHes /api/listings/[id] — so a fill through any other
+ * Seaport surface (a direct fulfillOrder, another marketplace carrying the
+ * same order) left the row `active` here until it timed out, at which point
+ * the seller was told their listing EXPIRED. That is not merely a missing
+ * notification, it is a false one: the piece sold and we announced that it
+ * hadn't. getOrderStatus is the frontend-agnostic record — Seaport writes
+ * totalFilled on every fulfillment and isCancelled in cancel(), whoever calls
+ * them — so one multicall over the batch settles it before anyone is told
+ * anything.
+ *
+ * Everything is failure-biased toward TODAY'S behavior: an unhashable order, a
+ * reverting call, or a dead RPC all keep 'expired', so this can only ever
+ * convert a wrong answer into a right one, never stall the sweep on chain
+ * health.
+ *
+ * SCOPE: status and notification only. A fill discovered here is deliberately
+ * NOT credited to royalties or secondary volume — those figures are
+ * Kismet-listing-fills-only by an explicit decision documented on
+ * creditListingRoyalty (lib/stats.ts), and widening them is a separate call
+ * with its own reconciliation story. The seller gets told the truth either way.
+ */
+async function resolveTerminalStatuses(listings: Listing[]): Promise<TerminalStatus[]> {
+  const out: TerminalStatus[] = listings.map(() => 'expired')
+  // Compacted: only the listings whose order actually hashed get a call, with
+  // `idx` mapping each result back to its position in `out`.
+  const idx: number[] = []
+  const contracts: {
+    address: typeof SEAPORT_ADDRESS
+    abi: typeof SEAPORT_ABI
+    functionName: 'getOrderStatus'
+    args: readonly [Hex]
+  }[] = []
+  for (let i = 0; i < listings.length; i++) {
+    let orderHash: Hex
+    try {
+      orderHash = listingOrderHash(listings[i])
+    } catch {
+      // Malformed/legacy orderComponents — unhashable, so unanswerable. Leave
+      // it 'expired' rather than let one bad row abort the whole batch.
+      continue
+    }
+    idx.push(i)
+    contracts.push({
+      address: SEAPORT_ADDRESS,
+      abi: SEAPORT_ABI,
+      functionName: 'getOrderStatus',
+      args: [orderHash] as const,
+    })
+  }
+  if (contracts.length === 0) return out
+
+  let results
+  try {
+    // allowFailure so one reverting/undecodable row degrades to 'expired' on
+    // its own instead of throwing the batch away.
+    results = await multicall(serverBaseClient(), { contracts, allowFailure: true })
+  } catch (err) {
+    console.error('[listings] Seaport order-status read failed — treating batch as expired', {
+      count: contracts.length,
+      err: err instanceof Error ? err.message : String(err),
+    })
+    return out
+  }
+
+  for (let j = 0; j < idx.length; j++) {
+    const r = results[j]
+    if (!r || r.status !== 'success') continue
+    const [, isCancelled, totalFilled] = r.result as readonly [boolean, boolean, bigint, bigint]
+    // Filled wins over cancelled: the two can only coexist on a partially
+    // filled order that was then cancelled, and "it sold" is the fact the
+    // seller needs. An untouched off-chain order reads all-zero and stays
+    // 'expired', which is the honest answer for it.
+    if (totalFilled > 0n) out[idx[j]] = 'filled'
+    else if (isCancelled) out[idx[j]] = 'cancelled'
+  }
+  return out
+}
+
+// Retire listings whose clock ran out, announcing what ACTUALLY happened to
+// each (see resolveTerminalStatuses). A claim key (NX) ensures exactly one
+// notification per listing even under concurrency.
 async function handleExpiredListings(listings: Listing[]): Promise<void> {
-  await Promise.all(listings.map(async (listing) => {
+  // Resolved before the claim so the outcome is known when the single
+  // notification per listing is chosen — claiming first would burn the one
+  // announcement this listing ever gets on a guess.
+  const outcomes = await resolveTerminalStatuses(listings)
+  await Promise.all(listings.map(async (listing, i) => {
+    const status = outcomes[i]
     const claimed = await redis.set(keyExpiredNotif(listing.id), '1', {
       nx: true,
       ex: 7 * 24 * 60 * 60,
     })
     if (!claimed) return
 
-    const updated: Listing = { ...listing, status: 'expired' }
+    const updated: Listing = { ...listing, status }
     await Promise.all([
       redis.set(keyById(listing.id), JSON.stringify(updated)),
       redis.del(keyByOwned(listing.collectionAddress, listing.tokenId, listing.seller)),
@@ -208,8 +306,20 @@ async function handleExpiredListings(listings: Listing[]): Promise<void> {
       unhideListing(listing.collectionAddress, listing.tokenId, listing.seller).catch(() => {}),
     ])
 
+    // An on-chain cancel is the seller's own deliberate act — they already
+    // know. Announcing anything would be noise, and announcing EXPIRY would be
+    // wrong.
+    if (status === 'cancelled') return
+
+    // 'sale' means it sold through some other Seaport surface, so the seller
+    // was never told. Same payload the on-platform fill sends from
+    // PATCH /api/listings/[id], minus `actor`: getOrderStatus reports THAT an
+    // order filled, never to whom, and inventing a buyer would be worse than
+    // omitting one — NotificationRow already renders the actor-less sale as
+    // "your listing was filled". `price` is the listing's signed asking price,
+    // the same field the on-platform path passes.
     await writeNotification({
-      type: 'listing_expired',
+      type: status === 'filled' ? 'sale' : 'listing_expired',
       recipient: listing.seller,
       tokenAddress: listing.collectionAddress,
       tokenId: listing.tokenId,

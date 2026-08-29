@@ -27,6 +27,22 @@ export async function resolve(specifier, context, nextResolve) {
     return { url: 'data:text/javascript,', shortCircuit: true }
   }
 
+  // `next/server` is unresolvable on bare Node (the package exports map is
+  // conditioned on Next's own runtime), which put every production module that
+  // schedules background work behind it — lib/listings among them — out of the
+  // verify suite's reach. Shim the one primitive those modules import at
+  // MODULE scope: `after`, which defers work past the response. Running the
+  // callback on the microtask queue and swallowing its errors is the honest
+  // stand-in for a verifier — the work still happens, still asynchronously,
+  // and still can't break its caller. Route handlers (NextRequest /
+  // NextResponse) are deliberately NOT stubbed: a verifier should drive the
+  // library, not fake the framework, and a missing export fails loudly instead
+  // of silently testing a mock.
+  if (specifier === 'next/server') {
+    const shim = 'export const after = (fn) => { Promise.resolve().then(() => fn()).catch(() => {}) }'
+    return { url: `data:text/javascript,${encodeURIComponent(shim)}`, shortCircuit: true }
+  }
+
   // Map the `@/` alias to an absolute file URL under the repo root.
   const mapped = specifier.startsWith('@/')
     ? pathToFileURL(path.join(root, specifier.slice(2))).href

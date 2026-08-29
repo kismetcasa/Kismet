@@ -84,8 +84,18 @@ const LEGACY_DEFAULT_COLLECT_COMMENTS = [
   'collected via kismet',
 ] as const
 
-export function isPlatformCollectComment(comment: string): boolean {
-  const c = comment.trim().toLowerCase()
+export function isPlatformCollectComment(comment: string | null | undefined): boolean {
+  // Absent is the same answer as empty — there is no human-written comment to
+  // surface. Accepting null/undefined is load-bearing, not defensive: the
+  // activity renderer (components/MomentActivity) feeds this straight from the
+  // /comments proxy, which passes upstream rows through OPAQUELY (its row type
+  // is `{ sender?: string; [k: string]: unknown }`), so an upstream row with no
+  // `comment` field arrives here as undefined. The previous `comment.trim()`
+  // threw a TypeError on it and took the whole activity panel down with it —
+  // while the three other call sites (NotificationRow, farcasterNotifications,
+  // /api/collect) all guarded truthiness first and never hit it. Absorbing it
+  // here fixes the class rather than that one call site.
+  const c = comment?.trim().toLowerCase() ?? ''
   if (!c) return true
   if (c === DEFAULT_COLLECT_COMMENT) return true
   if (LEGACY_DEFAULT_COLLECT_COMMENTS.includes(c as typeof LEGACY_DEFAULT_COLLECT_COMMENTS[number])) return true
@@ -216,7 +226,12 @@ export interface CreateMomentPayload {
 
 export interface MomentComment {
   sender: string
-  comment: string
+  // Optional because the upstream feed can omit it — /api/moment/comments
+  // proxies rows through without reshaping them, so this must describe the
+  // WIRE, not the happy path. Every consumer therefore has to tolerate
+  // undefined; isPlatformCollectComment accepts it directly, and JSX renders
+  // it as nothing.
+  comment?: string
   timestamp: number // may be ms or seconds — normalize before use
   // 'airdrop' marks a synthetic activity row the comments route folds in from
   // a Kismet airdrop record: `sender` is the RECIPIENT (the invited artist)

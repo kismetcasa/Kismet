@@ -2,6 +2,7 @@ import { redis } from './redis'
 import { getFollowers, isFollowing } from './follows'
 import { KEY_PROFILES } from './profile'
 import { safeRead } from './redisRead'
+import { getSmartWalletOwners } from './smartWalletCache'
 
 export const ALL_NOTIFICATION_TYPES = [
   'collect',
@@ -93,6 +94,14 @@ type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'r
    *  Only set by fanoutToFollowers where recipients are proven followers
    *  of the actor, so isPriority always returns true. */
   _forcePriority?: true
+  /** Internal — skip the inprocess-smart-wallet alias resolution below. Only
+   *  set by fanoutToFollowers, whose recipients come from the followers set:
+   *  every member of it followed through the app from a wallet they signed in
+   *  with, so none can be an operator-controlled per-creator smart wallet. At
+   *  celebrity fan-out scale the lookup would otherwise add one billed Redis
+   *  command per follower for an outcome that is structurally impossible —
+   *  the same reasoning that gave _forcePriority its two skipped commands. */
+  _skipAliasResolve?: true
   /** Internal — AWAIT the Farcaster push dispatch instead of the default
    *  fire-and-forget. Only set by paced bulk fanouts (the collector-file
    *  update) so their batch boundaries actually bound in-flight push HTTP —
@@ -218,6 +227,40 @@ async function isPriority(
 }
 
 /**
+ * Deliver to the wallet the user can actually SIGN IN AS.
+ *
+ * lib/smartWalletCache keeps a reverse index (`kismetart:smartwallet-owner:*`)
+ * of inprocess per-creator smart wallets → the owning EOA, written only by
+ * resolveSmartWallet on a live /smartwallet resolution. Those smart wallets are
+ * operator-controlled contracts: nobody can produce a SIWE signature for one,
+ * and one can never be a Farcaster verification, so it can never be a session
+ * address (lib/session: SIWE cookie, else getKismetIdentityAddress over the
+ * FC verifications). A notification addressed to one is therefore not merely
+ * hard to find — it is unreadable by construction, forever.
+ *
+ * rebuildStats already folds these aliases onto their owner (statsMath's
+ * remapEntries), which is exactly why an artist's card could credit a sale
+ * whose notification landed in an inbox with no way in. This closes that
+ * asymmetry at the single write choke-point, so all 15 types inherit it.
+ *
+ * Best-effort by construction: getSmartWalletOwners is safeRead-wrapped and
+ * returns an empty map on a Redis failure, which degrades to today's behavior
+ * (deliver as addressed) rather than dropping the write.
+ */
+async function resolveRecipient(recipient: string, skip?: true): Promise<string> {
+  const addr = recipient.toLowerCase()
+  if (skip) return addr
+  try {
+    const owners = await getSmartWalletOwners([addr])
+    return owners.get(addr) ?? addr
+  } catch {
+    // Deliver as addressed rather than not at all. getSmartWalletOwners is
+    // already safeRead-wrapped, so this only catches something upstream of it.
+    return addr
+  }
+}
+
+/**
  * Returns true iff the bell entry was actually WRITTEN (false on suppression
  * — self-action, mute, dedup — and on any failure). Callers historically
  * ignore the result; the collector-file fanout counts it so its 24h cooldown
@@ -225,18 +268,27 @@ async function isPriority(
  */
 export async function writeNotification(input: NotificationInput): Promise<boolean> {
   try {
-    if (input.actor && input.actor.toLowerCase() === input.recipient.toLowerCase()) return false
+    // Resolved FIRST so every downstream key — per-type mute, the follow-dedup
+    // scan, the burst lock, the inbox zset, the unread-count invalidation — and
+    // the self-action check below all agree on one address. Resolving later
+    // would let a notification be deduped against one inbox and written to
+    // another. Inside the try, because this function's contract is that it
+    // never throws into its caller: a malformed recipient becomes a logged
+    // `return false`, exactly like every other failure here.
+    const recipient = await resolveRecipient(input.recipient, input._skipAliasResolve)
+
+    if (input.actor && input.actor.toLowerCase() === recipient) return false
 
     // Per-type mute — financial types bypass (see NON_MUTEABLE_TYPES).
     if (!NON_MUTEABLE_TYPES.has(input.type)) {
       try {
-        if ((await redis.sismember(keyMutedTypes(input.recipient), input.type)) === 1) return false
+        if ((await redis.sismember(keyMutedTypes(recipient), input.type)) === 1) return false
       } catch {}
     }
 
     if (input.type === 'follow' && input.actor) {
       const cutoff = Math.floor(Date.now() / 1000) - FOLLOW_DEDUP_WINDOW_SECS
-      const recent = (await redis.zrange(keyNotif(input.recipient), cutoff, '+inf', {
+      const recent = (await redis.zrange(keyNotif(recipient), cutoff, '+inf', {
         byScore: true,
       })) as string[]
       const dup = recent.some((raw) => {
@@ -254,7 +306,7 @@ export async function writeNotification(input: NotificationInput): Promise<boole
     // Best-effort: a Redis transient lets the write through rather than
     // silently drop — a duplicate is preferable to a missed signal.
     if (BURST_DEDUP_TYPES.has(input.type) && input.actor && input.tokenAddress) {
-      const lockKey = `kismetart:${input.type}-notif-lock:${input.recipient.toLowerCase()}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
+      const lockKey = `kismetart:${input.type}-notif-lock:${recipient}:${input.actor.toLowerCase()}:${input.tokenAddress.toLowerCase()}`
       let acquired = true
       try {
         acquired = (await redis.set(lockKey, '1', { nx: true, ex: BURST_DEDUP_WINDOW_SECS })) === 'OK'
@@ -264,11 +316,10 @@ export async function writeNotification(input: NotificationInput): Promise<boole
 
     const id = crypto.randomUUID()
     const timestamp = Math.floor(Date.now() / 1000)
-    const priority = input._forcePriority || await isPriority(input.recipient, input.type, input.actor, input.price)
-    const recipient = input.recipient.toLowerCase()
+    const priority = input._forcePriority || await isPriority(recipient, input.type, input.actor, input.price)
     // Strip the internal routing fields before persisting — they are
     // call-site hints, not notification data.
-    const { _forcePriority: _, _awaitPush, ...inputData } = input
+    const { _forcePriority: _, _awaitPush, _skipAliasResolve: __, ...inputData } = input
     const stored = {
       ...inputData,
       id,
@@ -307,8 +358,25 @@ export async function writeNotification(input: NotificationInput): Promise<boole
       .catch(() => {})
     if (_awaitPush) await dispatch
     return true
-  } catch {
-    // Notifications are non-critical — never let them break the parent operation
+  } catch (err) {
+    // Notifications stay non-critical — never let them break the parent
+    // operation — but they must not vanish WITHOUT A TRACE either. Everything
+    // that reaches here (the inbox ZADD, the trim, JSON.stringify, the
+    // isPriority reads) is a path on which the user simply never learns the
+    // event happened, and every caller but the collector-file fanout discards
+    // the boolean below. Silence here is what made a dropped bell entry
+    // indistinguishable from one that was never attempted: /api/collect logs
+    // its own verification failures loudly, then hands off to a write that
+    // could fail completely mutely. Log the routing fields only — never the
+    // payload, which can carry a collector's comment.
+    console.error('[notifications] write failed', {
+      type: input.type,
+      recipient: input.recipient,
+      actor: input.actor,
+      tokenAddress: input.tokenAddress,
+      tokenId: input.tokenId,
+      err,
+    })
     return false
   }
 }
@@ -350,12 +418,29 @@ export async function fanoutToFollowers(
           // isPriority always returns true via the isFollowing branch. Skip
           // the 2 Redis calls (isFollowing SISMEMBER + KEY_PROFILES SISMEMBER)
           // that would otherwise fire per recipient for collect/listing_created.
-          writeNotification({ ...payload, recipient: follower, actor: source, _forcePriority: true }),
+          // _skipAliasResolve: a follower followed through the app from a wallet
+          // it signed in with, so it can never be an operator-controlled
+          // per-creator smart wallet — saving a third per-recipient command.
+          writeNotification({
+            ...payload,
+            recipient: follower,
+            actor: source,
+            _forcePriority: true,
+            _skipAliasResolve: true,
+          }),
         ),
       )
     }
-  } catch {
-    // notifications are non-critical
+  } catch (err) {
+    // Non-critical, but not invisible: this catch swallows an ENTIRE fan-out
+    // (getFollowers failing, most likely), so every follower silently misses a
+    // mint or a new listing. Same reasoning as writeNotification's own catch —
+    // a dropped notification must leave a trace somewhere.
+    console.error('[notifications] fan-out failed', {
+      source,
+      type: payload.type,
+      err,
+    })
   }
 }
 
