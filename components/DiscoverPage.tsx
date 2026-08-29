@@ -39,6 +39,11 @@ const LABEL: Record<TabId, string> = {
   roster: 'artists',
 }
 
+// Ceiling on how many followed addresses ride the feed querystring — see the
+// apiUrl comment in MainFeed. 150 × ~43 bytes ≈ 6.5KB, comfortably inside the
+// 8KB request-line limit with the rest of the URL.
+const MAX_FOLLOWING_IN_URL = 150
+
 const ORDER_KEY = 'kismetart:tab-order'
 const ACTIVE_KEY = 'kismetart:active-tab'
 
@@ -395,8 +400,18 @@ function MainFeed() {
 
   // scope=standalone keeps collection moments out of the mints sub-tab —
   // they surface inside their collection card instead of appearing twice.
-  const apiUrl = followingAddrs.length
-    ? `/api/timeline?scope=standalone&following=${followingAddrs.join(',')}`
+  //
+  // The follow list is spliced into the querystring, and lib/follows' getFollowing
+  // is an uncapped SMEMBERS — so an active follower graph builds an unbounded
+  // request line (~43 bytes per address: ~8.6KB at 200 follows, past the 8KB
+  // limit common to CDNs and Node itself, where the feed 431s outright with no
+  // fallback). Cap it: `following=` only BUBBLES followed creators to the top
+  // server-side, so a truncated list still bubbles — a partial reorder degrades
+  // gracefully where a 431 does not. Raise this only alongside moving the list
+  // off the URL.
+  const followingParam = followingAddrs.slice(0, MAX_FOLLOWING_IN_URL).join(',')
+  const apiUrl = followingParam
+    ? `/api/timeline?scope=standalone&following=${followingParam}`
     : '/api/timeline?scope=standalone'
 
   // Single toggle controls both sub-tabs — switching mints↔collections

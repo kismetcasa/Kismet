@@ -491,7 +491,137 @@ Worth stating plainly, because the density of correct detail here is unusual:
   iframe/RN-webview rather than from UA alone — the surface matrix that
   `verify-surfaces.ts` pins.
 
-## 7. Suggested order of work
+## 7. Fixes applied
+
+Each change below is justified by evidence in this repository's own code, and
+each was checked for the specific way it could be wrong. Anything I could not
+justify that way was deliberately left alone — listed at the end.
+
+### Shipped
+
+**F1 — sample depth decoupled from `page`** (`lib/feedPagination.ts`,
+`app/api/timeline/route.ts`). The rule moved into a pure, dependency-free module
+(the pattern `lib/showcaseOrder.ts` established so a verify script can exercise
+it with no env) and now returns a page-independent depth for any feed whose
+post-merge filter thins the merge — `featured`, `creators=`, and the three
+personal feeds that were simply missing from the list.
+
+*Evidence it was broken:* the modelled route returned an artist's mints at depth
+101/341/396 on **none** of pages 1–25, and page 1 reported `total_pages: 1`.
+*Evidence it was intended to work:* the route already grants `creator=`/
+`airdroppable=` a 2× `MERGE_BUDGET` with the stated reason "per-collection depth
+decides whether an artist's older work surfaces on their own profile" — but
+`min(page*limit, 10000/N)` is 50 for every N under 100, so **that budget could
+never be spent**. The fix lets the allocation the author already provisioned
+actually apply. *Evidence it regresses nobody:* a caller-by-caller matrix shows
+no surface gets a shallower page-1 sample; the verify script asserts that
+property per caller.
+
+*Measured against the shipped module* (not a copy of the rule): an artist with
+40 mints inside the sample, browsed at `limit=24`, goes from `total_pages: 1`
+and 6 distinct rows across four pages to `total_pages: 2` and all 40. The
+Collected tab case recovers 2 of 4 rather than 1 of 4 — the two still missing
+sit at depth 301 and 396, beyond the sample, which is the residual §B1 problem
+and not something this change claims to solve. The honest summary: pagination
+over the thinned set is now *correct*, and depth is unchanged in kind.
+
+**F4 — cross-page dedupe** (`lib/feedPagination.ts`, `components/PaginatedGrid.tsx`).
+First occurrence wins; returns the same array reference when there is nothing to
+drop, so the common render allocates nothing. Placed before the caller's
+`filter` so consumer predicates always see a clean list.
+
+**F5 — load-more hoisted out of the `visible.length > 0` branch**
+(`components/PaginatedGrid.tsx`). The button *and* the infinite-scroll sentinel
+were nested inside it, so a client-side `filter` that emptied a page removed the
+only way to reach the next one. Verified no current caller combines `filter`
+with `infiniteScroll`, so the hoisted sentinel cannot auto-walk an existing
+surface.
+
+**F2 — rank from pins, hydrate only the page, cache the response**
+(`app/api/collections/route.ts`). `collectionFeedOrderTs` ignores `created_at`
+whenever a KV pin exists, so a pinned collection ranks with no upstream read at
+all — passing `undefined` yields a finite `ts` exactly when a usable pin is
+present, which is already CI-locked by `verify-collection-rank`. Ranking is
+therefore bit-identical to hydrate-first (same function, same inputs, and pinned
+rows never consulted `created_at`), while the expensive half — two
+`fetchEligibleTokens` per collection, each a `getBlock` plus a `multicall` over
+JSON-RPC that no cache layer covers — is now bounded by `limit` instead of by
+how many collections exist. The `public, s-maxage=30` header is safe because the
+branch reads no session and every input is global.
+
+**F10 — one MGET instead of a GET per fan-out leg** (`app/api/timeline/route.ts`,
+`lib/coverMomentSynthesis.ts`, `lib/kv.ts`). The batch is *started* and threaded
+in as a promise rather than awaited first, so it resolves inside the
+upstream-bound fan-out's shadow and adds no latency. Upstash bills per command,
+not per round trip, so auto-pipelining did not already make this free.
+`getCollectionMetaBatch` gained chunking because it now receives the whole
+tracked set. Verified it cannot reject (every await sits inside its own
+`try/catch`), which matters because it is now awaited outside `fetchCollection`'s.
+
+**F11 — shared cache window on the marketplace listings feed**
+(`app/api/listings/route.ts`). Confirmed viewer-independent first:
+`getListingVisibility` composes four *global* hide sets and this branch reads no
+session, unlike the single-token and seller-scope branches above it.
+
+**F8a — explicit `limit` on the featured tab** (`lib/feedPagination.ts`,
+`components/FeaturedFeed.tsx`, `app/page.tsx`). Costs nothing upstream, since a
+featured request samples at `THINNED_SAMPLE_DEPTH` regardless of `limit`.
+
+**F7 — bounded `following=` querystring** (`components/DiscoverPage.tsx`). Capped
+at 150 (~6.5KB, inside the common 8KB request-line limit). Safe to truncate
+because the server *bubbles* rather than filters on this parameter, so a partial
+list still bubbles — a degraded reorder beats a 431.
+
+**F3, F14, F15 — corrected comments** (`lib/momentEnrichment.ts`,
+`lib/paginatedGridQuery.ts`, `SCALING.md`).
+
+**New CI** — `scripts/verify-feed-pagination.ts`, wired into `verify:flows`. 21
+assertions covering the depth rule, the dedupe contract, a per-caller
+no-regression check, and an end-to-end reproduction of the original
+unreachable-at-every-page bug as a standing regression guard.
+
+### Deliberately not changed
+
+**F3's behaviour.** My first write-up called the fail-open scrub a privacy
+defect. Re-reading the call graph, it is not: `fetchHiddenProfilesSet` fails open
+so an outage cannot 404 every profile page, and that is documented at the
+primitive. The platform splits cleanly — *content* hiding (moments, collections)
+fails closed via `strictRead`; *identity* hiding fails open. The comment claiming
+otherwise was the whole defect, so the comment is what changed. Flipping the
+behaviour would be a platform-wide policy decision, not a bug fix.
+
+**F11's filter-before-paginate.** `getListings` is shared with
+`app/api/admin/hide/route.ts`, which needs to enumerate hidden listings. Moving
+the visibility filter inside would break the hide tooling. Correct fix is an
+opt-in parameter; not worth the surface without a way to test it here.
+
+**F1's complete fix.** There is no per-creator reverse index — `moment-meta` is
+keyed `addr:tokenId`, so the fan-out *width* cannot be narrowed for `creator=`
+without building one. Depth therefore still degrades as the tracked set grows
+(`perCollectionCap = MERGE_BUDGET/N` binds), and `ProfileView` still requests a
+single un-paginated page. Both are §B1.
+
+**F6, F9, F13** — product decisions (what "following" should mean, whether to
+expose or delete `scope`, whether ovals should badge hidden work), not defects
+with a single right answer.
+
+**F12** — the feed 500ing on a hidden-set blip is the deliberate fail-closed
+contract. Worth a friendlier 503, not worth changing unilaterally.
+
+### Two mistakes made while implementing, and caught
+
+A scripted edit **corrupted `PaginatedGrid.tsx`**, duplicating `ItemHelpers` and
+`GRID_FEED` — a guaranteed build break. Found by a structural audit
+(duplicate top-level declarations + bracket balance) run across every touched
+file, then reverted and re-applied with unique anchors. That audit is worth
+keeping as a habit for scripted edits.
+
+I also briefly had `app/page.tsx` — a Server Component — importing a *value*
+from a `'use client'` module, which is exactly the trap `lib/discoverState.ts`
+documents from a real production 500 (digest 1841440540). The constant now lives
+in the neutral module, and `app/page.tsx` keeps its type-only import.
+
+## 8. Original priority order (superseded by §7)
 
 Re-ranked after validation — F1 moved up (it is worse than first written), F4
 moved down (it is milder).

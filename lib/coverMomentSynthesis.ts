@@ -1,5 +1,5 @@
 import { inprocessUrl, type Moment, type MomentDetail } from './inprocess'
-import { getCollectionMeta } from './kv'
+import { getCollectionMeta, type CollectionMeta } from './kv'
 import { getMomentMeta } from './notifications'
 
 /**
@@ -33,8 +33,19 @@ import { getMomentMeta } from './notifications'
 export async function synthesizeMissingCoverMoment(
   collectionAddress: string,
   existingMoments: { token_id?: string | number }[],
+  /** Pre-read meta record, when the caller already has one in hand. The timeline
+   *  fan-out passes it from a single batch MGET so this helper — which runs on
+   *  EVERY fanned-out collection, overwhelmingly to discover there is no
+   *  `coverTokenId` — stops issuing one Redis GET per collection per request.
+   *  `null` means "read it, it isn't there"; omitting the argument entirely
+   *  keeps the original self-reading behaviour for callers without a batch
+   *  (lib/catalogCensus). */
+  collMetaIn?: CollectionMeta | null,
 ): Promise<Moment | null> {
-  const collMeta = await getCollectionMeta(collectionAddress).catch(() => null)
+  const collMeta =
+    collMetaIn === undefined
+      ? await getCollectionMeta(collectionAddress).catch(() => null)
+      : collMetaIn
   const coverTokenId = collMeta?.coverTokenId
   if (!coverTokenId) return null
   if (existingMoments.some((m) => String(m.token_id) === coverTokenId)) return null

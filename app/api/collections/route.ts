@@ -235,18 +235,17 @@ export async function GET(req: NextRequest) {
     const total = visible.length
     const total_pages = Math.max(1, Math.ceil(total / limit))
     const client = serverBaseClient()
-    const hydrated = await Promise.all(
-      visible.map(async (address) => {
-        // Hydrate metadata + bulk-collect eligibility in parallel. Mirrors
-        // /api/featured/collections-hydrated so the discovery grid surfaces
-        // the same one-click "collect all" UX as the featured rows.
-        const [metaPart, eligibility] = await Promise.all([
-          loadCollectionMeta(address),
-          loadCollectAllEligibility(client, address, hiddenMoments),
-        ])
-        return { ...metaPart, ...eligibility }
-      }),
-    )
+    // Per-request memo so a collection hydrated for RANKING (phase 1) isn't
+    // re-hydrated when it also lands in the PAGE (phase 2).
+    const metaFetch = new Map<string, Promise<Record<string, unknown>>>()
+    const loadMetaOnce = (address: string): Promise<Record<string, unknown>> => {
+      let p = metaFetch.get(address)
+      if (!p) {
+        p = loadCollectionMeta(address)
+        metaFetch.set(address, p)
+      }
+      return p
+    }
     // Order by the KV-pinned deploy instant when one exists — inprocess
     // rewrites a collection's created_at when its indexer reprocesses a
     // contractURI edit (the same reindex-on-edit that bumped edited MOMENTS;
@@ -258,21 +257,38 @@ export async function GET(req: NextRequest) {
     // rows and indexer-lagging deploys keep the inprocess/Infinity path —
     // Infinity still floats a just-created collection to the top while
     // inprocess catches up.
+    //
+    // PHASE 1 — RANK. Ranking used to require hydrating the whole catalogue
+    // first, because the sort key came from each row's inprocess `created_at`.
+    // But collectionFeedOrderTs IGNORES created_at whenever a KV pin exists,
+    // so a pinned collection can be ranked with no upstream read at all —
+    // passing `undefined` yields a finite ts exactly when a usable pin is
+    // present (CI-locked by verify-collection-rank: `({createdAt: PIN},
+    // undefined) → PIN` and `(undefined, undefined) → Infinity`). Only UNPINNED
+    // rows still need their created_at, and the write-through backfill below
+    // drives that set toward empty. Ranking is bit-identical to hydrate-first:
+    // same function, same inputs, and pinned rows never consulted created_at.
     const pinsDue: { address: string; createdAt: number }[] = []
-    const ranked = hydrated.map((row, i) => {
-      const addr = visible[i].toLowerCase()
-      // Pure decision (CI-locked by verify-collection-rank): pin wins,
-      // else feed created_at (offered back as a backfill pin only when a
-      // meta record exists — idempotent via setCollectionCreatedAt, and
-      // self-quiescing: the next request's batch read serves the pin),
-      // else Infinity floats an indexer-lagging fresh deploy to the top.
-      const { ts, backfillTs } = collectionFeedOrderTs(
-        metaByAddr.get(addr),
-        (row as { created_at?: string }).created_at,
-      )
-      if (backfillTs != null) pinsDue.push({ address: addr, createdAt: backfillTs })
-      return { row, ts }
-    })
+    const ranked = await Promise.all(
+      visible.map(async (address) => {
+        const addr = address.toLowerCase()
+        const meta = metaByAddr.get(addr)
+        // Pure decision (CI-locked by verify-collection-rank): pin wins,
+        // else feed created_at (offered back as a backfill pin only when a
+        // meta record exists — idempotent via setCollectionCreatedAt, and
+        // self-quiescing: the next request's batch read serves the pin),
+        // else Infinity floats an indexer-lagging fresh deploy to the top.
+        const pinned = collectionFeedOrderTs(meta, undefined)
+        if (Number.isFinite(pinned.ts)) return { address, ts: pinned.ts }
+        const row = await loadMetaOnce(address)
+        const { ts, backfillTs } = collectionFeedOrderTs(
+          meta,
+          (row as { created_at?: string }).created_at,
+        )
+        if (backfillTs != null) pinsDue.push({ address: addr, createdAt: backfillTs })
+        return { address, ts }
+      }),
+    )
     ranked.sort((a, b) => b.ts - a.ts)
     if (pinsDue.length > 0) {
       after(() =>
@@ -281,8 +297,25 @@ export async function GET(req: NextRequest) {
         ).catch(() => {}),
       )
     }
+    // PHASE 2 — HYDRATE ONLY THE PAGE. The eligibility read is the expensive
+    // half (two fetchEligibleTokens per collection, each a getBlock plus a
+    // multicall over JSON-RPC that no cache layer covers — lib/rpc's transport
+    // sets no `batch`), and it was previously paid for the ENTIRE catalogue on
+    // every request just to throw all but one page away. Cost is now bounded by
+    // `limit` instead of by how many collections exist.
     const start = (page - 1) * limit
-    const collections = ranked.slice(start, start + limit).map((r) => r.row)
+    const collections = await Promise.all(
+      ranked.slice(start, start + limit).map(async ({ address }) => {
+        // Hydrate metadata + bulk-collect eligibility in parallel. Mirrors
+        // /api/featured/collections-hydrated so the discovery grid surfaces
+        // the same one-click "collect all" UX as the featured rows.
+        const [metaPart, eligibility] = await Promise.all([
+          loadMetaOnce(address),
+          loadCollectAllEligibility(client, address, hiddenMoments),
+        ])
+        return { ...metaPart, ...eligibility }
+      }),
+    )
     // Visibility for "empty feed" reports — distinguishes "nothing tracked
     // yet" from "tracked but inprocess+KV both returned nothing".
     if (collections.length === 0) {
@@ -290,10 +323,17 @@ export async function GET(req: NextRequest) {
         userCreated: userCreated.length, hidden: hiddenSet.size, visible: visible.length,
       })
     }
-    return NextResponse.json({
-      collections,
-      pagination: { page, limit, total, total_pages },
-    })
+    return NextResponse.json(
+      { collections, pagination: { page, limit, total, total_pages } },
+      {
+        // Viewer-independent: this branch reads no session and every input
+        // (curated set, hide sets, collection meta, inprocess rows, on-chain
+        // eligibility) is global. Same window /api/timeline's public feeds and
+        // /api/featured/collections-hydrated already use — and the same
+        // acknowledged staleness, since eligibility is a function of `now`.
+        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+      },
+    )
   }
 
   if (artist) {

@@ -2,6 +2,7 @@ import { headers } from 'next/headers'
 import type { Metadata } from 'next'
 import { DiscoverPage } from '@/components/DiscoverPage'
 import type { InitialFeatured } from '@/components/FeaturedFeed'
+import { FEATURED_RENDER_LIMIT } from '@/lib/feedPagination'
 import { isMobileUA } from '@/lib/serverDevice'
 import { JsonLd } from '@/components/JsonLd'
 import { homeJsonLd } from '@/lib/structuredData'
@@ -50,7 +51,7 @@ async function fetchInitialFeatured(): Promise<InitialFeatured | null> {
     const opts = { next: { revalidate: 60 } } as const
     const [tl, fc] = await withSoftTimeout(
       Promise.all([
-        fetch(`${origin}/api/timeline?featured=1`, opts).then((r) => (r.ok ? r.json() : null)),
+        fetch(`${origin}/api/timeline?featured=1&limit=${FEATURED_RENDER_LIMIT}`, opts).then((r) => (r.ok ? r.json() : null)),
         fetch(`${origin}/api/featured/collections-hydrated`, opts).then((r) => (r.ok ? r.json() : null)),
       ]),
       SSR_FEATURED_BUDGET_MS,

@@ -462,15 +462,28 @@ export async function GET(req: NextRequest) {
   // the marketplace feed. feedHidden covers the per-listing hide, the
   // hidden-moment/collection cascade, and hidden sellers/creators.
   const visibleListings = listings.filter((l) => !visibility.feedHidden(l))
-  return NextResponse.json({
-    listings: visibleListings,
-    pagination: {
-      page,
-      limit,
-      total,
-      total_pages: Math.max(1, Math.ceil(total / limit)),
+  return NextResponse.json(
+    {
+      listings: visibleListings,
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: Math.max(1, Math.ceil(total / limit)),
+      },
     },
-  })
+    {
+      // Viewer-independent, so it can ride the same shared window as the
+      // `keys=1` snapshot above and /api/timeline's public feeds. Unlike the
+      // single-token and seller-scope branches, nothing here reads the session:
+      // getListingVisibility composes four GLOBAL hide sets (lib/hiddenListings)
+      // and getListings takes only querystring filters. Without this the route
+      // inherited Next's dynamic-route no-store, so every /market and
+      // /discover?m=secondary page view re-ran the 500-member zrange, the
+      // chunked MGET and the whole predicate chain from cold.
+      headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' },
+    },
+  )
 }
 
 export async function POST(req: NextRequest) {

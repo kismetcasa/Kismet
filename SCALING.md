@@ -19,7 +19,7 @@ change outside this repo — see `OPS_RUNBOOK.md`).
 
 | # | Finding | Status | Evidence / note |
 |---|---------|--------|-----------------|
-| §2 | Feed fan-out-on-read | 🔶 | Bounded to `FANOUT_CONCURRENCY=10` + `MERGE_BUDGET` width cap (`timeline/route.ts:44,276,283`); **materialized feed still not built** |
+| §2 | Feed fan-out-on-read | 🔶 | Bounded to `FANOUT_CONCURRENCY=10` + `MERGE_BUDGET` width cap (`timeline/route.ts:52,406,414`); **materialized feed still not built** |
 | §3 | Fan-out-on-write notifications | 🔶 | Concurrency bounded to batches of 50 + `large fan-out` warn ≥1k followers (`fanoutToFollowers`, 2026-07-13); **queue (B2) still open** — warn firing is its trigger |
 | §4a | `created-mints` full `SMEMBERS` | ✅ | Bounded `SMISMEMBER` over the request's candidates (`getCreatedMintsMembership`, `lib/kv.ts`; 2026-07-13) — full-set read removed |
 | §4d | 10 MB writing-moment bodies in Redis | ⬜ | `mint-proxy.ts:27` |
@@ -84,12 +84,20 @@ everything.
 
 **Since the audit (hardening that landed):** the fan-out is no longer one socket per
 collection — it runs through `mapWithConcurrency(…, FANOUT_CONCURRENCY=10, …)`
-(`timeline/route.ts:44`), and the in-memory merge is bounded by `MERGE_BUDGET` (5,000;
+(`timeline/route.ts:52`), and the in-memory merge is bounded by `MERGE_BUDGET` (5,000;
 10,000 for `creator=`/`airdroppable=`) with a hard width-truncation past
 `MERGE_BUDGET` collections and a `[timeline] fan-out thinned` warn
-(`timeline/route.ts:276-294`). The "500 collections × 200 = 100k moments in one
+(`timeline/route.ts:406-430`). The "500 collections × 200 = 100k moments in one
 request" cliff is therefore capped, and each fan-out fetch carries an
-`AbortSignal.timeout(8s)` (`timeline/route.ts:74`).
+`AbortSignal.timeout(8s)` (`timeline/route.ts:134`).
+
+Per-collection sample depth is `min(baseSample, MERGE_BUDGET/N)`. `baseSample`
+is page-INDEPENDENT for any request whose post-merge filter thins the set
+(`featured`, `creators=`, and the personal `creator=`/`collector=`/
+`airdroppable=` feeds) — coupling depth to `page` there made rows past page 1's
+depth unreachable at every page, because `page` also drives the slice offset
+over the thinned set. Sorted feeds keep the growing sample; see
+`THINNED_SAMPLE_DEPTH` and the `thinsTheMerge` block, and FEEDS_REVIEW.md §F1.
 
 **Still open (the architecture):**
 - Cost per uncached feed load is still **O(tracked collections)** upstream fetches.

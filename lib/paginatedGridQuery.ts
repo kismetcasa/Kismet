@@ -49,9 +49,15 @@ export function paginatedQueryKey(firstPageUrl: string) {
 // `fresh` is the manual-refresh path: append `fresh=1` so the feed route
 // bypasses its upstream revalidate window (returning genuinely new mints, not
 // the ≤30s-cached copy the auto-load path is happy with) and set the browser
-// fetch to `no-store` so a private HTTP cache can't shortcut it either. The
-// param rides the URL so it's also the react-query key of the refetch — it
-// never pollutes the normal cached feed's entry.
+// fetch to `no-store` so a private HTTP cache can't shortcut it either.
+//
+// The flag rides only the REQUEST url, not the react-query key: PaginatedGrid
+// keys on `paginatedFirstPageUrl(apiUrl, pageLimit)` and raises `fresh` through
+// a ref inside the queryFn, so a refresh deliberately writes its result into
+// the feed's normal cache entry — which is what makes the refreshed page the
+// one every later mount reads. (An earlier revision of this comment claimed
+// the opposite; the behaviour it described would have left the refreshed rows
+// in a sibling entry nothing reads.)
 export async function fetchPageJson(url: string, fresh = false): Promise<PageResponse> {
   const target = fresh ? `${url}${url.includes('?') ? '&' : '?'}fresh=1` : url
   const res = await fetch(target, fresh ? { cache: 'no-store' } : undefined)

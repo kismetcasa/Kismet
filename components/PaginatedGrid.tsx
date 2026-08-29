@@ -12,6 +12,7 @@ import {
   paginatedQueryKey,
   type PageResponse,
 } from '@/lib/paginatedGridQuery'
+import { dedupeByKey } from '@/lib/feedPagination'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -216,7 +217,16 @@ export function PaginatedGrid<T>({
       : []
     return [...firstPageItems, ...extraPages.flat()]
   }, [firstPage, itemsKey, extraPages])
-  const visible = filter ? filter(allItems) : allItems
+  // Offset pagination over a live, re-derived result set can hand back a row an
+  // earlier page already rendered, and this list is append-only — so the
+  // duplicate reaches React as a repeated key and one row is silently skipped.
+  // The feed route re-runs its whole merge per page, so on a SORTED feed a
+  // newly-sampled older row can outrank the previous page boundary; a mint
+  // landing between two page fetches does the same on any feed. Runs BEFORE the
+  // caller's filter so a consumer-supplied predicate always sees a clean list.
+  // See lib/feedPagination for the mechanism and its measured bound.
+  const deduped = dedupeByKey(allItems, getKey)
+  const visible = filter ? filter(deduped) : deduped
 
   // Optimistic remove — used after delete/list/etc. actions. Updates
   // BOTH the cached first page (so the item stays gone after the
@@ -392,27 +402,35 @@ export function PaginatedGrid<T>({
       {!loading && !error && visible.length === 0 && empty}
 
       {!loading && visible.length > 0 && (
-        <>
-          <div className={gridClass}>
-            {renderEntries()}
-          </div>
-          {currentPage < totalPages && (
-            <div className="mt-8 text-center">
-              {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
-                  observer's 600px rootMargin fires the auto-load well before the
-                  fold. The button stays as a keyboard / no-IntersectionObserver
-                  fallback. */}
-              {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
-              <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
-              >
-                {loadingMore ? 'loading…' : 'load more'}
-              </button>
-            </div>
-          )}
-        </>
+        <div className={gridClass}>
+          {renderEntries()}
+        </div>
+      )}
+
+      {/* Deliberately OUTSIDE the `visible.length > 0` branch above. A
+          caller-supplied `filter` runs client-side over server pages, so it can
+          empty a page that has successors — the discover collections sub-tab
+          with "following" on, and the roster tab's collection-scoped list, both
+          do exactly that. Nested, the button AND the infinite-scroll sentinel
+          disappeared with the rows, stranding the reader on "nothing here" with
+          pages still unread. Same `currentPage < totalPages` gate as before, so
+          an exhausted feed is unchanged; `!error` leaves the error branch's own
+          retry as the only control there. */}
+      {!loading && !error && currentPage < totalPages && (
+        <div className="mt-8 text-center">
+          {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
+              observer's 600px rootMargin fires the auto-load well before the
+              fold. The button stays as a keyboard / no-IntersectionObserver
+              fallback. */}
+          {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+          >
+            {loadingMore ? 'loading…' : 'load more'}
+          </button>
+        </div>
       )}
     </div>
   )

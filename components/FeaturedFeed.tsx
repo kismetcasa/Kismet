@@ -8,6 +8,7 @@ import { CollectionRow, type FeaturedCollectionRow } from './CollectionRow'
 import { FeaturedMoment } from './FeaturedMoment'
 import { FeedSkeleton, FEED_GRID_CLASS } from './FeedSkeleton'
 import { MaybeLazy } from './LazyMount'
+import { FEATURED_RENDER_LIMIT } from '@/lib/feedPagination'
 
 // Number of moments rendered as a single grid row before the next collection
 // breaks in. Picked to match the lg+ 4-col grid so the collection always
@@ -90,7 +91,7 @@ export function FeaturedFeed({ emptyMessage, isMobile = false, initialFeatured =
   useEffect(() => {
     if (seeded) return
     let cancelled = false
-    fetch('/api/timeline?featured=1')
+    fetch(`/api/timeline?featured=1&limit=${FEATURED_RENDER_LIMIT}`)
       .then((r) => (r.ok ? r.json() : { moments: [] }))
       .catch(() => ({ moments: [] }))
       .then((tl) => {
