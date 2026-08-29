@@ -125,6 +125,9 @@ const GET_ORDER_STATUS = parseAbi([
 /** orderHash → what Seaport should say happened to it. */
 const orderStatus = new Map<string, { cancelled: boolean; filled: bigint }>()
 let rpcMode: 'ok' | 'dead' = 'ok'
+/** Answer aggregate3 with success:false per call — what an ABI mismatch or a
+ *  reverting getOrderStatus looks like to viem's multicall. */
+let rpcFailCalls = false
 
 const rpcServer = createServer((req, res) => {
   let body = ''
@@ -145,6 +148,7 @@ const rpcServer = createServer((req, res) => {
         const inner = decodeFunctionData({ abi: GET_ORDER_STATUS, data: c.callData })
         const hash = String(inner.args[0]).toLowerCase()
         const st = orderStatus.get(hash) ?? { cancelled: false, filled: 0n }
+        if (rpcFailCalls) return { success: false, returnData: '0x' as Hex }
         return {
           success: true,
           returnData: encodeAbiParameters(
@@ -309,6 +313,24 @@ console.log('\nG1  a listing filled off-platform announced "expired"')
   check('an on-chain cancel is recorded, not announced', byToken('22') === undefined)
   check('  …and its row is recorded cancelled', JSON.parse(strings.get('kismetart:listing:L-cancelled')!).status === 'cancelled')
   check('a genuinely untouched order still expires (non-regression)', byToken('33')?.type === 'listing_expired')
+
+  // An order Seaport cannot answer for must expire (safe) AND be counted, so a
+  // systematically wrong ABI is visible instead of looking like "nothing sold".
+  {
+    const warns: unknown[][] = []
+    const realWarn = console.warn
+    console.warn = (...a: unknown[]) => { warns.push(a) }
+    mkListing('L-unreadable', '55')
+    rpcFailCalls = true
+    await listings.sweepExpiredListings()
+    await tick()
+    rpcFailCalls = false
+    console.warn = realWarn
+    check('an unreadable order still expires (safe fallback)',
+      inbox(SELLER).find((n) => n.tokenId === '55')?.type === 'listing_expired')
+    check('  …and is counted, so a wrong ABI cannot fail silently',
+      warns.some((w) => String(w[0]).includes('order-status unreadable')))
+  }
 
   // Chain health must never turn a correct expiry into a stall or a wrong call.
   const rpcHash = mkListing('L-rpcdown', '44')

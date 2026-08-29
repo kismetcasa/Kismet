@@ -264,9 +264,19 @@ async function resolveTerminalStatuses(listings: Listing[]): Promise<TerminalSta
     return out
   }
 
+  // A per-call failure is counted, not just skipped. Falling back to 'expired'
+  // is the safe answer, but if the ABI below ever stops matching the deployed
+  // Seaport — a wrong signature, a redeploy — EVERY call fails that way and the
+  // reconciliation silently stops working while looking exactly like "nothing
+  // sold off-platform". That is the failure mode this whole change exists to
+  // remove, so it has to be visible in its own implementation too.
+  let unreadable = 0
   for (let j = 0; j < idx.length; j++) {
     const r = results[j]
-    if (!r || r.status !== 'success') continue
+    if (!r || r.status !== 'success') {
+      unreadable++
+      continue
+    }
     const [, isCancelled, totalFilled] = r.result as readonly [boolean, boolean, bigint, bigint]
     // Filled wins over cancelled: the two can only coexist on a partially
     // filled order that was then cancelled, and "it sold" is the fact the
@@ -274,6 +284,12 @@ async function resolveTerminalStatuses(listings: Listing[]): Promise<TerminalSta
     // 'expired', which is the honest answer for it.
     if (totalFilled > 0n) out[idx[j]] = 'filled'
     else if (isCancelled) out[idx[j]] = 'cancelled'
+  }
+  if (unreadable > 0) {
+    console.warn('[listings] Seaport order-status unreadable for some orders', {
+      unreadable,
+      of: idx.length,
+    })
   }
   return out
 }
