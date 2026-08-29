@@ -1,5 +1,5 @@
 import type { LogEvent } from '@ffmpeg/ffmpeg'
-import { getFFmpeg } from './transcodeGif'
+import { getFFmpeg, runWatched } from './transcodeGif'
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
@@ -54,13 +54,13 @@ async function isAudioSilent(
     // `-f null -` discards output; we only care about stderr from
     // silencedetect. Suppress nonzero exits — silencedetect always
     // returns 0, but defensive in case the input has structural issues.
-    await ff
-      .exec([
+    await runWatched(ff, 'silence probe', () =>
+      ff.exec([
         '-i', input,
         '-af', `silencedetect=noise=${SILENCE_THRESHOLD_DB}dB:d=${SILENCE_MIN_RUN_S}`,
         '-f', 'null', '-',
-      ])
-      .catch(() => {})
+      ]),
+    ).catch(() => {})
   } finally {
     ff.off('log', onLog)
   }
@@ -92,13 +92,14 @@ export async function remuxToFaststartMp4(file: File): Promise<File | null> {
 
   const ff = await getFFmpeg()
   try {
-    await ff.writeFile(inputName, new Uint8Array(await file.arrayBuffer()))
+    const srcBytes = new Uint8Array(await file.arrayBuffer())
+    await runWatched(ff, 'remux write', () => ff.writeFile(inputName, srcBytes))
     const stripAudio = await isAudioSilent(ff, inputName).catch(() => false)
     const args = ['-i', inputName, '-c', 'copy', '-movflags', '+faststart']
     if (stripAudio) args.push('-an')
     args.push(outputName)
-    await ff.exec(args)
-    const bytes = (await ff.readFile(outputName)) as Uint8Array
+    await runWatched(ff, 'remux', () => ff.exec(args))
+    const bytes = (await runWatched(ff, 'remux read', () => ff.readFile(outputName))) as Uint8Array
     if (bytes.byteLength === 0) return null
     const base = file.name.replace(/\.[^.]+$/, '') || 'media'
     return new File([bytes as BlobPart], `${base}.mp4`, { type: 'video/mp4' })

@@ -1126,7 +1126,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           if (canTranscode(mediaFile)) {
             try {
               toast.loading('Optimizing animation for fast playback…', { id: 'edit-meta' })
-              const { mp4, poster } = await transcodeGifToMp4(mediaFile)
+              const { mp4, poster } = await transcodeGifToMp4(
+                mediaFile,
+                (pct) => toast.loading(`Optimizing animation… ${pct}%`, { id: 'edit-meta' }),
+                (pct) => toast.loading(`Preparing optimizer… ${pct}%`, { id: 'edit-meta' }),
+              )
               toast.loading('Uploading media…', { id: 'edit-meta' })
               const tp = generateThumbhash(poster)
               const [a, p] = await Promise.all([uploadToArweave(mp4), uploadToArweave(poster)])

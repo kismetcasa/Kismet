@@ -1,5 +1,5 @@
 import type { LogEvent } from '@ffmpeg/ffmpeg'
-import { getFFmpeg } from './transcodeGif'
+import { getFFmpeg, runWatched } from './transcodeGif'
 
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024
 
@@ -29,12 +29,15 @@ export async function probeDurationSeconds(file: File): Promise<number | null> {
     if (m) durationSec = +m[1] * 3600 + +m[2] * 60 + parseFloat(m[3])
   }
   try {
-    await ff.writeFile(input, new Uint8Array(await file.arrayBuffer()))
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    await runWatched(ff, 'duration write', () => ff.writeFile(input, bytes))
     ff.on('log', onLog)
     // `ffmpeg -i <input>` with no output produces a nonzero exit + writes
     // the Duration line to stderr. Suppress the exit so the catch in the
-    // caller doesn't swallow a successfully-probed value.
-    await ff.exec(['-i', input]).catch(() => {})
+    // caller doesn't swallow a successfully-probed value. The same catch
+    // absorbs a watchdog stall — this probe is best-effort, and MintForm
+    // awaits it in a Promise.all, so it must never be what hangs a mint.
+    await runWatched(ff, 'duration probe', () => ff.exec(['-i', input])).catch(() => {})
   } catch {
     return null
   } finally {

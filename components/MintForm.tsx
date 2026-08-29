@@ -1091,10 +1091,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setUploadProgress(0)
             toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
             try {
-              const { mp4, poster } = await transcodeGifToMp4(file!, (pct) => {
-                setUploadProgress(pct)
-                toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
-              })
+              const { mp4, poster } = await transcodeGifToMp4(
+                file!,
+                (pct) => {
+                  setUploadProgress(pct)
+                  toast.loading(`Optimizing animation… ${pct}%`, { id: 'mint' })
+                },
+                // The first GIF of a session pays a ~31MB ffmpeg-core download
+                // before a single frame is encoded. Reporting that phase
+                // separately keeps the toast moving: a motionless "Optimizing
+                // animation…" with no percentage is exactly how the stuck-mint
+                // reports arrived, and it read as a freeze rather than a wait.
+                (pct) => toast.loading(`Preparing optimizer… ${pct}%`, { id: 'mint' }),
+              )
               mediaFile = mp4
               posterFile = poster
             } catch (err) {
