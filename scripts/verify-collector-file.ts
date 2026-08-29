@@ -14,13 +14,16 @@ import {
   CFILE_BYTES_RETENTION,
   CFILE_CHUNK_BYTES,
   CFILE_HISTORY_CAP,
+  CFILE_KINDS,
+  CFILE_VIEWABLE_KINDS,
   cfileChunkCount,
   cfileRef,
   cfileStoredBytes,
   decodeCfileChunks,
+  detectCfileKind,
   encodeCfileChunks,
   isCfileVersionRestorable,
-  looksLikeZip,
+  isViewableCfileKind,
   normalizeCfileName,
   planAttach,
   planDetach,
@@ -63,6 +66,15 @@ assert.equal(cfileRef(COLLECTION, '1'), `${COLLECTION.toLowerCase()}:1`)
 
 // ---- 3. Filename hygiene -------------------------------------------------
 assert.equal(normalizeCfileName('Pixel Art Gallery - Sylvester.zip'), 'Pixel Art Gallery - Sylvester.zip')
+// The DETECTED kind forces the extension — the claimed one is stripped, so
+// name, bytes and Content-Type can never disagree.
+assert.equal(normalizeCfileName('gallery.pdf', 'pdf'), 'gallery.pdf')
+assert.equal(normalizeCfileName('sylvester.glb', 'glb'), 'sylvester.glb')
+assert.equal(normalizeCfileName('model.glb', 'pdf'), 'model.pdf', 'claimed ext must yield to detected kind')
+assert.equal(normalizeCfileName('notes.pdf', 'zip'), 'notes.zip', 'claimed ext must yield to detected kind')
+assert.equal(normalizeCfileName('', 'glb'), 'collector-file.glb')
+assert.equal(normalizeCfileName('logo.svg', 'svg'), 'logo.svg')
+assert.equal(normalizeCfileName('logo.svg', 'zip'), 'logo.zip', 'claimed ext must yield to detected kind')
 // Header-injection material is stripped; terminal .zip is forced.
 assert.equal(normalizeCfileName('a"; filename*=UTF-8\'\'payload.exe'), 'a filenameUTF-8payload.exe.zip')
 assert.ok(!normalizeCfileName('x\r\nSet-Cookie: a=b.zip').includes('\r'), 'CR survived')
@@ -76,11 +88,66 @@ assert.equal(normalizeCfileName(''), 'collector-file.zip')
 assert.equal(normalizeCfileName(null), 'collector-file.zip')
 assert.ok(normalizeCfileName('x'.repeat(500) + '.zip').length <= 64, 'length cap failed')
 
-// ---- 4. Zip magic --------------------------------------------------------
-assert.ok(looksLikeZip(Buffer.from('PK\x03\x04rest')))
-assert.ok(!looksLikeZip(Buffer.from('PK\x05\x06')), 'empty archive accepted') // empty central dir
-assert.ok(!looksLikeZip(Buffer.from('MZ\x90\x00')), 'PE binary accepted')
-assert.ok(!looksLikeZip(Buffer.alloc(2)))
+// ---- 4. Format detection (magic bytes ONLY — never claimed extension) ----
+assert.equal(detectCfileKind(Buffer.from('PK\x03\x04rest')), 'zip')
+assert.equal(detectCfileKind(Buffer.from('%PDF-1.7\n%…')), 'pdf')
+// Binary glTF: magic 0x46546C67 LE = ASCII "glTF" (IANA model/gltf-binary).
+assert.equal(detectCfileKind(Buffer.from('glTF\x02\x00\x00\x00rest')), 'glb')
+assert.equal(Buffer.from(CFILE_KINDS.glb.magic!).readUInt32LE(0), 0x46546c67, 'GLB magic drifted from spec')
+assert.equal(detectCfileKind(Buffer.from('PK\x05\x06')), null, 'empty archive accepted') // empty central dir
+assert.equal(detectCfileKind(Buffer.from('MZ\x90\x00')), null, 'PE binary accepted')
+assert.equal(detectCfileKind(Buffer.from('%PDF')), null, 'truncated PDF header accepted')
+assert.equal(detectCfileKind(Buffer.alloc(2)), null)
+// ---- 4b. SVG: the one TEXT-sniffed kind -----------------------------------
+// SVG has no fixed-offset signature, so it is detected by a bounded text
+// sniff that runs ONLY after every binary matcher fails. These are the real
+// preambles Inkscape/Illustrator/Figma emit — a regression here silently
+// rejects legitimate vector uploads.
+assert.equal(CFILE_KINDS.svg.magic, undefined, 'SVG must have no magic bytes')
+const SVG_OK = [
+  '<svg xmlns="http://www.w3.org/2000/svg"/>',
+  '<?xml version="1.0" encoding="UTF-8"?>\n<svg width="10"/>',
+  '<?xml version="1.0"?>\n<!-- Generator: Adobe Illustrator 27.0 -->\n<svg viewBox="0 0 1 1"/>',
+  '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x.dtd">\n<svg/>',
+  '\n\n   <svg/>',
+  '<svg\n  xmlns="http://www.w3.org/2000/svg"/>',
+]
+for (const src of SVG_OK) {
+  assert.equal(detectCfileKind(Buffer.from(src)), 'svg', `SVG preamble rejected: ${src.slice(0, 32)}`)
+  // A UTF-8 BOM must not change the verdict.
+  assert.equal(detectCfileKind(Buffer.from('\ufeff' + src)), 'svg', 'BOM-prefixed SVG rejected')
+}
+const SVG_NOT = [
+  '<html><body>x',            // markup, not SVG
+  '<?xml version="1.0"?><rss/>', // XML, not SVG
+  '<svgfoo/>',                // different element with an svg prefix
+  '<SVG/>',                   // XML is case-sensitive; would not parse anyway
+  'hello world',
+  '<?xml version',            // unterminated processing instruction
+]
+for (const src of SVG_NOT) {
+  assert.equal(detectCfileKind(Buffer.from(src)), null, `non-SVG accepted: ${src.slice(0, 24)}`)
+}
+// Binary signatures WIN over the text sniff — a zip whose bytes happen to
+// contain markup is still a zip.
+assert.equal(detectCfileKind(Buffer.from('PK\x03\x04<svg')), 'zip', 'text sniff overrode zip magic')
+assert.equal(detectCfileKind(Buffer.from('%PDF-<svg')), 'pdf', 'text sniff overrode pdf magic')
+// The sniff is BOUNDED: a root element pushed past the scan window is not
+// accepted (a crafted file must not make us scan megabytes).
+assert.equal(detectCfileKind(Buffer.from('<!--' + 'x'.repeat(8000) + '--><svg/>')), null, 'sniff scanned past its bound')
+
+// ---- 4c. Viewability + served Content-Types (immutable contracts) ---------
+assert.deepEqual([...CFILE_VIEWABLE_KINDS].sort(), ['glb', 'svg'], 'viewable set drifted')
+assert.ok(isViewableCfileKind('glb') && isViewableCfileKind('svg'))
+// PDF/zip must NOT be viewable: the view route has no attachment semantics
+// for a save dialog, and PDF viewing was deliberately deferred (pdf.js).
+assert.ok(!isViewableCfileKind('pdf'), 'pdf became viewable without a viewer')
+assert.ok(!isViewableCfileKind('zip'), 'zip became viewable')
+assert.ok(!isViewableCfileKind(undefined), 'legacy (kind-less) record became viewable')
+assert.equal(CFILE_KINDS.zip.mime, 'application/zip')
+assert.equal(CFILE_KINDS.pdf.mime, 'application/pdf')
+assert.equal(CFILE_KINDS.glb.mime, 'model/gltf-binary')
+assert.equal(CFILE_KINDS.svg.mime, 'image/svg+xml')
 
 // ---- 5. Version planning: attach, dedup, retention -----------------------
 const now = 1_756_000_000_000
@@ -88,6 +155,7 @@ const plaintext = Buffer.from('PK\x03\x04 pretend rom bytes '.repeat(64))
 const base = (over: Partial<Parameters<typeof planAttach>[1]> = {}) => ({
   size: plaintext.length,
   sha256: sha256Hex(plaintext),
+  kind: 'zip' as const,
   name: 'a.zip',
   updatedBy: '0xArtist',
   now,
@@ -106,9 +174,11 @@ assert.deepEqual(first.prune, [], 'first attach pruned something')
 // Same bytes again → null (no version, no meters, no cooldown burn).
 assert.equal(planAttach(first.record, base()), null, 'same-sha replace not deduped')
 
-const second = planAttach(first.record, base({ sha256: 'different' }))
+const second = planAttach(first.record, base({ sha256: 'different', kind: 'glb', name: 'model.glb' }))
 assert.ok(second)
 assert.equal(second.version.v, 2)
+assert.equal(second.version.kind, 'glb', 'kind not stored on the version')
+assert.equal(second.record.history[0].kind, 'zip', 'history row lost its kind')
 assert.equal(second.version.blobSeq, 2, 'blobSeq not sequenced')
 assert.equal(second.record.history[0].v, 1, 'superseded version not in history')
 assert.ok(second.record.history[0].stored, 'previous version lost its bytes inside the window')

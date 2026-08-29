@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { toast } from 'sonner'
-import { ArrowDownToLine, Link as LinkIcon } from 'lucide-react'
+import { ArrowDownToLine, Eye, Link as LinkIcon } from 'lucide-react'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
-import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
+import { CollectorFileViewer } from './CollectorFileViewer'
+import { formatCfileSize, type CfilePublic, isViewableCfileKind } from '@/lib/collectorFileTypes'
 import { formatPrice } from '@/lib/inprocess'
 
 /**
@@ -59,6 +60,7 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
   const [file, setFile] = useState<CfilePublic | null>(initial)
   const [downloadedV, setDownloadedV] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  const [viewing, setViewing] = useState(false)
   const fetchedRef = useRef(false)
 
   const qs = `collection=${collection}&tokenId=${tokenId}`
@@ -259,6 +261,15 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
                 <LinkIcon size={12} />
               </button>
             )}
+            {isViewableCfileKind(file?.kind) && (
+              <button
+                onClick={() => setViewing(true)}
+                title="View in the browser"
+                className="px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors flex items-center gap-1.5"
+              >
+                <Eye size={12} /> view
+              </button>
+            )}
             <button
               onClick={() => void handleDownload()}
               disabled={busy}
@@ -269,6 +280,16 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
           </div>
         )}
       </div>
+      {viewing && file?.kind && (
+        <CollectorFileViewer
+          collection={collection}
+          tokenId={tokenId}
+          kind={file.kind}
+          name={file.name}
+          v={file.v}
+          onClose={() => setViewing(false)}
+        />
+      )}
     </div>
   )
 }

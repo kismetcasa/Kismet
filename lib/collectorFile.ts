@@ -122,6 +122,9 @@ export function toPublicDescriptor(record: CfileRecord | null): CfilePublic | nu
     v: c.v,
     updatedAt: c.updatedAt,
     ...(c.note ? { note: c.note } : {}),
+    // Drives the client's view-vs-download affordance. Absent on
+    // pre-multi-format records; the client treats that as 'zip'.
+    ...(c.kind ? { kind: c.kind } : {}),
   }
 }
 

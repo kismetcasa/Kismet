@@ -4,7 +4,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { CFILE_MAX_BYTES, formatCfileSize, type CfileManageView, type CfilePublic } from '@/lib/collectorFileTypes'
+import {
+  CFILE_ACCEPT_ATTR,
+  CFILE_KIND_LABEL,
+  CFILE_MAX_BYTES,
+  formatCfileSize,
+  hasAcceptedCfileExt,
+  type CfileManageView,
+  type CfilePublic,
+} from '@/lib/collectorFileTypes'
 
 /**
  * Artist-side manage panel for an artwork's collector file — an inline panel
@@ -66,8 +74,8 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       toast.error('File too large', { description: 'The limit is 16 MB per version' })
       return
     }
-    if (!f.name.toLowerCase().endsWith('.zip')) {
-      toast.error('Zip files only', { description: 'Package the download as a .zip' })
+    if (!hasAcceptedCfileExt(f.name)) {
+      toast.error('Unsupported file type', { description: `Use a ${CFILE_KIND_LABEL}` })
       return
     }
     setPicked(f)
@@ -93,7 +101,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       const res = await fetch(`/api/collector-file?${params.toString()}`, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/zip',
+          'Content-Type': 'application/octet-stream',
           // Header values must be Latin-1 — a raw CJK/emoji filename makes
           // fetch() throw before any request. The server decodes + normalizes.
           'x-file-name': encodeURIComponent(picked.name),
@@ -211,15 +219,16 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             </div>
           ) : (
             <p className="text-[10px] font-mono text-muted">
-              Attach a zip that collectors of this artwork can download. Up to 16 MB;
-              replace it any time — collectors get notified and can re-download.
+              Attach a file ({CFILE_KIND_LABEL}) that collectors of this artwork can
+              download. Up to 16 MB; replace it any time — collectors get notified
+              and can re-download.
             </p>
           )}
 
           <input
             ref={inputRef}
             type="file"
-            accept=".zip,application/zip"
+            accept={CFILE_ACCEPT_ATTR}
             className="hidden"
             onChange={(e) => handlePick(e.target.files?.[0] ?? null)}
           />
@@ -228,7 +237,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             disabled={saving}
             className="py-2 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors disabled:opacity-50"
           >
-            {picked ? `${picked.name} · ${formatCfileSize(picked.size)}` : view?.file ? 'choose replacement zip' : 'choose zip'}
+            {picked ? `${picked.name} · ${formatCfileSize(picked.size)}` : view?.file ? 'choose replacement file' : 'choose file'}
           </button>
 
           {picked && (

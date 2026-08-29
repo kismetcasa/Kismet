@@ -33,6 +33,7 @@ export type QuotaKind =
   | 'cfile-upload'
   | 'cfile-bytes'
   | 'cfile-download'
+  | 'cfile-view'
 
 interface QuotaWindow {
   /** Cap per UTC calendar day. */
@@ -84,6 +85,12 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // as a free CDN (each download ships ~1.33× the file out of the metered
   // Upstash bandwidth); far above any human re-download cadence.
   'cfile-download': { day: 100,                week: 400                 },
+  // In-page views are a SEPARATE, looser meter: viewing recurs every
+  // session (a collector may open the artwork daily), so sharing the
+  // download budget would ration looking at something you own. Same
+  // bandwidth shape, so it is still metered — just at a viewing cadence,
+  // and the view route's response caching absorbs most repeats.
+  'cfile-view':     { day: 400,                week: 1500                },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests

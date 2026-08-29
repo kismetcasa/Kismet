@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto'
-import { CFILE_MAX_BYTES } from './collectorFileTypes.ts'
+import {
+  CFILE_KIND_META,
+  CFILE_MAX_BYTES,
+  CFILE_VIEWABLE_KINDS,
+  isViewableCfileKind,
+  type CfileKind,
+} from './collectorFileTypes.ts'
 
 /**
  * Pure core of the collector-file feature (COLLECTOR_DOWNLOADS_DESIGN.md):
@@ -97,13 +103,90 @@ export function decodeCfileChunks(chunks: string[], size: number): Buffer {
 // buffered serve, so the cap is a storage + memory dial, not a format need.
 export { CFILE_MAX_BYTES }
 
-/** Local-file zips start `PK\x03\x04`. A typo filter, not a content control
- *  (JAR/DOCX share the magic; readers parse from the end-of-central-directory)
- *  — the real controls are the forced .zip name, `attachment`, `nosniff`, and
- *  the admin kill-switch (design §10.2). An empty archive (`PK\x05\x06`) is
- *  rejected as "not a usable zip" rather than stored. */
-export function looksLikeZip(head: Buffer): boolean {
-  return head.length >= 4 && head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04
+/**
+ * Accepted collector-file formats, keyed by KIND. Detection is by leading
+ * magic bytes ONLY — never by claimed extension or Content-Type header —
+ * and the detected kind then dictates both the forced filename extension
+ * and the served Content-Type, so name, bytes, and headers can never
+ * disagree. A typo filter, not a content control (JAR/DOCX share the zip
+ * magic; a PDF's tail matters more than its head) — the real controls are
+ * the forced extension, `attachment`, `nosniff`, and the admin kill-switch
+ * (design §10.2).
+ *
+ *   zip  PK\x03\x04             (empty-archive PK\x05\x06 rejected)
+ *   pdf  %PDF-                  (ISO 32000 header, offset 0)
+ *   glb  glTF                   (Binary glTF magic 0x46546C67 LE — the
+ *                                12-byte header per the IANA
+ *                                model/gltf-binary registration)
+ *   svg  <svg root element        (XML TEXT — no fixed signature; sniffed
+ *                                only after every binary matcher fails)
+ */
+export type { CfileKind }
+export { CFILE_VIEWABLE_KINDS, isViewableCfileKind }
+
+/** Identity (ext/mime) comes from the client-safe map; this adds the byte
+ *  signatures the server detects with. SVG has none — see sniffSvg. */
+export const CFILE_KINDS: Record<CfileKind, { ext: string; mime: string; magic?: number[] }> = {
+  zip: { ...CFILE_KIND_META.zip, magic: [0x50, 0x4b, 0x03, 0x04] },
+  pdf: { ...CFILE_KIND_META.pdf, magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
+  glb: { ...CFILE_KIND_META.glb, magic: [0x67, 0x6c, 0x54, 0x46] }, // glTF
+  svg: { ...CFILE_KIND_META.svg },
+}
+
+/** How far into the file the SVG sniff will look for the root element. Real
+ *  exporters put it within a few hundred bytes (declaration + generator
+ *  comment + DOCTYPE); the bound stops a crafted file from making us scan
+ *  megabytes of comments. */
+const SVG_SNIFF_BYTES = 4096
+
+/**
+ * Is this XML text whose root element is <svg? Skips, in order: a UTF-8 BOM,
+ * whitespace, XML processing instructions (`<?xml …?>`), comments, and a
+ * DOCTYPE — the exact preamble Illustrator/Inkscape/Figma emit — then
+ * requires a literal `<svg` (XML is case-sensitive, and the SVG element is
+ * lowercase, so an uppercase root would not parse in a browser either).
+ */
+function sniffSvg(head: Buffer): boolean {
+  let text = head.subarray(0, SVG_SNIFF_BYTES).toString('utf8')
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1) // BOM
+  let i = 0
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text.startsWith('<?', i)) {
+      const end = text.indexOf('?>', i)
+      if (end === -1) return false
+      i = end + 2
+      continue
+    }
+    if (text.startsWith('<!--', i)) {
+      const end = text.indexOf('-->', i)
+      if (end === -1) return false
+      i = end + 3
+      continue
+    }
+    if (text.startsWith('<!DOCTYPE', i)) {
+      const end = text.indexOf('>', i)
+      if (end === -1) return false
+      i = end + 1
+      continue
+    }
+    break
+  }
+  // The next character after the root delimiter must not make this a
+  // different element (e.g. <svgfoo).
+  return text.startsWith('<svg', i) && /[\s/>]/.test(text[i + 4] ?? '')
+}
+
+/** Detect the format from leading bytes; null = not an accepted format.
+ *  Binary magic matchers run FIRST and are exact; the SVG text sniff only
+ *  gets a look once every binary signature has failed, so a binary file can
+ *  never be mistaken for markup. */
+export function detectCfileKind(head: Buffer): CfileKind | null {
+  for (const [kind, meta] of Object.entries(CFILE_KINDS) as [CfileKind, (typeof CFILE_KINDS)[CfileKind]][]) {
+    const magic = meta.magic
+    if (magic && head.length >= magic.length && magic.every((b, i) => head[i] === b)) return kind
+  }
+  return sniffSvg(head) ? 'svg' : null
 }
 
 /**
@@ -111,20 +194,24 @@ export function looksLikeZip(head: Buffer): boolean {
  * The raw value is attacker-controlled input into a response header, so:
  * strip everything outside [A-Za-z0-9 ._-] (drops quotes/CRLF/path
  * separators/bidi overrides in one stroke), collapse whitespace, trim
- * leading dots (no hidden files), cap length, force a terminal `.zip`
- * (defeats `invoice.pdf.exe`-style double extensions). ASCII-only output —
- * no RFC 6266 `filename*` needed, no quoting ambiguity possible.
+ * leading dots (no hidden files), cap length, force the DETECTED kind's
+ * terminal extension (defeats `invoice.pdf.exe`-style double extensions
+ * AND extension/content mismatches — a PDF named model.glb serves as
+ * .pdf). ASCII-only output — no RFC 6266 `filename*` needed, no quoting
+ * ambiguity possible.
  */
-export function normalizeCfileName(raw: string | null | undefined): string {
+export function normalizeCfileName(raw: string | null | undefined, kind: CfileKind = 'zip'): string {
   const cleaned = (raw ?? '')
     .replace(/[^A-Za-z0-9 ._-]+/g, '')
     .replace(/\s+/g, ' ')
     .replace(/^[. ]+/, '')
     .trim()
-  const base = (cleaned.toLowerCase().endsWith('.zip') ? cleaned.slice(0, -4) : cleaned)
+  const lower = cleaned.toLowerCase()
+  const claimed = Object.values(CFILE_KINDS).find((m) => lower.endsWith(m.ext))
+  const base = (claimed ? cleaned.slice(0, -claimed.ext.length) : cleaned)
     .replace(/[. ]+$/, '')
     .slice(0, 60)
-  return `${base || 'collector-file'}.zip`
+  return `${base || 'collector-file'}${CFILE_KINDS[kind].ext}`
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +231,10 @@ export interface CfileVersion {
   /** Plaintext bytes / sha256 — shown to collectors, used for same-bytes dedup. */
   size: number
   sha256: string
+  /** Detected format (magic-derived, never claimed) — dictates the served
+   *  Content-Type. Absent on records written before formats beyond zip
+   *  existed; readers default to 'zip'. */
+  kind?: CfileKind
   name: string
   note?: string
   updatedAt: number
@@ -257,7 +348,7 @@ function applyRetention(
  *  the notify cooldown. */
 export function planAttach(
   record: CfileRecord | null,
-  input: { size: number; sha256: string; name: string; note?: string; updatedBy: string; now: number },
+  input: { size: number; sha256: string; kind: CfileKind; name: string; note?: string; updatedBy: string; now: number },
 ): { record: CfileRecord; version: CfileVersion; prune: CfileBlobRef[] } | null {
   if (record?.current && record.current.sha256 === input.sha256) return null
   const seq = record?.nextBlobSeq ?? 1
@@ -267,6 +358,7 @@ export function planAttach(
     chunks: cfileChunkCount(input.size),
     size: input.size,
     sha256: input.sha256,
+    kind: input.kind,
     name: input.name,
     ...(input.note ? { note: input.note } : {}),
     updatedAt: input.now,
