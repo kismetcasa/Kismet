@@ -276,6 +276,8 @@ kismetart:cfile:<collection>:<tokenId>             STRING (JSON), no TTL
       name: "Pixel Art Gallery - Sylvester.zip",   // normalized (§10.2)
       size: 365396,                    // plaintext bytes
       sha256: "79919fea…",             // plaintext hash — shown to collectors
+      kind: "zip",                     // magic-detected format (zip|pdf|glb);
+                                       // absent = pre-extension record = zip
       note: "added music!",            // optional artist release note, ≤140 chars
       updatedAt, updatedBy,
       stored: true                     // bytes exist (retention window)
