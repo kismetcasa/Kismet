@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { getTrackedCollectionsByScope, getCreatedMintsMembership, markCreatedMint, getCollectionMetaBatch, type CollectionScope, type CollectionMeta } from '@/lib/kv'
 import { admitsOffPlatformMint } from '@/lib/feedAdmission'
-import { feedSampleDepth } from '@/lib/feedPagination'
+import { feedSampleDepth, isThinnedFeed } from '@/lib/feedPagination'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
@@ -343,16 +343,42 @@ export async function GET(req: NextRequest) {
   // lib/feedPagination owns the rule and the reason a thinning filter's sample
   // must not scale with `page`; it is CI-locked by verify-feed-pagination.
   //
-  // The three personal filters were absent from the old `needsLargerSample`
-  // list, which pinned them to `page * limit` — and at limit=50 that made the
-  // 2x MERGE_BUDGET below inert: `min(50, 10000/N)` is 50 for every N under
-  // 100, so the doubled allowance granted a few lines down for precisely this
-  // reason could never be spent.
+  // Everything that survives only a small subset belongs here:
+  //   - the personal feeds (creator= / collector= / airdroppable=), which keep
+  //     ONE address's moments out of the whole merge;
+  //   - featured curation and the creators roster;
+  //   - the four discover BROWSE filters, applied below at :927-947, i.e. also
+  //     before the slice. `resale=1` is the starkest — it intersects with a
+  //     listing book capped platform-wide at MAX_LISTINGS_SCAN — but all four
+  //     can cut the set to a handful.
+  // `scope=standalone` deliberately does NOT belong: created-mints membership
+  // removes a FRACTION of the merge rather than reducing it to a handful, so
+  // the home feed keeps the growing sample that lets deep scrolling reach more.
+  //
+  // Two concrete defects this closes. The three personal filters were absent
+  // from the old `needsLargerSample` list, which pinned them to `page * limit`
+  // — and at limit=50 that made the 2x MERGE_BUDGET below inert:
+  // `min(50, 10000/N)` is 50 for every N under 100, so the doubled allowance
+  // granted a few lines down for precisely this reason could never be spent.
+  // And the browse filters understated page 1's `total_pages`, which the
+  // client reads ONCE and never asks past — so the tail of a filtered feed was
+  // unreachable, contradicting this route's own claim (:201-206) that filtering
+  // before pagination keeps "filtered pages and total_pages honest".
   const baseSample = feedSampleDepth({
     page,
     limit,
     sorted: sort !== null,
-    thinned: featured || filterToCreators || !!creatorRaw || !!collectorRaw || !!airdroppable,
+    thinned: isThinnedFeed({
+      featured,
+      creatorsRoster: filterToCreators,
+      creator: !!creatorRaw,
+      collector: !!collectorRaw,
+      airdroppable: !!airdroppable,
+      free: freeOnly,
+      media: !!media,
+      resale: resaleOnly,
+      soldOut: soldOutOnly,
+    }),
   })
   // Bound the TOTAL moments pulled into the in-memory merge, not just the
   // per-collection request. The fan-out hits EVERY collection in parallel and

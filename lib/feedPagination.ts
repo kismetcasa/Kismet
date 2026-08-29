@@ -46,6 +46,56 @@ export interface FeedSampleInput {
 }
 
 /**
+ * Does this request's post-merge filtering reduce the merge to a HANDFUL of
+ * rows, rather than removing a fraction of it? Every flag is listed explicitly
+ * and asserted one-by-one in verify-feed-pagination, because the cost of
+ * forgetting one is silent: the feed under-reports page 1's `total_pages`, the
+ * grid reads that number once and never asks past it, and the tail of the
+ * filtered feed becomes unreachable rather than merely late.
+ *
+ * The line is "handful" vs "fraction". `scope=standalone` is deliberately NOT
+ * here: created-mints membership removes a fraction of the merge, so the home
+ * feed keeps the growing sample that lets deep scrolling reach more content.
+ * The discover browse filters ARE here — `resale` intersects with a listing
+ * book capped platform-wide, and `free` / `media` / `soldout` can each cut the
+ * set to a handful.
+ */
+export interface FeedThinningInput {
+  /** featured=1 — only curated members survive. */
+  featured: boolean
+  /** creators= — only the roster's artists survive. */
+  creatorsRoster: boolean
+  /** creator= — one artist's own work. */
+  creator: boolean
+  /** collector= — one collector's holdings. */
+  collector: boolean
+  /** airdroppable= — pieces one wallet may airdrop. */
+  airdroppable: boolean
+  /** free=1 */
+  free: boolean
+  /** media=<kind> */
+  media: boolean
+  /** resale=1 */
+  resale: boolean
+  /** soldout=1 */
+  soldOut: boolean
+}
+
+export function isThinnedFeed(f: FeedThinningInput): boolean {
+  return (
+    f.featured ||
+    f.creatorsRoster ||
+    f.creator ||
+    f.collector ||
+    f.airdroppable ||
+    f.free ||
+    f.media ||
+    f.resale ||
+    f.soldOut
+  )
+}
+
+/**
  * How deep to sample EACH collection in the fan-out, before the caller bounds
  * it by the merge budget. Thinning wins when a request is both — the roster
  * feed is `creators=` plus `sort=trending` — because the thinned set is the one
@@ -99,9 +149,14 @@ export function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
  * /api/timeline's default of 20 — curate a 21st mint and it never appeared,
  * with no empty state and no "load more" (FeaturedFeed reads `.moments` and
  * ignores `pagination`). 100 is the route's own `limit` ceiling, i.e. the most
- * one page can serve, and it costs nothing upstream: a featured request samples
- * at THINNED_SAMPLE_DEPTH regardless of `limit`. Both the client fetch and the
- * SSR seed in app/page.tsx must use it — a seeded FeaturedFeed renders its
- * payload verbatim and never re-fetches, so a smaller seed would re-cap the tab.
+ * one page can serve. It costs nothing UPSTREAM — a featured request samples at
+ * THINNED_SAMPLE_DEPTH regardless of `limit` — but it is not free downstream:
+ * the SSR seed is serialized into the landing page's HTML, so the payload now
+ * scales with how many mints are actually curated rather than being clipped at
+ * 20. That is the intended trade (silent truncation is the worse failure), and
+ * it self-limits: a curator with 12 featured mints sees no change at all.
+ * Both the client fetch and the SSR seed in app/page.tsx must use it — a seeded
+ * FeaturedFeed renders its payload verbatim and never re-fetches, so a smaller
+ * seed would silently re-cap the tab.
  */
 export const FEATURED_RENDER_LIMIT = 100

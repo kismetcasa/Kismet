@@ -331,6 +331,16 @@ export async function GET(req: NextRequest) {
         // eligibility) is global. Same window /api/timeline's public feeds and
         // /api/featured/collections-hydrated already use — and the same
         // acknowledged staleness, since eligibility is a function of `now`.
+        //
+        // Two consequences worth naming. A just-deployed collection can lag the
+        // shared cache by up to 30s, which is a real change from "always
+        // fresh" — but addTrackedCollection's own-pod invalidate exists for the
+        // artist's next read, the create flow routes to /collection/[address]
+        // rather than here, and PaginatedGrid's refresh appends `fresh=1`,
+        // which is a DIFFERENT cache key and therefore always an origin hit.
+        // And the win is a scaling one: with the page-bounded hydration above,
+        // a catalogue near `limit` sees little change, while one several times
+        // `limit` stops paying 4 uncached RPC calls per collection per request.
         'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
       },
     )

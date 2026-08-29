@@ -20,9 +20,11 @@
 
 import {
   feedSampleDepth,
+  isThinnedFeed,
   dedupeByKey,
   THINNED_SAMPLE_DEPTH,
   SORTED_SAMPLE_FLOOR,
+  type FeedThinningInput,
 } from '../lib/feedPagination.ts'
 
 let failures = 0
@@ -84,6 +86,23 @@ for (const [name, limit, isThinned, wasFloored] of [
   const before = preFix(1, limit, wasFloored)
   check(`page 1 not shallower than before — ${name}`, after >= before, `${before} → ${after}`)
 }
+
+// ---- (1b) which filters count as thinning ---------------------------------
+// Every flag asserted individually: forgetting one is silent (the feed
+// under-reports page 1's total_pages and the grid never asks past it), and the
+// browse filters WERE forgotten on the first pass at this fix.
+const NO_FILTERS: FeedThinningInput = {
+  featured: false, creatorsRoster: false, creator: false, collector: false,
+  airdroppable: false, free: false, media: false, resale: false, soldOut: false,
+}
+check('no filter → not thinned (the plain home feed keeps its growing sample)', !isThinnedFeed(NO_FILTERS))
+for (const k of Object.keys(NO_FILTERS) as (keyof FeedThinningInput)[]) {
+  check(`${k}= alone marks the feed thinned`, isThinnedFeed({ ...NO_FILTERS, [k]: true }))
+}
+check('all flags at once is still thinned', isThinnedFeed({
+  featured: true, creatorsRoster: true, creator: true, collector: true,
+  airdroppable: true, free: true, media: true, resale: true, soldOut: true,
+}))
 
 // ---- (2) dedupeByKey -------------------------------------------------------
 type Row = { k: string; page: number }
