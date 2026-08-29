@@ -128,30 +128,49 @@ properties matter for everything below:
 
 Ranked by expected impact. Each is verified against the code, not inferred.
 
-### F1 · Collected + profile feeds can silently drop older work · **correctness**
+### F1 · Rows past the page-1 sample depth are unreachable at *every* page · **correctness**
 
-`app/api/timeline/route.ts:336-337, 375-376` · `components/ProfileView.tsx:503,566`
+`app/api/timeline/route.ts:336-337, 375-376, 958-963` · `components/ProfileView.tsx:503,566`
 
 For `collector=` and `creator=`, `needsLargerSample` is **false**, so
-`baseSample = page × limit = 50` — and `ProfileView` fetches exactly one page
-with no "load more". The fan-out therefore samples only each collection's
-**newest 50 moments**, *then* filters by membership.
+`baseSample = page × limit`. With `ProfileView`'s `limit=50` the fan-out samples
+only each collection's **newest 50 moments**, *then* filters by membership.
 
-Consequence: a piece collected (or minted) into a collection that has since
-produced ≥50 newer moments falls outside the sample and disappears from the
-owner's Collected / Mints tab, with no empty-state signal. It gets worse as the
-tracked set grows — at 500 tracked collections `perCollectionCap` is 20, so an
-artist's profile only sees each collection's newest 20 rows.
+The validation run showed this is worse than a missing-pagination problem. The
+page number drives **both** the sample depth (`fetchLimit = page × limit`) **and**
+the slice offset (`start = (page - 1) × limit`) — but the slice is taken over the
+*filtered* set, which stays tiny. So a row deep enough to need page N to enter
+the sample is, at page N, already past the slice window. It is unreachable at
+every page.
 
-The in-code note at `:355-360` ("Collector feeds don't need it — their fan-out
-is already narrowed to `collectedCollections`") addresses **width**; the binding
-constraint here is **depth**.
+Modelled against the route's verbatim formulas — one 400-moment collection, the
+artist owning tokens at depths 101 / 341 / 396, `creator=`, `limit=18`:
 
-*Fix:* for `collector=`, the membership set is already known exactly — resolve
-those refs directly (`/moment` batch or a per-collection targeted read) instead
-of sampling-then-filtering. For `creator=`, either include `creatorRaw` in
-`needsLargerSample` or paginate the profile tab. Cheapest interim: bump
-`baseSample` for both to the 200 floor the sorted feeds already use.
+```
+page  fetchLimit  artist rows in sample  filtered set  slice window   returned
+   1          18                      0             0  [0,18)               0
+   6         108                      1             1  [90,108)             0
+  19         342                      2             2  [324,342)            0
+  22         396                      3             3  [378,396)            0
+```
+
+Reachable across pages 1–25: **none**. And page 1 reports `total_pages: 1`, so a
+paginating client is never offered page 2 either.
+
+Same shape on the Collected tab — of four items collected from a 400-moment
+collection (depths 1 / 61 / 301 / 396), the feed returned **1 of 4**. Depth
+degrades further as the tracked set grows: at 400 tracked collections
+`perCollectionCap` is 25, so `fetchLimit` drops to 25 even at `limit=50`.
+
+The in-code note at `:355-360` ("Collector feeds don't need it — their fan-out is
+already narrowed to `collectedCollections`") addresses **width**; the binding
+constraint is **depth**, and widening the budget does not move it.
+
+*Fix:* decouple sample depth from the page number for post-merge-filtered feeds.
+For `collector=` the membership set is already known exactly — resolve those refs
+directly rather than sampling-then-filtering. For `creator=`, add `creatorRaw` to
+`needsLargerSample` so the 200 floor applies (a partial fix — it moves the cliff
+from depth 50 to depth 200, it does not remove it).
 
 ### F2 · `/api/collections?feed=1` hydrates the entire catalogue per request, uncached · **cost**
 
@@ -160,12 +179,19 @@ of sampling-then-filtering. For `creator=`, either include `creatorRaw` in
 `visible.map(...)` hydrates **every** curated collection before slicing the
 page, and each hydration runs `loadCollectAllEligibility` twice (ETH + USDC).
 `fetchEligibleTokens` does a `getBlock` plus a `multicall` each time, over
-JSON-RPC POSTs that Next's Data Cache does not cache. So one page view of the
-collections sub-tab costs ≈ **4 × N uncached RPC round trips** (plus 2N
-inprocess fetches, those at least `revalidate:60`).
+JSON-RPC POSTs that Next's Data Cache does not cache — and `lib/rpc.ts:22`
+constructs `http()` with no `batch` option, so none of them coalesce. So one
+request costs ≈ **4 RPC round trips per collection that has a visible moment**
+(collections with none short-circuit before any RPC), plus 2N inprocess fetches
+at `revalidate:60`.
 
-And the response carries **no `Cache-Control`** — unlike `/api/timeline`, every
-visitor pays it in full.
+The response sets **no cache header**, so it inherits Next's dynamic-route
+`no-store` — unlike `/api/timeline`, every visitor pays it in full.
+
+There is a second consumer I initially missed: `DiscoverFilters.tsx:404-417`
+fetches the same endpoint each time the `/discover` filters drawer is opened —
+and keeps only `{ contractAddress, label }`, discarding every eligibility field
+the route just spent 4 RPC calls per collection computing.
 
 *Fix:* hydrate only the page slice (sorting needs `created_at`, which the
 `getCollectionMetaBatch` pin already supplies for pinned rows), and add
@@ -210,8 +236,18 @@ older rows). For `trending` / `latest-sales` / `ending-soon` it is not: a
 newly-sampled old row can rank *above* the previous page boundary, so a row
 already rendered reappears in the next slice → duplicate React keys.
 
-Trigger: `page × limit > 200` (the `baseSample` floor). At `/discover`'s desktop
-limit of 24 with infinite scroll that is page 9 — reachable.
+Trigger: `page × limit > 200` (the `baseSample` floor) — page 10 at `/discover`'s
+desktop limit of 24, page 11 on mobile (20), page 13 at the home feed's 18, page
+21 at the constrained 10.
+
+Magnitude, measured against the model rather than assumed: **exactly one
+duplicated slot (and one silently skipped row) per reordering row that enters the
+widening sample** — 1 scored row deep in the catalogue → 1 duplicate over 20
+pages; 50 → 50. The default newest-first feed is provably clean (0 duplicates
+across 30 pages of a 600-moment collection), because deeper sampling can only
+append older rows to the tail, leaving the prefix order-invariant. So this is a
+sorted-feed-only defect, and a mild one — but it is real, and it produces
+duplicate React keys.
 
 *Fix:* dedupe by `getKey` when appending in `loadMore` (2 lines, fixes the
 symptom for the live-data race too), and file cursor pagination behind
@@ -225,8 +261,12 @@ The load-more button renders only inside `visible.length > 0`. When the
 caller-supplied `filter` empties a page, the grid shows its empty state and
 offers **no way to reach page 2**, even with `currentPage < totalPages`.
 
-Both current `filter` users are exposed: `CollectionsFeed` with "following" on,
-and `ArtistsFeed`. `CollectionsFeed` compounds it — the empty copy reads *"no
+Two of the three `filter` call sites are exposed. `ArtistsFeed`'s `creators=`
+branch is **not** — the server already filters to the same artists, so a page can
+only come back empty when there is genuinely nothing more (`total_pages: 1`). Its
+`collection=` branch **is** (no server-side creator filter, so the client filter
+can empty a full page of a busy collection), as is `CollectionsFeed` with
+"following" on. `CollectionsFeed` compounds it — the empty copy reads *"no
 collections yet"* rather than "no matches", and the predicate keys on
 `default_admin.address`, which the KV-fallback row shape
 (`app/api/collections/route.ts:72-88`) doesn't carry, so indexer-lagging
@@ -266,9 +306,11 @@ the set / derive it server-side from the session.
 
 `/api/timeline?featured=1` is called with no `limit`, so it defaults to 20 and
 `total_pages` is ignored — mints 21+ of a curated set (`MAX_FEATURED` is 1000)
-never render. Separately, featuring is a *pin*, but the fan-out still samples
-only the newest 200 per collection, so a featured moment deeper than that in a
-large collection silently vanishes from the tab it was pinned to.
+never render. Separately, featuring is a *pin*, but the fan-out still recovers
+pinned rows from a newest-first sample of `min(200, MERGE_BUDGET/N)`, so a pin
+deeper than that vanishes from the tab it was pinned to. Measured cutoffs: depth
+200 while ≤25 collections hold featured members, falling to 100 at 50 collections
+and 50 at 100.
 
 *Fix:* pass an explicit `limit` sized to the curation cap; for the pin-depth
 case, resolve featured refs directly (the members are known) rather than
@@ -360,7 +402,7 @@ comment describes a superseded design.
 ### F15 · `SCALING.md` §2 line references have drifted · **docs**
 
 Cited `timeline/route.ts:44, 74, 276-294` are now `:52` (`FANOUT_CONCURRENCY`),
-`:115` (the 8s abort), `:368-384` (budget/truncation/warn). Worth a pass, since
+`:115` (the 8s abort), `:361-384` (budget/truncation/warn). Worth a pass, since
 this is the doc an on-call reader follows first. `diagnose-feed-visibility.mjs`
 is also missing a gate: it probes upstream at `limit=200` (`:191`), which is
 *deeper* than what the route actually samples for a profile feed (50), so it can
@@ -368,7 +410,56 @@ report G2 PASS for a row the feed never sees — exactly the F1 blind spot.
 
 ---
 
-## 5. What's working well
+## 5. Validation
+
+Every finding above was re-derived adversarially rather than left as a reading.
+Method, and what it changed:
+
+**Executable model.** `app/api/timeline/route.ts`'s sampling → merge → sort →
+slice pipeline was reimplemented with the formulas copied verbatim (`:170-171`,
+`:336-337`, `:361`, `:375-376`, `:730-764`, `:821-828`, `:958-963`), driven by a
+synthetic catalogue, with upstream modelled exactly as inprocess behaves
+(`GET /timeline?collection=X&limit=L` → that collection's newest L). This is what
+proved F1's unreachable-at-every-page property, bounded F4's magnitude, and
+produced F8's depth cutoffs.
+
+**Mechanical assertions.** 41 grep/awk assertions over the real source — payload
+shapes, guard nesting, header presence, call ordering, failure modes — covering
+F2, F3, F5, F6, F7, F8, F9, F11, F12, F13, F14. All 41 hold. Four of them were
+convoluted enough to be weak evidence, so they were re-checked by hand
+(`scope` in the discover UI, the bare hidden-set `await`, the KV fallback row
+shape, and whether `MarketOvals` reads `moment.hidden` at all).
+
+**What validation changed:**
+
+| | outcome |
+|---|---|
+| F1 | **strengthened** — not "the profile tab doesn't paginate" but "unreachable at every page"; depth and slice offset advance together |
+| F2 | **widened** — a second consumer (the `/discover` filters drawer) pays the full cost for two fields; RPC count qualified to collections *with* visible moments |
+| F4 | **narrowed** — real, but one duplicated slot per reordering row, only past page ⌈200/limit⌉; newest-first proven clean |
+| F5 | **narrowed** — `ArtistsFeed`'s `creators=` branch is not exposed; only its `collection=` branch and `CollectionsFeed`+following are |
+| F8 | **quantified** — exact pin-depth cutoffs (200 → 100 → 50 as the featured-collection count passes 25 → 50 → 100) |
+| F15 | **self-correction** — my own cited range was wrong (`:361-384`, not `:368-384`) |
+| F3, F6, F7, F9–F14 | confirmed as written |
+| — | nothing was refuted |
+
+Two corrections to the work itself: the first duplicate-count harness assumed
+every page returns a full `limit` and over-counted once the walk ran past the
+catalogue (fixed by counting actual rows — this is what turned an apparent "120
+duplicates on the default feed" into the correct 0); and the first assertion
+runner used `eval` in the current shell, so an `exit` inside a check aborted the
+suite after two lines.
+
+**Limit of this validation.** `kismet.art` is blocked by this environment's
+network policy, so nothing was checked against production data. Every finding is
+therefore stated with its *trigger condition* rather than an observed frequency:
+F1 needs a collection holding more than `limit` moments newer than the target,
+F4 needs a catalogue deeper than 200 plus a user paging past it, F8's second half
+needs a pinned mint deeper than 200. Whether those hold today is a question of
+the live catalogue's shape — `scripts/diagnose-feed-visibility.mjs` plus a
+`SCARD kismetart:collections` would settle it in a minute against real Redis.
+
+## 6. What's working well
 
 Worth stating plainly, because the density of correct detail here is unusual:
 
@@ -400,19 +491,32 @@ Worth stating plainly, because the density of correct detail here is unusual:
   iframe/RN-webview rather than from UA alone — the surface matrix that
   `verify-surfaces.ts` pins.
 
-## 6. Suggested order of work
+## 7. Suggested order of work
 
-1. **F1** (collected/profile drops) — silent data loss on the two most personal
-   surfaces.
-2. **F2** (collections feed cost) — biggest uncached per-request cost on the
-   platform; a one-line cache header plus slice-then-hydrate.
-3. **F3** (fail-open scrub) — small, privacy-shaped, and currently mis-documented.
-4. **F4 + F5** (pagination duplicates, filtered-empty stranding) — ~10 lines in
-   `PaginatedGrid` between them.
-5. **F11** (listings cache + 500 ceiling), **F10** (batch the meta read).
-6. **F6–F9, F13** (UI truth-in-labelling and dead surface).
-7. **F14, F15** (comment/doc drift).
+Re-ranked after validation — F1 moved up (it is worse than first written), F4
+moved down (it is milder).
+
+1. **F1** — the only finding that loses data outright, on the two most personal
+   surfaces, with no page the user can reach to recover it. The cheap partial fix
+   (add `creatorRaw` to `needsLargerSample`) moves the cliff from depth 50 to 200
+   in one line; the real fix is resolving `collector=` refs directly, since the
+   membership set is already known exactly.
+2. **F2** — the largest uncached per-request cost on the platform, now with two
+   consumers, one of which uses two fields out of the payload. Slice before
+   hydrating, add the shared cache header.
+3. **F3** — small, privacy-shaped, and actively mis-documented, which is the part
+   that makes it worth doing now rather than later.
+4. **F5** (filtered-empty stranding) and **F8a** (the defaulted `limit=20` on the
+   featured tab) — both are one-liners with user-visible consequences.
+5. **F11** (listings cache + the 500 ceiling), **F10** (batch the per-leg meta
+   read into one MGET).
+6. **F4** (cross-page duplicates) — a 2-line dedupe on append; low severity but
+   the fix is smaller than the analysis.
+7. **F6, F7, F9, F13** (truth-in-labelling, the unbounded querystring, dead
+   surface), then **F14, F15** (comment and doc drift).
 
 None of these change the architecture. The architecture item remains
 `SCALING.md` §B1 — a materialized per-scope feed replaces fan-out-on-read, makes
-personalized feeds cacheable, and dissolves F1 and F4 as a side effect.
+personalized feeds cacheable, and dissolves F1, F4 and F8b outright: all three
+are artifacts of recovering specific rows from a newest-first sample instead of
+addressing them directly.
