@@ -8,6 +8,18 @@
  *  without importing server code. */
 export const CFILE_MAX_BYTES = 16 * 1024 * 1024
 
+/** Accepted formats, ONE definition for both pickers (server truth is the
+ *  magic-byte detection in lib/collectorFileCore — this is the client-side
+ *  pre-check + <input accept>). */
+export const CFILE_ACCEPT_EXTS = ['.zip', '.pdf', '.glb'] as const
+export const CFILE_ACCEPT_ATTR = '.zip,.pdf,.glb,application/zip,application/pdf,model/gltf-binary'
+export const CFILE_KIND_LABEL = 'zip, PDF, or 3D model (.glb)'
+
+export function hasAcceptedCfileExt(name: string): boolean {
+  const lower = name.toLowerCase()
+  return CFILE_ACCEPT_EXTS.some((ext) => lower.endsWith(ext))
+}
+
 /** One shared B/KB/MB formatter for the card + manage panel + mint form. */
 export function formatCfileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

@@ -1157,6 +1157,21 @@ chunk codec round-trip, the request-cap margin, JSON-unparseability of
 chunks, the storage math the ceiling ledger relies on, and the retention
 planner's prune/never-prune/detach invariants.
 
+**Format extension (post-merge).** The feature accepts **zip, PDF, and GLB**
+(Binary glTF). One registry in the core (`CFILE_KINDS`: extension, MIME,
+magic bytes) drives everything: the server detects the format from leading
+magic bytes only (`PK\x03\x04` / `%PDF-` / `glTF` per the IANA
+`model/gltf-binary` registration) — never from the claimed extension or
+Content-Type header — the normalizer forces the DETECTED kind's extension
+(a PDF named `model.glb` serves as `.pdf`), the download route serves the
+kind's MIME, and every file still ships as `attachment` + `nosniff` (a PDF
+is never rendered inline on the origin). `CfileVersion.kind` is optional —
+records written before the extension are all zips and read as such. The
+chunk store, gate, tickets, retention, ceiling and notifications are
+format-agnostic and unchanged; the 16 MiB cap stays uniform. Client pickers
+share one accept-list (`lib/collectorFileTypes.ts`) and upload as explicit
+`application/octet-stream`, leaving the magic bytes as the single authority.
+
 **Net verdict.** The architecture is optimal *for this stack today* in the
 precise sense that every layer reuses a pattern that has already survived
 production here, adds no external dependency, and keeps the artist's three

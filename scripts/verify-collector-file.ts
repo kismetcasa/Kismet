@@ -14,13 +14,14 @@ import {
   CFILE_BYTES_RETENTION,
   CFILE_CHUNK_BYTES,
   CFILE_HISTORY_CAP,
+  CFILE_KINDS,
   cfileChunkCount,
   cfileRef,
   cfileStoredBytes,
   decodeCfileChunks,
+  detectCfileKind,
   encodeCfileChunks,
   isCfileVersionRestorable,
-  looksLikeZip,
   normalizeCfileName,
   planAttach,
   planDetach,
@@ -63,6 +64,13 @@ assert.equal(cfileRef(COLLECTION, '1'), `${COLLECTION.toLowerCase()}:1`)
 
 // ---- 3. Filename hygiene -------------------------------------------------
 assert.equal(normalizeCfileName('Pixel Art Gallery - Sylvester.zip'), 'Pixel Art Gallery - Sylvester.zip')
+// The DETECTED kind forces the extension — the claimed one is stripped, so
+// name, bytes and Content-Type can never disagree.
+assert.equal(normalizeCfileName('gallery.pdf', 'pdf'), 'gallery.pdf')
+assert.equal(normalizeCfileName('sylvester.glb', 'glb'), 'sylvester.glb')
+assert.equal(normalizeCfileName('model.glb', 'pdf'), 'model.pdf', 'claimed ext must yield to detected kind')
+assert.equal(normalizeCfileName('notes.pdf', 'zip'), 'notes.zip', 'claimed ext must yield to detected kind')
+assert.equal(normalizeCfileName('', 'glb'), 'collector-file.glb')
 // Header-injection material is stripped; terminal .zip is forced.
 assert.equal(normalizeCfileName('a"; filename*=UTF-8\'\'payload.exe'), 'a filenameUTF-8payload.exe.zip')
 assert.ok(!normalizeCfileName('x\r\nSet-Cookie: a=b.zip').includes('\r'), 'CR survived')
@@ -76,11 +84,20 @@ assert.equal(normalizeCfileName(''), 'collector-file.zip')
 assert.equal(normalizeCfileName(null), 'collector-file.zip')
 assert.ok(normalizeCfileName('x'.repeat(500) + '.zip').length <= 64, 'length cap failed')
 
-// ---- 4. Zip magic --------------------------------------------------------
-assert.ok(looksLikeZip(Buffer.from('PK\x03\x04rest')))
-assert.ok(!looksLikeZip(Buffer.from('PK\x05\x06')), 'empty archive accepted') // empty central dir
-assert.ok(!looksLikeZip(Buffer.from('MZ\x90\x00')), 'PE binary accepted')
-assert.ok(!looksLikeZip(Buffer.alloc(2)))
+// ---- 4. Format detection (magic bytes ONLY — never claimed extension) ----
+assert.equal(detectCfileKind(Buffer.from('PK\x03\x04rest')), 'zip')
+assert.equal(detectCfileKind(Buffer.from('%PDF-1.7\n%…')), 'pdf')
+// Binary glTF: magic 0x46546C67 LE = ASCII "glTF" (IANA model/gltf-binary).
+assert.equal(detectCfileKind(Buffer.from('glTF\x02\x00\x00\x00rest')), 'glb')
+assert.equal(Buffer.from(CFILE_KINDS.glb.magic).readUInt32LE(0), 0x46546c67, 'GLB magic drifted from spec')
+assert.equal(detectCfileKind(Buffer.from('PK\x05\x06')), null, 'empty archive accepted') // empty central dir
+assert.equal(detectCfileKind(Buffer.from('MZ\x90\x00')), null, 'PE binary accepted')
+assert.equal(detectCfileKind(Buffer.from('%PDF')), null, 'truncated PDF header accepted')
+assert.equal(detectCfileKind(Buffer.alloc(2)), null)
+// Served Content-Types stay pinned (immutable download contract).
+assert.equal(CFILE_KINDS.zip.mime, 'application/zip')
+assert.equal(CFILE_KINDS.pdf.mime, 'application/pdf')
+assert.equal(CFILE_KINDS.glb.mime, 'model/gltf-binary')
 
 // ---- 5. Version planning: attach, dedup, retention -----------------------
 const now = 1_756_000_000_000
@@ -88,6 +105,7 @@ const plaintext = Buffer.from('PK\x03\x04 pretend rom bytes '.repeat(64))
 const base = (over: Partial<Parameters<typeof planAttach>[1]> = {}) => ({
   size: plaintext.length,
   sha256: sha256Hex(plaintext),
+  kind: 'zip' as const,
   name: 'a.zip',
   updatedBy: '0xArtist',
   now,
@@ -106,9 +124,11 @@ assert.deepEqual(first.prune, [], 'first attach pruned something')
 // Same bytes again → null (no version, no meters, no cooldown burn).
 assert.equal(planAttach(first.record, base()), null, 'same-sha replace not deduped')
 
-const second = planAttach(first.record, base({ sha256: 'different' }))
+const second = planAttach(first.record, base({ sha256: 'different', kind: 'glb', name: 'model.glb' }))
 assert.ok(second)
 assert.equal(second.version.v, 2)
+assert.equal(second.version.kind, 'glb', 'kind not stored on the version')
+assert.equal(second.record.history[0].kind, 'zip', 'history row lost its kind')
 assert.equal(second.version.blobSeq, 2, 'blobSeq not sequenced')
 assert.equal(second.record.history[0].v, 1, 'superseded version not in history')
 assert.ok(second.record.history[0].stored, 'previous version lost its bytes inside the window')
