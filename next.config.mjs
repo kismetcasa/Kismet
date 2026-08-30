@@ -75,6 +75,19 @@ const nextConfig = {
         destination: '/artwork/:path*',
         permanent: true,
       },
+      // /about → /learn (2026-08). The About page duplicated ~80% of /learn
+      // (near-verbatim lead, a second copy of the Kismet Casa story) while
+      // adding no schema /learn couldn't carry, so its unique operator content
+      // moved into /learn#who-runs-kismet and the two URLs consolidated onto
+      // one. Permanent (308) and kept forever: /about is the conventional URL
+      // third parties link to, and the 308 is what folds those signals into
+      // /learn. The fragment preserves the reader's intent — it is not sent to
+      // the server and has no effect on index consolidation.
+      {
+        source: '/about',
+        destination: '/learn#who-runs-kismet',
+        permanent: true,
+      },
     ]
   },
 
