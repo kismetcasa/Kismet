@@ -459,6 +459,28 @@ needs a pinned mint deeper than 200. Whether those hold today is a question of
 the live catalogue's shape — `scripts/diagnose-feed-visibility.mjs` plus a
 `SCARD kismetart:collections` would settle it in a minute against real Redis.
 
+**§5b · Validation round 2 (toolchain + adversarial audit).** Late in the
+session the npm registry proved reachable through the proxy's bypass list, so
+the missing-toolchain caveat above was closed: `npm ci` succeeded and — for the
+first time against any of this work — `tsc --noEmit`, `eslint .`, the full
+`verify:flows` battery (including `verify-collection-rank`, previously
+unrunnable), the sibling verify suites, `next build` (115/115 pages, no compile
+or RSC-boundary errors) and `check:bundle` (no route grew past threshold) all
+ran. The typechecker immediately found a blocker: F2's cache header was a
+TS2353 and, shape-wise, inert (proven against the real `NextResponse`: the
+committed shape set NO header at all). An 8-lens adversarial workflow over the
+final diff then surfaced 11 candidates; after manual adjudication (its
+refutation phase died on a rate limit — and the harness's `survives` logic
+mislabelled unverified findings as killed, a false-negative bug worth
+recording): two were real regressions introduced by the fixes themselves (the
+sentinel auto-walk and the `fresh=1` bypass, both corrected above), one was the
+already-fixed TS2353, four are documented trade-offs (thinned-depth cost within
+the route's own 2× budget, the 5× featured SSR seed, ~90s admin-hide lag on the
+newly cached feeds, phase-1 serialization when zero pins exist), and the rest
+were duplicates. Still not validated: anything requiring production data or a
+running instance — integration behaviour, real catalogue shape, real cache-hit
+rates.
+
 ## 6. What's working well
 
 Worth stating plainly, because the density of correct detail here is unusual:
@@ -533,9 +555,14 @@ drop, so the common render allocates nothing. Placed before the caller's
 **F5 — load-more hoisted out of the `visible.length > 0` branch**
 (`components/PaginatedGrid.tsx`). The button *and* the infinite-scroll sentinel
 were nested inside it, so a client-side `filter` that emptied a page removed the
-only way to reach the next one. Verified no current caller combines `filter`
-with `infiniteScroll`, so the hoisted sentinel cannot auto-walk an existing
-surface.
+only way to reach the next one. The first version of this fix hoisted BOTH and
+cleared it as safe because no caller combines `filter` with `infiniteScroll` —
+a clearance round 2 (§5b) falsified: an empty page needs no filter, because
+/api/listings filters visibility AFTER pagination while `total` still counts
+hidden rows, and /discover?m=secondary runs infinite scroll on exactly that
+endpoint. Final shape: the BUTTON renders whenever `currentPage < totalPages`
+(the stranding fix), the SENTINEL only when rows are on screen — which is
+byte-identical to the sentinel's pre-change condition.
 
 **F2 — rank from pins, hydrate only the page, cache the response**
 (`app/api/collections/route.ts`). `collectionFeedOrderTs` ignores `created_at`
@@ -546,7 +573,14 @@ therefore bit-identical to hydrate-first (same function, same inputs, and pinned
 rows never consulted `created_at`), while the expensive half — two
 `fetchEligibleTokens` per collection, each a `getBlock` plus a `multicall` over
 JSON-RPC that no cache layer covers — is now bounded by `limit` instead of by
-how many collections exist. The `public, s-maxage=30` header is safe because the
+how many collections exist. Round 2 (§5b) found the header as first committed
+was INERT — written into the `ResponseInit` itself instead of under `headers:`,
+a TS2353 the then-unavailable typechecker would have caught — and that neither
+new header honoured PaginatedGrid's `fresh=1` refresh (the differing cache key
+is itself cacheable, so a second refresh inside the window replayed the first).
+Both fixed: the header is nested correctly and `fresh=1` now answers
+`private, no-store`, the same escape hatch /api/timeline already had.
+The `public, s-maxage=30` header is safe because the
 branch reads no session and every input is global.
 
 **F10 — one MGET instead of a GET per fan-out leg** (`app/api/timeline/route.ts`,

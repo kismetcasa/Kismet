@@ -343,9 +343,8 @@ export async function GET(req: NextRequest) {
         // fresh" — but addTrackedCollection's own-pod invalidate exists for the
         // artist's next read, the create flow routes to /collection/[address]
         // rather than here, and PaginatedGrid's refresh appends `fresh=1`,
-        // which this branch answers `private, no-store` (a different cache KEY
-        // alone would not do it — that key caches too, so a second refresh
-        // inside the window replayed the first).
+        // which this branch answers `private, no-store` (see the branch-top
+        // comment for why the differing key alone is not enough).
         // And the win is a scaling one: with the page-bounded hydration above,
         // a catalogue near `limit` sees little change, while one several times
         // `limit` stops paying 4 uncached RPC calls per collection per request.
