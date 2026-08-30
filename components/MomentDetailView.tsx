@@ -10,7 +10,7 @@ import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, E
 import { isAddress } from 'viem'
 import { normalize } from 'viem/ens'
 import { useQueryClient } from '@tanstack/react-query'
-import { resolveUri, formatPrice, shortAddress, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, getSaleWindow, parseRealSaleEnd, type MomentDetail } from '@/lib/inprocess'
+import { formatPrice, shortAddress, inferCollectCurrency, DEFAULT_COLLECT_COMMENT, getSaleWindow, parseRealSaleEnd, type MomentDetail } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { GiftRecipientForm } from './GiftRecipientForm'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -50,7 +50,7 @@ import { canTranscode, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { proxyUrl } from '@/lib/media/gateway'
-import { CollectedActions } from './CollectedActions'
+import { RaffleButton } from './RaffleButton'
 import { CollectorFileCard } from './CollectorFileCard'
 import { CollectorFileManagePanel } from './CollectorFileManagePanel'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
@@ -2204,22 +2204,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           </div>
 
-          {/* Action row: [price|supply] [list] [collect] */}
+          {/* Action row: [price|supply] [collect] [gift]. Deliberately NO
+              "list" column: with the flex-none price box and gift button, a
+              fourth column left the phone/mini-app row too narrow — the
+              min-w-0 list cell collapsed and its label painted over the
+              collect button. Listing an owned edition lives on the holder's
+              profile (MomentCard keepList) instead; the one owned-edition
+              action this page keeps is "enter raffle", on its own row below. */}
           <div className="px-5 py-4 flex gap-2 items-stretch">
             {priceSupplyBox}
-            {alreadyOwned && (
-              <div className="flex-1 min-w-0">
-                <CollectedActions
-                  collectionAddress={address}
-                  tokenId={tokenId}
-                  name={meta.name}
-                  image={meta.image ? resolveUri(meta.image) : undefined}
-                  creatorAddress={creatorAddress}
-                  contentUri={meta.content?.uri}
-                  contentMime={meta.content?.mime}
-                />
-              </div>
-            )}
             {/* Gradient on the inner span, not the button box — see
                 MomentCard.renderCollectButton (Chromium seam with
                 background-clip:text on bordered flex boxes). */}
@@ -2264,6 +2257,26 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             </div>
           )}
 
+          {/* Raffle entry — the owned-edition action this page kept when the
+              "list" column moved to the profile. Its own full-width row (not
+              an action-row column: "enter raffle" is wider than "list" and
+              would recreate the phone-width collapse), rendered only for the
+              rare raffle-enabled moment — the RaffleCallout below advertises
+              "collect to enter", so the entry control must live on this page
+              or the funnel it sells dead-ends for a fresh collector.
+              listFallback={false}: fall-through states (ended and didn't win,
+              never entered) render nothing here rather than a list button. */}
+          {alreadyOwned && hasRaffle && (
+            <div className="px-5 pb-3">
+              <RaffleButton
+                collectionAddress={address}
+                tokenId={tokenId}
+                listFallback={false}
+                listProps={{ collectionAddress: address, tokenId, creatorAddress }}
+              />
+            </div>
+          )}
+
           {/* Collector download card — the perk advertisement for non-holders
               and the download surface for holders. Gated on the OPTIMISTIC
               hasCollected (not alreadyOwned) so it flips the instant a collect
@@ -2302,13 +2315,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               desktop line reserves nothing on mobile).
               • Desktop: scan / share / send on the left, the sale date CENTERED
                 UNDER THE COLLECT BUTTON — the line mirrors the action row's
-                columns ([price-box width] [list flex-1 when owned] [flex-1]),
-                still one line, so no empty band around the date.
+                columns ([price-box width] [flex-1]), still one line, so no
+                empty band around the date.
               • Feature toggle: admin-only, demoted to its own line directly
                 beneath the button group.
               • Send form: armed on DESKTOP it sits inline in the utility row,
-                between the send button and the date (the empty list-mirror
-                column); on mobile it drops in full-width below the row.
+                between the send button and the date; on mobile it drops in
+                full-width below the row.
               On mobile the buttons live in the "x sold" row and the date in its
               own line above, so this row carries only feature (admin) + the form. */}
           <div className="px-5 pb-4 flex flex-col gap-2">
@@ -2342,19 +2355,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   {secondaryActionButtons}
                 </div>
               </div>
-              {/* List-mirror column: an empty spacer normally; the send form
-                  when armed — sitting exactly between the send button and the
-                  sale date. min-w-[12rem] floors the input at a usable width:
-                  on panels too narrow to hold buttons + form + date in one
-                  line, the DATE (whose min-content exceeds its flex share
-                  first) wraps to its own centered line via the row's existing
-                  flex-wrap fallback instead of the input crushing to ~40px. */}
-              {alreadyOwned &&
-                (sendOpen ? (
-                  <div className="flex-1 min-w-[12rem]">{sendForm}</div>
-                ) : (
-                  <div aria-hidden className="flex-1" />
-                ))}
+              {/* Armed send form — inline between the send button and the sale
+                  date. Rendered ONLY while armed (the action row no longer has
+                  a list column, so there's no column to mirror with a spacer;
+                  owned and not-owned rows share one geometry). min-w-[12rem]
+                  floors the input at a usable width: on panels too narrow to
+                  hold buttons + form + date in one line, the DATE (whose
+                  min-content exceeds its flex share first) wraps to its own
+                  centered line via the row's existing flex-wrap fallback
+                  instead of the input crushing to ~40px. */}
+              {alreadyOwned && sendOpen && (
+                <div className="flex-1 min-w-[12rem]">{sendForm}</div>
+              )}
               {showSaleWindowRow && (
                 <div className="flex-1 flex justify-center">
                   <RaffleCallout

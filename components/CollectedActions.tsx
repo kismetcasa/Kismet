@@ -13,11 +13,17 @@ import { RaffleButton } from './RaffleButton'
  * `keepList` overrides the swap and forces the listing action even when the
  * raffle is enabled — passed on the owner's own profile card, so a holder can
  * still list their edition from their profile while the raffle runs (entering
- * is non-custodial, so the two aren't mutually exclusive). Every other surface
- * (feed, discover, collection, moment detail) shows "enter raffle".
+ * is non-custodial, so the two aren't mutually exclusive). Every other card
+ * surface (feed, discover, collection) shows "enter raffle".
  *
- * Single decision point so the owned-edition call sites (MomentCard ×2,
- * MomentDetailView) don't each repeat the branch. The decision is synchronous:
+ * MomentDetailView is deliberately NOT a call site: the detail page carries no
+ * listing action at all (listing lives on the holder's profile — a fourth
+ * action-row column didn't fit the phone/mini-app row) and renders
+ * RaffleButton directly, with the list fall-through suppressed, for the rare
+ * raffle-enabled moment.
+ *
+ * Single decision point so the owned-edition call sites (MomentCard ×2)
+ * don't each repeat the branch. The decision is synchronous:
  * the whole raffle-enabled set is loaded once on mount, so there's no per-card
  * request — at worst a brief List→Raffle swap on the rare enabled moment before
  * the set finishes loading.
