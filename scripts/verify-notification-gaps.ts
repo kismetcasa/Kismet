@@ -589,6 +589,14 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
   check('a row with no sender is dropped', n([row({ sender: undefined })]).length === 0)
   check('a row with an empty sender is dropped', n([row({ sender: '' })]).length === 0)
   check('a row with a non-finite timestamp is dropped', n([row({ timestamp: 'abc' })]).length === 0)
+  // Number(null) === Number('') === Number([]) === Number(false) === 0, i.e.
+  // FINITE — so a bare Number() guard keeps these and renders a ~20000d age.
+  // 'abc' alone could never prove the guard does anything.
+  check('  …and so is timestamp: null', n([row({ timestamp: null })]).length === 0)
+  check('  …and timestamp: undefined', n([row({ timestamp: undefined })]).length === 0)
+  check('  …and timestamp: false', n([row({ timestamp: false })]).length === 0)
+  check('  …and timestamp: [] ', n([row({ timestamp: [] })]).length === 0)
+  check('  …and the empty string', n([row({ timestamp: '' })]).length === 0)
   check('a non-object row is dropped', n([null, 7, 'x']).length === 0)
 
   // Must not become the thing that strips upstream's newer columns.
@@ -609,9 +617,30 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
     'components/MomentCard.tsx',
     'app/api/moment/comments/route.ts',
   ]
+  // Counted WITH the open paren, which is what separates a call from the import
+  // line: matching the bare identifier let a reader delete the call, keep the
+  // import, and stay green — all three boundary mutants survived that way.
+  // MomentActivity has two fetch sites, so one call is not enough there.
+  const MIN_CALLS: Record<string, number> = {
+    'components/MomentActivity.tsx': 2,
+    'components/MomentCard.tsx': 1,
+    'app/api/moment/comments/route.ts': 1,
+  }
   for (const f of READERS) {
     const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
-    check(`${f} parses the feed it reads`, src.includes('normalizeMomentComments'))
+    const calls = src.split('normalizeMomentComments(').length - 1
+    check(`${f} parses the feed it reads (${MIN_CALLS[f]}+ call sites)`, calls >= MIN_CALLS[f])
+    // Every reference to the raw payload must be inside a parse call. Catches a
+    // NEW unparsed read added beside the existing parsed one. Comment text is
+    // stripped first — these very files DISCUSS `data.comments ?? []` in prose,
+    // and counting that made the check fail on correct code.
+    const code = src
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n')
+    const raw = code.split('data.comments').length - 1
+    const parsed = code.split('normalizeMomentComments(data.comments').length - 1
+    if (raw > 0) check(`  …and every data.comments read in ${f} is parsed`, raw === parsed)
   }
   // And no OTHER file may quietly start reading it unparsed.
   const unguarded = execSync(
