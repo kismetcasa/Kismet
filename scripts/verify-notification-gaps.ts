@@ -39,7 +39,7 @@ import {
 const strings = new Map<string, string>()
 const sets = new Map<string, Set<string>>()
 const zsets = new Map<string, Map<string, number>>()
-const fail = { cmds: new Set<string>() }
+const fail = { cmds: new Set<string>(), httpError: null as string | null }
 
 function exec(cmd: unknown[]): unknown {
   const name = String(cmd[0]).toLowerCase()
@@ -75,11 +75,50 @@ function exec(cmd: unknown[]): unknown {
     case 'zscore': { const s = zsets.get(k)?.get(args[1]); return s === undefined ? null : s }
     case 'zrange': {
       const m = zsets.get(k); if (!m) return []
-      const entries = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
-      const rev = args.some((a) => a.toLowerCase() === 'rev')
+      let entries = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      const flags = args.map((a) => a.toLowerCase())
+      const rev = flags.includes('rev')
+      // Honour the RANGE, not just the key. Redis reads min/max as scores under
+      // BYSCORE and as ranks otherwise; '+inf'/'-inf' are legal score bounds.
+      const bound = (raw: string, dflt: number) =>
+        raw === '+inf' ? Infinity : raw === '-inf' ? -Infinity : Number.isFinite(Number(raw)) ? Number(raw) : dflt
+      if (flags.includes('byscore')) {
+        const lo = bound(args[1], -Infinity)
+        const hi = bound(args[2], Infinity)
+        entries = entries.filter(([, sc]) => sc >= lo && sc <= hi)
+      } else {
+        const start = Number(args[1]); const stop = Number(args[2])
+        if (Number.isFinite(start) && Number.isFinite(stop)) {
+          const n = entries.length
+          const a = start < 0 ? Math.max(0, n + start) : start
+          const b = stop < 0 ? n + stop : Math.min(n - 1, stop)
+          entries = b < a ? [] : entries.slice(a, b + 1)
+        }
+      }
       return (rev ? entries.reverse() : entries).map(([mem]) => mem)
     }
-    case 'zremrangebyrank': case 'zremrangebyscore': return 0
+    case 'zremrangebyrank': {
+      // Really trims. lib/notifications caps every inbox with
+      // zremrangebyrank(key, 0, -MAX_PER_USER - 1); a mock returning 0 let a
+      // bound that deletes EVERY entry on EVERY write pass the whole suite.
+      const m = zsets.get(k); if (!m) return 0
+      const sorted = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      const n = sorted.length
+      const start = Number(args[1]); const stop = Number(args[2])
+      const a = start < 0 ? Math.max(0, n + start) : start
+      const b = stop < 0 ? n + stop : Math.min(n - 1, stop)
+      if (b < a) return 0
+      for (const [mem] of sorted.slice(a, b + 1)) m.delete(mem)
+      return b - a + 1
+    }
+    case 'zremrangebyscore': {
+      const m = zsets.get(k); if (!m) return 0
+      const lo = args[1] === '-inf' ? -Infinity : Number(args[1])
+      const hi = args[2] === '+inf' ? Infinity : Number(args[2])
+      let n = 0
+      for (const [mem, sc] of [...m.entries()]) { if (sc >= lo && sc <= hi) { m.delete(mem); n++ } }
+      return n
+    }
     default: throw new Error(`unsupported cmd ${name}`)
   }
 }
@@ -98,6 +137,14 @@ const redisServer = createServer((req, res) => {
   req.on('data', (c) => { body += c })
   req.on('end', () => {
     try {
+      // A non-2xx with an {error} body is the ONLY shape that makes the SDK
+      // echo the command it sent — the exact path that leaked notification
+      // payloads into the logs. A 200-with-per-command-error cannot reproduce it.
+      if (fail.httpError) {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: `${fail.httpError}, command was: ${body}` }))
+        return
+      }
       const useB64 = req.headers['upstash-encoding'] === 'base64'
       const enc = (v: unknown) => (useB64 ? encodeResult(v) : v)
       const parsed = JSON.parse(body) as unknown[]
@@ -293,6 +340,63 @@ console.log('\nG3  a lost notification left no trace')
   check('the log carries the routing fields needed to trace it', logged?.type === 'sale' && logged?.recipient === VICTIM)
   check('but never the payload (a collector comment is private)',
     logged !== undefined && !('comment' in logged) && !('note' in logged))
+
+  // The leak that mattered was not a stray field on our own object — it was the
+  // Upstash error itself. On any NON-2xx the SDK throws
+  // `<reason>, command was: <the whole serialized body>`, and auto-pipelining
+  // makes that body the entire tick. Asserted over the SERIALIZED log line, not
+  // over key names, because the payload arrived inside a value.
+  const errs2: unknown[][] = []
+  const realErr2 = console.error
+  console.error = (...a: unknown[]) => { errs2.push(a) }
+  fail.httpError = 'ERR max daily request limit exceeded'
+  await notifications.writeNotification({
+    type: 'sale', recipient: VICTIM, actor: '0x9', tokenAddress: '0xc0ffee', tokenId: '9', price: '5',
+    comment: 'SECRET-COLLECTOR-COMMENT', note: 'SECRET-RELEASE-NOTE',
+  })
+  fail.httpError = null
+  console.error = realErr2
+  // JSON.stringify alone is NOT enough here: an Error's name/message are
+  // non-enumerable, so a logged Error serializes to {} and the assertion below
+  // would pass while the payload sailed out through err.message. Unfold errors
+  // explicitly — this test exists precisely to catch that shape.
+  const line = JSON.stringify(errs2, (_k, v) =>
+    v instanceof Error ? `${v.name}: ${v.message}` : v,
+  )
+  check('an Upstash transport error is logged at all', /write failed/.test(line))
+  check('  …with the reason kept (an operator needs to know WHY)', /max daily request limit/.test(line))
+  check('  …and the echoed command body stripped, payload and all',
+    !/SECRET-COLLECTOR-COMMENT/.test(line) && !/SECRET-RELEASE-NOTE/.test(line))
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\nG7  inbox retention: the bounds nothing was checking')
+{
+  // Both of these passed with a mock that returned 0 for the range-trims and
+  // ignored min/max on ZRANGE, so a bound that wiped every inbox on every write
+  // — and a dedup window ~53,000 years wide — were both invisible.
+  const KEEPER = '0x9999999999999999999999999999999999999999'
+  for (let i = 0; i < 5; i++) {
+    await notifications.writeNotification({
+      type: 'collect', recipient: KEEPER, actor: `0xa${i}`, tokenAddress: '0xbeef', tokenId: String(i), price: '1',
+    })
+  }
+  check('the per-write trim keeps entries rather than clearing the inbox', inbox(KEEPER).length === 5)
+
+  // The follow-dedup WINDOW, not just its parse shape. A follow older than
+  // FOLLOW_DEDUP_WINDOW_SECS (7d) must NOT suppress; a recent one must.
+  const FA = '0xb111111111111111111111111111111111111111'
+  const OLD = '0xb222222222222222222222222222222222222222'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const stale = JSON.stringify({
+    id: 'stale', type: 'follow', recipient: FA, actor: OLD,
+    timestamp: nowSec - 8 * 24 * 60 * 60, priority: true,
+  })
+  zsets.set(`kismetart:notif:${FA}`, new Map([[stale, nowSec - 8 * 24 * 60 * 60]]))
+  await notifications.writeNotification({ type: 'follow', recipient: FA, actor: OLD })
+  check('a follow older than the 7d window does NOT suppress a new one', inbox(FA).length === 2)
+  await notifications.writeNotification({ type: 'follow', recipient: FA, actor: OLD })
+  check('  …while one inside the window does', inbox(FA).length === 2)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -425,6 +529,23 @@ console.log('\nG2  a Farcaster blip reassigned identity and deleted the choice')
   strings.set(`kismetart:fc:primary:${FID4}`, OTHER)
   fcVerifications = [OTHER]
   check('a definitive un-verify still moves off it (non-regression)', (await farcasterAuth.getKismetIdentityAddress(FID4)) === OTHER)
+
+  // The WEB-FIRST cohort: an address-keyed profile, no FidProfile, no legacy
+  // pointer. Steps 1 and 2 give no answer, so before the guard was extended
+  // this fell through step 3 (an empty enumeration) into step 4 and answered
+  // with the FC primary — a DIFFERENT wallet — during a transient. Fixing only
+  // steps 1-2 left the same defect one branch further down.
+  const FID5 = 4005
+  strings.set(`kismetart:fc:primary:${FID5}`, OTHER)
+  fcVerifications = 'transient'
+  check('a web-first user is not re-resolved to FC primary on a transient',
+    (await farcasterAuth.getKismetIdentityAddress(FID5)) === null)
+
+  const FID6 = 4006
+  strings.set(`kismetart:fc:primary:${FID6}`, OTHER)
+  fcVerifications = []
+  check('  …but a DEFINITIVE empty still answers with primary (non-regression)',
+    (await farcasterAuth.getKismetIdentityAddress(FID6)) === OTHER)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

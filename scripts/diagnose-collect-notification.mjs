@@ -238,6 +238,10 @@ for (const t of rawMints) {
   mints.push({
     txHash: (t.hash || '').toLowerCase(),
     collector: to,
+    // Carried so burstSibling can exclude a mint from matching ITSELF in the
+    // collection-wide list. Without it the comparison was '7' === undefined,
+    // the exclusion never fired, and LOST/UNKNOWN were unreachable.
+    tokenId: TOKEN_ID,
     units,
     tsMs,
     tsSec: Math.floor(tsMs / 1000),
@@ -285,11 +289,19 @@ for (const tx of new Set(mints.map((m) => m.txHash))) {
   try {
     const t = await rpc('eth_getTransactionByHash', [tx])
     const input = (t?.input || '').toLowerCase()
-    txCache.set(tx, {
-      stamped: input.endsWith(BUILDER_SUFFIX),
-      referral: input.includes(KISMET_REFERRAL.slice(2)),
-      from: (t?.from || '').toLowerCase(),
-    })
+    // No tx, or no calldata to read, is UNKNOWN — never "not Kismet". A pruned
+    // node, a reorged hash or an RPC pointed at the wrong chain all land here,
+    // and reporting absence of attribution as proof of foreign origin is the
+    // one wrong answer this script must not give.
+    if (!t || !input || input === '0x') {
+      txCache.set(tx, { stamped: null, referral: null, from: (t?.from || '').toLowerCase() })
+    } else {
+      txCache.set(tx, {
+        stamped: input.endsWith(BUILDER_SUFFIX),
+        referral: input.includes(KISMET_REFERRAL.slice(2)),
+        from: (t?.from || '').toLowerCase(),
+      })
+    }
   } catch {
     txCache.set(tx, { stamped: null, referral: null, from: '' })
   }
@@ -325,11 +337,14 @@ const [notifRaw, mutedRaw, mutedTypesRaw, airdropRaw, ...idemResults] = await re
 ])
 
 const notifs = (notifRaw || []).map(parseMaybe).filter(Boolean)
-const airdropRecipients = new Set(
+// Keyed on the airdrop's OWN txHash, not on the recipient: an address that was
+// airdropped this artwork once may well buy another edition later, and keying
+// on the address swallowed that paid collect as "nothing is missing".
+const airdropTxs = new Set(
   (airdropRaw || [])
     .map(parseMaybe)
     .filter(Boolean)
-    .map((a) => String(a?.recipient?.address ?? a?.recipient ?? '').toLowerCase())
+    .map((a) => String(a?.txHash ?? '').toLowerCase())
     .filter(Boolean),
 )
 const mutedActors = new Set((mutedRaw || []).map((a) => String(a).toLowerCase()))
@@ -406,7 +421,11 @@ const rows = mints.map((m, i) => {
   const idemExpired = ageSec > IDEMPOTENCY_TTL_SECONDS
 
   let status, reason
-  if (notif && mutedActors.has(m.collector)) {
+  // Muting is evaluated on the NOTIFICATION's actor, exactly as
+  // loadAndAnnotate does — not on the on-chain recipient. On a gift those are
+  // different wallets, so the recipient test produced both false OKs and
+  // fabricated HIDDENs.
+  if (notif && mutedActors.has((notif.actor || '').toLowerCase())) {
     status = 'HIDDEN'
     reason =
       `written, but ${m.collector} is in the artist's muted-actor set and 'collect' is not ` +
@@ -427,7 +446,7 @@ const rows = mints.map((m, i) => {
   } else if (mutedTypes.has('collect')) {
     status = 'MUTED'
     reason = `the artist has muted the 'collect' type — suppressed at WRITE time, never stored.`
-  } else if (airdropRecipients.has(m.collector)) {
+  } else if (airdropTxs.has(m.txHash)) {
     status = 'AIRDROP'
     reason =
       `this edition was AIRDROPPED to ${m.collector}, not collected — /api/airdrop/notify records it ` +
@@ -453,6 +472,15 @@ const rows = mints.map((m, i) => {
             `the sale still counts in the artist's stats (those are read from the chain) while no ` +
             `notification exists.`
           : `The tx could not be fetched, so origin is undetermined.`)
+  } else if (!idem) {
+    // Reached only when the key has aged out (the definitive case above already
+    // returned). Every arm below therefore HAS the key, which is what lets them
+    // say "/api/collect ran" without overstating.
+    status = 'UNKNOWN'
+    reason =
+      `no notification, and the mint is older than the ${IDEMPOTENCY_TTL_SECONDS / 86400}d idempotency-key ` +
+      `retention, so whether /api/collect ever ran can no longer be established. NOT an explanation — ` +
+      `the evidence is simply gone.`
   } else if (ageSec > NOTIF_TTL_SECONDS) {
     status = 'EXPIRED'
     reason = `/api/collect ran, but the mint is ${Math.floor(ageSec / 86400)}d old — past the ${NOTIF_TTL_SECONDS / 86400}d retention, so any entry was dropped by the lazy ZREMRANGEBYSCORE.`
@@ -467,11 +495,6 @@ const rows = mints.map((m, i) => {
       `${m.tsSec - sib.tsSec}s earlier (tx ${sib.txHash}); the burst-dedup lock is keyed ` +
       `(recipient, actor, collection) with NO tokenId, so this mint was folded into that ` +
       `one notification.`
-  } else if (!idem) {
-    status = 'UNKNOWN'
-    reason =
-      `no notification, and the mint is older than the ${IDEMPOTENCY_TTL_SECONDS / 86400}d idempotency-key ` +
-      `retention, so whether /api/collect ran can no longer be established.`
   } else {
     status = 'LOST'
     reason =

@@ -248,6 +248,27 @@ async function isPriority(
  * returns an empty map on a Redis failure, which degrades to today's behavior
  * (deliver as addressed) rather than dropping the write.
  */
+/**
+ * Strip the echoed command body out of an Upstash error before it is logged.
+ *
+ * The SDK throws `new UpstashError(\`${body.error}, command was: ${JSON.stringify(req.body)}\`)`
+ * (@upstash/redis chunk-*.mjs), so on any non-2xx — quota, rotated token,
+ * request too large, 5xx — the message carries the FULL serialized command.
+ * For a notification write that command is the ZADD whose member is the
+ * notification JSON, i.e. the collector's comment and the artist's release
+ * note. And lib/redis.ts enables auto-pipelining, so req.body is the whole
+ * tick: one failure would otherwise print EVERY batched recipient's payload,
+ * on a path that only runs when something is already going wrong.
+ *
+ * Keeping the reason (everything before the echo) preserves the diagnostic
+ * value the log was added for — "ERR max daily request limit exceeded" is the
+ * part an operator needs — while the payload never reaches the log sink.
+ */
+function scrubRedisError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err).split(', command was:')[0].slice(0, 300)
+  return `${err.name}: ${err.message.split(', command was:')[0].slice(0, 300)}`
+}
+
 async function resolveRecipient(recipient: string, skip?: true): Promise<string> {
   const addr = recipient.toLowerCase()
   if (skip) return addr
@@ -381,7 +402,7 @@ export async function writeNotification(input: NotificationInput): Promise<boole
       actor: input.actor,
       tokenAddress: input.tokenAddress,
       tokenId: input.tokenId,
-      err,
+      err: scrubRedisError(err),
     })
     return false
   }
@@ -445,7 +466,7 @@ export async function fanoutToFollowers(
     console.error('[notifications] fan-out failed', {
       source,
       type: payload.type,
-      err,
+      err: scrubRedisError(err),
     })
   }
 }

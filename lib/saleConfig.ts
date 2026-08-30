@@ -295,10 +295,13 @@ export async function readSalePricePerToken(
     // Tuple shape differs per strategy but saleEnd + pricePerToken are on both;
     // cast through the discriminated read to surface them.
     const row = sale as { saleEnd: bigint; pricePerToken: bigint }
-    // An UNSET row is not a zero price. Every other reader in this file and in
-    // lib/saleEdit gates on saleEnd !== 0n (:336, :356, :493, :511;
-    // saleEdit :77, :98) precisely because a strategy with no row for this
-    // token returns an all-zero struct. Without the same gate this returned
+    // An UNSET row is not a zero price. Every other reader gates on saleEnd
+    // before trusting the struct — fetchEligibleTokens, resolveOnchainSale (both
+    // currency arms), saleConfigsFromMulticall (both arms), and readSaleWindow /
+    // readSaleWindowUsdc in lib/saleEdit — precisely because a strategy with no
+    // row for this token returns an all-zero struct. Cited by FUNCTION, not by
+    // line: the first version of this comment gave line numbers and every one of
+    // them had already drifted by the time it was reviewed. Without the same gate this returned
     // 0n — not null — and /api/collect's `derivedPrice !== null` then
     // OVERWROTE the collector's real, regex-validated price with "0". Two
     // silent consequences downstream: formatPrice("0") renders the literal

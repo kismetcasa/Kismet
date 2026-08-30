@@ -162,12 +162,26 @@ export async function getKismetIdentityAddress(fid: number): Promise<string | nu
   //    this step, /api/me would return their FC primary (which can
   //    differ from the anchor) and every Nav link / share URL would
   //    point at a sibling-inheritance path instead of the canonical
-  //    anchor URL. Enumerates `verified`, so it is simply empty (a no-op,
-  //    not a wrong answer) while the verifications are unknown.
+  //    anchor URL.
   for (const v of verified) {
     const candidate = await getProfile(v)
     if (candidate.username || candidate.avatarUrl) return v
   }
+
+  // Steps 3 and 4 both need the verifications to mean anything: step 3
+  // ENUMERATES them, and step 4 answers with the FC primary, which for a
+  // web-first user is a different wallet than their anchor. So while the list
+  // is unknown, a user who got no answer above is exactly the case this
+  // function must not guess at — the earlier version fell through here and
+  // silently re-resolved them, which is the same defect the guards at steps 1
+  // and 2 exist to prevent, one branch further down.
+  //
+  // Returning null fails the session CLOSED: verifyFarcasterJwt yields no
+  // address, the request 401s, and the client shows its sign-in prompt until
+  // the 30-second transient sentinel expires. A visible, self-correcting stall
+  // is the right trade against silently reading and WRITING to another of the
+  // user's wallets — writes are the part that does not heal.
+  if (!verificationsKnown) return null
 
   // 4. FC primary — for users who haven't created any Kismet profile
   //    yet (returns null if FC has no primary set for this FID).
