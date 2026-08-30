@@ -19,9 +19,15 @@ interface RaffleButtonProps {
   buttonClassName?: string
   // Full ListButton props, so the button can fall through to "list" for a
   // released non-winner (ended, didn't win) or a holder who never entered once
-  // entries close. Required: every raffle surface must keep the listing action
-  // reachable, or ending a raffle would strand holders with no action at all.
+  // entries close. Required even when the fall-through is suppressed —
+  // creatorAddress feeds the self-entry check and the entry modal.
   listProps: ListButtonProps
+  // Card surfaces keep the default: falling through to "list" so ending a
+  // raffle never strands holders with no action on that card. The artwork
+  // detail page passes false — listing deliberately lives on the holder's
+  // profile, not the detail page, so fall-through states render nothing
+  // there instead of resurrecting a list button the page doesn't carry.
+  listFallback?: boolean
 }
 
 interface RaffleStatus {
@@ -57,6 +63,7 @@ export function RaffleButton({
   tokenId,
   buttonClassName,
   listProps,
+  listFallback = true,
 }: RaffleButtonProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -96,8 +103,8 @@ export function RaffleButton({
 
   const entered = status?.entered ?? false
   const className = `${BASE_BTN} ${buttonClassName ?? ''}`
-  // Fall-through to the marketplace "list" action.
-  const renderList = () => <ListButton {...listProps} />
+  // Fall-through to the marketplace "list" action (nothing where suppressed).
+  const renderList = () => (listFallback ? <ListButton {...listProps} /> : null)
 
   async function enterRaffle() {
     if (!isConnected || !address) {
