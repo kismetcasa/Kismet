@@ -72,11 +72,13 @@ const keyByOwned = (collection: string, tokenId: string, seller: string) =>
   `kismetart:listings:owned:${collection.toLowerCase()}:${tokenId}:${seller.toLowerCase()}`
 const keyBySeller = (seller: string) =>
   `kismetart:listings:seller:${seller.toLowerCase()}`
-// Claim key prevents duplicate TERMINAL notifications across concurrent
-// requests. Named for expiry because that was the only outcome it used to
-// gate; it now covers the sale/cancel outcomes resolveTerminalStatuses can
-// return too. The key string is deliberately unchanged — rotating it would
-// re-announce every listing already retired under the old name.
+// Serializes concurrent handlers within one round so a listing is announced
+// once. Named for expiry because that was the only outcome it used to gate; it
+// now covers the sale/cancel outcomes resolveTerminalStatuses can return too.
+// What makes retirement terminal is the STATUS write below, not this key —
+// every entry path filters on status === 'active' — and the key's own 7-day
+// TTL could not provide durable dedup anyway. The name is kept simply because
+// there is no reason to rotate it.
 const keyExpiredNotif = (id: string) => `kismetart:listing-notified:${id}`
 
 export async function createListing(

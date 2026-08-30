@@ -264,7 +264,17 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
     if (!row || typeof row !== 'object') continue
     const r = row as Record<string, unknown>
     if (typeof r.sender !== 'string' || r.sender.length === 0) continue
-    const timestamp = Number(r.timestamp)
+    // Number() alone would NOT implement the rule stated above: Number(null),
+    // Number(''), Number([]) and Number(false) are all 0 — finite — so a row
+    // with no timestamp would be kept and rendered as a ~20000d age. Accept
+    // only a real number or a numeric string.
+    const rawTs = r.timestamp
+    const timestamp =
+      typeof rawTs === 'number'
+        ? rawTs
+        : typeof rawTs === 'string' && rawTs.trim() !== ''
+          ? Number(rawTs)
+          : NaN
     if (!Number.isFinite(timestamp)) continue
     out.push({
       ...r,

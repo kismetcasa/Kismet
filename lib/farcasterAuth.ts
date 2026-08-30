@@ -91,9 +91,12 @@ export async function getPrimaryAddress(
  *
  * Falls back to FC primary when the user has never explicitly picked
  * one. Re-validates the stored choice against the current verifications
- * list on every read — if the user has un-verified the chosen address
- * since picking it (rare but possible), we silently fall back to
- * primary rather than serving a no-longer-valid identity.
+ * WHENEVER THOSE ARE KNOWN — if the user has un-verified the chosen address
+ * since picking it (rare but possible), we silently fall back to primary
+ * rather than serving a no-longer-valid identity. While an upstream failure
+ * leaves the verifications unknown the stored choice is served
+ * unrevalidated: reassigning someone's identity on a transient is worse than
+ * briefly serving a stale one, and the list is cached an hour regardless.
  */
 export async function getKismetIdentityAddress(fid: number): Promise<string | null> {
   // Single verifications fetch reused across all precedence steps below

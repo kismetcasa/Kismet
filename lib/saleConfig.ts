@@ -292,9 +292,23 @@ export async function readSalePricePerToken(
       functionName: 'sale',
       args: [collection, tokenId],
     })
-    // Tuple shape differs per strategy but pricePerToken is the canonical
-    // field on both; cast through the discriminated read to surface it.
-    return (sale as { pricePerToken: bigint }).pricePerToken
+    // Tuple shape differs per strategy but saleEnd + pricePerToken are on both;
+    // cast through the discriminated read to surface them.
+    const row = sale as { saleEnd: bigint; pricePerToken: bigint }
+    // An UNSET row is not a zero price. Every other reader in this file and in
+    // lib/saleEdit gates on saleEnd !== 0n (:336, :356, :493, :511;
+    // saleEdit :77, :98) precisely because a strategy with no row for this
+    // token returns an all-zero struct. Without the same gate this returned
+    // 0n — not null — and /api/collect's `derivedPrice !== null` then
+    // OVERWROTE the collector's real, regex-validated price with "0". Two
+    // silent consequences downstream: isPriority requires `price !== '0'`
+    // (lib/notifications.ts), so a PAID sale never enters the unread count and
+    // the bell badge stays dark; and formatPrice("0") renders the literal
+    // "free". Note the asymmetry this restores — an RPC *failure* already
+    // returned null and let the client's truthful price stand, so an unset row
+    // was the one input that destroyed it.
+    if (row.saleEnd === 0n) return null
+    return row.pricePerToken
   } catch {
     return null
   }

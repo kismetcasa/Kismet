@@ -244,6 +244,30 @@ for (const t of rawMints) {
   })
 }
 
+/** Every mint in the COLLECTION, not just this token — the burst-dedup lock is
+ *  keyed (recipient, actor, collection) with no tokenId, so detecting
+ *  coalescing needs the wider set. */
+const collectionMints = []
+for (const t of rawMints) {
+  const to = (t.to || '').toLowerCase()
+  if (!to || to === ZERO) continue
+  const tsMs = Date.parse(t.metadata?.blockTimestamp || '') || 0
+  for (const meta of t.erc1155Metadata || []) {
+    let id
+    try {
+      id = BigInt(meta.tokenId).toString()
+    } catch {
+      continue
+    }
+    collectionMints.push({
+      txHash: (t.hash || '').toLowerCase(),
+      collector: to,
+      tokenId: id,
+      tsSec: Math.floor(tsMs / 1000),
+    })
+  }
+}
+
 if (mints.length === 0) {
   console.error(`No on-chain mints found for ${REF}. Nothing to diagnose.`)
   process.exit(0)
@@ -286,15 +310,28 @@ if (!artist) {
   process.exit(1)
 }
 
+// Airdropped editions are minted from 0x0 exactly like a collect, but they are
+// recorded by /api/airdrop/notify — which writes type:'airdrop' to the
+// RECIPIENT and never touches kismetart:collect-idem or the artist's collect
+// inbox. Without this set every airdrop reads as a lost collect POST.
+const kAirdropsByMoment = `kismetart:airdrops:moment:${COLLECTION}:${TOKEN_ID}`
 const idemCmds = mints.map((m) => ['GET', kIdem(m.txHash, m.collector)])
-const [notifRaw, mutedRaw, mutedTypesRaw, ...idemResults] = await redisPipeline([
+const [notifRaw, mutedRaw, mutedTypesRaw, airdropRaw, ...idemResults] = await redisPipeline([
   ['ZRANGE', kNotif(artist), '0', '-1'],
   ['SMEMBERS', kMuted(artist)],
   ['SMEMBERS', kMutedTypes(artist)],
+  ['ZRANGE', kAirdropsByMoment, '0', '-1'],
   ...idemCmds,
 ])
 
 const notifs = (notifRaw || []).map(parseMaybe).filter(Boolean)
+const airdropRecipients = new Set(
+  (airdropRaw || [])
+    .map(parseMaybe)
+    .filter(Boolean)
+    .map((a) => String(a?.recipient?.address ?? a?.recipient ?? '').toLowerCase())
+    .filter(Boolean),
+)
 const mutedActors = new Set((mutedRaw || []).map((a) => String(a).toLowerCase()))
 const mutedTypes = new Set((mutedTypesRaw || []).map(String))
 const idemByIdx = idemResults.map((r) => r != null)
@@ -316,12 +353,20 @@ const nowSec = Math.floor(Date.now() / 1000)
  *  Matched on the tuple writeNotification persists — actor + token — not on
  *  timestamp, which drifts from block time by the after() delay. */
 function findNotif(m) {
+  // The actor is "whoever bought the edition from the creator's point of view"
+  // — app/api/collect writes `actor: giftedBy ?? account`. On a COLLECT-AND-GIFT
+  // those differ: the notification names the payer while the on-chain transfer
+  // names the recipient. Matching only the recipient reported a correctly
+  // delivered gift as LOST. The payer match is corroborating, not
+  // authoritative: on a 4337 path receipt.from is the bundler.
+  const payer = (txCache.get(m.txHash) || {}).from || ''
   return notifs.find(
     (n) =>
       n.type === 'collect' &&
       (n.tokenAddress || '').toLowerCase() === COLLECTION &&
       String(n.tokenId) === TOKEN_ID &&
-      (n.actor || '').toLowerCase() === m.collector,
+      ((n.actor || '').toLowerCase() === m.collector ||
+        (!!payer && (n.actor || '').toLowerCase() === payer)),
   )
 }
 
@@ -330,11 +375,16 @@ function findNotif(m) {
  *  tokenId (lib/notifications.ts), so a collect-all across several artworks in
  *  ONE collection legitimately yields exactly one notification. */
 function burstSibling(m) {
-  return mints.find(
+  // Searches the COLLECTION-wide list, not the token-filtered one. The lock key
+  // carries no tokenId, so the case that actually coalesces is a collector
+  // taking several DIFFERENT artworks from one collection inside 60s — which a
+  // token-filtered search can never see. `<=` because a bundled collect-all
+  // lands every mint in one block, hence one identical timestamp.
+  return collectionMints.find(
     (o) =>
-      o !== m &&
+      !(o.txHash === m.txHash && o.tokenId === m.tokenId) &&
       o.collector === m.collector &&
-      o.tsSec < m.tsSec &&
+      o.tsSec <= m.tsSec &&
       m.tsSec - o.tsSec < BURST_DEDUP_WINDOW_SECS,
   )
 }
@@ -377,28 +427,21 @@ const rows = mints.map((m, i) => {
   } else if (mutedTypes.has('collect')) {
     status = 'MUTED'
     reason = `the artist has muted the 'collect' type — suppressed at WRITE time, never stored.`
-  } else if (ageSec > NOTIF_TTL_SECONDS) {
-    status = 'EXPIRED'
-    reason = `mint is ${Math.floor(ageSec / 86400)}d old, past the ${NOTIF_TTL_SECONDS / 86400}d retention — dropped by the lazy ZREMRANGEBYSCORE.`
-  } else if (atCap && m.tsSec < oldestNotifTs) {
-    status = 'EVICTED'
-    reason = `inbox is at the ${MAX_PER_USER}-entry cap and this mint predates the oldest surviving entry.`
-  } else if (burstSibling(m)) {
-    const sib = burstSibling(m)
-    status = 'COALESCED'
+  } else if (airdropRecipients.has(m.collector)) {
+    status = 'AIRDROP'
     reason =
-      `same collector minted ${REF.split(':')[0]} again ${m.tsSec - sib.tsSec}s earlier (tx ${sib.txHash}); ` +
-      `the burst-dedup lock is keyed (recipient, actor, collection) with NO tokenId, so this ` +
-      `second artwork was folded into that one notification.`
-  } else if (!idem && idemExpired) {
-    status = 'UNKNOWN'
-    reason =
-      `no notification, and the mint is older than the ${IDEMPOTENCY_TTL_SECONDS / 86400}d idempotency-key ` +
-      `retention, so whether /api/collect ran can no longer be established.`
-  } else if (!idem) {
+      `this edition was AIRDROPPED to ${m.collector}, not collected — /api/airdrop/notify records it ` +
+      `(type:'airdrop' to the recipient) and never writes a collect notification or a collect-idem key. ` +
+      `Nothing is missing.`
+  } else if (!idem && !idemExpired) {
+    // Tested BEFORE the retention rules: those explain why a notification that
+    // WAS written is gone, and are silent about one that was never attempted.
+    // Below the cap check, a prolific artist's never-recorded mint read as a
+    // benign eviction and landed in the accounted-for bucket.
     status = 'MISSING'
     reason =
-      `/api/collect NEVER completed for this mint (no idempotency key). ` +
+      `/api/collect NEVER completed for this mint (no idempotency key, and the mint is inside the ` +
+      `${IDEMPOTENCY_TTL_SECONDS / 86400}d key retention, so the absence is definitive). ` +
       (kismetOrigin === true
         ? `The tx DOES carry Kismet's attribution (${tx.referral ? 'mint referral' : ''}${tx.referral && tx.stamped ? ' + ' : ''}${tx.stamped ? 'builder code' : ''}), ` +
           `so the mint was issued by Kismet and the best-effort recording POST was lost — tab closed ` +
@@ -410,6 +453,25 @@ const rows = mints.map((m, i) => {
             `the sale still counts in the artist's stats (those are read from the chain) while no ` +
             `notification exists.`
           : `The tx could not be fetched, so origin is undetermined.`)
+  } else if (ageSec > NOTIF_TTL_SECONDS) {
+    status = 'EXPIRED'
+    reason = `/api/collect ran, but the mint is ${Math.floor(ageSec / 86400)}d old — past the ${NOTIF_TTL_SECONDS / 86400}d retention, so any entry was dropped by the lazy ZREMRANGEBYSCORE.`
+  } else if (atCap && m.tsSec < oldestNotifTs) {
+    status = 'EVICTED'
+    reason = `/api/collect ran, and the inbox is at the ${MAX_PER_USER}-entry cap with this mint predating the oldest surviving entry — consistent with eviction.`
+  } else if (burstSibling(m)) {
+    const sib = burstSibling(m)
+    status = 'COALESCED'
+    reason =
+      `the same collector also minted token ${sib.tokenId} of this collection ` +
+      `${m.tsSec - sib.tsSec}s earlier (tx ${sib.txHash}); the burst-dedup lock is keyed ` +
+      `(recipient, actor, collection) with NO tokenId, so this mint was folded into that ` +
+      `one notification.`
+  } else if (!idem) {
+    status = 'UNKNOWN'
+    reason =
+      `no notification, and the mint is older than the ${IDEMPOTENCY_TTL_SECONDS / 86400}d idempotency-key ` +
+      `retention, so whether /api/collect ran can no longer be established.`
   } else {
     status = 'LOST'
     reason =
@@ -465,6 +527,7 @@ const label = (s) =>
     LOST: '  LOST    ',
     HIDDEN: '  HIDDEN  ',
     MUTED: '  MUTED   ',
+    AIRDROP: '  airdrop ',
     COALESCED: '  COALESCD',
     EVICTED: '  EVICTED ',
     EXPIRED: '  EXPIRED ',
@@ -490,11 +553,14 @@ for (const r of scope) {
   console.log(`             ${r.reason}\n`)
 }
 
+const EXPLAINED = ['OK', 'BY DESIGN', 'AIRDROP', 'COALESCED']
 const missing = scope.filter((r) => ['MISSING', 'LOST', 'HIDDEN', 'MISROUTED'].includes(r.status))
+const inconclusive = scope.filter((r) => !EXPLAINED.includes(r.status) && !missing.includes(r))
 console.log(
-  missing.length === 0
+  missing.length === 0 && inconclusive.length === 0
     ? 'Every on-chain mint in scope is accounted for.'
-    : `${missing.length} of ${scope.length} mint(s) in scope produced no visible notification.`,
+    : `${missing.length} of ${scope.length} mint(s) produced no visible notification` +
+      (inconclusive.length ? `; ${inconclusive.length} inconclusive (retention/eviction/expired key) — NOT the same as accounted for.` : '.'),
 )
 console.log(
   '\nReminder: the activity list and the sales/$ figures are read from In Process\'s on-chain\n' +

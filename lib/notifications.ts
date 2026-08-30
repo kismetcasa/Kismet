@@ -232,16 +232,17 @@ async function isPriority(
  * lib/smartWalletCache keeps a reverse index (`kismetart:smartwallet-owner:*`)
  * of inprocess per-creator smart wallets → the owning EOA, written only by
  * resolveSmartWallet on a live /smartwallet resolution. Those smart wallets are
- * operator-controlled contracts: nobody can produce a SIWE signature for one,
- * and one can never be a Farcaster verification, so it can never be a session
- * address (lib/session: SIWE cookie, else getKismetIdentityAddress over the
- * FC verifications). A notification addressed to one is therefore not merely
- * hard to find — it is unreadable by construction, forever.
+ * inprocess-custodied: they exist so inprocess can execute /moment/create as
+ * the creator (see resolveSmartWallet), and no user holds their key. Note the
+ * bar is custody, NOT Kismet's auth code — lib/siweLogin verifies through
+ * serverBaseClient, which carries EIP-1271, so a contract that CAN sign would
+ * be issued a session. A notification addressed to one of these is therefore
+ * unread in practice, and nothing on the read side ever looks for it.
  *
  * rebuildStats already folds these aliases onto their owner (statsMath's
  * remapEntries), which is exactly why an artist's card could credit a sale
  * whose notification landed in an inbox with no way in. This closes that
- * asymmetry at the single write choke-point, so all 15 types inherit it.
+ * asymmetry at the single write choke-point, so every type inherits it.
  *
  * Best-effort by construction: getSmartWalletOwners is safeRead-wrapped and
  * returns an empty map on a Redis failure, which degrades to today's behavior
@@ -290,10 +291,15 @@ export async function writeNotification(input: NotificationInput): Promise<boole
       const cutoff = Math.floor(Date.now() / 1000) - FOLLOW_DEDUP_WINDOW_SECS
       const recent = (await redis.zrange(keyNotif(recipient), cutoff, '+inf', {
         byScore: true,
-      })) as string[]
+      })) as (string | Notification)[]
       const dup = recent.some((raw) => {
         try {
-          const n = JSON.parse(raw) as Notification
+          // Upstash decodes base64 and JSON-parses, so a member arrives as an
+          // OBJECT as often as a string — the same dual shape loadAndAnnotate
+          // handles. A bare JSON.parse threw on the object form, the catch
+          // swallowed it, and FOLLOW_DEDUP_WINDOW_SECS never suppressed
+          // anything: every re-follow re-notified.
+          const n = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Notification
           return n.type === 'follow' && n.actor?.toLowerCase() === input.actor!.toLowerCase()
         } catch {
           return false

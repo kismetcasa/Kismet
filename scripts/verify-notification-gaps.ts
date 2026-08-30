@@ -242,12 +242,31 @@ console.log('\nG5  notifications addressed to an unreachable smart-wallet inbox'
     type: 'collect', recipient: ALIAS, actor: BUYER, tokenAddress: '0xc0ffee', tokenId: '3',
   })
   check("OWNER's type-mute suppresses a collect addressed to the ALIAS", inbox(OWNER).length === 1)
+  sets.delete(`kismetart:notif-muted-types:${OWNER}`)
 
-  // Self-action is judged on the resolved address too.
-  await notifications.writeNotification({
-    type: 'follow', recipient: ALIAS, actor: OWNER,
-  })
-  check('self-action detected through the alias', inbox(OWNER).length === 1)
+  // The burst lock is the second derivation that must agree. Addressing the
+  // SAME (actor, collection) tuple once via the alias and once directly must
+  // collide on ONE lock key — if the lock still keyed off the unresolved
+  // address the second write would land and the inbox would hold two.
+  const BURST = { type: 'collect' as const, actor: BUYER, tokenAddress: '0xdecaf', tokenId: '7' }
+  await notifications.writeNotification({ ...BURST, recipient: ALIAS })
+  const afterFirst = inbox(OWNER).length
+  await notifications.writeNotification({ ...BURST, recipient: OWNER, tokenId: '8' })
+  check('the burst lock keys off the RESOLVED address, not the alias',
+    inbox(OWNER).length === afterFirst)
+
+  // The follow-dedup scan is the third: it reads the inbox zset directly, so a
+  // stale key would scan an empty set and let a duplicate follow through.
+  await notifications.writeNotification({ type: 'follow', recipient: OWNER, actor: BUYER })
+  const afterFollow = inbox(OWNER).length
+  await notifications.writeNotification({ type: 'follow', recipient: ALIAS, actor: BUYER })
+  check('the follow-dedup scan reads the RESOLVED inbox', inbox(OWNER).length === afterFollow)
+
+  // Self-action is judged on the resolved address too. Asserted as a DELTA:
+  // an absolute count silently rots as soon as a case is added above it.
+  const beforeSelf = inbox(OWNER).length
+  await notifications.writeNotification({ type: 'follow', recipient: ALIAS, actor: OWNER })
+  check('self-action detected through the alias', inbox(OWNER).length === beforeSelf)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -259,7 +278,11 @@ console.log('\nG3  a lost notification left no trace')
   console.error = (...a: unknown[]) => { errs.push(a) }
   fail.cmds.add('zadd')
   const ok = await notifications.writeNotification({
+    // `comment` and `note` are load-bearing test data, not decoration: without a
+    // private field actually PRESENT on the input, the privacy assertion below
+    // holds for any log shape at all, including one that spreads the whole input.
     type: 'sale', recipient: VICTIM, actor: '0x9', tokenAddress: '0xc0ffee', tokenId: '1', price: '5',
+    comment: 'saw this at the show — congrats', note: 'private release note',
   })
   fail.cmds.delete('zadd')
   console.error = realErr
@@ -268,7 +291,8 @@ console.log('\nG3  a lost notification left no trace')
   check('and no longer fails silently', errs.some((e) => String(e[0]).includes('[notifications] write failed')))
   const logged = errs.find((e) => String(e[0]).includes('write failed'))?.[1] as Record<string, unknown> | undefined
   check('the log carries the routing fields needed to trace it', logged?.type === 'sale' && logged?.recipient === VICTIM)
-  check('but never the payload (a collector comment is private)', logged !== undefined && !('comment' in logged))
+  check('but never the payload (a collector comment is private)',
+    logged !== undefined && !('comment' in logged) && !('note' in logged))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -295,6 +319,25 @@ console.log('\nG1  a listing filled off-platform announced "expired"')
     return seaport.listingOrderHash(listing).toLowerCase()
   }
 
+  // Unhashable orderComponents, seeded FIRST so it is skipped by the compaction
+  // and every later result must be re-mapped through `idx`. Without this the
+  // mapping is the identity permutation and out[j] passes for out[idx[j]].
+  strings.set('kismetart:listing:L-unhashable', JSON.stringify({
+    id: 'L-unhashable', collectionAddress: '0x00000000000000000000000000000000c0ffee01',
+    tokenId: '99', seller: SELLER, price: '1', sellerProceeds: '1', royaltyReceiver: SELLER,
+    royaltyAmount: '0', currency: 'eth', platformFee: '0', platformFeeRecipient: SELLER,
+    orderComponents: { offerer: 'not-an-order' }, signature: '0x',
+    createdAt: Date.now() - 2000, expiresAt: Date.now() - 1000, status: 'active', name: 'Broken',
+  }))
+  {
+    // Score deliberately ABOVE the others: sweepExpiredListings reads the index
+    // with { rev: true }, so this must sort FIRST to be the row the compaction
+    // skips. Seeded last-in-order it would sort last, idx would stay the
+    // identity permutation, and out[j] would pass for out[idx[j]].
+    const z = zsets.get('kismetart:listings') ?? new Map<string, number>()
+    z.set('L-unhashable', Date.now() + 10_000); zsets.set('kismetart:listings', z)
+  }
+
   const soldHash = mkListing('L-sold', '11')
   const goneHash = mkListing('L-cancelled', '22')
   mkListing('L-expired', '33')
@@ -313,6 +356,10 @@ console.log('\nG1  a listing filled off-platform announced "expired"')
   check('an on-chain cancel is recorded, not announced', byToken('22') === undefined)
   check('  …and its row is recorded cancelled', JSON.parse(strings.get('kismetart:listing:L-cancelled')!).status === 'cancelled')
   check('a genuinely untouched order still expires (non-regression)', byToken('33')?.type === 'listing_expired')
+  check('an unhashable order expires without aborting the batch', byToken('99')?.type === 'listing_expired')
+  check('  …and results are re-mapped through idx, not by position',
+    JSON.parse(strings.get('kismetart:listing:L-unhashable')!).status === 'expired' &&
+    JSON.parse(strings.get('kismetart:listing:L-sold')!).status === 'filled')
 
   // An order Seaport cannot answer for must expire (safe) AND be counted, so a
   // systematically wrong ABI is visible instead of looking like "nothing sold".
@@ -455,6 +502,45 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
     .filter((f) => !READERS.includes(f))
     .filter((f) => !readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes('normalizeMomentComments'))
   check('no unparsed reader of the comments feed exists', unguarded.length === 0, unguarded.join(', '))
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\nG6  a paid collect recorded as free silences the bell badge')
+{
+  // Not a fix on this branch's original five — this is the consequence chain
+  // behind lib/saleConfig's newly-guarded readSalePricePerToken. An unset sale
+  // row returned 0n rather than null, /api/collect overwrote the collector's
+  // real price with "0", and isPriority requires price !== '0' — so a PAID
+  // sale never entered the unread count. The price plumbing is asserted here
+  // because it is the badge, not the list, that goes quiet.
+  const ARTIST = '0x7777777777777777777777777777777777777777'
+  const B1 = '0x8888888888888888888888888888888888888881'
+  const B2 = '0x8888888888888888888888888888888888888882'
+
+  await notifications.writeNotification({
+    type: 'collect', recipient: ARTIST, actor: B1,
+    tokenAddress: '0xfeed', tokenId: '1', price: '1000', currency: 'eth',
+  })
+  const paid = inbox(ARTIST).find((n) => n.tokenId === '1')
+  check('a priced collect is priority, so it reaches the badge', paid?.priority === true)
+
+  await notifications.writeNotification({
+    type: 'collect', recipient: ARTIST, actor: B2,
+    tokenAddress: '0xfeed', tokenId: '2', price: '0', currency: 'eth',
+  })
+  const free = inbox(ARTIST).find((n) => n.tokenId === '2')
+  check('  …while a zero price is NOT priority (the badge stays dark)', free?.priority === false)
+  check('  …so a mispriced paid sale is invisible in the count, not just quiet',
+    paid?.priority === true && free?.priority === false)
+
+  // The guard itself: an unset row must read as "no answer", not "free".
+  // Sliced to the function body rather than regex-spanning a distance, so
+  // adding or removing comment lines cannot silently break the assertion.
+  const src = readFileSync(new URL('../lib/saleConfig.ts', import.meta.url), 'utf8')
+  const start = src.indexOf('export async function readSalePricePerToken')
+  const body = start >= 0 ? src.slice(start, src.indexOf('\nexport ', start + 1)) : ''
+  check('readSalePricePerToken gates on an unset sale row like its siblings',
+    body.includes('saleEnd === 0n) return null'))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
