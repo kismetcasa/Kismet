@@ -301,12 +301,16 @@ export async function readSalePricePerToken(
     // token returns an all-zero struct. Without the same gate this returned
     // 0n — not null — and /api/collect's `derivedPrice !== null` then
     // OVERWROTE the collector's real, regex-validated price with "0". Two
-    // silent consequences downstream: isPriority requires `price !== '0'`
-    // (lib/notifications.ts), so a PAID sale never enters the unread count and
-    // the bell badge stays dark; and formatPrice("0") renders the literal
-    // "free". Note the asymmetry this restores — an RPC *failure* already
-    // returned null and let the client's truthful price stand, so an unset row
-    // was the one input that destroyed it.
+    // silent consequences downstream: formatPrice("0") renders the literal
+    // "free"; and isPriority's `price !== '0'` shortcut is skipped, so the
+    // collect falls through to `isFollowing(artist, collector) || collector in
+    // KEY_PROFILES`. That fall-through is why the badge effect is CONDITIONAL,
+    // not universal — an established collector (a saved profile, an FidProfile,
+    // or anyone who has minted, per profile.trackWallet) is "known" and still
+    // badges. It goes dark specifically for a first-time collector the artist
+    // does not follow. Note the asymmetry this restores — an RPC *failure*
+    // already returned null and let the client's truthful price stand, so an
+    // unset row was the one input that destroyed it.
     if (row.saleEnd === 0n) return null
     return row.pricePerToken
   } catch {

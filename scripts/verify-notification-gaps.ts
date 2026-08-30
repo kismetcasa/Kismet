@@ -509,10 +509,12 @@ console.log('\nG6  a paid collect recorded as free silences the bell badge')
 {
   // Not a fix on this branch's original five — this is the consequence chain
   // behind lib/saleConfig's newly-guarded readSalePricePerToken. An unset sale
-  // row returned 0n rather than null, /api/collect overwrote the collector's
-  // real price with "0", and isPriority requires price !== '0' — so a PAID
-  // sale never entered the unread count. The price plumbing is asserted here
-  // because it is the badge, not the list, that goes quiet.
+  // row returned 0n rather than null and /api/collect overwrote the collector's
+  // real price with "0", which skips isPriority's `price !== '0'` shortcut.
+  // The effect is CONDITIONAL and the cases below pin both sides of it: with
+  // the price intact the collect badges outright, while at "0" it falls
+  // through to `isFollowing || KEY_PROFILES` — dark for a stranger, still lit
+  // for a known collector. It is the badge, not the list, that goes quiet.
   const ARTIST = '0x7777777777777777777777777777777777777777'
   const B1 = '0x8888888888888888888888888888888888888881'
   const B2 = '0x8888888888888888888888888888888888888882'
@@ -529,9 +531,21 @@ console.log('\nG6  a paid collect recorded as free silences the bell badge')
     tokenAddress: '0xfeed', tokenId: '2', price: '0', currency: 'eth',
   })
   const free = inbox(ARTIST).find((n) => n.tokenId === '2')
-  check('  …while a zero price is NOT priority (the badge stays dark)', free?.priority === false)
-  check('  …so a mispriced paid sale is invisible in the count, not just quiet',
-    paid?.priority === true && free?.priority === false)
+  check('  …a zero price from an UNKNOWN collector is not (the badge goes dark)',
+    free?.priority === false)
+
+  // The other side of the fall-through, so the conditionality is pinned rather
+  // than implied: a collector in KEY_PROFILES badges even at price "0". Without
+  // this case the suite would read as "zero price ⇒ always dark", which is the
+  // overstatement the guard's comment was corrected for.
+  const B3 = '0x8888888888888888888888888888888888888883'
+  sets.set('kismetart:profiles', new Set([B3]))
+  await notifications.writeNotification({
+    type: 'collect', recipient: ARTIST, actor: B3,
+    tokenAddress: '0xfeed', tokenId: '3', price: '0', currency: 'eth',
+  })
+  check('  …but a KNOWN collector still badges at price 0 (effect is conditional)',
+    inbox(ARTIST).find((n) => n.tokenId === '3')?.priority === true)
 
   // The guard itself: an unset row must read as "no answer", not "free".
   // Sliced to the function body rather than regex-spanning a distance, so
