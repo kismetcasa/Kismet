@@ -33,8 +33,11 @@
  *   2. the /api/collect idempotency key — did the recording endpoint ever
  *      complete for this mint? (30-day retention; older mints read "unknown")
  *   3. a matching entry in the artist's notification ZSET
- *   4. every suppression rule that could have eaten it, checked in the order
- *      lib/notifications.ts applies them
+ *   4. every suppression or retention rule that could have eaten it — ordered
+ *      by EVIDENCE STRENGTH, not by the order lib/notifications.ts applies
+ *      them: a definitive absent-idempotency-key result is tested before the
+ *      retention heuristics (EXPIRED/EVICTED/COALESCED), which only qualify a
+ *      mint the endpoint provably recorded
  * and prints a verdict naming the exact stage that dropped it.
  *
  * ORIGIN IS DECIDED ON-CHAIN, NOT ON THE COMMENT. The activity row's wording is

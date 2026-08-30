@@ -139,9 +139,11 @@ export const SEAPORT_ABI = [
   {
     // Seaport's own record of what happened to an order, keyed by its hash.
     // The ONLY frontend-agnostic answer to "did this listing actually sell?":
-    // Seaport writes totalFilled/totalSize in _updateStatus on every
-    // fulfillment and flips isCancelled in cancel(), no matter which UI (or
-    // raw contract call) drove it. An off-chain signed order that nobody has
+    // Seaport updates its stored order status (the numerator/denominator
+    // behind totalFilled/totalSize, via OrderValidator's
+    // _validateOrderAndUpdateStatus) on every fulfillment and flips
+    // isCancelled in cancel(), no matter which UI (or raw contract call)
+    // drove it. An off-chain signed order that nobody has
     // touched reads back all-zero/false.
     name: 'getOrderStatus',
     type: 'function',

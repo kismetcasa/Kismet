@@ -27,19 +27,24 @@ export async function resolve(specifier, context, nextResolve) {
     return { url: 'data:text/javascript,', shortCircuit: true }
   }
 
-  // `next/server` is unresolvable on bare Node (the package exports map is
-  // conditioned on Next's own runtime), which put every production module that
-  // schedules background work behind it — lib/listings among them — out of the
-  // verify suite's reach. Shim the one primitive those modules import at
+  // `next/server` is unresolvable on bare Node — not because of an exports
+  // map (next's package.json has NONE; verified) but because the extensionless
+  // specifier fails Node's ESM resolution, and requiring `next/server.js`
+  // would pull Next's runtime into a bare-Node process anyway. That put every
+  // production module that schedules background work behind it — lib/listings
+  // among them — out of the verify suite's reach. Shim the one primitive those modules import at
   // MODULE scope: `after`, which defers work past the response. Running the
-  // callback on the microtask queue and swallowing its errors is the honest
-  // stand-in for a verifier — the work still happens, still asynchronously,
-  // and still can't break its caller. Route handlers (NextRequest /
+  // callback on the microtask queue is the honest stand-in for a verifier —
+  // the work still happens, still asynchronously, and still can't break its
+  // caller synchronously. Errors are deliberately NOT swallowed, which is
+  // STRICTER than production (Next logs an after() throw and carries on): in
+  // a verifier an unexpected deferred throw should fail the run loudly, not
+  // vanish. Route handlers (NextRequest /
   // NextResponse) are deliberately NOT stubbed: a verifier should drive the
   // library, not fake the framework, and a missing export fails loudly instead
   // of silently testing a mock.
   if (specifier === 'next/server') {
-    const shim = 'export const after = (fn) => { Promise.resolve().then(() => fn()).catch(() => {}) }'
+    const shim = 'export const after = (fn) => { Promise.resolve().then(() => fn()) }'
     return { url: `data:text/javascript,${encodeURIComponent(shim)}`, shortCircuit: true }
   }
 

@@ -19,6 +19,10 @@
 //   G5  notifications addressed to an inprocess per-creator smart wallet — an
 //       inbox nobody can sign in to — while stats folded the same alias onto
 //       its owner (lib/notifications resolveRecipient)
+//   G6  a paid collect recorded as free — an unset sale row read as price 0n —
+//       silencing the bell badge for unknown collectors (lib/saleConfig)
+//   G7  inbox retention bounds nothing was checking: the per-write 200-entry
+//       trim and the 7-day follow-dedup window (lib/notifications)
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-notification-gaps.ts
@@ -604,6 +608,8 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
   check('a good row survives intact', kept?.sender === '0xabc' && kept?.comment === 'hi')
   check('opaque upstream fields are preserved', (kept as Record<string, unknown>)?.username === 'ada')
   check('kind is preserved (airdrop rows key separately)', kept?.kind === 'airdrop')
+  check('  …while a junk kind is stripped, not carried through typed as valid',
+    n([row({ kind: 'exploit' })])[0]?.kind === undefined)
   check('one bad row no longer costs the good ones', n([row({}), null, row({ sender: '' })]).length === 1)
 
   // The parse only helps where it is actually applied, and TypeScript cannot

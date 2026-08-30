@@ -276,11 +276,17 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
           ? Number(rawTs)
           : NaN
     if (!Number.isFinite(timestamp)) continue
+    // `kind` is Kismet's OWN synthetic marker (the comments route stamps
+    // 'airdrop' on its folded rows; upstream rows carry no kind at all), so a
+    // value outside the declared union can only be junk — normalized to
+    // absent rather than carried through typed as something it is not.
+    const kind = r.kind === 'collect' || r.kind === 'airdrop' ? r.kind : undefined
     out.push({
       ...r,
       sender: r.sender,
       timestamp,
       comment: typeof r.comment === 'string' ? r.comment : '',
+      kind,
     } as MomentComment)
   }
   return out

@@ -14,13 +14,13 @@ import {
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
   getSaleWindow,
+  normalizeMomentComments,
   type Moment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { fetchCollectionChip } from '@/lib/collectionCache'
 import { useTextContent, fetchTextContent } from '@/lib/textCache'
 import { getCachedComments, setCachedComments } from '@/lib/momentCache'
-import { normalizeMomentComments } from '@/lib/inprocess'
 import { FeatureStar } from './FeatureStar'
 import { ERC1155_ABI } from '@/lib/seaport'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '@/lib/zoraMint'
