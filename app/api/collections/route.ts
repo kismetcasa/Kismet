@@ -210,6 +210,12 @@ export async function GET(req: NextRequest) {
   // app/api/timeline/route.ts. Proxying inprocess's global collections
   // endpoint instead would surface collections we didn't deploy.
   if (feed) {
+    // PaginatedGrid's refresh button appends `fresh=1` (lib/paginatedGridQuery).
+    // It must bypass the shared window below, and NOT merely land on a
+    // different cache key: that key is itself cacheable, so a second refresh
+    // inside the window replayed the first one's body — which is the opposite
+    // of what a refresh means. Same `fresh` escape hatch /api/timeline uses.
+    const fresh = searchParams.get('fresh') === '1'
     const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get('limit') ?? '18', 10) || 18))
     const [userCreated, hiddenSet, hiddenMoments, hiddenUsers] = await Promise.all([
@@ -337,11 +343,17 @@ export async function GET(req: NextRequest) {
         // fresh" — but addTrackedCollection's own-pod invalidate exists for the
         // artist's next read, the create flow routes to /collection/[address]
         // rather than here, and PaginatedGrid's refresh appends `fresh=1`,
-        // which is a DIFFERENT cache key and therefore always an origin hit.
+        // which this branch answers `private, no-store` (a different cache KEY
+        // alone would not do it — that key caches too, so a second refresh
+        // inside the window replayed the first).
         // And the win is a scaling one: with the page-bounded hydration above,
         // a catalogue near `limit` sees little change, while one several times
         // `limit` stops paying 4 uncached RPC calls per collection per request.
-        headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' },
+        headers: {
+          'Cache-Control': fresh
+            ? 'private, no-store'
+            : 'public, s-maxage=30, stale-while-revalidate=120',
+        },
       },
     )
   }

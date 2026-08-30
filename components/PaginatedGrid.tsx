@@ -419,9 +419,19 @@ export function PaginatedGrid<T>({
         <div className="mt-8 text-center">
           {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
               observer's 600px rootMargin fires the auto-load well before the
-              fold. The button stays as a keyboard / no-IntersectionObserver
-              fallback. */}
-          {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
+              fold; the button is the keyboard / no-IntersectionObserver
+              fallback and stays available even with zero rows.
+              The sentinel does NOT: an auto-loading tripwire over an EMPTY grid
+              sits in the viewport permanently and re-arms on every committed
+              page, walking the feed to its last page with no user action. That
+              state needs no client `filter` to reach — /api/listings filters
+              visibility AFTER pagination (route.ts:460-465) while `total` still
+              counts hidden rows, so a fully-hidden page returns `listings: []`
+              with total_pages > 1, and /discover?m=secondary runs infinite
+              scroll on exactly that endpoint. */}
+          {infiniteScroll && visible.length > 0 && (
+            <div ref={sentinelRef} aria-hidden className="h-px w-full" />
+          )}
           <button
             onClick={loadMore}
             disabled={loadingMore}

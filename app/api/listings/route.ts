@@ -481,7 +481,17 @@ export async function GET(req: NextRequest) {
       // inherited Next's dynamic-route no-store, so every /market and
       // /discover?m=secondary page view re-ran the 500-member zrange, the
       // chunked MGET and the whole predicate chain from cold.
-      headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' },
+      // `fresh=1` (PaginatedGrid's refresh button) bypasses the shared window
+      // the same way /api/timeline handles it. Relying on the differing cache
+      // KEY is not enough: that key is cacheable too, so a second refresh
+      // within 30s replayed the first — visibly wrong right after a seller
+      // lists or cancels, which is exactly when refresh gets pressed.
+      headers: {
+        'Cache-Control':
+          searchParams.get('fresh') === '1'
+            ? 'private, no-store'
+            : 'public, s-maxage=30, stale-while-revalidate=60',
+      },
     },
   )
 }
