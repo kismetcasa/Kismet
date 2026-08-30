@@ -300,9 +300,18 @@ async function resolveTerminalStatuses(listings: Listing[]): Promise<TerminalSta
 // each (see resolveTerminalStatuses). A claim key (NX) ensures exactly one
 // notification per listing even under concurrency.
 async function handleExpiredListings(listings: Listing[]): Promise<void> {
-  // Resolved before the claim so the outcome is known when the single
-  // notification per listing is chosen — claiming first would burn the one
-  // announcement this listing ever gets on a guess.
+  // Resolved BEFORE the claim, which is a deliberate trade and not the obvious
+  // ordering. Claiming first would be cheaper: the claim decides which handler
+  // proceeds, never what it announces, so only the winner would pay for the
+  // multicall instead of every concurrent handler paying before dedup rejects
+  // it. What claiming first would cost is a much wider crash window — the gap
+  // between taking the claim and writing the status would then contain a
+  // network round trip, and a process that dies inside it leaves the listing
+  // claimed but un-retired for the claim key's full 7-day TTL, announced to
+  // nobody. Keeping the RPC outside that gap leaves only Redis writes in it.
+  // The duplicated work is bounded in practice: `listings` here is only the
+  // rows that crossed expiresAt since the last pass and are still active,
+  // which is normally zero.
   const outcomes = await resolveTerminalStatuses(listings)
   await Promise.all(listings.map(async (listing, i) => {
     const status = outcomes[i]

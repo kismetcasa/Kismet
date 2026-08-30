@@ -538,8 +538,8 @@ console.log('\nG2  a Farcaster blip reassigned identity and deleted the choice')
   const FID5 = 4005
   strings.set(`kismetart:fc:primary:${FID5}`, OTHER)
   fcVerifications = 'transient'
-  check('a web-first user is not re-resolved to FC primary on a transient',
-    (await farcasterAuth.getKismetIdentityAddress(FID5)) === null)
+  check('a user with NO stored choice still resolves during a transient (availability)',
+    (await farcasterAuth.getKismetIdentityAddress(FID5)) === OTHER)
 
   const FID6 = 4006
   strings.set(`kismetart:fc:primary:${FID6}`, OTHER)

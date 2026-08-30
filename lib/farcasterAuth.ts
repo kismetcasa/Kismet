@@ -168,20 +168,23 @@ export async function getKismetIdentityAddress(fid: number): Promise<string | nu
     if (candidate.username || candidate.avatarUrl) return v
   }
 
-  // Steps 3 and 4 both need the verifications to mean anything: step 3
-  // ENUMERATES them, and step 4 answers with the FC primary, which for a
-  // web-first user is a different wallet than their anchor. So while the list
-  // is unknown, a user who got no answer above is exactly the case this
-  // function must not guess at — the earlier version fell through here and
-  // silently re-resolved them, which is the same defect the guards at steps 1
-  // and 2 exist to prevent, one branch further down.
+  // KNOWN RESIDUAL, deliberately not guarded. While the verifications are
+  // unknown, step 3's enumeration is empty, so a web-first user whose identity
+  // is their ANCHOR (an address-keyed profile, no FidProfile, no legacy
+  // pointer) falls to step 4 and resolves to their FC primary — a different
+  // wallet. Steps 1 and 2 above are guarded because they have a stored answer
+  // to fall back on; this cohort has none, and nothing in Kismet can find an
+  // anchor without the verifications list (the durable reverse index is
+  // address→FID, the wrong direction).
   //
-  // Returning null fails the session CLOSED: verifyFarcasterJwt yields no
-  // address, the request 401s, and the client shows its sign-in prompt until
-  // the 30-second transient sentinel expires. A visible, self-correcting stall
-  // is the right trade against silently reading and WRITING to another of the
-  // user's wallets — writes are the part that does not heal.
-  if (!verificationsKnown) return null
+  // A guard here was tried and reverted: returning null fails the session
+  // closed, which 401s a strictly LARGER population than it protects. Step 4
+  // does not depend on `verified` at all — getPrimaryAddress has its own cache
+  // and its own endpoint — so blocking it also breaks every user for whom
+  // primary is the correct answer, including a brand-new Mini App user on
+  // their first load, who would be unable to onboard for the duration of a
+  // Farcaster outage. Serving a possibly-wrong address to a narrow cohort for
+  // ~30s beats denying the app to everyone.
 
   // 4. FC primary — for users who haven't created any Kismet profile
   //    yet (returns null if FC has no primary set for this FID).

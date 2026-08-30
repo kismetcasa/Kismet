@@ -13,7 +13,10 @@ import { cfileRef } from './collectorFileCore'
  * The file_update fan-out (COLLECTOR_DOWNLOADS_DESIGN.md §6.2) — the one
  * bulk-notification path in the app with an explicit cost model, because it
  * runs against a datastore with a hard-stop budget cap: each recipient costs
- * ~10-12 Redis commands through writeNotification + push, so the audience is
+ * ~11-13 Redis commands through writeNotification + push (the extra one is
+ * writeNotification's smart-wallet alias resolution, which this path does NOT
+ * opt out of — unlike the follower fan-out, a collector audience CAN in
+ * principle contain a contract that received an edition), so the audience is
  * CEILING-REFUSED (never silently truncated), delivery is paced in small
  * batches with the push AWAITED (bounding in-flight HTTP — the detached-push
  * shape is the OOM-incident shape), and the 24h cooldown is a SET NX lock.
