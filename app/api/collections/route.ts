@@ -341,7 +341,7 @@ export async function GET(req: NextRequest) {
         // And the win is a scaling one: with the page-bounded hydration above,
         // a catalogue near `limit` sees little change, while one several times
         // `limit` stops paying 4 uncached RPC calls per collection per request.
-        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120',
+        headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' },
       },
     )
   }
