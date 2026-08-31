@@ -132,8 +132,10 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   signals into `/learn`. Nothing was lost in the merge — the `Organization`
   node with `sameAs` already rendered on the homepage and all three guides, and
   the visible x.com / farcaster.xyz / kismetcasa.xyz links live site-wide in
-  `components/SiteFooter.tsx`. The footer's "About" label is retained, pointed
-  at the anchor.
+  `components/SiteFooter.tsx`. The footer's "About" label was retained at
+  first, pointed at the anchor, then dropped (2026-08) as redundant next to
+  the footer's existing `/learn` link; the operator section stays reachable
+  via the permanent `/about` 308 and from `/learn` itself.
 
 ## Realistic timelines
 
