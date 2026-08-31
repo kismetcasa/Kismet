@@ -12,6 +12,7 @@ import {
   paginatedQueryKey,
   type PageResponse,
 } from '@/lib/paginatedGridQuery'
+import { dedupeByKey } from '@/lib/feedPagination'
 
 interface ItemHelpers {
   /** Optimistically drop this item from the rendered list (e.g. after a delete). */
@@ -216,7 +217,12 @@ export function PaginatedGrid<T>({
       : []
     return [...firstPageItems, ...extraPages.flat()]
   }, [firstPage, itemsKey, extraPages])
-  const visible = filter ? filter(allItems) : allItems
+  // This list is append-only, so a row an earlier page already rendered reaches
+  // React as a repeated key (and one row is silently skipped). Runs BEFORE the
+  // caller's filter, so a consumer-supplied predicate always sees a clean list.
+  // lib/feedPagination.dedupeByKey documents when the duplicate arises.
+  const deduped = dedupeByKey(allItems, getKey)
+  const visible = filter ? filter(deduped) : deduped
 
   // Optimistic remove — used after delete/list/etc. actions. Updates
   // BOTH the cached first page (so the item stays gone after the
@@ -392,27 +398,48 @@ export function PaginatedGrid<T>({
       {!loading && !error && visible.length === 0 && empty}
 
       {!loading && visible.length > 0 && (
-        <>
-          <div className={gridClass}>
-            {renderEntries()}
-          </div>
-          {currentPage < totalPages && (
-            <div className="mt-8 text-center">
-              {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
-                  observer's 600px rootMargin fires the auto-load well before the
-                  fold. The button stays as a keyboard / no-IntersectionObserver
-                  fallback. */}
-              {infiniteScroll && <div ref={sentinelRef} aria-hidden className="h-px w-full" />}
-              <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
-              >
-                {loadingMore ? 'loading…' : 'load more'}
-              </button>
-            </div>
+        <div className={gridClass}>
+          {renderEntries()}
+        </div>
+      )}
+
+      {/* Deliberately OUTSIDE the `visible.length > 0` branch above. A
+          caller-supplied `filter` runs client-side over server pages, so it can
+          empty a page that has successors — the discover collections sub-tab
+          with "following" on, and the roster tab's collection-scoped list, both
+          do exactly that. Nested, the button AND the infinite-scroll sentinel
+          disappeared with the rows, stranding the reader on "nothing here" with
+          pages still unread. Same `currentPage < totalPages` gate as before, so
+          an exhausted feed is unchanged. No `!error` guard: `totalPages` falls
+          back to 1 when there is no first page, so a cold failure hides this
+          anyway — while a background refetch that fails with cached rows still
+          on screen must keep its "load more", which is what the pre-existing
+          nesting did. */}
+      {!loading && currentPage < totalPages && (
+        <div className="mt-8 text-center">
+          {/* Infinite-scroll trip wire (opt-in). Sits above the button so the
+              observer's 600px rootMargin fires the auto-load well before the
+              fold; the button is the keyboard / no-IntersectionObserver
+              fallback and stays available even with zero rows.
+              The sentinel does NOT: an auto-loading tripwire over an EMPTY grid
+              sits in the viewport permanently and re-arms on every committed
+              page, walking the feed to its last page with no user action. That
+              state needs no client `filter` to reach — /api/listings filters
+              visibility AFTER pagination (route.ts:460-465) while `total` still
+              counts hidden rows, so a fully-hidden page returns `listings: []`
+              with total_pages > 1, and /discover?m=secondary runs infinite
+              scroll on exactly that endpoint. */}
+          {infiniteScroll && visible.length > 0 && (
+            <div ref={sentinelRef} aria-hidden className="h-px w-full" />
           )}
-        </>
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="px-8 py-3 border border-line text-xs font-mono text-dim uppercase tracking-wider hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+          >
+            {loadingMore ? 'loading…' : 'load more'}
+          </button>
+        </div>
       )}
     </div>
   )
