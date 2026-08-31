@@ -20,9 +20,10 @@ import Link from 'next/link'
 const FOOTER_LINKS = [
   { href: '/learn', label: 'Learn' },
   { href: '/discover', label: 'Discover' },
-  // /about is footer-only: the entity/trust surface search and answer engines
-  // look for, with no place in the product nav.
-  { href: '/about', label: 'About' },
+  // No "About" entry: the former /about page merged into /learn#who-runs-kismet
+  // (2026-08), and a footer About link next to the Learn link was judged
+  // redundant. The operator section stays reachable via the permanent /about
+  // 308 redirect and from /learn itself.
   // Label "Agent" for nav brevity; the /agent URL and its page title ("AI
   // agent — Kismet") stay as-is — the title keeps the query-bearing phrase
   // for search while the anchor stays concise. No redirect needed.

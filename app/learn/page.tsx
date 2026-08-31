@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { JsonLd } from '@/components/JsonLd'
-import { faqJsonLd, breadcrumbNode } from '@/lib/structuredData'
+import { learnJsonLd } from '@/lib/structuredData'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { SITE_URL } from '@/lib/siteUrl'
 import { PATRON_COLLECTION_ADDRESS } from '@/lib/patronCollection'
@@ -242,21 +242,53 @@ const SECTIONS: Section[] = [
       </p>
     ),
   },
+  // Operator / provenance — merged from the former /about page (2026-08), which
+  // now 308s here. Deliberately LAST: the front-loaded positions belong to the
+  // intent queries this page ranks for ("how to mint onchain art"), while the
+  // entity + trust content is E-E-A-T that reads fine further down. It states
+  // what the "Why was Kismet created?" FAQ does not — who operates the
+  // platform, and the concrete commitments that follow from it — so the two
+  // complement rather than repeat each other.
+  {
+    id: 'who-runs-kismet',
+    heading: 'Who runs Kismet',
+    body: (
+      <>
+        <p>
+          Kismet is built and operated by{' '}
+          <a
+            href="https://www.kismetcasa.xyz"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-ink underline underline-offset-4"
+          >
+            Kismet Casa
+          </a>
+          , a hybrid residency program for artists and developers producing
+          experiences that bridge IRL and onchain. The platform was developed
+          during our residency at FarCon Rome, as a home for the collaborations
+          and artist work coming out of that programming.
+        </p>
+        <p>
+          That origin is why Kismet is built for artists to capture the value
+          they create: a 0% mint fee, sponsored gas on Base and sponsored
+          Arweave uploads so permanent storage costs the artist nothing, and
+          royalties enforced on the secondary market. You keep custody
+          throughout — Kismet prepares transactions, you sign them, and the
+          platform never holds your artwork or your funds.
+        </p>
+      </>
+    ),
+  },
 ]
 
 export default function LearnPage() {
   return (
     <>
-      <JsonLd data={faqJsonLd(FAQ)} />
-      <JsonLd
-        data={{
-          '@context': 'https://schema.org',
-          ...breadcrumbNode([
-            { name: 'Kismet', url: `${SITE_URL}/` },
-            { name: 'Learn', url: CANONICAL },
-          ]),
-        }}
-      />
+      {/* One graph: the FAQPage (its `about`/`publisher` pointing at the
+          Organization — the entity signal merged here from /about), the full
+          Organization node, and the breadcrumb. */}
+      <JsonLd data={learnJsonLd(FAQ)} />
 
       <article className="mx-auto max-w-2xl px-4 py-12 font-mono text-sm leading-relaxed text-dim">
         <nav aria-label="Breadcrumb" className="mb-6 text-xs text-muted">

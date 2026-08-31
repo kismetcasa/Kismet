@@ -10,6 +10,9 @@
 //      InStock Offer at the matching price.
 //   4. Breadcrumbs are positioned 1..n over real URLs, deepest last.
 //   5. FAQPage emits one Question/acceptedAnswer per pair.
+//   5b. The /learn hub graph keeps mainEntity for the QUESTIONS and hangs the
+//      Organization off about/publisher — the entity signal merged from the
+//      retired /about page, and the one place it's easy to clobber.
 //   6. serializeJsonLd escapes `<` so a string can't close the <script> early.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-structured-data.ts
@@ -21,6 +24,7 @@ import {
   offerAmount,
   momentJsonLd,
   faqJsonLd,
+  learnJsonLd,
   articleJsonLd,
   breadcrumbNode,
   organizationNode,
@@ -144,7 +148,37 @@ check('FAQPage type', faq['@type'] === 'FAQPage')
 check('FAQ one entry per pair', faq.mainEntity.length === 2 && faq.mainEntity[0]['@type'] === 'Question')
 check('FAQ answer text preserved', faq.mainEntity[0].acceptedAnswer.text.startsWith('Connect a wallet'))
 
-// 5b. Article carries dates + Organization author/publisher by reference.
+// 5b. /learn hub graph. This is the entity surface merged from the retired
+// /about page (2026-08), and its one subtlety: FAQPage.mainEntity belongs to
+// the QUESTIONS, so the Organization must ride on about/publisher instead.
+// Setting mainEntity to the Org here would silently destroy the FAQ markup —
+// pin both halves.
+const learn = learnJsonLd([
+  { question: 'Who runs Kismet?', answer: 'Kismet Casa, a hybrid residency program.' },
+]) as { '@graph': Record<string, unknown>[] }
+const learnFaq = learn['@graph'].find((n) => n['@type'] === 'FAQPage') as
+  | Record<string, unknown>
+  | undefined
+check('learn graph contains the FAQPage node', learnFaq !== undefined)
+check(
+  'learn FAQPage keeps mainEntity for the questions',
+  Array.isArray(learnFaq?.mainEntity) &&
+    (learnFaq!.mainEntity as Record<string, unknown>[])[0]['@type'] === 'Question',
+)
+check(
+  'learn FAQPage points about + publisher at the Organization @id',
+  (learnFaq?.about as { '@id': string })?.['@id'] === 'https://kismet.art/#organization' &&
+    (learnFaq?.publisher as { '@id': string })?.['@id'] === 'https://kismet.art/#organization',
+)
+check(
+  'learn graph includes the Organization node + a 2-level breadcrumb',
+  learn['@graph'].some((n) => n['@type'] === 'Organization') &&
+    learn['@graph'].some(
+      (n) => n['@type'] === 'BreadcrumbList' && (n.itemListElement as unknown[]).length === 2,
+    ),
+)
+
+// 5c. Article carries dates + Organization author/publisher by reference.
 const article = articleJsonLd({
   url: 'https://kismet.art/learn/how-to-mint-onchain-art',
   headline: 'How to mint onchain art',
@@ -168,7 +202,7 @@ check('Article graph includes the Organization node + a 3-level breadcrumb',
   article['@graph'].some((n) => n['@type'] === 'BreadcrumbList' &&
     (n.itemListElement as unknown[]).length === 3))
 
-// 5c. Organization sameAs carries the three owner-confirmed profiles — https
+// 5d. Organization sameAs carries the three owner-confirmed profiles — https
 // only, and present at all (an empty sameAs silently weakens entity
 // resolution; a wrong one misattributes the brand, so pin the exact set).
 const org = organizationNode() as { name?: string; alternateName?: string[]; sameAs?: string[] }
