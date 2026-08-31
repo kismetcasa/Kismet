@@ -96,28 +96,33 @@ export function discoverJsonLd(): Record<string, unknown> {
   }
 }
 
-// The /about entity page. An AboutPage whose mainEntity IS the Organization —
-// the pattern search engines and answer engines read to resolve "who runs this
-// site", which is the concrete E-E-A-T signal a marketplace otherwise lacks.
-// Includes the full Organization node (not just an @id reference) so the page
-// is self-describing to a crawler that fetches it in isolation.
-export function aboutJsonLd(): Record<string, unknown> {
-  const url = `${SITE_URL}/about`
+// The /learn hub. Its primary type is FAQPage — the Q&A pairs are the page's
+// main entity and its highest-value citation surface — so the Organization
+// association rides on `about`/`publisher`, NOT `mainEntity`, which FAQPage
+// reserves for the questions. This is the entity signal /about used to assert
+// via AboutPage+mainEntity (merged here 2026-08); carrying it on /learn puts it
+// on the page that actually earns crawl attention, and emitting the full
+// Organization node (not a bare @id) keeps the page self-describing to a
+// crawler that fetches it in isolation.
+export function learnJsonLd(
+  faq: { question: string; answer: string }[],
+): Record<string, unknown> {
+  const url = `${SITE_URL}/learn`
   return {
     '@context': 'https://schema.org',
     '@graph': [
       {
-        '@type': 'AboutPage',
-        '@id': `${url}#about`,
+        ...faqPageNode(faq),
+        '@id': `${url}#faq`,
         url,
-        name: 'About Kismet',
         isPartOf: { '@id': WEBSITE_ID },
-        mainEntity: { '@id': ORG_ID },
+        about: { '@id': ORG_ID },
+        publisher: { '@id': ORG_ID },
       },
       organizationNode(),
       breadcrumbNode([
         { name: 'Kismet', url: `${SITE_URL}/` },
-        { name: 'About', url },
+        { name: 'Learn', url },
       ]),
     ],
   }
@@ -399,11 +404,12 @@ export function articleJsonLd(input: ArticleJsonLdInput): Record<string, unknown
 // FAQPage from Q&A pairs. The highest-leverage type for AI answer engines:
 // each pair is a discrete, machine-readable citation candidate. Answers should
 // be self-contained and declarative (see the /learn content).
-export function faqJsonLd(
+// The FAQPage node WITHOUT @context, so it can be embedded in a @graph
+// (learnJsonLd) as well as emitted standalone (faqJsonLd, used by the guides).
+function faqPageNode(
   items: { question: string; answer: string }[],
 ): Record<string, unknown> {
   return {
-    '@context': 'https://schema.org',
     '@type': 'FAQPage',
     mainEntity: items.map((item) => ({
       '@type': 'Question',
@@ -411,6 +417,12 @@ export function faqJsonLd(
       acceptedAnswer: { '@type': 'Answer', text: item.answer },
     })),
   }
+}
+
+export function faqJsonLd(
+  items: { question: string; answer: string }[],
+): Record<string, unknown> {
+  return { '@context': 'https://schema.org', ...faqPageNode(items) }
 }
 
 // Serialize for a <script type="application/ld+json">, escaping `<` so no

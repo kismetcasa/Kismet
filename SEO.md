@@ -25,7 +25,9 @@ that only a human with console access can finish.
   exists (price mirrors the visible `formatPrice` number exactly). Breadcrumb.
 - Collection: `CollectionPage` + creator + breadcrumb.
 - Profile: `ProfilePage` + `Person` + breadcrumb (suppressed for hidden identities).
-- `/learn` + guides: `FAQPage`, `Article`, `BreadcrumbList`.
+- `/learn` hub: `FAQPage` + the full `Organization` node (the hub's FAQPage
+  points at it via `about`/`publisher` — `mainEntity` is reserved for the
+  questions) + `BreadcrumbList`. Guides: `Article`, `FAQPage`, `BreadcrumbList`.
 
 All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
 `<` to prevent script-breakout.
@@ -33,7 +35,11 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
 **Content & GEO**
 - `/learn` hub + `/learn/[slug]` guides: front-loaded, declarative answers to
   the intent queries ("how to mint artwork", "onchain minting platform",
-  "onchain art marketplace"), mirrored into `FAQPage` schema.
+  "onchain art marketplace"), mirrored into `FAQPage` schema. The hub also
+  carries the operator/provenance section (`#who-runs-kismet`) merged from
+  the former `/about` — the E-E-A-T "who is responsible for this site"
+  surface, kept last on the page so the intent queries keep the
+  front-loaded positions.
 - `public/llms.txt`: curated content map for AI crawlers.
 - `components/SiteFooter.tsx`: site-wide crawlable internal links.
 - Keyword-informed titles/descriptions; `sr-only` H1 on the homepage.
@@ -114,6 +120,20 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   `/api/artwork/*` exists only as a compatibility rewrite for stale bundles.
   Provenance is unaffected: recorded onchain + on Arweave keyed by
   (contract address, tokenId), never by page URL.
+
+- **`/about` merged into `/learn`** (2026-08). The About page duplicated ~80%
+  of `/learn` — a near-verbatim lead paragraph and a second copy of the Kismet
+  Casa story — so the two competed for the "what is Kismet" intent while
+  `/about` (footer-only, priority 0.6, one URL, no rich-result-eligible schema)
+  captured no non-brand demand of its own. Its unique operator content moved to
+  `/learn#who-runs-kismet` and `next.config.mjs` carries a permanent 308
+  `/about` → that anchor. **Keep the redirect forever:** `/about` is the
+  conventional URL third parties link to, and the 308 is what folds those
+  signals into `/learn`. Nothing was lost in the merge — the `Organization`
+  node with `sameAs` already rendered on the homepage and all three guides, and
+  the visible x.com / farcaster.xyz / kismetcasa.xyz links live site-wide in
+  `components/SiteFooter.tsx`. The footer's "About" label is retained, pointed
+  at the anchor.
 
 ## Realistic timelines
 
