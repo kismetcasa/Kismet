@@ -32,10 +32,20 @@ export async function enrichMomentsWithKismetMeta<T extends Moment>(
     getCollectionMetaBatch(collectionAddrs),
     getUserCollections(),
     // Sibling-aware admin-hidden identity set. Memoized (60s), so on the hot
-    // feed path this is a cached read; the timeline route awaits the same
-    // memo, so adding it here is free there. Fail policy matches the feed's
-    // other hide sets: a Redis error rejects (fails closed) rather than
-    // leaking a hidden name during the blip.
+    // feed path this is a cached read.
+    //
+    // Fail policy — this comment previously claimed the opposite, so state it
+    // exactly: this read fails OPEN. getHiddenIdentityClosure builds on
+    // fetchHiddenProfilesSet, which catches a Redis error and returns an EMPTY
+    // set (lib/hidden-profiles), so during an Upstash blip a hidden creator's
+    // username and avatar can be overlaid onto feed cards for up to the memo
+    // window. That is deliberate and consistent: hidden-PROFILES is identity
+    // hiding, which fails open platform-wide so an outage can't 404 every
+    // profile page, whereas hidden-MOMENTS/COLLECTIONS is content hiding and
+    // fails closed via strictRead. Two policies, split on that line — not an
+    // oversight to "fix" here without changing the platform-wide one.
+    // (Nor is this memo shared with the timeline route: this call site is the
+    // only one on that path.)
     getHiddenIdentityClosure(),
   ])
   // Curator-blessed set (create-form deploys + the collections minted into).

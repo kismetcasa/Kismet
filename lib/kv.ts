@@ -360,9 +360,12 @@ export async function getCollectionMetaBatch(
   if (addresses.length === 0) return out
   const unique = Array.from(new Set(addresses.map((a) => a.toLowerCase())))
   try {
-    const raws = await redis.mget<(string | CollectionMeta | null)[]>(
-      ...unique.map(keyCollectionMeta),
-    )
+    // Chunked: the timeline fan-out now passes its ENTIRE collection list here
+    // (one batch instead of a GET per fan-out leg), and that set grows with
+    // every deploy and is never pruned. mgetChunked keeps each REST request
+    // small while auto-pipelining still collapses the chunks into one round
+    // trip — same latency, same billed-command count, no argv cliff.
+    const raws = await mgetChunked<string | CollectionMeta>(unique.map(keyCollectionMeta))
     for (let i = 0; i < unique.length; i++) {
       const raw = raws[i]
       if (!raw) continue

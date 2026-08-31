@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
-import { getTrackedCollectionsByScope, getCreatedMintsMembership, markCreatedMint, type CollectionScope } from '@/lib/kv'
+import { getTrackedCollectionsByScope, getCreatedMintsMembership, markCreatedMint, getCollectionMetaBatch, type CollectionScope, type CollectionMeta } from '@/lib/kv'
 import { admitsOffPlatformMint } from '@/lib/feedAdmission'
+import { feedSampleDepth, isThinnedFeed } from '@/lib/feedPagination'
 import { inprocessUrl } from '@/lib/inprocess'
 import { redis, zpairsToMap, FEATURED_KEY, TRENDING_KEY, TRENDING_LATEST_KEY, MAX_FEATURED } from '@/lib/redis'
 import { getUpcomingSaleEnds, getFreeMoments } from '@/lib/saleEnds'
@@ -95,7 +96,17 @@ const pinnedCreatedAtSeen = new Set<string>()
 // costs a redundant idempotent SADD.
 const admittedMintSeen = new Set<string>()
 
-async function fetchCollection(collection: string, limit: number, fresh: boolean): Promise<unknown[]> {
+async function fetchCollection(
+  collection: string,
+  limit: number,
+  fresh: boolean,
+  /** In-flight batch read of every fanned-out collection's meta record. Awaited
+   *  (not passed resolved) so the ONE MGET overlaps the upstream fetch below
+   *  instead of serializing ahead of it. Replaces the per-leg GET the cover
+   *  synthesis used to issue: N billed Redis commands per feed request — on the
+   *  `no-store` personal feeds, on every single request — collapsed to one. */
+  collMetas: Promise<Map<string, CollectionMeta>>,
+): Promise<unknown[]> {
   const url = inprocessUrl('/timeline', { collection, limit, chain_id: '8453' })
   let moments: unknown[] = []
   try {
@@ -132,6 +143,7 @@ async function fetchCollection(collection: string, limit: number, fresh: boolean
   const synthCover = await synthesizeMissingCoverMoment(
     collection,
     moments as { token_id?: string }[],
+    (await collMetas).get(collection.toLowerCase()) ?? null,
   )
   if (synthCover) moments.push(synthCover)
 
@@ -327,14 +339,47 @@ export async function GET(req: NextRequest) {
     collections = Array.from(new Set([...trackedCollections, ...collectedCollections]))
   }
 
-  // Cross-collection sort, featured curation, and the creators allowlist
-  // can each thin the result set below `page * limit`. Bump the per-
-  // collection sample so paginated pages don't empty out prematurely.
-  // All three sort modes reorder across collections (a recently-sold or
-  // soon-ending moment can sit deep in its collection's newest-first
-  // timeline), so they all need the deeper sample.
-  const needsLargerSample = sort !== null || featured || filterToCreators
-  const baseSample = needsLargerSample ? Math.max(page * limit, 200) : page * limit
+  // Which of THIS route's filters thin the merge, and which merely reorder it.
+  // lib/feedPagination owns the rule and the reason a thinning filter's sample
+  // must not scale with `page`; it is CI-locked by verify-feed-pagination.
+  //
+  // Everything that survives only a small subset belongs here:
+  //   - the personal feeds (creator= / collector= / airdroppable=), which keep
+  //     ONE address's moments out of the whole merge;
+  //   - featured curation and the creators roster;
+  //   - the four discover BROWSE filters, applied below at :927-947, i.e. also
+  //     before the slice. `resale=1` is the starkest — it intersects with a
+  //     listing book capped platform-wide at MAX_LISTINGS_SCAN — but all four
+  //     can cut the set to a handful.
+  // `scope=standalone` deliberately does NOT belong: created-mints membership
+  // removes a FRACTION of the merge rather than reducing it to a handful, so
+  // the home feed keeps the growing sample that lets deep scrolling reach more.
+  //
+  // Two concrete defects this closes. The three personal filters were absent
+  // from the old `needsLargerSample` list, which pinned them to `page * limit`
+  // — and at limit=50 that made the 2x MERGE_BUDGET below inert:
+  // `min(50, 10000/N)` is 50 for every N under 100, so the doubled allowance
+  // granted a few lines down for precisely this reason could never be spent.
+  // And the browse filters understated page 1's `total_pages`, which the
+  // client reads ONCE and never asks past — so the tail of a filtered feed was
+  // unreachable, contradicting this route's own claim (:201-206) that filtering
+  // before pagination keeps "filtered pages and total_pages honest".
+  const baseSample = feedSampleDepth({
+    page,
+    limit,
+    sorted: sort !== null,
+    thinned: isThinnedFeed({
+      featured,
+      creatorsRoster: filterToCreators,
+      creator: !!creatorRaw,
+      collector: !!collectorRaw,
+      airdroppable: !!airdroppable,
+      free: freeOnly,
+      media: !!media,
+      resale: resaleOnly,
+      soldOut: soldOutOnly,
+    }),
+  })
   // Bound the TOTAL moments pulled into the in-memory merge, not just the
   // per-collection request. The fan-out hits EVERY collection in parallel and
   // holds the whole merged set in heap to sort before slicing `limit`; the
@@ -382,8 +427,11 @@ export async function GET(req: NextRequest) {
       limit,
     })
   }
+  // Started, not awaited: the fan-out below is upstream-bound, so this single
+  // MGET resolves inside its shadow (see fetchCollection's `collMetas`).
+  const collMetas = getCollectionMetaBatch(collections)
   const results = await mapWithConcurrency(collections, FANOUT_CONCURRENCY, (c) =>
-    fetchCollection(c, fetchLimit, fresh),
+    fetchCollection(c, fetchLimit, fresh, collMetas),
   )
 
   // Merge and deduplicate
