@@ -20,12 +20,10 @@ import Link from 'next/link'
 const FOOTER_LINKS = [
   { href: '/learn', label: 'Learn' },
   { href: '/discover', label: 'Discover' },
-  // "About" deliberately points INTO /learn, not at a separate page: the
-  // former /about merged into /learn#who-runs-kismet (2026-08). The label
-  // stays because the conventional "who runs this site" affordance is exactly
-  // what the E-E-A-T signal depends on being findable — only its destination
-  // changed. Anchor, so it lands on the operator section rather than the top.
-  { href: '/learn#who-runs-kismet', label: 'About' },
+  // No "About" entry: the former /about page merged into /learn#who-runs-kismet
+  // (2026-08), and a footer About link next to the Learn link was judged
+  // redundant. The operator section stays reachable via the permanent /about
+  // 308 redirect and from /learn itself.
   // Label "Agent" for nav brevity; the /agent URL and its page title ("AI
   // agent — Kismet") stay as-is — the title keeps the query-bearing phrase
   // for search while the anchor stays concise. No redirect needed.
