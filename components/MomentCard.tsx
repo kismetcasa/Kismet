@@ -14,6 +14,7 @@ import {
   inferCollectCurrency,
   DEFAULT_COLLECT_COMMENT,
   getSaleWindow,
+  normalizeMomentComments,
   type Moment,
 } from '@/lib/inprocess'
 import { fetchCreatorProfile } from '@/lib/profileCache'
@@ -280,10 +281,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
         // Forward the route's hasMore only when it's a real boolean, so the
         // detail view's load-more seeding can tell "no more pages" from
         // "signal unknown" (a response that predates the field).
+        // Normalized before caching, not after: this hover-prefetch is a
+        // WRITER of the cache MomentActivity reads, and `data.comments ?? []`
+        // asserted `MomentComment[]` over untyped JSON without even checking it
+        // was an array — a non-array upstream value was stored verbatim and
+        // then hit `.filter` on the read side, which no per-row guard could
+        // ever catch.
         setCachedComments(
           moment.address,
           moment.token_id,
-          data.comments ?? [],
+          normalizeMomentComments(data.comments),
           typeof data.hasMore === 'boolean' ? data.hasMore : undefined,
         )
       })

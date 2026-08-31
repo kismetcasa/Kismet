@@ -292,9 +292,30 @@ export async function readSalePricePerToken(
       functionName: 'sale',
       args: [collection, tokenId],
     })
-    // Tuple shape differs per strategy but pricePerToken is the canonical
-    // field on both; cast through the discriminated read to surface it.
-    return (sale as { pricePerToken: bigint }).pricePerToken
+    // Tuple shape differs per strategy but saleEnd + pricePerToken are on both;
+    // cast through the discriminated read to surface them.
+    const row = sale as { saleEnd: bigint; pricePerToken: bigint }
+    // An UNSET row is not a zero price. Every other reader gates on saleEnd
+    // before trusting the struct — fetchEligibleTokens, resolveOnchainSale (both
+    // currency arms), saleConfigsFromMulticall (both arms), and readSaleWindow /
+    // readSaleWindowUsdc in lib/saleEdit — precisely because a strategy with no
+    // row for this token returns an all-zero struct. Cited by FUNCTION, not by
+    // line: the first version of this comment gave line numbers and every one of
+    // them had already drifted by the time it was reviewed. Without the same gate this returned
+    // 0n — not null — and /api/collect's `derivedPrice !== null` then
+    // OVERWROTE the collector's real, regex-validated price with "0". Two
+    // silent consequences downstream: formatPrice("0") renders the literal
+    // "free"; and isPriority's `price !== '0'` shortcut is skipped, so the
+    // collect falls through to `isFollowing(artist, collector) || collector in
+    // KEY_PROFILES`. That fall-through is why the badge effect is CONDITIONAL,
+    // not universal — an established collector (a saved profile, an FidProfile,
+    // or anyone who has minted, per profile.trackWallet) is "known" and still
+    // badges. It goes dark specifically for a first-time collector the artist
+    // does not follow. Note the asymmetry this restores — an RPC *failure*
+    // already returned null and let the client's truthful price stand, so an
+    // unset row was the one input that destroyed it.
+    if (row.saleEnd === 0n) return null
+    return row.pricePerToken
   } catch {
     return null
   }

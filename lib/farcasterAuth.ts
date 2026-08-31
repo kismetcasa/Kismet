@@ -1,7 +1,7 @@
 import { createClient } from '@farcaster/quick-auth'
 import { redis } from './redis'
 import { SITE_URL } from './siteUrl'
-import { getVerifiedAddressesByFid } from './farcasterProfile'
+import { getVerifiedAddressesByFidChecked } from './farcasterProfile'
 import { getFidProfile, getProfile } from './profile'
 
 // Quick Auth verifies a JWT's signature against the issuer's JWKS
@@ -91,21 +91,44 @@ export async function getPrimaryAddress(
  *
  * Falls back to FC primary when the user has never explicitly picked
  * one. Re-validates the stored choice against the current verifications
- * list on every read — if the user has un-verified the chosen address
- * since picking it (rare but possible), we silently fall back to
- * primary rather than serving a no-longer-valid identity.
+ * WHENEVER THOSE ARE KNOWN — if the user has un-verified the chosen address
+ * since picking it (rare but possible), we silently fall back to primary
+ * rather than serving a no-longer-valid identity. While an upstream failure
+ * leaves the verifications unknown the stored choice is served
+ * unrevalidated: reassigning someone's identity on a transient is worse than
+ * briefly serving a stale one, and the list is cached an hour regardless.
  */
 export async function getKismetIdentityAddress(fid: number): Promise<string | null> {
   // Single verifications fetch reused across all precedence steps below
   // (cached upstream so this is one Redis read in the common case).
-  const verified = await getVerifiedAddressesByFid(fid)
+  //
+  // The CHECKED variant, deliberately. This function's whole job is to answer
+  // "which address is this user?", and that answer selects their notification
+  // inbox, their profile, and every address-keyed read behind a Mini App
+  // session. The unchecked helper collapses a TRANSIENT upstream failure
+  // (Farcaster 429/5xx) to the same `[]` a genuinely-unverified account
+  // returns — and on that false negative every revalidation below fails, so a
+  // 30-second Farcaster blip silently RE-RESOLVED the user to a different
+  // address, and step 2 additionally DELETED their stored identity choice for
+  // good. getVerifiedAddressesByFidChecked exists precisely to keep those two
+  // cases apart (its TRANSIENT_SENTINEL, added so a 429 "won't masquerade as a
+  // definitive empty" for the sibling union); null here means "unknown", and
+  // unknown must never be grounds to reassign an identity or destroy a choice.
+  const checked = await getVerifiedAddressesByFidChecked(fid)
+  const verificationsKnown = checked !== null
+  const verified = checked?.addresses ?? []
 
   // 1. FidProfile.currentAddress — source of truth for miniapp-first
   //    users. Re-validate against current verifications to guard
   //    against a stale pointer if the user un-verified the chosen
-  //    wallet on Farcaster.
+  //    wallet on Farcaster — but only when we actually KNOW the
+  //    verifications; while they're unknown the stored choice is the
+  //    best available answer and stability beats revalidation.
   const fidProfile = await getFidProfile(fid)
-  if (fidProfile?.currentAddress && verified.includes(fidProfile.currentAddress)) {
+  if (
+    fidProfile?.currentAddress &&
+    (!verificationsKnown || verified.includes(fidProfile.currentAddress))
+  ) {
     return fidProfile.currentAddress
   }
 
@@ -121,9 +144,15 @@ export async function getKismetIdentityAddress(fid: number): Promise<string | nu
     // Redis blip — fall through to anchor / primary.
   }
   if (stored) {
+    // Unknown verifications: serve the choice untouched. Falling through here
+    // would swap the user's identity mid-session, and the delete below would
+    // make that swap PERMANENT — a transient upstream failure destroying
+    // durable user state.
+    if (!verificationsKnown) return stored
     if (verified.includes(stored)) return stored
     // Stale choice — drop it and fall through. Avoids a permanent
     // "ghost identity" if a user un-verifies the wallet they picked.
+    // Reached only on a DEFINITIVE verifications read.
     await redis.del(identityAddressKey(fid)).catch(() => {})
   }
 
@@ -138,6 +167,24 @@ export async function getKismetIdentityAddress(fid: number): Promise<string | nu
     const candidate = await getProfile(v)
     if (candidate.username || candidate.avatarUrl) return v
   }
+
+  // KNOWN RESIDUAL, deliberately not guarded. While the verifications are
+  // unknown, step 3's enumeration is empty, so a web-first user whose identity
+  // is their ANCHOR (an address-keyed profile, no FidProfile, no legacy
+  // pointer) falls to step 4 and resolves to their FC primary — a different
+  // wallet. Steps 1 and 2 above are guarded because they have a stored answer
+  // to fall back on; this cohort has none, and nothing in Kismet can find an
+  // anchor without the verifications list (the durable reverse index is
+  // address→FID, the wrong direction).
+  //
+  // A guard here was tried and reverted: returning null fails the session
+  // closed, which 401s a strictly LARGER population than it protects. Step 4
+  // does not depend on `verified` at all — getPrimaryAddress has its own cache
+  // and its own endpoint — so blocking it also breaks every user for whom
+  // primary is the correct answer, including a brand-new Mini App user on
+  // their first load, who would be unable to onboard for the duration of a
+  // Farcaster outage. Serving a possibly-wrong address to a narrow cohort for
+  // ~30s beats denying the app to everyone.
 
   // 4. FC primary — for users who haven't created any Kismet profile
   //    yet (returns null if FC has no primary set for this FID).

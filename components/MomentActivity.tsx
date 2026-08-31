@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import Link from 'next/link'
-import { formatRelativeTime, isPlatformCollectComment, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
+import { formatRelativeTime, isPlatformCollectComment, normalizeMomentComments, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfilesBatch } from '@/lib/profileCache'
 import { getCachedComments, getCachedCommentsHasMore, setCachedComments } from '@/lib/momentCache'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -26,6 +26,12 @@ import { ProfileAvatar } from './ProfileAvatar'
 // sender+timestamp space, so `kind` disambiguates. Used as the React key AND
 // for cross-page dedup, so a new collect shifting the newest-first feed can't
 // surface a boundary row twice.
+//
+// Dereferences `sender` unguarded, which is safe for one reason only: every
+// path that turns a response into MomentComment[] goes through
+// normalizeMomentComments first. That is the invariant this file relies on —
+// `res.json()` is `any`, so without it the cast below is an unchecked claim
+// and this line is where a malformed row takes the whole panel down.
 function activityRowKey(c: MomentComment): string {
   return `${c.sender.toLowerCase()}:${c.timestamp}:${c.kind ?? 'collect'}`
 }
@@ -97,7 +103,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const fetched: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const fetched: MomentComment[] = normalizeMomentComments(data.comments)
         const deduped = dedupeActivity(fetched)
         seenCommentsRef.current = new Set(deduped.map(activityRowKey))
         // Next page starts after page 0's real comments; airdrop rows live only
@@ -148,7 +154,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
       const res = await fetch(`/api/moment/comments?${params}`)
       if (res.ok) {
         const data = await res.json()
-        const page: MomentComment[] = Array.isArray(data.comments) ? data.comments : []
+        const page: MomentComment[] = normalizeMomentComments(data.comments)
         // Advance by the RAW page size before deduping so an all-duplicate
         // boundary page still moves the cursor forward.
         commentOffsetRef.current = startOffset + page.length

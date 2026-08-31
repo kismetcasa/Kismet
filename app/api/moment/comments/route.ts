@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeMomentComments, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
@@ -90,10 +90,34 @@ export async function GET(req: NextRequest) {
   // full page (INPROCESS_COMMENTS_PAGE_SIZE rows) is the only keep-paging
   // signal there is. Computed only for a well-formed 2xx body; anything else
   // passes through untouched, hasMore-free, like today.
+  //
+  // Screening happens in the SAME block, on the `rows` captured above, so the
+  // ordering is structural rather than a rule the next reader has to honour:
+  // hasMore is computed from the raw array, then the rows are replaced with the
+  // ones that satisfy MomentComment. Without that screen the proxy relayed
+  // whatever arrived and every consumer's `as MomentComment[]` was an unchecked
+  // claim — see normalizeMomentComments for what it repairs versus drops. A
+  // drop is logged rather than silent: it means real on-chain activity is
+  // missing from the panel while the supply count still includes it, which is
+  // exactly the kind of discrepancy nobody notices until an artist reports it.
   let upstreamHasMore: boolean | null = null
   if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
-    const rows = (data as Record<string, unknown>).comments
-    if (Array.isArray(rows)) upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
+    const obj = data as Record<string, unknown>
+    const rows = obj.comments
+    if (Array.isArray(rows)) {
+      upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
+      const normalized = normalizeMomentComments(rows)
+      obj.comments = normalized
+      const dropped = rows.length - normalized.length
+      if (dropped > 0) {
+        console.warn('[comments] dropped unrenderable upstream rows', {
+          collectionAddress,
+          tokenId,
+          dropped,
+          raw: rows.length,
+        })
+      }
+    }
   }
 
   // No own-profile exception here: comments live in a public per-moment

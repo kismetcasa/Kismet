@@ -84,8 +84,14 @@ const LEGACY_DEFAULT_COLLECT_COMMENTS = [
   'collected via kismet',
 ] as const
 
-export function isPlatformCollectComment(comment: string): boolean {
-  const c = comment.trim().toLowerCase()
+export function isPlatformCollectComment(comment: string | null | undefined): boolean {
+  // Absent is the same answer as empty — either way there is no human-written
+  // comment to surface. The wide signature is for Notification.comment, which
+  // is genuinely optional in its own domain: NotificationRow and
+  // farcasterNotifications both hold a possibly-absent value and had to guard
+  // truthiness before calling in. (Activity rows arrive already normalized —
+  // see normalizeMomentComments — so they are never the reason for this.)
+  const c = comment?.trim().toLowerCase() ?? ''
   if (!c) return true
   if (c === DEFAULT_COLLECT_COMMENT) return true
   if (LEGACY_DEFAULT_COLLECT_COMMENTS.includes(c as typeof LEGACY_DEFAULT_COLLECT_COMMENTS[number])) return true
@@ -223,6 +229,67 @@ export interface MomentComment {
   // and the UI renders it as "invited to kismet". Absent/'collect' = an
   // on-chain collect comment from the inprocess feed.
   kind?: 'collect' | 'airdrop'
+}
+
+/**
+ * Parse an untrusted `comments` payload into rows that satisfy MomentComment.
+ *
+ * This is what makes the interface above a GUARANTEE rather than a hope. Rows
+ * are upstream data from In Process's Supabase-backed feed and cross two
+ * boundaries that checked nothing — the /api/moment/comments proxy, which
+ * relays them opaquely, and `res.json()` on the client, which is `any` and was
+ * asserted straight into `MomentComment[]`. So the declared types were claims
+ * nobody enforced, and three faults reached code that trusted them:
+ *
+ *   - a null/absent `comment` (the natural encoding of an empty nullable text
+ *     column) threw in isPlatformCollectComment's `comment.trim()`,
+ *   - an absent `sender` threw in the activity list's row-key derivation —
+ *     before render, so the whole panel went down, not one row,
+ *   - and a `comments` value that was not an ARRAY at all defeated any
+ *     per-row guard, because `.filter` was the throw.
+ *
+ * Rows are REPAIRED where the fault is cosmetic and DROPPED only where it is
+ * disqualifying: a missing comment becomes '' (which isPlatformCollectComment
+ * already reads as the platform default label, exactly as an empty on-chain
+ * comment does today), while a row with no sender or no finite timestamp is
+ * dropped — it cannot be attributed, keyed, ordered, or linked, and rendering
+ * it would print visible garbage. Unknown fields are preserved: the proxy
+ * relays upstream's newer columns (username, commentId, replies…) opaquely and
+ * this must not become the thing that strips them.
+ */
+export function normalizeMomentComments(rows: unknown): MomentComment[] {
+  if (!Array.isArray(rows)) return []
+  const out: MomentComment[] = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const r = row as Record<string, unknown>
+    if (typeof r.sender !== 'string' || r.sender.length === 0) continue
+    // Number() alone would NOT implement the rule stated above: Number(null),
+    // Number(''), Number([]) and Number(false) are all 0 — finite — so a row
+    // with no timestamp would be kept and rendered as a ~20000d age. Accept
+    // only a real number or a numeric string.
+    const rawTs = r.timestamp
+    const timestamp =
+      typeof rawTs === 'number'
+        ? rawTs
+        : typeof rawTs === 'string' && rawTs.trim() !== ''
+          ? Number(rawTs)
+          : NaN
+    if (!Number.isFinite(timestamp)) continue
+    // `kind` is Kismet's OWN synthetic marker (the comments route stamps
+    // 'airdrop' on its folded rows; upstream rows carry no kind at all), so a
+    // value outside the declared union can only be junk — normalized to
+    // absent rather than carried through typed as something it is not.
+    const kind = r.kind === 'collect' || r.kind === 'airdrop' ? r.kind : undefined
+    out.push({
+      ...r,
+      sender: r.sender,
+      timestamp,
+      comment: typeof r.comment === 'string' ? r.comment : '',
+      kind,
+    } as MomentComment)
+  }
+  return out
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */
