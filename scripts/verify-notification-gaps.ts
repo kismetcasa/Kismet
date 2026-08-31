@@ -661,6 +661,48 @@ console.log('\nG4  a malformed activity row crashed the whole panel')
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+console.log('\nG1b the hand-written Seaport ABI, pinned to OpenSea-published constants')
+{
+  // lib/seaport.ts's ABI is hand-written, and this suite otherwise verifies it
+  // only against a mock that ENCODES with the same ABI — circular. These
+  // constants are independently sourced, so a future edit to our ABI that
+  // changes what goes on the wire fails here against something we did not
+  // write:
+  //   - getOrderStatus selector 0x46423aa7 and the (bool,bool,uint256,uint256)
+  //     output layout: identical in @opensea/seaport-js 2.0.8 (the 1.5-only
+  //     era — its constants know no 1.6 and pin OUR address as
+  //     CROSS_CHAIN_SEAPORT_V1_5_ADDRESS) and 4.3.0 (current), both typechain-
+  //     generated from seaport-core, and in abitype's fixture. Extracted and
+  //     hash-compared 2026-08-30.
+  //   - OrderFulfilled topic0: the event app/api/listings/[id] already decodes
+  //     from PRODUCTION logs at this address — every recorded secondary sale
+  //     is a live attestation that the deployed bytecode emits this layout.
+  //   - the domain pairing: Kismet signs listings under version '1.5' at this
+  //     address, and fills validate on-chain, which pins the deployed
+  //     contract's own domain separator to Seaport 1.5.
+  const { toFunctionSelector, toFunctionSignature, toEventSelector, getAbiItem, parseAbiItem } =
+    await import('viem')
+  const status = getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'getOrderStatus' })
+  check('getOrderStatus selector matches OpenSea-published 0x46423aa7',
+    toFunctionSelector(status) === '0x46423aa7')
+  check('  …with the published output layout, order and all',
+    JSON.stringify((status as { outputs: { name: string; type: string }[] }).outputs.map((o) => [o.name, o.type])) ===
+    JSON.stringify([['isValidated', 'bool'], ['isCancelled', 'bool'], ['totalFilled', 'uint256'], ['totalSize', 'uint256']]))
+  check('getCounter selector matches published 0xf07ec373',
+    toFunctionSelector(getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'getCounter' })) === '0xf07ec373')
+  check('fulfillOrder signature is the canonical one',
+    toFunctionSignature(getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'fulfillOrder' })).startsWith('fulfillOrder((('))
+  const evSrc = readFileSync(new URL('../lib/seaport.ts', import.meta.url), 'utf8')
+    .match(/'(event OrderFulfilled[\s\S]*?)'/)?.[1]
+  check('OrderFulfilled topic0 matches the event production fills already emit',
+    !!evSrc && toEventSelector(parseAbiItem(evSrc)) === '0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31')
+  check('the signing domain pins Seaport 1.5 at the OpenSea-published 1.5 address',
+    seaport.SEAPORT_DOMAIN.version === '1.5' &&
+    seaport.SEAPORT_DOMAIN.chainId === 8453 &&
+    seaport.SEAPORT_ADDRESS === '0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC')
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 console.log('\nG6  a paid collect recorded as free silences the bell badge')
 {
   // Not a fix on this branch's original five — this is the consequence chain
