@@ -680,22 +680,34 @@ console.log('\nG1b the hand-written Seaport ABI, pinned to OpenSea-published con
   //   - the domain pairing: Kismet signs listings under version '1.5' at this
   //     address, and fills validate on-chain, which pins the deployed
   //     contract's own domain separator to Seaport 1.5.
-  const { toFunctionSelector, toFunctionSignature, toEventSelector, getAbiItem, parseAbiItem } =
+  const { toFunctionSelector, toFunctionSignature, toEventSelector, parseAbiItem } =
     await import('viem')
-  const status = getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'getOrderStatus' })
+  // Narrowed by hand rather than via getAbiItem, whose return includes
+  // undefined and every non-function ABI shape — the lookup is over our own
+  // const array, so a miss is a broken suite, not a case to type around.
+  const fnItem = (name: string) => {
+    const item = seaport.SEAPORT_ABI.find(
+      (e: { type: string; name?: string }) => e.type === 'function' && e.name === name,
+    )
+    if (!item) throw new Error(`SEAPORT_ABI has no function ${name}`)
+    return item
+  }
+  const status = fnItem('getOrderStatus')
   check('getOrderStatus selector matches OpenSea-published 0x46423aa7',
     toFunctionSelector(status) === '0x46423aa7')
   check('  …with the published output layout, order and all',
-    JSON.stringify((status as { outputs: { name: string; type: string }[] }).outputs.map((o) => [o.name, o.type])) ===
+    JSON.stringify(status.outputs.map((o: { name: string; type: string }) => [o.name, o.type])) ===
     JSON.stringify([['isValidated', 'bool'], ['isCancelled', 'bool'], ['totalFilled', 'uint256'], ['totalSize', 'uint256']]))
   check('getCounter selector matches published 0xf07ec373',
-    toFunctionSelector(getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'getCounter' })) === '0xf07ec373')
+    toFunctionSelector(fnItem('getCounter')) === '0xf07ec373')
   check('fulfillOrder signature is the canonical one',
-    toFunctionSignature(getAbiItem({ abi: seaport.SEAPORT_ABI, name: 'fulfillOrder' })).startsWith('fulfillOrder((('))
+    toFunctionSignature(fnItem('fulfillOrder')).startsWith('fulfillOrder((('))
   const evSrc = readFileSync(new URL('../lib/seaport.ts', import.meta.url), 'utf8')
     .match(/'(event OrderFulfilled[\s\S]*?)'/)?.[1]
   check('OrderFulfilled topic0 matches the event production fills already emit',
-    !!evSrc && toEventSelector(parseAbiItem(evSrc)) === '0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31')
+    !!evSrc &&
+      toEventSelector(parseAbiItem(evSrc) as unknown as import('viem').AbiEvent) ===
+        '0x9d9af8e38d66c62e2c12f0225249fd9d721c54b83f48d9352c97c6cacdcb6f31')
   check('the signing domain pins Seaport 1.5 at the OpenSea-published 1.5 address',
     seaport.SEAPORT_DOMAIN.version === '1.5' &&
     seaport.SEAPORT_DOMAIN.chainId === 8453 &&
