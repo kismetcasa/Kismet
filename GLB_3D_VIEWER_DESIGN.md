@@ -250,7 +250,93 @@ upload path → `content.mime` in metadata → `'model'` kind in
 that would otherwise rot (no WebGL in feeds; poster required; metadata shape);
 size warnings; the `/api/img` guard.
 
-## 11. Open product question
+## 11. Implementation record (Phase 0 + Phase 1)
+
+What shipped, and where the reasoning lives in the code.
+
+### New modules
+
+| File | Role |
+|---|---|
+| `lib/glbFormat.ts` | The GLB identity — `.glb`, `model/gltf-binary`, the `glTF` header magic — in ONE place. Zero imports, client-safe. **Both** features that accept GLB now read it: `lib/collectorFileTypes` (ext/MIME) and `lib/collectorFileCore` (magic). They have to agree — an artist dropping the same file into the MEDIA slot and the collector-download slot must get the same verdict. |
+| `lib/media/modelMedia.ts` | GLB specifics for the media path: `MODEL_MAX_BYTES` (30 MB), `MODEL_SOFT_WARN_BYTES` (8 MB), `isGlbFile` (magic sniff), `asGlbFile` (re-wrap with the real MIME). |
+| `lib/media/mintMedia.ts` | The media gates: `checkMintMedia` (mint — image/video/gif/model), `checkReplaceMedia` (edit — same, minus model), `checkCoverImage` (covers — stills only). |
+| `components/ModelPreview.tsx` | Mint-form 3D preview **and** poster source. |
+| `components/MomentModel.tsx` | The detail view's tap-to-load viewer. The only WebGL surface. |
+| `scripts/verify-model-media.ts` | 30-assertion oracle, wired into `verify:flows`. |
+
+### The four decisions that carry the feature
+
+**1. `src` is the still, `modelSrc` is the GLB.** `resolveMomentMedia` returns
+`kind: 'model'` with the *poster* in `src`. This looks backwards next to
+`video` (where `src` is the video) and is the single most important choice
+here: `MarketOvals`, `CustomizePanel`, `FeaturedMoment`,
+`PatronArtworkShowcase` and the profile-theme route all read `src` as an
+image. With the still in `src` they needed **no changes at all**, and a
+surface anyone forgets renders a correct static tile instead of feeding GLB
+bytes to an `<img>` — or, server-side, to `sharp`. The new kind fails safe by
+construction rather than by vigilance. The oracle pins it.
+
+**2. The poster is captured from the posed preview.** `<model-viewer>`
+exposes `toBlob()` over its own canvas, so the element the artist is already
+looking at is the poster source — no second parse of the model (which would
+double peak memory) and no server-side renderer. Capture runs on `load` and
+again 400 ms after the artist stops orbiting, so the framing they land on is
+what ships. Two facts verified in the installed source make this sound rather
+than lucky: the renderer sets `preserveDrawingBuffer: true`, and `load` is
+dispatched only *after* model-viewer awaits two rAFs specifically to "wait for
+shaders to compile and pixels to be drawn".
+
+**3. A 3D moment takes the video binding verbatim.** One line in `MintForm`
+(`mediaFile.type.startsWith('video/') || isModelMedia`) produces
+`animation_url` = GLB, `image` = still, `content.mime` = `model/gltf-binary`.
+Keying off `mediaFile.type` rather than the picked file means the cross-reload
+resume path — which rehydrates only the persisted `mediaType` — binds
+identically with no extra state. `asGlbFile` is what makes that work:
+browsers report `File.type === ''` for `.glb`, so the re-wrap is what gives
+Arweave the right `Content-Type` tag *and* the binding its signal.
+
+**4. Exactly one WebGL context.** Feed cards render the still plus a `3D`
+badge and never mount a viewer; the detail view mounts one behind a tap.
+
+Measured on a clean production build: the model-viewer chunks exist on disk
+but appear in **no route manifest at all**, and the artwork route came in at
+1283.8 KB against a 1250.4 KB baseline — **+0.26%** where a static import
+would have been +37% against a 10% guard. `bundle-baseline.json` needed no
+bump.
+
+### The Phase 0 bug, and its blast radius
+
+`useFileUpload` validated only size. `accept` on an `<input>` filters the OS
+picker dialog and **drag-and-drop ignores it entirely**, so any file reached
+the mint form. Now `useFileUpload` takes an async `accept` gate (returning a
+human-readable reason) with a monotonic pick token so a slow magic-byte sniff
+on one file can never install itself over a later pick.
+
+Auditing for the fix turned up the *same* bug on two more pickers, both of
+which would produce the identical permanently-broken artwork:
+
+- **Edit → replace media** (`MomentDetailView`): its non-video branch uploads
+  the picked file and writes the returned URI straight into `image`. Now
+  gated by `checkReplaceMedia`, which also refuses models — that path has no
+  poster-capture step, so accepting one would break an artwork that currently
+  works. The refusal says so.
+- **Edit → change cover**: a cover renders as a still everywhere, so
+  `checkCoverImage` refuses video and 3D.
+
+### Verified, not assumed
+
+`npm run verify:model-media` (30 assertions) pins the mint gate (a zip, a PDF,
+a typeless binary and a non-GLB named `.glb` are all rejected; a GLB named
+`.bin` is still a model), the fail-safe `src`/`modelSrc` shape, the degenerate
+`image === model` legacy guard, the posterless case, and that the four
+pre-existing kinds are unaffected. `verify:collector-file` still passes
+unchanged, proving the shared-identity refactor was behaviour-neutral.
+
+Full `npm run check` — typecheck, lint, the bundle guard and every
+`verify:*` suite — passes on a clean build.
+
+## 12. Open product question
 
 GLB is currently a **collector-gated download**. If a GLB can also be public
 primary media, the bytes sit world-readable on Arweave and the gating premise
@@ -265,13 +351,18 @@ an explicit decision rather than letting it fall out of the implementation.
 
 ## Risk register
 
-| # | Risk | Severity | Mitigation |
+Status as shipped. "Closed" means the code and an assertion both hold it;
+"accepted" means the cost is deliberate and recorded.
+
+| # | Risk | Severity | Status |
 |---|---|---|---|
-| 1 | Live: any file type mints as `image:` today, permanently | **High** | Phase 0 — type validation at pick time |
-| 2 | WebGL in a feed grid OOMs the iOS Mini App | **High** | Poster-only in feeds; pinned by comment + verify oracle |
-| 3 | Large GLB OOMs mobile even on detail | Medium | Tap-to-load, 30 MB hard cap, 8 MB soft warning, Draco guidance |
-| 4 | Missing `content.mime` → moment attempted as video | Medium | Always emit it; pin the metadata shape in `verify:flows` |
-| 5 | Static import blows the bundle guard (+37%) | Medium | Dynamic import behind the click |
-| 6 | Poster capture fails → invisible on every static surface | Medium | Reject at pick time rather than mint posterless |
-| 7 | GLB reaches `sharp` via `/api/img` | Low | Mime guard on the route |
-| 8 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | Pre-existing platform risk; a GLB inherits it, adds nothing |
+| 1 | Any file type mints as `image:`, permanently | **High** | **Closed.** `checkMintMedia` gates the mint picker; the same audit closed the edit-media and three cover pickers. Oracle-pinned. |
+| 2 | WebGL in a feed grid OOMs the iOS Mini App | **High** | **Closed by shape.** Feeds read `media.src`, which for a model is the still — a viewer cannot be mounted there by accident. `MomentModel` is imported by the detail view alone. |
+| 3 | Large GLB OOMs mobile even on the detail view | Medium | **Mitigated.** Tap-to-load (nothing downloads or parses until asked), 30 MB hard cap, 8 MB soft warning naming the phone consequence, Draco guidance, exit button that unmounts the context. |
+| 4 | Missing `content.mime` → moment attempted as video | Medium | **Closed.** Always emitted; the shape is oracle-pinned, and the `.glb` extension covers external mints that lack it. |
+| 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
+| 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
+| 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
+| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted.** ~500–1900 px in practice against an 800×800 OG hero; same convention as `extractVideoPoster` (native size). A fixed-size capture would need a second parse or visible resize jank — worse trades against risk 3. |
+| 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Accepted, deliberate.** Both would need their own poster-capture step; refusing with a reason beats half-supporting it. |
+| 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |

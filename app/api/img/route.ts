@@ -302,6 +302,12 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
     !ct.startsWith('video/') &&
     !ct.startsWith('image/gif') &&
     !ct.startsWith('image/svg') &&
+    // 3D models (model/gltf-binary). Never an image, so sharp would throw
+    // after buffering up to MAX_RESIZE_SOURCE_BYTES for nothing. Defense in
+    // depth — the client only ever proxies a model with no ?w= (MomentModel
+    // uses the stream-through URL) — but this route takes an arbitrary
+    // ar:// and a mislabeled or hand-crafted ?w= must not reach sharp.
+    !ct.startsWith('model/') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
   if (!resizable) {
     // Costs one headers-only fetch (body cancelled) before the streaming

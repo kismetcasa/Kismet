@@ -1,6 +1,7 @@
+import { GLB_MIME } from '@/lib/glbFormat'
 import { isVideoMoment } from './isVideo'
 
-export type MomentMediaKind = 'video' | 'gif' | 'image' | 'text' | 'none'
+export type MomentMediaKind = 'video' | 'gif' | 'image' | 'text' | 'model' | 'none'
 
 interface MediaMeta {
   image?: string
@@ -11,11 +12,25 @@ interface MediaMeta {
 export interface ResolvedMedia {
   kind: MomentMediaKind
   /** Primary URL to render: the video src, the (animated) gif src, or the
-   *  still-image src. Undefined for `text` / `none`. */
+   *  still-image src. Undefined for `text` / `none`.
+   *
+   *  For `model` this is the STILL, not the GLB — see `modelSrc`. */
   src?: string
   /** Static poster for the `video`/`gif` kinds when a non-animated image
    *  is also present. Never itself a gif. */
   poster?: string
+  /** The GLB itself, for `model` moments only.
+   *
+   *  Deliberately NOT `src`, which for a model carries the still instead.
+   *  Mounting a 3D viewer is opt-in per surface (only the artwork detail
+   *  view does it — see GLB_3D_VIEWER_DESIGN.md "one WebGL context, ever"),
+   *  so the DEFAULT for any surface that doesn't know about 3D has to be the
+   *  still. That is what makes the new kind fail SAFE: MarketOvals,
+   *  CustomizePanel, FeaturedMoment, PatronArtworkShowcase and the profile
+   *  theme route all read `src` as an image, and a surface we forget shows a
+   *  correct-but-static tile rather than feeding GLB bytes to an <img> (or,
+   *  server-side, to sharp). */
+  modelSrc?: string
 }
 
 // ar:// content is hash-addressed (no extension), so the extension test
@@ -23,6 +38,20 @@ export interface ResolvedMedia {
 // reliable signal for Kismet mints and most marketplaces.
 function isGifUrl(url?: string): boolean {
   return !!url && url.split(/[?#]/, 1)[0]!.toLowerCase().endsWith('.gif')
+}
+
+// Extension test for the external-mint case; ar:// carries no extension, so
+// `content.mime` is the primary signal (see resolveModelSrc).
+function isModelUrl(url?: string): boolean {
+  return !!url && /\.(glb|gltf)$/.test(url.split(/[?#]/, 1)[0]!.toLowerCase())
+}
+
+/** The GLB URI for a 3D moment, or undefined if this isn't one. */
+function resolveModelSrc(meta: MediaMeta): string | undefined {
+  if (meta.content?.mime === GLB_MIME) return meta.content.uri ?? meta.animation_url
+  if (isModelUrl(meta.animation_url)) return meta.animation_url
+  if (isModelUrl(meta.content?.uri)) return meta.content!.uri
+  return undefined
 }
 
 /**
@@ -42,7 +71,7 @@ function isGifUrl(url?: string): boolean {
  * attempted as an image (the card/detail view fall back to the thumbhash
  * blur if it errors), which is strictly better than a blank tile.
  *
- * Precedence: video → text → gif → still image → none.
+ * Precedence: video → text → model → gif → still image → none.
  */
 export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
   if (isVideoMoment(meta)) {
@@ -54,6 +83,21 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
   }
 
   if (meta.content?.mime === 'text/plain') return { kind: 'text' }
+
+  // 3D (GLB). The mime hint is the reliable signal — ar:// URIs are
+  // hash-addressed and carry no extension, which is the same dependency that
+  // left mime-less video rows rendering as stills (VIDEO_PLAYBACK_RCA.md), so
+  // Kismet mints self-carry `content.mime`. The extension test only catches
+  // `https://…/foo.glb` from an external mint.
+  const modelSrc = resolveModelSrc(meta)
+  if (modelSrc) {
+    // `image` is the captured still. Guard the degenerate case where it IS
+    // the model (the pre-Phase-0 mint bug wrote the media URI into `image`
+    // for any file that wasn't a video) — better no still, and a thumbhash
+    // blur, than an <img> pointed at GLB bytes.
+    const still = meta.image && meta.image !== modelSrc ? meta.image : undefined
+    return { kind: 'model', src: still, modelSrc }
+  }
 
   const animIsGif = isGifUrl(meta.animation_url)
   const contentIsGif = isGifUrl(meta.content?.uri)

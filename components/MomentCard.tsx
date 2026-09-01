@@ -3,7 +3,7 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
+import { Copy, Check, EyeOff, ArrowUpRight, Pin, Box } from 'lucide-react'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
@@ -585,6 +585,24 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           tokenId={moment.token_id}
           className="absolute top-1.5 left-1.5"
         />
+        {media.kind === 'model' && (
+          <span
+            role="img"
+            aria-label="3D artwork"
+            title="3D artwork"
+            // Top-right is the hidden badge's corner (admin star = top-left,
+            // pin = bottom-left, valid-Pass = bottom-right — every corner is
+            // spoken for). The hidden badge only ever renders for the
+            // creator's own hidden mint, so step aside for it rather than
+            // claiming a fifth position no other overlay uses.
+            className={`pointer-events-none absolute top-2 z-10 flex items-center gap-1 px-1.5 py-0.5 bg-[#0d0d0d]/80 border border-line text-[9px] font-mono uppercase tracking-wider text-dim ${
+              isOwnMoment && moment.hidden ? 'right-9' : 'right-2'
+            }`}
+          >
+            <Box size={9} strokeWidth={1.5} />
+            3D
+          </span>
+        )}
         {isOwnMoment && moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">
             <EyeOff size={10} className="text-muted" />
@@ -649,7 +667,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
             // box. Fall through to the thumbhash blur / placeholder.
             onAllError={() => setVideoError(true)}
           />
-        ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !imgError ? (
+        ) : (media.kind === 'image' || media.kind === 'gif' || media.kind === 'model') && media.src && !imgError ? (
+          // `model` renders its captured STILL here and NEVER a viewer. A feed
+          // is 20-50 cards and each live <model-viewer> is a WebGL context
+          // plus GPU memory — mounting them per card is an immediate OOM in
+          // the iOS Mini App webview, the same budget the GIF gate below
+          // exists for. resolveMomentMedia puts the still in `src` precisely
+          // so this stays a one-word change and any surface that forgets
+          // about 3D still shows something correct. The interactive viewer
+          // lives on the artwork detail view alone (components/MomentModel).
+          //
           // Animated GIFs decode continuously on iOS (no pause) and pin memory
           // even off-screen — a primary OOM-crash contributor. On MOBILE, while
           // a GIF card isn't settled in view, show the static thumbhash so

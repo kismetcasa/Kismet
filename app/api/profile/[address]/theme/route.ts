@@ -122,9 +122,18 @@ export async function POST(
 
   // Palette source: a video's poster, or frame 1 of a gif / the still image —
   // sharp can't decode a video stream, but it reads a gif's first frame fine.
+  //
+  // A 3D moment lands in the else-branch and resolves to `src`, which for a
+  // model is its captured STILL (never the GLB — see resolveMomentMedia), so
+  // sharp gets a JPEG exactly as it does for a video's poster. The `md.image`
+  // fallback is skipped for models: on the degenerate legacy shape where
+  // `image` IS the model, it would hand sharp a multi-megabyte GLB to fetch
+  // and fail on. Palette then falls through to the thumbhash below.
   const extractRaw = resolved.kind === 'video'
     ? resolved.poster ?? md.image
-    : resolved.src ?? resolved.poster ?? md.image
+    : resolved.kind === 'model'
+      ? resolved.src
+      : resolved.src ?? resolved.poster ?? md.image
   const extractUrl = extractRaw ? resolveUri(extractRaw) : ''
   // Backdrop still: a NON-animated frame only (never the video/gif src), so the
   // V3 still layer can't animate when the owner hasn't enabled the live backdrop.
@@ -132,7 +141,14 @@ export async function POST(
   // it directly (NOT md.image, which for a poster-less gif IS the gif). May be
   // empty for such a gif — then the still layer is skipped and the palette
   // gradient carries the backdrop until `live` plays it.
-  const stillRaw = resolved.kind === 'image' ? resolved.src ?? md.image : resolved.poster
+  // A model's `src` is already a non-animated still, so it backdrops like an
+  // image rather than being dropped for want of a `poster`.
+  const stillRaw =
+    resolved.kind === 'image'
+      ? resolved.src ?? md.image
+      : resolved.kind === 'model'
+        ? resolved.src
+        : resolved.poster
   const stillUrl = stillRaw ? resolveUri(stillRaw) : ''
 
   let palette = extractUrl ? await extractPalette(extractUrl) : null

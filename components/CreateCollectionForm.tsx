@@ -20,6 +20,7 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
+import { checkCoverImage } from '@/lib/media/mintMedia'
 import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { verifyDeployPermissions } from '@/lib/permissions'
@@ -87,7 +88,16 @@ export function CreateCollectionForm({ onDeployed }: CreateCollectionFormProps =
     onChange: handleFileChange,
     onDrop: handleDrop,
     clear: clearFile,
-  } = useFileUpload()
+  } = useFileUpload({
+    // A drop zone, so the input's `accept` attribute never sees the file —
+    // without this gate anything at all (a .glb, a zip) became the
+    // collection cover and was uploaded to Arweave as one.
+    accept: async (f) => {
+      const verdict = await checkCoverImage(f)
+      return verdict.ok ? null : verdict.reason
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported cover', { description: reason }),
+  })
 
   // Verified-upload session caches (see CoverUploadSession above). Refs,
   // not state: they never drive rendering and must survive across submit
