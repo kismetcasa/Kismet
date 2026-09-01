@@ -15,7 +15,7 @@
 
 export type PrimarySort = 'new' | 'trending' | 'latest-sales' | 'ending-soon'
 export type SecondarySort = 'new' | 'price-asc' | 'price-desc' | 'expiring'
-export type MediaKind = 'image' | 'video' | 'gif' | 'text'
+export type MediaKind = 'image' | 'video' | 'gif' | 'text' | 'model'
 
 export interface DiscoverState {
   market: 'primary' | 'secondary'
@@ -107,7 +107,13 @@ export function parseDiscoverState(get: (key: string) => string | null): Discove
   if (sortP === 'trending' || sortP === 'latest-sales' || sortP === 'ending-soon') s.sortP = sortP
   if (get('free') === '1') s.free = true
   const media = get('media')
-  if (media === 'image' || media === 'video' || media === 'gif' || media === 'text') s.media = media
+  if (
+    media === 'image' ||
+    media === 'video' ||
+    media === 'gif' ||
+    media === 'text' ||
+    media === 'model'
+  ) s.media = media
   const scope = get('scope')
   if (scope === 'collections' || scope === 'all') s.scope = scope
   if (get('resale') === '1') s.resale = true

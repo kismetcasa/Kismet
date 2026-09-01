@@ -19,6 +19,10 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
+import { checkMintMedia } from '@/lib/media/mintMedia'
+import { MODEL_SOFT_WARN_BYTES, asGlbFile } from '@/lib/media/modelMedia'
+import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
+import { ModelPreview } from './ModelPreview'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { loadPersistedUpload, savePersistedUpload, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
@@ -283,6 +287,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { applyRaffleEnabled } = useAdmin()
 
   const [mintMode, setMintMode] = useState<MintMode>('media')
+  // Identity of the file the media gate admitted as a MODEL. Compared by
+  // identity against `file` below rather than read as a boolean: a GLB has
+  // no positive `File.type` to re-test (browsers report ''), so the gate's
+  // verdict is the only authority — and identity comparison makes a stale
+  // verdict from a superseded pick harmless instead of sticky.
+  const modelPickRef = useRef<File | null>(null)
   const {
     file,
     preview,
@@ -293,7 +303,41 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Maximum file size is 420 MB' }),
+    // The real type gate. The input's `accept` attribute filters only the OS
+    // picker — drag-and-drop ignores it — which is how a .glb used to reach
+    // the form, render as a broken <img>, and mint with the model's URI in
+    // `metadata.image`.
+    accept: async (f) => {
+      const verdict = await checkMintMedia(f)
+      if (!verdict.ok) return verdict.reason
+      if (verdict.kind === 'model') modelPickRef.current = f
+      return null
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
   })
+  // A model's poster is captured from the posed preview (ModelPreview), so it
+  // belongs to exactly one file. Dropping it whenever the pick changes is what
+  // stops a swap (pick model A, pose it, then pick model B without clearing)
+  // from shipping A's still attached to B's geometry; the submit gate then
+  // reports "could not capture" until B's own capture lands, which is the
+  // safe answer rather than a silently mismatched artwork.
+  const [modelPoster, setModelPoster] = useState<File | null>(null)
+  useEffect(() => {
+    setModelPoster(null)
+    // Warn HERE rather than inside the gate: the gate can run for a pick that
+    // a faster second drop supersedes, and warning about a file that never
+    // became the media would be a lie. By this point `file` is installed.
+    if (file && modelPickRef.current === file && file.size > MODEL_SOFT_WARN_BYTES) {
+      toast.warning('Large 3D model', {
+        description: `${formatCfileSize(file.size)} may fail to load on phones — consider Draco compression`,
+      })
+    }
+  }, [file])
+  // No explicit reset needed on clear: `file` going null makes this false
+  // whatever the ref holds, and the effect above drops the poster. That
+  // self-cleaning property is the reason the verdict is compared by identity
+  // rather than stored as a boolean.
+  const isModelPick = !!file && modelPickRef.current === file
   // Verified-upload session caches (see UploadedMediaSession above). Refs,
   // not state: they never drive rendering and must survive across submit
   // attempts. jsonUploadRef maps serialized-JSON content → its uploaded
@@ -1092,7 +1136,24 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           posterFile = null
           needsServerTranscode = false
           const isGifFile = file!.type === 'image/gif' || file!.name.toLowerCase().endsWith('.gif')
-          if (canTranscode(file!)) {
+          if (isModelPick) {
+            // 3D. Re-wrap with the real MIME — browsers report '' for .glb —
+            // so the Arweave Content-Type tag, the animation binding below and
+            // the resume path's persisted `mediaType` all agree on what this
+            // is. No transcode, no remux: a GLB ships as authored.
+            mediaFile = asGlbFile(file!)
+            // Captured from the framing the artist posed in the preview
+            // (ModelPreview). It is not optional: `image` is what every feed
+            // card, OG card, Farcaster embed and collection cover renders, so
+            // a posterless 3D mint would be invisible everywhere but the
+            // artwork page. Refuse rather than mint one.
+            posterFile = modelPoster
+            if (!posterFile) {
+              throw new Error(
+                'Could not capture a preview image of this model — scroll it into view, rotate it once, and try again',
+              )
+            }
+          } else if (canTranscode(file!)) {
             setStep('preparing-media')
             setUploadProgress(0)
             toast.loading('Optimizing animation for fast playback…', { id: 'mint' })
@@ -1149,7 +1210,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // persists via setMomentMeta so feeds can pick long-form
           // preload at element-create time. Returns null for non-video or
           // probe failure; payload omits durationSec in those cases.
-          const durationPromise = probeDurationSeconds(mediaFile).catch(() => null)
+          const durationPromise =
+            mediaFile.type === GLB_MIME
+              ? Promise.resolve(null) // a model has no timeline to probe
+              : probeDurationSeconds(mediaFile).catch(() => null)
           mediaUri = await uploadToArweave(mediaFile, (pct) => {
             setUploadProgress(pct)
             toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
@@ -1218,7 +1282,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // Default (client-transcoded or non-GIF) media bindings: a video
         // moment points animation_url at the uploaded MP4 and image at the
         // poster; everything else uses the media itself as the image.
-        let animationUri: string | undefined = mediaFile.type.startsWith('video/') ? mediaUri : undefined
+        //
+        // A 3D moment takes the VIDEO binding verbatim — animation_url = the
+        // GLB, image = the captured still, content.mime = model/gltf-binary —
+        // which is what makes it structurally identical to a video moment on
+        // every surface that isn't the artwork page, and portable to
+        // marketplaces (OpenSea/Zora both render GLB from animation_url).
+        // Keyed off `mediaFile.type`, not the picked file, so the resume path
+        // (which rehydrates only the persisted mediaType) binds identically.
+        const isModelMedia = mediaFile.type === GLB_MIME
+        let animationUri: string | undefined =
+          mediaFile.type.startsWith('video/') || isModelMedia ? mediaUri : undefined
         // Mime for the metadata `content` field below — tracks animationUri
         // through the server-transcode swaps (whose output is always mp4).
         let animationMime: string | undefined = animationUri ? mediaFile.type : undefined
@@ -1653,7 +1727,31 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               // the artist dropped. 16:9 stays 16:9, 9:16 stays 9:16, 1:1
               // stays 1:1. No letterbox, no crop, no surprise.
               <div className="relative bg-surface border border-line overflow-hidden">
-                {file?.type.startsWith('video/') ? (
+                {isModelPick ? (
+                  // 3D: the preview doubles as the poster source — whatever
+                  // framing the artist lands on is captured and becomes
+                  // `metadata.image`, which is what every feed card, OG card
+                  // and embed actually renders. See components/ModelPreview.
+                  <>
+                    <ModelPreview
+                      // Keyed so a swap remounts rather than re-pointing a live
+                      // element: no camera pose, buffers or GPU memory from the
+                      // previous model survive into the next one.
+                      key={preview}
+                      src={preview}
+                      fileName={file!.name}
+                      onPoster={setModelPoster}
+                      onError={(msg) => toast.error('3D model', { description: msg })}
+                    />
+                    {/* Without this the poster capture is invisible: the
+                        artist has no way to know the angle they leave the
+                        model at is the thumbnail every feed, share card and
+                        embed will show. */}
+                    <p className="absolute bottom-0 inset-x-0 px-3 py-2 bg-[#0d0d0d]/85 text-[10px] font-mono text-muted text-center">
+                      drag to pose — this view becomes the thumbnail
+                    </p>
+                  </>
+                ) : file?.type.startsWith('video/') ? (
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -1683,7 +1781,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 <div className="text-center">
                   <p className="text-xs font-mono text-muted">drop file or click to upload</p>
                   <p className="text-xs font-mono text-subtle mt-1">
-                    image, video, gif,{' '}
+                    image, video, gif, 3D,{' '}
                     {/* "text" is a shortcut into the writing-moment mode.
                         stopPropagation so we don't also trigger the parent
                         drop zone's file-picker click handler. */}
@@ -1704,7 +1802,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,video/*,.gif"
+              // Picker-dialog filter only — drag-and-drop bypasses it entirely,
+              // so the real gate is `accept` on useFileUpload above.
+              accept={`image/*,video/*,.gif,${GLB_EXT},${GLB_MIME}`}
               onChange={handleFileChange}
               className="hidden"
             />

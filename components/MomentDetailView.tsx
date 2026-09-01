@@ -25,6 +25,7 @@ import { useComment } from '@/hooks/useComment'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
+import { checkCoverImage, checkReplaceMedia } from '@/lib/media/mintMedia'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
@@ -59,6 +60,7 @@ import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
 import { MomentImage, MomentImg } from './MomentImage'
+import { MomentModel } from './MomentModel'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { normalizeMediaUrl, guessMediaTypeFromUrl } from '@/lib/media/normalizeMediaUrl'
@@ -209,6 +211,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [descOverflows, setDescOverflows] = useState(false)
   const [imgError, setImgError] = useState(false)
   const [videoError, setVideoError] = useState(false)
+  const [modelError, setModelError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -243,6 +246,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Max 420 MB' }),
+    // The input's `accept` filters the OS picker only (and its "all files"
+    // escape hatch defeats even that), so this is the real gate. Without it
+    // the non-video branch of the save below uploads whatever was picked and
+    // writes its URI straight into `image` — a permanently broken artwork.
+    accept: async (f) => {
+      const verdict = await checkReplaceMedia(f)
+      return verdict.ok ? null : verdict.reason
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
   })
   const [mediaMode, setMediaMode] = useState<'upload' | 'url'>('upload')
   const [existingMediaUrl, setExistingMediaUrl] = useState('')
@@ -258,6 +270,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   } = useFileUpload({
     maxBytes: 100 * 1024 * 1024,
     onTooLarge: () => toast.error('Cover too large', { description: 'Max 100 MB' }),
+    accept: async (f) => {
+      const verdict = await checkCoverImage(f)
+      return verdict.ok ? null : verdict.reason
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported cover', { description: reason }),
   })
   const [savingMeta, setSavingMeta] = useState(false)
   // Edit-sale flow: visible only to holders of the on-chain ADMIN|SALES bits
@@ -1337,8 +1354,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const media = resolveMomentMedia(meta)
   const isTextMoment = media.kind === 'text'
   const isVideo = media.kind === 'video'
+  const isModel = media.kind === 'model'
   // Still images and gifs open the zoom lightbox; videos use native
-  // fullscreen via their controls.
+  // fullscreen via their controls, and a model promotes to its own viewer.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
   // Low-fi blur for the no-preview fallback. When every gateway is exhausted
   // or the codec is undecodable there's no poster left to show (MomentVideo
@@ -1551,7 +1569,18 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isVideo && media.src && !videoError ? (
+              {isModel && media.modelSrc && !modelError ? (
+                // The one WebGL surface in the app. Tap-to-load, so the
+                // multi-megabyte parse is only paid by a viewer who asked —
+                // see components/MomentModel.
+                <MomentModel
+                  src={media.modelSrc}
+                  poster={media.src}
+                  thumbhash={meta.kismet_thumbhash}
+                  alt={meta.name ?? 'artwork'}
+                  onAllError={() => setModelError(true)}
+                />
+              ) : isVideo && media.src && !videoError ? (
                 <MomentVideo
                   src={media.src}
                   poster={media.poster}

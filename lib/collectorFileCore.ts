@@ -6,6 +6,7 @@ import {
   isViewableCfileKind,
   type CfileKind,
 } from './collectorFileTypes.ts'
+import { GLB_MAGIC } from './glbFormat.ts'
 
 /**
  * Pure core of the collector-file feature (COLLECTOR_DOWNLOADS_DESIGN.md):
@@ -129,7 +130,7 @@ export { CFILE_VIEWABLE_KINDS, isViewableCfileKind }
 export const CFILE_KINDS: Record<CfileKind, { ext: string; mime: string; magic?: number[] }> = {
   zip: { ...CFILE_KIND_META.zip, magic: [0x50, 0x4b, 0x03, 0x04] },
   pdf: { ...CFILE_KIND_META.pdf, magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
-  glb: { ...CFILE_KIND_META.glb, magic: [0x67, 0x6c, 0x54, 0x46] }, // glTF
+  glb: { ...CFILE_KIND_META.glb, magic: [...GLB_MAGIC] }, // glTF (lib/glbFormat)
   svg: { ...CFILE_KIND_META.svg },
 }
 

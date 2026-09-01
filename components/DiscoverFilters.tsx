@@ -495,6 +495,7 @@ const MEDIA_LABEL: Record<MediaKind, string> = {
   video: 'video',
   gif: 'gifs',
   text: 'writing',
+  model: '3D',
 }
 
 export function DiscoverPillBar({
