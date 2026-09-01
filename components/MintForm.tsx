@@ -20,7 +20,14 @@ import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { checkMintMedia } from '@/lib/media/mintMedia'
-import { MODEL_SOFT_WARN_BYTES, asGlbFile } from '@/lib/media/modelMedia'
+import {
+  DEFAULT_MODEL_BACKGROUND,
+  MODEL_BACKGROUNDS,
+  MODEL_SOFT_WARN_BYTES,
+  asGlbFile,
+  modelBackgroundCss,
+  type ModelBackgroundId,
+} from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
 import { ModelPreview } from './ModelPreview'
 import { uploadJson } from '@/lib/arweave/uploadJson'
@@ -322,6 +329,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // reports "could not capture" until B's own capture lands, which is the
   // safe answer rather than a silently mismatched artwork.
   const [modelPoster, setModelPoster] = useState<File | null>(null)
+  // The backdrop the model is shot on. Baked into the captured JPEG, so it is
+  // recorded in the metadata (`kismet_bg`) and replayed by the artwork page's
+  // viewer — otherwise tapping "view in 3D" would swap the artist's chosen
+  // backdrop for the page's own.
+  const [modelBg, setModelBg] = useState<ModelBackgroundId>(DEFAULT_MODEL_BACKGROUND)
   useEffect(() => {
     setModelPoster(null)
     // Warn HERE rather than inside the gate: the gate can run for a pick that
@@ -1358,6 +1370,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             ? { content: { uri: animationUri, mime: animationMime ?? 'video/mp4' } }
             : {}),
           ...(finalThumbhash ? { kismet_thumbhash: finalThumbhash } : {}),
+          // The backdrop baked into a 3D moment's poster, so the artwork
+          // page's live viewer can render on the same one instead of the
+          // page's. Only meaningful for models; omitted otherwise.
+          ...(isModelMedia ? { kismet_bg: modelBg } : {}),
         }
         const metadataKey = JSON.stringify(metadata)
         const metadataUri = await uploadJsonCached(metadata, metadataKey)
@@ -1739,17 +1755,37 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       // previous model survive into the next one.
                       key={preview}
                       src={preview}
+                      background={modelBackgroundCss(modelBg)}
                       fileName={file!.name}
                       onPoster={setModelPoster}
                       onError={(msg) => toast.error('3D model', { description: msg })}
                     />
-                    {/* Without this the poster capture is invisible: the
-                        artist has no way to know the angle they leave the
-                        model at is the thumbnail every feed, share card and
-                        embed will show. */}
-                    <p className="absolute bottom-0 inset-x-0 px-3 py-2 bg-[#0d0d0d]/85 text-[10px] font-mono text-muted text-center">
-                      drag to pose — this view becomes the thumbnail
-                    </p>
+                    {/* Both authored decisions in one bar. Without the hint the
+                        poster capture is invisible — the artist has no way to
+                        know the angle they leave the model at is the thumbnail
+                        every feed, share card and embed will show; and the
+                        backdrop is baked into that same JPEG. */}
+                    <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-[#0d0d0d]/85 flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-mono text-muted truncate">
+                        drag to pose — this view becomes the thumbnail
+                      </p>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {MODEL_BACKGROUNDS.map((bg) => (
+                          <button
+                            key={bg.id}
+                            type="button"
+                            onClick={() => setModelBg(bg.id)}
+                            aria-pressed={modelBg === bg.id}
+                            aria-label={`${bg.label} background`}
+                            title={`${bg.label} background`}
+                            className={`w-4 h-4 rounded-full border transition-colors ${
+                              modelBg === bg.id ? 'border-ink' : 'border-line hover:border-dim'
+                            }`}
+                            style={{ backgroundColor: bg.css }}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   </>
                 ) : file?.type.startsWith('video/') ? (
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />

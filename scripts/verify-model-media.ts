@@ -29,7 +29,14 @@ import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
 import { checkCoverImage, checkMintMedia, checkReplaceMedia } from '../lib/media/mintMedia.ts'
-import { MODEL_MAX_BYTES, asGlbFile, inspectGlbFile } from '../lib/media/modelMedia.ts'
+import {
+  DEFAULT_MODEL_BACKGROUND,
+  MODEL_BACKGROUNDS,
+  MODEL_MAX_BYTES,
+  asGlbFile,
+  inspectGlbFile,
+  modelBackgroundCss,
+} from '../lib/media/modelMedia.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -153,7 +160,24 @@ check('modelMedia: inspectGlbFile separates "not a GLB" from "malformed GLB"',
 check('modelMedia: asGlbFile stamps the real MIME (browsers give us "")',
   asGlbFile(glbFile()).type === GLB_MIME)
 
-// ── 3. Classification + the fail-safe shape ────────────────────────────────
+// ── 3. The authored backdrop ───────────────────────────────────────────────
+// Baked into the poster JPEG (no alpha), so the resolver must never answer
+// `transparent` — the live viewer has to reproduce the same backdrop the
+// still was captured on, including for moments minted before the field
+// existed.
+check('background: the default is white (the product-shot presentation)',
+  modelBackgroundCss(DEFAULT_MODEL_BACKGROUND) === '#ffffff')
+check('background: a missing kismet_bg falls back to the default, not transparent',
+  modelBackgroundCss(undefined) === '#ffffff', modelBackgroundCss(undefined))
+check('background: an unknown id falls back rather than breaking the viewer',
+  modelBackgroundCss('chartreuse') === '#ffffff')
+check('background: every option resolves to an OPAQUE colour',
+  MODEL_BACKGROUNDS.every((b) => /^#[0-9a-f]{6}$/i.test(b.css)),
+  JSON.stringify(MODEL_BACKGROUNDS.map((b) => b.css)))
+check('background: dark stays available for artists who want it',
+  modelBackgroundCss('dark') === '#111111')
+
+// ── 4. Classification + the fail-safe shape ────────────────────────────────
 // The exact metadata MintForm writes for a 3D moment.
 const minted = {
   image: STILL,

@@ -476,6 +476,46 @@ preview mounted" pass **vacuously**, since nothing ran at all.
 component needs SSR data or on-chain reads that cannot be stubbed from the
 browser. Its condition is oracle-pinned; the markup is unverified on screen.
 
+### Finding 16 — the backdrop is authored, and had to be recorded
+
+The artist asked for a white background. Acting on that literally would have
+shipped a visible bug: the mint preview captured on `#111` while the artwork
+page's viewer rendered `transparent` over the near-black page. Those two were
+already inconsistent — nobody noticed because both happened to be dark. Making
+only the capture white would have meant tapping "view in 3D" swapped a white
+still for a model on black, which reads as breakage rather than a choice.
+
+So the backdrop is now an authored decision with one definition
+(`MODEL_BACKGROUNDS`), picked in the mint form, stored as `metadata.kismet_bg`
+and replayed by the viewer. Three things have to agree — the preview, the JPEG
+captured from it (no alpha, so the backdrop is baked in permanently), and the
+live viewer — and `modelBackgroundCss` falls back to the default rather than
+to transparent so a moment minted before the field existed still renders on
+the backdrop its poster was baked on.
+
+Default is **white**: a model on white is the neutral product-shot
+presentation, and it is what reads as intentional on a share card or an embed,
+where the surrounding surface is not ours to control. Dark stays one tap away.
+
+Two things fell out of it: the progress readout is now chipped (grey on white
+would have been sub-AA once a backdrop could be light), and changing the
+backdrop re-captures the poster, since the banked one has the old colour baked
+in.
+
+**And a bug only a pixel could find.** Setting the backdrop revealed that
+`model-viewer` renders the scene into a **transparent** buffer — the CSS
+background is a DOM layer *behind* the canvas, not part of it. So
+`toBlob({mimeType:'image/jpeg'})` returns the model composited onto **black**,
+whatever the element shows on screen. Every poster was black-backed from the
+start; the original `#111` never reached a single one, and it went unnoticed
+only because black and `#111` look alike. The capture now takes a **PNG**
+(alpha intact) and composites onto the chosen colour itself.
+
+The browser check pins all three halves of this so it cannot regress quietly:
+the rendered element's corner is the chosen colour, model-viewer's own JPEG is
+black, and its PNG has alpha 0. If anyone "simplifies" the capture back to a
+direct JPEG, that middle assertion is what fails.
+
 ## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:

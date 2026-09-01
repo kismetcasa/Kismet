@@ -50,6 +50,7 @@ const MODEL_META = {
     image: 'ar://poster-txid',
     animation_url: 'ar://model-txid',
     content: { uri: 'ar://model-txid', mime: 'model/gltf-binary' },
+    kismet_bg: 'white',
   },
 }
 
@@ -129,6 +130,80 @@ check('captured poster is square', Math.abs(cap.w / cap.h - 1) < 0.02, `${cap.w}
 check('captured poster is big enough for the 800x800 OG hero', cap.h >= 800, `${cap.w}x${cap.h}`)
 console.log(`    capture: ${cap.w}x${cap.h}, ${(cap.size/1024).toFixed(0)} KB`)
 
+// Read a real corner pixel of the RENDERED element — what the artist sees —
+// rather than trusting the CSS declaration.
+const cornerOf = async (pg) => {
+  const buf = await pg.locator('model-viewer').screenshot()
+  // PNG: walk to IDAT-free territory by decoding in the page instead.
+  const b64 = buf.toString('base64')
+  return pg.evaluate(async (data) => {
+    const img = new Image()
+    await new Promise((r) => { img.onload = r; img.src = 'data:image/png;base64,' + data })
+    const c = document.createElement('canvas')
+    c.width = img.width; c.height = img.height
+    const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    return Array.from(ctx.getImageData(4, 4, 1, 1).data).slice(0, 3)
+  }, b64)
+}
+// model-viewer fades out its own loading overlay for about a second after
+// `load`, so an element screenshot taken immediately reads a transient grey.
+// That overlay is DOM-only and never reaches the capture (which reads the
+// WebGL canvas), so poll for the settled colour rather than adding a sleep.
+const waitCorner = async (pg, ok, ms = 6000) => {
+  const t0 = Date.now()
+  let last = []
+  while (Date.now() - t0 < ms) {
+    last = await cornerOf(pg)
+    if (ok(last)) return last
+    await pg.waitForTimeout(250)
+  }
+  return last
+}
+const isWhite = (px) => px.every((v) => v > 245)
+const isDark = (px) => px.every((v) => v < 40)
+const firstCorner = await waitCorner(page, isWhite)
+check('the preview is shot on WHITE by default (the artist\'s ask)',
+  isWhite(firstCorner), JSON.stringify(firstCorner))
+
+// THE TRAP, pinned. model-viewer renders into a TRANSPARENT buffer, so asking
+// it for a JPEG returns the model on BLACK no matter what the element shows.
+// ModelPreview therefore takes a PNG and composites itself. If anyone
+// "simplifies" that back to a direct JPEG toBlob, every poster silently goes
+// black-backed again — this assertion is what makes that visible.
+const rawJpeg = await page.evaluate(async () => {
+  const el = document.querySelector('model-viewer')
+  const b = await el.toBlob({ mimeType: 'image/jpeg', qualityArgument: 0.92 })
+  const bmp = await createImageBitmap(b)
+  const c = document.createElement('canvas')
+  c.width = bmp.width; c.height = bmp.height
+  c.getContext('2d').drawImage(bmp, 0, 0)
+  return Array.from(c.getContext('2d').getImageData(4, 4, 1, 1).data).slice(0, 3)
+})
+check('model-viewer\'s own JPEG ignores the backdrop (why we composite)',
+  rawJpeg.every((v) => v < 20), JSON.stringify(rawJpeg))
+
+// A PNG keeps the alpha, which is what makes our compositing possible.
+const rawPngAlpha = await page.evaluate(async () => {
+  const el = document.querySelector('model-viewer')
+  const b = await el.toBlob({ mimeType: 'image/png' })
+  const bmp = await createImageBitmap(b)
+  const c = document.createElement('canvas')
+  c.width = bmp.width; c.height = bmp.height
+  c.getContext('2d').drawImage(bmp, 0, 0)
+  return c.getContext('2d').getImageData(4, 4, 1, 1).data[3]
+})
+check('model-viewer\'s PNG preserves alpha (the composite source)', rawPngAlpha === 0,
+  String(rawPngAlpha))
+
+// Switching the backdrop must change the preview, not just a stored id.
+await page.locator('button[aria-label="dark background"]').click()
+const darkCorner = await waitCorner(page, isDark)
+check('choosing "dark" actually changes the backdrop', isDark(darkCorner), JSON.stringify(darkCorner))
+await page.screenshot({ path: path.join(SHOTS, '10-mint-dark-bg.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
+await page.locator('button[aria-label="white background"]').click()
+check('switching back returns the preview to white', isWhite(await waitCorner(page, isWhite)))
+
 // Rotate, confirm a re-capture happens and differs (the "pose it" mechanic).
 const before = cap.size
 await page.locator('model-viewer').hover()
@@ -194,6 +269,12 @@ await page.waitForFunction(() => document.querySelector('model-viewer')?.loaded 
 await page.waitForTimeout(600)
 check('exit control is present and labelled',
   await page.locator('button[aria-label="Exit 3D view"]').isVisible())
+// The whole point of recording kismet_bg: tapping must not swap the artist's
+// backdrop for the page's.
+const viewerBg = await page.evaluate(() =>
+  getComputedStyle(document.querySelector('model-viewer')).backgroundColor)
+check('the live viewer renders on the SAME backdrop as the still, not transparent',
+  viewerBg === 'rgb(255, 255, 255)', viewerBg)
 await page.screenshot({ path: path.join(SHOTS, '05-detail-active.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
 
 // The still must fade out only AFTER the model paints.

@@ -36,6 +36,43 @@ export const MODEL_MAX_BYTES = 30 * 1024 * 1024
 export const MODEL_SOFT_WARN_BYTES = 8 * 1024 * 1024
 
 /**
+ * Backdrops an artist can mint a 3D moment on.
+ *
+ * This is an AUTHORED decision, not a theme detail, which is why it is stored
+ * with the artwork rather than derived from the site's palette: a model shot
+ * on white reads as a product/gallery photograph, the same one on the site's
+ * near-black reads as an object floating in the page. Both are legitimate and
+ * the artist picks.
+ *
+ * It has to be recorded because THREE things must agree — the mint preview,
+ * the JPEG captured from it (JPEG has no alpha, so the backdrop is baked in
+ * permanently), and the live viewer on the artwork page. If the viewer just
+ * rendered transparent over the page, tapping "view in 3D" would swap a white
+ * still for a model on black, which reads as a bug rather than a choice.
+ */
+export const MODEL_BACKGROUNDS = [
+  { id: 'white', label: 'white', css: '#ffffff' },
+  { id: 'dark', label: 'dark', css: '#111111' },
+] as const
+
+export type ModelBackgroundId = (typeof MODEL_BACKGROUNDS)[number]['id']
+
+/** Default for a new 3D mint. White: a model on white is the neutral
+ *  product-shot presentation, and it is what reads as intentional on a share
+ *  card or an embed, where the surrounding surface is not ours to control. */
+export const DEFAULT_MODEL_BACKGROUND: ModelBackgroundId = 'white'
+
+/**
+ * Resolve a stored `kismet_bg` to a CSS color. Unknown or absent values fall
+ * back to the DEFAULT rather than to transparent, so a moment minted before
+ * this field existed still renders its viewer on the same backdrop its baked
+ * poster was captured on.
+ */
+export function modelBackgroundCss(id: string | undefined): string {
+  return (MODEL_BACKGROUNDS.find((b) => b.id === id) ?? MODEL_BACKGROUNDS[0]).css
+}
+
+/**
  * Three-way verdict, from ONE read of the file's first 12 bytes:
  *
  *   'no'        — not a GLB; the caller should go on classifying it

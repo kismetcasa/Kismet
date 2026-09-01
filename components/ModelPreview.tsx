@@ -35,10 +35,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * captures at the video's native size rather than a fixed one.
  */
 
-/** Matches extractVideoPoster: JPEG, same quality. JPEG has no alpha, so the
- *  element paints an explicit opaque background (below) and a model with a
- *  transparent backdrop composites onto the site's surface color rather than
- *  onto accidental black. */
+/** Matches extractVideoPoster: JPEG, same quality. JPEG has no alpha, which
+ *  is exactly why `capture` composites onto the chosen backdrop itself rather
+ *  than asking model-viewer for a JPEG — see the note there. */
 const POSTER_MIME = 'image/jpeg'
 const POSTER_QUALITY = 0.85
 
@@ -57,6 +56,10 @@ interface ModelViewerElement extends HTMLElement {
 interface Props {
   /** Blob URL for the picked GLB. */
   src: string
+  /** CSS backdrop. Baked into the captured JPEG (no alpha), so this is what
+   *  the artist is choosing when they pick a background — see
+   *  lib/media/modelMedia.MODEL_BACKGROUNDS. */
+  background: string
   /** Source file name — the poster is named after it, like the video path. */
   fileName: string
   /** Fires with the newest captured poster, or null if capture failed. */
@@ -65,7 +68,7 @@ interface Props {
   onError: (message: string) => void
 }
 
-export function ModelPreview({ src, fileName, onPoster, onError }: Props) {
+export function ModelPreview({ src, background, fileName, onPoster, onError }: Props) {
   const [ready, setReady] = useState(false)
   const elRef = useRef<ModelViewerElement | null>(null)
   // Callbacks live in refs so the effect that wires DOM listeners doesn't
@@ -113,17 +116,51 @@ export function ModelPreview({ src, fileName, onPoster, onError }: Props) {
     const el = elRef.current
     if (!el) return
     try {
-      const blob = await el.toBlob({ mimeType: POSTER_MIME, qualityArgument: POSTER_QUALITY })
-      if (!liveRef.current) return
-      const base = fileName.replace(/\.[^.]+$/, '') || 'poster'
-      onPosterRef.current(new File([blob], `${base}.jpg`, { type: POSTER_MIME }))
+      // THE BACKDROP IS NOT IN THE CANVAS. model-viewer renders the scene
+      // into a TRANSPARENT buffer and lets the element's CSS background show
+      // through behind it in the DOM — so asking it for a JPEG directly
+      // returns the model composited onto BLACK (JPEG has no alpha), whatever
+      // the artist sees on screen. That silently made every poster
+      // black-backed regardless of the chosen background.
+      //
+      // Take a PNG instead, which keeps the alpha, and do the compositing
+      // ourselves onto the colour the artist picked.
+      const png = await el.toBlob({ mimeType: 'image/png' })
+      const bmp = await createImageBitmap(png)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = bmp.width
+        canvas.height = bmp.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('no 2d context')
+        ctx.fillStyle = background
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(bmp, 0, 0)
+        const blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, POSTER_MIME, POSTER_QUALITY),
+        )
+        if (!blob) throw new Error('poster encode failed')
+        if (!liveRef.current) return
+        const base = fileName.replace(/\.[^.]+$/, '') || 'poster'
+        onPosterRef.current(new File([blob], `${base}.jpg`, { type: POSTER_MIME }))
+      } finally {
+        bmp.close()
+      }
     } catch {
       if (!liveRef.current) return
       // Report the miss so the parent never holds a poster this element did
       // not produce; the mint gate turns a persistent failure into a refusal.
       onPosterRef.current(null)
     }
-  }, [fileName])
+  }, [fileName, background])
+
+  // The backdrop is baked into the capture, so changing it invalidates the
+  // banked poster. Re-capture once the new colour has painted.
+  useEffect(() => {
+    if (!ready) return
+    const t = setTimeout(() => { void capture() }, 120)
+    return () => clearTimeout(t)
+  }, [background, ready, capture])
 
   // Event wiring via a callback ref + addEventListener, NOT on*-props:
   // React's synthetic event system maps on*-props for known DOM elements
@@ -156,7 +193,7 @@ export function ModelPreview({ src, fileName, onPoster, onError }: Props) {
 
   if (!ready) {
     return (
-      <div className="aspect-square bg-surface flex items-center justify-center">
+      <div className="aspect-square flex items-center justify-center" style={{ backgroundColor: background }}>
         <p className="text-[11px] font-mono text-muted">loading 3D viewer…</p>
       </div>
     )
@@ -183,9 +220,11 @@ export function ModelPreview({ src, fileName, onPoster, onError }: Props) {
         alt="3D model preview"
         camera-controls
         touch-action="pan-y"
-        // Opaque, and the same token the surrounding form surfaces use, so the
-        // JPEG capture (no alpha) composites predictably instead of onto black.
-        style={{ width: '100%', height: '100%', display: 'block', backgroundColor: '#111' }}
+        // Opaque and artist-chosen. JPEG has no alpha, so whatever is here is
+        // permanently baked into the poster every feed, share card and embed
+        // will show — which is why it is a decision the artist makes rather
+        // than a site token.
+        style={{ width: '100%', height: '100%', display: 'block', backgroundColor: background }}
       />
     </div>
   )
