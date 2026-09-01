@@ -578,6 +578,41 @@ IS the poster source and the thumbnail would otherwise differ from what the
 artist posed. It lands in the capture for free: the shadow is part of the
 rendered scene, not a DOM layer.
 
+### Post-merge verification
+
+Verified against the merged `main` (PR #680), not the branch: the merged tree
+is byte-identical to what was reviewed, `npm run build` and the full
+`npm run check` both exit 0, and the browser check passes 44/44.
+
+**Bundle cost, measured rather than estimated.** Building `0ce7503` (main
+before any of this) and diffing route totals against merged main attributes
+the whole feature at:
+
+| Route | Delta |
+|---|---|
+| `/artwork/[address]/[tokenId]` | **+7,446 B (+0.57%)** |
+| `/mint` | +7,054 B (+0.52%) |
+| `/collection/[address]` | +4,757 B (+0.36%) |
+| `/layout` | +191 B (+0.01%) |
+| 31 of 39 routes | unchanged |
+
+`model-viewer` appears in **no route manifest** — still fully lazy. Note for
+whoever owns the guard: `bundle-baseline.json` is stale from *other* merged
+work (`/layout` was already +4.5% over baseline before this branch existed),
+so the guard's 10% headroom is eroding for reasons unrelated to 3D.
+
+Two findings from that pass, both fixed:
+
+- **`readGlbHeader` was an exported function nobody imported** — used only by
+  `isWellFormedGlbHeader` beside it. Now module-private; the two verdict types
+  next to it stay exported because they appear in four exported signatures and
+  are the documented return contract.
+- **The browser check had a cold-start race.** On a freshly started server the
+  first `/mint` request compiles a large lazy chunk, and a cold run could lose
+  the 30s selector race — a red that says nothing about the code. It now warms
+  the route first; re-verified passing 44/44 from a deliberately colder start
+  than the one that failed.
+
 ## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:

@@ -90,6 +90,15 @@ const waitStillFaded = async (pg, ms = 4000) => {
 }
 
 const page = await ctx.newPage()
+// Warm the route before asserting anything. On a freshly started server the
+// first /mint request compiles and serves a large lazy chunk, and a cold run
+// can lose the 30s race on the first selector — a red that says nothing about
+// the code. One throwaway load removes it.
+{
+  const warm = await ctx.newPage()
+  await warm.goto(`${BASE}/mint`, { waitUntil: 'load' }).catch(() => {})
+  await warm.close()
+}
 page.on('console', (m) => { if (m.type() === 'error') console.log('    [console.error]', m.text().slice(0, 140)) })
 
 // ───────────────────────── A. Mint form: real GLB ─────────────────────────

@@ -48,8 +48,12 @@ export const GLB_HEADER_BYTES = 12
  * later is worth catching at pick time rather than after the artist has
  * spent Arweave credits on it. The header carries exactly the two extra
  * facts needed for that — see isWellFormedGlbHeader.
+ *
+ * Module-private: the verdict callers want is isWellFormedGlbHeader's, and
+ * an exported reader nobody imports is API surface with no user. Export it
+ * the day something needs the raw fields (a message naming the version, say).
  */
-export function readGlbHeader(
+function readGlbHeader(
   head: Uint8Array,
 ): { version: number; declaredLength: number } | null {
   if (!hasGlbMagic(head) || head.length < GLB_HEADER_BYTES) return null
