@@ -5,6 +5,7 @@ import { Box, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
 import { videoGatewayUrls } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/media/modelMedia'
 
 /**
  * The artwork detail view's 3D viewer — the ONE surface in the app that
@@ -45,6 +46,11 @@ interface Props {
   poster?: string
   thumbhash?: string
   alt: string
+  /** The artist's chosen backdrop (`metadata.kismet_bg`). It is already baked
+   *  into the poster JPEG, so the live viewer must render on the SAME one —
+   *  otherwise tapping "view in 3D" swaps a white still for a model on the
+   *  page's near-black, which reads as a bug rather than a choice. */
+  background?: string
   /** Fires when neither the model nor its poster can be shown, so the
    *  parent can fall back to its own placeholder. */
   onAllError?: () => void
@@ -70,7 +76,7 @@ function useAllowsMotion(): boolean {
   return allow
 }
 
-export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) {
+export function MomentModel({ src, poster, thumbhash, alt, background, onAllError }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState<string | null>(null)
   // The still and the model fail independently: a poster whose gateways are
@@ -161,6 +167,9 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
   }, [phase, hasStill])
 
   const blur = thumbhashToBlurDataURL(thumbhash)
+  // The VIEWER colour, which may be `transparent` — distinct from the opaque
+  // one baked into the poster. See MODEL_BACKGROUNDS.
+  const bg = modelViewerBg(background)
 
   // One still layer, shared by the idle and active states — so promoting to
   // 3D never re-fetches it — faded out only once the model has actually
@@ -179,8 +188,8 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
     />
   ) : (
     <div
-      className="absolute inset-0 bg-surface bg-cover bg-center"
-      style={blur ? { backgroundImage: `url(${blur})` } : undefined}
+      className="absolute inset-0 bg-cover bg-center"
+      style={{ backgroundColor: bg, ...(blur ? { backgroundImage: `url(${blur})` } : {}) }}
     />
   )
 
@@ -201,11 +210,15 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
           alt={alt}
           camera-controls
           {...(allowsMotion ? { 'auto-rotate': true } : {})}
+          shadow-intensity={MODEL_SHADOW_INTENSITY}
           touch-action="pan-y"
-          style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+          style={{ width: '100%', height: '100%', backgroundColor: bg }}
         />
         {!modelLoaded && (
-          <p className="absolute bottom-4 left-0 right-0 text-center text-[11px] font-mono text-muted pointer-events-none">
+          // Chipped rather than bare: the backdrop is artist-chosen, so this
+          // text can sit on white as easily as on near-black and grey-on-white
+          // would be sub-AA.
+          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 px-2.5 py-1 bg-[#0d0d0d]/85 text-[11px] font-mono text-dim pointer-events-none">
             loading 3D… {Math.round(progress * 100)}%
           </p>
         )}

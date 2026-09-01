@@ -29,7 +29,16 @@ import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
 import { checkCoverImage, checkMintMedia, checkReplaceMedia } from '../lib/media/mintMedia.ts'
-import { MODEL_MAX_BYTES, asGlbFile, inspectGlbFile } from '../lib/media/modelMedia.ts'
+import {
+  DEFAULT_MODEL_BACKGROUND,
+  MODEL_BACKGROUNDS,
+  MODEL_MAX_BYTES,
+  asGlbFile,
+  inspectGlbFile,
+  MODEL_SHADOW_INTENSITY,
+  modelPosterBg,
+  modelViewerBg,
+} from '../lib/media/modelMedia.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -153,7 +162,40 @@ check('modelMedia: inspectGlbFile separates "not a GLB" from "malformed GLB"',
 check('modelMedia: asGlbFile stamps the real MIME (browsers give us "")',
   asGlbFile(glbFile()).type === GLB_MIME)
 
-// ── 3. Classification + the fail-safe shape ────────────────────────────────
+// ── 3. The authored backdrop ───────────────────────────────────────────────
+// The poster colour is baked into a JPEG that travels to surfaces we do not
+// control, so it must always be opaque; the viewer colour may be transparent
+// so a model can sit in the page. Those are different questions and the
+// artist answers them with one choice.
+check('backdrop: the default poster is white (the product-shot presentation)',
+  modelPosterBg(DEFAULT_MODEL_BACKGROUND) === '#ffffff')
+check('backdrop: a missing kismet_bg falls back to the default, not transparent',
+  modelPosterBg(undefined) === '#ffffff' && modelViewerBg(undefined) === '#ffffff')
+check('backdrop: an unknown id falls back rather than breaking the viewer',
+  modelPosterBg('chartreuse') === '#ffffff' && modelViewerBg('chartreuse') === '#ffffff')
+// The invariant that keeps thumbnails legible everywhere: NO option, present
+// or future, may bake transparency into a JPEG.
+check('backdrop: EVERY option has an opaque poster colour',
+  MODEL_BACKGROUNDS.every((b) => /^#[0-9a-f]{6}$/i.test(b.poster)),
+  JSON.stringify(MODEL_BACKGROUNDS.map((b) => b.poster)))
+check('backdrop: `transparent` means transparent IN THE VIEWER but white in the thumbnail',
+  modelViewerBg('transparent') === 'transparent' && modelPosterBg('transparent') === '#ffffff')
+check('backdrop: dark stays available for artists who want it',
+  modelPosterBg('dark') === '#111111' && modelViewerBg('dark') === '#111111')
+// The fallback must track DEFAULT_MODEL_BACKGROUND, not the array's first
+// entry — otherwise reordering MODEL_BACKGROUNDS silently changes what every
+// pre-kismet_bg moment renders on.
+const dflt = MODEL_BACKGROUNDS.find((b) => b.id === DEFAULT_MODEL_BACKGROUND)!
+check('backdrop: the fallback IS the declared default, not the first entry',
+  modelPosterBg(undefined) === dflt.poster && modelPosterBg('nope') === dflt.poster)
+check('backdrop: ids are unique (they are persisted in metadata)',
+  new Set(MODEL_BACKGROUNDS.map((b) => b.id)).size === MODEL_BACKGROUNDS.length)
+// model-viewer ships shadow-intensity at 0, which is what makes an untextured
+// model read as a flat silhouette. Pin that we override it.
+check('backdrop: a grounding shadow is enabled (model-viewer defaults to none)',
+  Number(MODEL_SHADOW_INTENSITY) > 0, MODEL_SHADOW_INTENSITY)
+
+// ── 4. Classification + the fail-safe shape ────────────────────────────────
 // The exact metadata MintForm writes for a 3D moment.
 const minted = {
   image: STILL,

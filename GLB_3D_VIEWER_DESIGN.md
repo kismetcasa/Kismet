@@ -421,7 +421,164 @@ Fourteen findings; all fixed.
 repo's ESLint config, so hook dependency arrays are unchecked by tooling and
 were verified by hand.
 
-## 13. Still left to be desired
+### Finding 15 — from the artist, not from the audit
+
+The mint preview rendered as a full-width, 150px-tall strip instead of a
+square. Cause: model-viewer's shadow stylesheet sets
+`:host { width: 300px; height: 150px; contain: strict }` (`lib/template.js`),
+and CSS `aspect-ratio` is ignored when the other dimension is explicitly set —
+so the inline `aspectRatio: '1'` with no `height` lost to that `150px`.
+
+It was **not only cosmetic**. `toBlob` captures at the element's own rendered
+size, so the POSTER was being grabbed at roughly 620x150 as well — a squashed
+letterbox destined for square feed cards, OG cards and embeds. The box is now
+sized by a `relative w-full aspect-square` wrapper with the element at
+`height: 100%`, which fixes the preview and the capture together and lifts
+capture resolution from ~150px tall to the full column width. `MomentModel`
+was never affected: it sets an explicit `height: 100%` inside a definite-height
+`absolute inset-0` wrapper.
+
+Worth recording *why this survived*: typecheck, lint, the 44-assertion oracle
+and the bundle guard were all green on it. Nothing in the suite renders a
+layout, so nothing could have caught it. It took one look at the actual
+screen — which is the honest limit of what the verification here proves.
+
+## 13. Browser end-to-end validation
+
+`scripts/e2e/model-media.mjs` — 30 assertions against a real Chromium, a real
+WebGL context and a spec-valid glTF 2.0 cube, driving a production build.
+Deliberately outside `npm run check` (it needs a built app, a running server
+and a browser); see `scripts/e2e/README.md`.
+
+It exists because finding 15 proved the rest of the suite structurally cannot
+catch a layout: a preview that rendered — and captured — at the wrong size was
+green on typecheck, lint, the oracle and the bundle guard. So this asserts
+pixel geometry and capture *output*, not just that pages load.
+
+What it confirmed, all passing across three consecutive runs:
+
+| Area | Confirmed |
+|---|---|
+| Mint | The preview is square, a real GLB loads, and `toBlob` yields a **956×956** JPEG — direct proof of the finding-15 fix, since the same capture was ~620×150 before it. Posing changes what would be captured; the pose hint is visible. |
+| Gate | A zip, a **truncated** GLB and a **glTF 1.0** binary are each rejected with the exact copy, and leave no preview mounted. |
+| Detail | The still paints first; **no WebGL exists before the tap**; tapping mounts exactly one viewer; the still fades only after the model paints; exiting unmounts the viewer and restores the affordance. |
+| Reduced motion | `auto-rotate` is off under `prefers-reduced-motion` and on without it — the WCAG 2.2 SC 2.2.2 fix, verified rather than assumed. |
+| Slow load | The progress readout appears and the still stays visible throughout, so a big model on a slow link never shows an empty box. This state had never been observed before. |
+| Feed | A 3D moment renders its still (proving the one-line `MarketOvals` change — the tile would otherwise be blank) and **no `model-viewer` is ever mounted in a feed**. |
+
+Two harness bugs were fixed along the way, both worth recording because each
+would have produced false confidence: reading a sonner toast via `.first()`
+could pick one still animating out, and `page.reload()` followed immediately
+by `setInputFiles` could beat hydration — which would have made "leaves no
+preview mounted" pass **vacuously**, since nothing ran at all.
+
+**Not covered:** `MomentCard`'s `3D` badge. Every page that renders that
+component needs SSR data or on-chain reads that cannot be stubbed from the
+browser. Its condition is oracle-pinned; the markup is unverified on screen.
+
+### Finding 16 — the backdrop is authored, and had to be recorded
+
+The artist asked for a white background. Acting on that literally would have
+shipped a visible bug: the mint preview captured on `#111` while the artwork
+page's viewer rendered `transparent` over the near-black page. Those two were
+already inconsistent — nobody noticed because both happened to be dark. Making
+only the capture white would have meant tapping "view in 3D" swapped a white
+still for a model on black, which reads as breakage rather than a choice.
+
+So the backdrop is now an authored decision with one definition
+(`MODEL_BACKGROUNDS`), picked in the mint form, stored as `metadata.kismet_bg`
+and replayed by the viewer. Three things have to agree — the preview, the JPEG
+captured from it (no alpha, so the backdrop is baked in permanently), and the
+live viewer — and `modelBackgroundCss` falls back to the default rather than
+to transparent so a moment minted before the field existed still renders on
+the backdrop its poster was baked on.
+
+Default is **white**: a model on white is the neutral product-shot
+presentation, and it is what reads as intentional on a share card or an embed,
+where the surrounding surface is not ours to control. Dark stays one tap away.
+
+Two things fell out of it: the progress readout is now chipped (grey on white
+would have been sub-AA once a backdrop could be light), and changing the
+backdrop re-captures the poster, since the banked one has the old colour baked
+in.
+
+**And a bug only a pixel could find.** Setting the backdrop revealed that
+`model-viewer` renders the scene into a **transparent** buffer — the CSS
+background is a DOM layer *behind* the canvas, not part of it. So
+`toBlob({mimeType:'image/jpeg'})` returns the model composited onto **black**,
+whatever the element shows on screen. Every poster was black-backed from the
+start; the original `#111` never reached a single one, and it went unnoticed
+only because black and `#111` look alike. The capture now takes a **PNG**
+(alpha intact) and composites onto the chosen colour itself.
+
+The browser check pins all three halves of this so it cannot regress quietly:
+the rendered element's corner is the chosen colour, model-viewer's own JPEG is
+black, and its PNG has alpha 0. If anyone "simplifies" the capture back to a
+direct JPEG, that middle assertion is what fails.
+
+### Findings 17-20 — reviewing the backdrop commit
+
+**17. A model that never loads banked a blank poster.** The re-capture effect
+fired on `ready`, not on `load`, so a GLB with a valid 12-byte header and
+corrupt chunks — which passes the gate, because the gate reads only the header
+— produced a picture of an *empty scene*, composited onto the backdrop into a
+perfectly valid-looking blank JPEG. That defeats the mint's "refuse rather
+than ship a posterless 3D moment" guard, because the poster is not null, just
+blank: the artist would have minted a white square.
+
+Proven, not reasoned: instrumenting `canvas.toBlob` showed **2 composites** on
+a model where `loaded` never became true. Fixed by gating the effect on a
+`loadedRef` set in the `load` handler, and the browser check now asserts zero
+composites for exactly that file.
+
+**18. The re-capture delay was cargo.** The effect waited 120 ms "once the new
+colour has painted" — but `capture` fills the colour itself (`ctx.fillStyle =
+background`) and never reads the painted DOM. The timer and its justification
+were both wrong. Removed.
+
+**19. The fallback had two sources of truth.** `modelBackgroundCss` fell back
+to `MODEL_BACKGROUNDS[0]` while its contract said "the default". Those are the
+same entry today; reordering the array would have silently changed what every
+pre-`kismet_bg` moment renders on, with the comment still claiming otherwise.
+Now resolved through `DEFAULT_MODEL_BACKGROUND` and oracle-pinned.
+
+**20. The backdrop swatches were 16px targets.** Under WCAG 2.2 SC 2.5.8's
+24px minimum, and too close together to claim the spacing exemption — while
+this codebase already uses `min-w-9` hit areas on its card overlays for
+precisely this reason. Now a 24px hit area around the 16px visual dot.
+`verify:a11y` scans text contrast only, so nothing in the suite could see it;
+the browser check now measures the button box.
+
+Two of these four (17, 20) were invisible to every non-browser check, which is
+the same lesson as finding 15 arriving twice more.
+
+### Findings 21-22 — the artist's second round
+
+**21. The thumbnail and the in-app view are different contexts.** The artist's
+read, and it is correct: the shared image wants white (the presentation the
+NFT world already parses that way — Zora's is always white), while inside our
+own dark page a model can sit *in* the page rather than in a box. Coupling
+them forced one answer to both questions.
+
+Each `MODEL_BACKGROUNDS` entry now carries two colours behind one stored id:
+`poster` (always opaque — a JPEG has no alpha and it travels to surfaces whose
+surrounding colour is not ours) and `viewer` (may be `transparent`). The third
+option is exactly the artist's proposal: white thumbnail, transparent in app.
+The accepted cost is that promoting to 3D then crossfades the backdrop — which
+is why it is one option among three rather than the rule, and it rides the
+300 ms fade the still already had. `EVERY option has an opaque poster colour`
+is oracle-pinned so a future entry cannot bake transparency into a JPEG.
+
+**22. `shadow-intensity` defaults to 0.** Verified in the installed package:
+model-viewer renders **no shadow at all** unless asked, which is exactly why
+an untextured model reads as a flat silhouette — worst of all against the
+white default this branch just made standard. A grounding shadow is now on
+everywhere a model renders, including the mint preview, because the preview
+IS the poster source and the thumbnail would otherwise differ from what the
+artist posed. It lands in the capture for free: the shadow is part of the
+rendered scene, not a DOM layer.
+
+## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:
 
@@ -443,7 +600,7 @@ Known and deliberate, in rough priority order:
    fixed-size capture would need a second parse of the model or visible resize
    jank, both worse trades against the mobile-memory risk.
 
-## 14. Open product question
+## 15. Open product question
 
 GLB is currently a **collector-gated download**. If a GLB can also be public
 primary media, the bytes sit world-readable on Arweave and the gating premise
@@ -470,6 +627,6 @@ Status as shipped. "Closed" means the code and an assertion both hold it;
 | 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
 | 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
 | 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
-| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted.** ~500–1900 px in practice against an 800×800 OG hero; same convention as `extractVideoPoster` (native size). A fixed-size capture would need a second parse or visible resize jank — worse trades against risk 3. |
+| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, and materially better since finding 15.** The preview is now a true square at the form column's width, so capture is roughly 620–1900 px square rather than 150 px tall. Same convention as `extractVideoPoster` (native size); a fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
 | 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Accepted, deliberate.** Both would need their own poster-capture step; refusing with a reason beats half-supporting it. |
 | 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |

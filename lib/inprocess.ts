@@ -132,6 +132,9 @@ interface MomentMetadataInline {
    * to survive indexer passthrough of unknown JSON keys.
    */
   kismet_thumbhash?: string
+  /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
+   *  the poster, replayed by the artwork page's viewer. */
+  kismet_bg?: string
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
@@ -329,6 +332,9 @@ export interface MomentDetail {
     animation_url?: string
     content?: { mime?: string; uri?: string }
     kismet_thumbhash?: string
+  /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
+   *  the poster, replayed by the artwork page's viewer. */
+  kismet_bg?: string
   }
   // Set by /api/moment from the kismetart:hidden-moments KV. True when the
   // creator has hidden the moment from public feeds. Detail page renders

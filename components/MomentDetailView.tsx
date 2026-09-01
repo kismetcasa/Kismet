@@ -90,6 +90,9 @@ interface Props {
     animation_url?: string
     content?: { mime?: string; uri?: string }
     kismet_thumbhash?: string
+    // Carried so a freshly-minted 3D moment renders its viewer on the artist's
+    // backdrop during the indexer gap, not the default.
+    kismet_bg?: string
   }
   // Server-side hydration for the collection chip below the title. Without
   // this the chip pops in once the client-side /api/collections fetch lands;
@@ -1578,6 +1581,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   poster={media.src}
                   thumbhash={meta.kismet_thumbhash}
                   alt={meta.name ?? 'artwork'}
+                  background={meta.kismet_bg}
                   onAllError={() => setModelError(true)}
                 />
               ) : isVideo && media.src && !videoError ? (
