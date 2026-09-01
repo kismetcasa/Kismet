@@ -421,6 +421,28 @@ Fourteen findings; all fixed.
 repo's ESLint config, so hook dependency arrays are unchecked by tooling and
 were verified by hand.
 
+### Finding 15 — from the artist, not from the audit
+
+The mint preview rendered as a full-width, 150px-tall strip instead of a
+square. Cause: model-viewer's shadow stylesheet sets
+`:host { width: 300px; height: 150px; contain: strict }` (`lib/template.js`),
+and CSS `aspect-ratio` is ignored when the other dimension is explicitly set —
+so the inline `aspectRatio: '1'` with no `height` lost to that `150px`.
+
+It was **not only cosmetic**. `toBlob` captures at the element's own rendered
+size, so the POSTER was being grabbed at roughly 620x150 as well — a squashed
+letterbox destined for square feed cards, OG cards and embeds. The box is now
+sized by a `relative w-full aspect-square` wrapper with the element at
+`height: 100%`, which fixes the preview and the capture together and lifts
+capture resolution from ~150px tall to the full column width. `MomentModel`
+was never affected: it sets an explicit `height: 100%` inside a definite-height
+`absolute inset-0` wrapper.
+
+Worth recording *why this survived*: typecheck, lint, the 44-assertion oracle
+and the bundle guard were all green on it. Nothing in the suite renders a
+layout, so nothing could have caught it. It took one look at the actual
+screen — which is the honest limit of what the verification here proves.
+
 ## 13. Still left to be desired
 
 Known and deliberate, in rough priority order:
@@ -470,6 +492,6 @@ Status as shipped. "Closed" means the code and an assertion both hold it;
 | 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
 | 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
 | 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
-| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted.** ~500–1900 px in practice against an 800×800 OG hero; same convention as `extractVideoPoster` (native size). A fixed-size capture would need a second parse or visible resize jank — worse trades against risk 3. |
+| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, and materially better since finding 15.** The preview is now a true square at the form column's width, so capture is roughly 620–1900 px square rather than 150 px tall. Same convention as `extractVideoPoster` (native size); a fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
 | 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Accepted, deliberate.** Both would need their own poster-capture step; refusing with a reason beats half-supporting it. |
 | 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |

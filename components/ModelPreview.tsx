@@ -163,16 +163,30 @@ export function ModelPreview({ src, fileName, onPoster, onError }: Props) {
   }
 
   return (
-    // @ts-expect-error — custom element registered by the lazy import above.
-    <model-viewer
-      ref={attach}
-      src={src}
-      alt="3D model preview"
-      camera-controls
-      touch-action="pan-y"
-      // Opaque, and the same token the surrounding form surfaces use, so the
-      // JPEG capture (no alpha) composites predictably instead of onto black.
-      style={{ width: '100%', aspectRatio: '1', display: 'block', backgroundColor: '#111' }}
-    />
+    // The square comes from THIS wrapper, and the element is sized in
+    // percentages against it. model-viewer's shadow stylesheet sets
+    // `:host { width: 300px; height: 150px; contain: strict }`, and CSS
+    // `aspect-ratio` is ignored when the other dimension is explicitly set —
+    // so an inline `aspectRatio` with no `height` loses to that 150px and
+    // silently produced a full-width, 150px-tall strip.
+    //
+    // That was never only cosmetic: toBlob captures at the element's own
+    // rendered size, so the POSTER was being grabbed at ~620x150 as well —
+    // a squashed letterbox on every square feed card. Sizing the box
+    // explicitly fixes the preview and the capture in one move, and lifts
+    // capture resolution from ~150px tall to the full column width.
+    <div className="relative w-full aspect-square">
+      {/* @ts-expect-error — custom element registered by the lazy import above. */}
+      <model-viewer
+        ref={attach}
+        src={src}
+        alt="3D model preview"
+        camera-controls
+        touch-action="pan-y"
+        // Opaque, and the same token the surrounding form surfaces use, so the
+        // JPEG capture (no alpha) composites predictably instead of onto black.
+        style={{ width: '100%', height: '100%', display: 'block', backgroundColor: '#111' }}
+      />
+    </div>
   )
 }
