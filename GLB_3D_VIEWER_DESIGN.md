@@ -443,7 +443,40 @@ and the bundle guard were all green on it. Nothing in the suite renders a
 layout, so nothing could have caught it. It took one look at the actual
 screen — which is the honest limit of what the verification here proves.
 
-## 13. Still left to be desired
+## 13. Browser end-to-end validation
+
+`scripts/e2e/model-media.mjs` — 30 assertions against a real Chromium, a real
+WebGL context and a spec-valid glTF 2.0 cube, driving a production build.
+Deliberately outside `npm run check` (it needs a built app, a running server
+and a browser); see `scripts/e2e/README.md`.
+
+It exists because finding 15 proved the rest of the suite structurally cannot
+catch a layout: a preview that rendered — and captured — at the wrong size was
+green on typecheck, lint, the oracle and the bundle guard. So this asserts
+pixel geometry and capture *output*, not just that pages load.
+
+What it confirmed, all passing across three consecutive runs:
+
+| Area | Confirmed |
+|---|---|
+| Mint | The preview is square, a real GLB loads, and `toBlob` yields a **956×956** JPEG — direct proof of the finding-15 fix, since the same capture was ~620×150 before it. Posing changes what would be captured; the pose hint is visible. |
+| Gate | A zip, a **truncated** GLB and a **glTF 1.0** binary are each rejected with the exact copy, and leave no preview mounted. |
+| Detail | The still paints first; **no WebGL exists before the tap**; tapping mounts exactly one viewer; the still fades only after the model paints; exiting unmounts the viewer and restores the affordance. |
+| Reduced motion | `auto-rotate` is off under `prefers-reduced-motion` and on without it — the WCAG 2.2 SC 2.2.2 fix, verified rather than assumed. |
+| Slow load | The progress readout appears and the still stays visible throughout, so a big model on a slow link never shows an empty box. This state had never been observed before. |
+| Feed | A 3D moment renders its still (proving the one-line `MarketOvals` change — the tile would otherwise be blank) and **no `model-viewer` is ever mounted in a feed**. |
+
+Two harness bugs were fixed along the way, both worth recording because each
+would have produced false confidence: reading a sonner toast via `.first()`
+could pick one still animating out, and `page.reload()` followed immediately
+by `setInputFiles` could beat hydration — which would have made "leaves no
+preview mounted" pass **vacuously**, since nothing ran at all.
+
+**Not covered:** `MomentCard`'s `3D` badge. Every page that renders that
+component needs SSR data or on-chain reads that cannot be stubbed from the
+browser. Its condition is oracle-pinned; the markup is unverified on screen.
+
+## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:
 
@@ -465,7 +498,7 @@ Known and deliberate, in rough priority order:
    fixed-size capture would need a second parse of the model or visible resize
    jank, both worse trades against the mobile-memory risk.
 
-## 14. Open product question
+## 15. Open product question
 
 GLB is currently a **collector-gated download**. If a GLB can also be public
 primary media, the bytes sit world-readable on Arweave and the gating premise

@@ -1,0 +1,289 @@
+/**
+ * Browser end-to-end check for 3D moments (GLB_3D_VIEWER_DESIGN.md).
+ *
+ * This exists because the rest of the suite cannot catch a whole class of
+ * bug. typecheck, lint, the verify-model-media oracle and the bundle guard
+ * were ALL green on a mint preview that rendered as a 150px strip and
+ * captured its poster at the same wrong size — nothing in them renders a
+ * layout. Every assertion below needs a real browser, a real WebGL context
+ * and a real GLB.
+ *
+ * Deliberately NOT wired into `npm run check`: it needs a built app, a
+ * running server and a browser, none of which that suite assumes. See
+ * scripts/e2e/README.md to run it.
+ */
+import { chromium } from 'playwright'
+import fs from 'fs'
+import path from 'path'
+
+const DIR = process.env.E2E_DIR || path.join(process.cwd(), '.e2e')
+const SHOTS = path.join(DIR, 'shots')
+fs.mkdirSync(SHOTS, { recursive: true })
+const BASE = process.env.E2E_BASE_URL || 'http://localhost:3100'
+// Chromium ships with the image in CI/sandboxes; override if yours differs.
+const EXE = process.env.E2E_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
+const GLB = fs.readFileSync(path.join(DIR, 'cube.glb'))
+const POSTER = fs.readFileSync(path.join(DIR, 'poster.jpg'))
+
+let fails = 0
+const check = (name, cond, detail = '') => {
+  console.log(`${cond ? '  PASS' : '  FAIL'}  ${name}${!cond && detail ? ` — ${detail}` : ''}`)
+  if (!cond) fails++
+}
+
+// Fixtures written as truncated / wrong-version GLBs so the gate's header
+// checks are exercised against real bytes, not mocks.
+const truncated = Buffer.from(GLB); truncated.writeUInt32LE(999999, 8)
+const oldVersion = Buffer.from(GLB); oldVersion.writeUInt32LE(1, 4)
+fs.writeFileSync(path.join(DIR, 'truncated.glb'), truncated)
+fs.writeFileSync(path.join(DIR, 'v1.glb'), oldVersion)
+fs.writeFileSync(path.join(DIR, 'archive.zip'), Buffer.from([0x50,0x4b,0x03,0x04, ...Array(60).fill(0)]))
+
+const MODEL_META = {
+  uri: 'ar://meta',
+  owner: '0x000000000000000000000000000000000000dEaD',
+  momentAdmins: [],
+  saleConfig: null,
+  metadata: {
+    name: 'E2E Cube',
+    description: 'A 3D moment used to validate the viewer end to end.',
+    image: 'ar://poster-txid',
+    animation_url: 'ar://model-txid',
+    content: { uri: 'ar://model-txid', mime: 'model/gltf-binary' },
+  },
+}
+
+const browser = await chromium.launch({
+  executablePath: EXE,
+  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+})
+const ctx = await browser.newContext({ viewport: { width: 1280, height: 1400 }, deviceScaleFactor: 2 })
+
+// Serve the fixture bytes wherever the app resolves ar:// to.
+await ctx.route('**/arweave.net/**', (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB })
+  if (u.includes('poster-txid')) return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+  return route.fulfill({ status: 404, body: '' })
+})
+await ctx.route('**/api/img**', (route) => {
+  const u = decodeURIComponent(route.request().url())
+  if (u.includes('model-txid')) return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB })
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+
+const stillOpacityOf = async (pg) => pg.evaluate(() => {
+  const mv = document.querySelector('model-viewer')
+  const layer = mv?.parentElement?.querySelector('div')
+  return layer ? getComputedStyle(layer).opacity : null
+})
+// The fade is a 300ms CSS transition, and getComputedStyle reports the value
+// MID-transition — so poll for the settled state instead of racing it.
+const waitStillFaded = async (pg, ms = 4000) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if ((await stillOpacityOf(pg)) === '0') return true
+    await pg.waitForTimeout(150)
+  }
+  return false
+}
+
+const page = await ctx.newPage()
+page.on('console', (m) => { if (m.type() === 'error') console.log('    [console.error]', m.text().slice(0, 140)) })
+
+// ───────────────────────── A. Mint form: real GLB ─────────────────────────
+console.log('\nA. Mint form — picking a real GLB')
+await page.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
+// The media picker is hidden by design (a styled drop zone triggers it), so
+// wait for it to be ATTACHED, and target it by the accept list rather than
+// index — there are three file inputs on this form.
+const MEDIA_INPUT = 'input[accept*="model/gltf-binary"]'
+await page.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
+check('media input advertises .glb in its accept list', true)
+await page.setInputFiles(MEDIA_INPUT, path.join(DIR, 'cube.glb'))
+
+await page.waitForSelector('model-viewer', { timeout: 30000 })
+await page.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
+
+const box = await page.locator('model-viewer').boundingBox()
+check('preview renders (model-viewer present and loaded)', !!box)
+// The artist's bug: the host stylesheet's 150px height won when no explicit
+// height was set. Ratio ~1 proves the aspect-square wrapper is in control.
+const ratio = box.width / box.height
+check('preview box is SQUARE, not the 150px host default',
+  Math.abs(ratio - 1) < 0.02 && box.height > 300, `${Math.round(box.width)}x${Math.round(box.height)} ratio ${ratio.toFixed(3)}`)
+
+const hint = await page.locator('text=drag to pose').first().isVisible()
+check('pose hint is visible to the artist', hint)
+await page.screenshot({ path: path.join(SHOTS, '01-mint-preview.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
+
+// Exercise the ACTUAL capture path the mint uses, and measure what it yields.
+const cap = await page.evaluate(async () => {
+  const el = document.querySelector('model-viewer')
+  const blob = await el.toBlob({ mimeType: 'image/jpeg', qualityArgument: 0.85 })
+  const bmp = await createImageBitmap(blob)
+  return { type: blob.type, size: blob.size, w: bmp.width, h: bmp.height }
+})
+check('toBlob yields a real JPEG', cap.type === 'image/jpeg' && cap.size > 1000, JSON.stringify(cap))
+check('captured poster is square', Math.abs(cap.w / cap.h - 1) < 0.02, `${cap.w}x${cap.h}`)
+check('captured poster is big enough for the 800x800 OG hero', cap.h >= 800, `${cap.w}x${cap.h}`)
+console.log(`    capture: ${cap.w}x${cap.h}, ${(cap.size/1024).toFixed(0)} KB`)
+
+// Rotate, confirm a re-capture happens and differs (the "pose it" mechanic).
+const before = cap.size
+await page.locator('model-viewer').hover()
+await page.mouse.down(); await page.mouse.move(600, 400, { steps: 12 }); await page.mouse.up()
+await page.waitForTimeout(900)
+const after = await page.evaluate(async () => {
+  const el = document.querySelector('model-viewer')
+  const b = await el.toBlob({ mimeType: 'image/jpeg', qualityArgument: 0.85 })
+  return b.size
+})
+check('posing changes what would be captured', after !== before, `${before} -> ${after}`)
+await page.screenshot({ path: path.join(SHOTS, '02-mint-posed.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
+
+// ───────────────────── B. Mint gate: rejections ─────────────────────
+console.log('\nB. Mint gate — rejections')
+// Clear the accepted model via the form's own × rather than reloading. A
+// reload can land setInputFiles BEFORE hydration, and then nothing happens at
+// all — which would ALSO make "leaves no preview mounted" pass vacuously.
+// Staying on a live page keeps every assertion here meaningful.
+await page.locator('button:has(svg.lucide-x)').first().click()
+await page.waitForSelector('model-viewer', { state: 'detached', timeout: 10000 })
+check('clearing the preview removes the viewer', (await page.locator('model-viewer').count()) === 0)
+
+for (const [file, expect] of [
+  ['archive.zip', 'Use an image, video, gif, or a .glb 3D model'],
+  ['truncated.glb', 'looks incomplete or is an older glTF version'],
+  ['v1.glb', 'looks incomplete or is an older glTF version'],
+]) {
+  await page.setInputFiles(MEDIA_INPUT, path.join(DIR, file))
+  // Match on the EXPECTED TEXT rather than `.first()`: sonner mounts a toast
+  // element before its content paints, and a toast still animating out from
+  // the previous case would otherwise be picked up as an empty string.
+  const toast = page.locator('[data-sonner-toast]', { hasText: expect })
+  let matched = true
+  try { await toast.first().waitFor({ timeout: 10000 }) } catch { matched = false }
+  check(`${file} is rejected with the right reason`, matched,
+    matched ? '' : JSON.stringify((await page.locator('[data-sonner-toast]').allInnerTexts()).join(' | ').slice(0, 160)))
+  const noPreview = (await page.locator('model-viewer').count()) === 0
+  check(`${file} leaves no preview mounted`, noPreview)
+  if (file === 'truncated.glb') {
+    await page.screenshot({ path: path.join(SHOTS, '03-mint-reject.png'), clip: { x: 300, y: 150, width: 680, height: 500 } })
+  }
+}
+
+// ───────────────── C. Artwork detail: tap to load ─────────────────
+console.log('\nC. Artwork detail — the 3D viewer')
+await ctx.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MODEL_META) }))
+const ART = `${BASE}/artwork/0x00000000000000000000000000000000000000aa/1`
+await page.goto(ART, { waitUntil: 'domcontentloaded' })
+
+const viewBtn = page.locator('button:has-text("view in 3D")')
+await viewBtn.waitFor({ timeout: 30000 })
+check('idle state offers "view in 3D"', await viewBtn.isVisible())
+check('no WebGL context before the tap', (await page.locator('model-viewer').count()) === 0)
+const stillVisible = await page.locator('img[alt="E2E Cube"]').first().isVisible().catch(() => false)
+check('the still paints before any tap', stillVisible)
+await page.screenshot({ path: path.join(SHOTS, '04-detail-idle.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+
+await viewBtn.click()
+await page.waitForSelector('model-viewer', { timeout: 30000 })
+check('tapping mounts exactly one viewer', (await page.locator('model-viewer').count()) === 1)
+await page.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
+await page.waitForTimeout(600)
+check('exit control is present and labelled',
+  await page.locator('button[aria-label="Exit 3D view"]').isVisible())
+await page.screenshot({ path: path.join(SHOTS, '05-detail-active.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+
+// The still must fade out only AFTER the model paints.
+check('still layer faded once the model painted', await waitStillFaded(page))
+
+await page.locator('button[aria-label="Exit 3D view"]').click()
+await page.waitForTimeout(400)
+check('exiting unmounts the viewer (releases the context)', (await page.locator('model-viewer').count()) === 0)
+check('exiting restores the "view in 3D" affordance', await page.locator('button:has-text("view in 3D")').isVisible())
+await page.screenshot({ path: path.join(SHOTS, '06-detail-exited.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+
+// ───────────────── D. Reduced motion ─────────────────
+console.log('\nD. prefers-reduced-motion')
+const rm = await ctx.newPage()
+await rm.emulateMedia({ reducedMotion: 'reduce' })
+await rm.goto(ART, { waitUntil: 'domcontentloaded' })
+await rm.locator('button:has-text("view in 3D")').click()
+await rm.waitForSelector('model-viewer', { timeout: 30000 })
+await rm.waitForTimeout(1200)
+const autoRotate = await rm.evaluate(() => document.querySelector('model-viewer')?.hasAttribute('auto-rotate'))
+check('auto-rotate is OFF under prefers-reduced-motion', autoRotate === false, `hasAttribute=${autoRotate}`)
+await rm.close()
+
+const normal = await ctx.newPage()
+await normal.emulateMedia({ reducedMotion: 'no-preference' })
+await normal.goto(ART, { waitUntil: 'domcontentloaded' })
+await normal.locator('button:has-text("view in 3D")').click()
+await normal.waitForSelector('model-viewer', { timeout: 30000 })
+await normal.waitForTimeout(1200)
+check('auto-rotate is ON with no motion preference',
+  await normal.evaluate(() => document.querySelector('model-viewer')?.hasAttribute('auto-rotate')) === true)
+await normal.close()
+
+// ───────── E. Slow load: still stays, progress shows ─────────
+// The 856-byte fixture loads instantly, so the loading state this feature
+// adds for big models on slow links is never otherwise observed. Delay the
+// bytes to actually look at it.
+console.log('\nE. Slow model load — the state a big model on a slow link hits')
+const slow = await ctx.newPage()
+await slow.route('**/arweave.net/**', async (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) {
+    await new Promise((r) => setTimeout(r, 4000))
+    return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB })
+  }
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await slow.goto(ART, { waitUntil: 'domcontentloaded' })
+await slow.locator('button:has-text("view in 3D")').click()
+await slow.waitForSelector('model-viewer', { timeout: 30000 })
+await slow.waitForTimeout(1200)
+const loadingText = await slow.locator('text=/loading 3D…/').first().innerText().catch(() => '')
+check('a progress readout is shown while the model downloads',
+  /loading 3D…\s*\d+%/.test(loadingText), JSON.stringify(loadingText))
+const stillDuringLoad = await stillOpacityOf(slow)
+check('the still is STILL VISIBLE while the model downloads (no empty box)',
+  stillDuringLoad === '1', String(stillDuringLoad))
+await slow.screenshot({ path: path.join(SHOTS, '09-detail-loading.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+await slow.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 30000 })
+await slow.waitForTimeout(600)
+check('the still fades only AFTER the model paints', await waitStillFaded(slow))
+await slow.close()
+
+// ───────── F. Feed surface: still renders, NO WebGL ─────────
+console.log('\nF. Feed surface — the no-WebGL rule')
+const MODEL_MOMENT = {
+  address: '0x00000000000000000000000000000000000000aa',
+  token_id: '1',
+  metadata: MODEL_META.metadata,
+  creator: '0x000000000000000000000000000000000000dEaD',
+}
+await ctx.route(/\/api\/timeline/, (r) => r.fulfill({
+  status: 200, contentType: 'application/json',
+  body: JSON.stringify({ status: 'success', moments: [MODEL_MOMENT],
+    pagination: { page: 1, limit: 20, total_pages: 1 } }),
+}))
+const feed = await ctx.newPage()
+await feed.goto(`${BASE}/discover`, { waitUntil: 'domcontentloaded' })
+await feed.waitForSelector('article', { timeout: 30000 })
+await feed.waitForTimeout(3000)
+// MarketOvals resolves a model through `media.src`, which is the STILL. Before
+// that one-line change the tile would have been blank.
+const tileImg = await feed.locator('article img[alt="E2E Cube"]').first().getAttribute('src').catch(() => null)
+check('a 3D moment renders its still on the feed surface', !!tileImg, String(tileImg))
+// THE load-bearing rule for this feature.
+check('NO model-viewer is mounted anywhere in a feed',
+  (await feed.locator('model-viewer').count()) === 0)
+await feed.screenshot({ path: path.join(SHOTS, '07-feed-still.png'), clip: { x: 0, y: 80, width: 900, height: 500 } })
+await feed.close()
+
+await browser.close()
+console.log(fails === 0 ? '\nE2E: all assertions passed' : `\nE2E: ${fails} assertion(s) failed`)
+process.exit(fails === 0 ? 0 : 1)
