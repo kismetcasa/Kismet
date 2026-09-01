@@ -5,7 +5,7 @@ import { Box, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
 import { videoGatewayUrls } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
-import { modelBackgroundCss } from '@/lib/media/modelMedia'
+import { MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/media/modelMedia'
 
 /**
  * The artwork detail view's 3D viewer — the ONE surface in the app that
@@ -167,7 +167,9 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
   }, [phase, hasStill])
 
   const blur = thumbhashToBlurDataURL(thumbhash)
-  const bg = modelBackgroundCss(background)
+  // The VIEWER colour, which may be `transparent` — distinct from the opaque
+  // one baked into the poster. See MODEL_BACKGROUNDS.
+  const bg = modelViewerBg(background)
 
   // One still layer, shared by the idle and active states — so promoting to
   // 3D never re-fetches it — faded out only once the model has actually
@@ -208,6 +210,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
           alt={alt}
           camera-controls
           {...(allowsMotion ? { 'auto-rotate': true } : {})}
+          shadow-intensity={MODEL_SHADOW_INTENSITY}
           touch-action="pan-y"
           style={{ width: '100%', height: '100%', backgroundColor: bg }}
         />

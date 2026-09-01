@@ -42,7 +42,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (40)
+## What it asserts (44)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -56,10 +56,14 @@ node scripts/e2e/model-media.mjs
   on without it.
 - **Slow load** — the progress readout appears and the still stays visible
   throughout, so a big model on a slow link never shows an empty box.
-- **Backdrop** — the preview renders on the artist's colour, switching it
-  changes the render, the swatches meet the 24px target-size minimum, and
-  model-viewer's own JPEG is black while its PNG keeps alpha (the reason the
-  capture composites itself rather than asking for a JPEG).
+- **Backdrop** — all three options are offered, the preview renders on the
+  artist's colour, switching it changes the render, the swatches meet the
+  24px target-size minimum, `transparent` lets the page through the viewer
+  while the thumbnail stays opaque, and model-viewer's own JPEG is black
+  while its PNG keeps alpha (the reason the capture composites itself rather
+  than asking for a JPEG).
+- **Shadow** — a grounding shadow is enabled on both the viewer and the mint
+  preview; model-viewer ships `shadow-intensity` at 0.
 - **A model that never loads** — a header-valid but corrupt GLB reaches the
   preview, never loads, and banks NO poster, so the mint's refusal cannot be
   defeated by a blank-but-valid capture.

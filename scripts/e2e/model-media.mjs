@@ -197,18 +197,23 @@ check('model-viewer\'s PNG preserves alpha (the composite source)', rawPngAlpha 
   String(rawPngAlpha))
 
 // Switching the backdrop must change the preview, not just a stored id.
-await page.locator('button[aria-label="dark background"]').click()
+check('the picker offers all three backdrop options',
+  (await page.locator('button[aria-label^="Backdrop:"]').count()) === 3,
+  String(await page.locator('button[aria-label^="Backdrop:"]').count()))
+check('the mint preview also renders the grounding shadow (it IS the poster source)',
+  Number(await page.locator('model-viewer').getAttribute('shadow-intensity')) > 0)
+await page.locator('button[aria-label="Backdrop: dark"]').click()
 const darkCorner = await waitCorner(page, isDark)
 check('choosing "dark" actually changes the backdrop', isDark(darkCorner), JSON.stringify(darkCorner))
 // WCAG 2.2 SC 2.5.8: 24px minimum, and these sit too close together to claim
 // the spacing exemption. verify:a11y only scans text contrast, so nothing
 // else in the suite can see this.
-const swatch = await page.locator('button[aria-label="dark background"]').boundingBox()
+const swatch = await page.locator('button[aria-label="Backdrop: dark"]').boundingBox()
 check('the backdrop swatches meet the 24px minimum target size',
   swatch.width >= 24 && swatch.height >= 24,
   `${Math.round(swatch.width)}x${Math.round(swatch.height)}`)
 await page.screenshot({ path: path.join(SHOTS, '10-mint-dark-bg.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
-await page.locator('button[aria-label="white background"]').click()
+await page.locator('button[aria-label="Backdrop: white"]').click()
 check('switching back returns the preview to white', isWhite(await waitCorner(page, isWhite)))
 
 // Rotate, confirm a re-capture happens and differs (the "pose it" mechanic).
@@ -282,6 +287,10 @@ const viewerBg = await page.evaluate(() =>
   getComputedStyle(document.querySelector('model-viewer')).backgroundColor)
 check('the live viewer renders on the SAME backdrop as the still, not transparent',
   viewerBg === 'rgb(255, 255, 255)', viewerBg)
+// model-viewer ships shadow-intensity at 0; an untextured model reads as a
+// flat silhouette without this, worst of all on the white default.
+check('a grounding shadow is enabled on the viewer',
+  Number(await page.locator('model-viewer').getAttribute('shadow-intensity')) > 0)
 await page.screenshot({ path: path.join(SHOTS, '05-detail-active.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
 
 // The still must fade out only AFTER the model paints.
@@ -292,6 +301,26 @@ await page.waitForTimeout(400)
 check('exiting unmounts the viewer (releases the context)', (await page.locator('model-viewer').count()) === 0)
 check('exiting restores the "view in 3D" affordance', await page.locator('button:has-text("view in 3D")').isVisible())
 await page.screenshot({ path: path.join(SHOTS, '06-detail-exited.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+
+// ───────── C2. `transparent` backdrop ─────────
+// The artist's ask: a white shared thumbnail, but the in-app view open onto
+// the page. Two different colours behind ONE stored choice.
+console.log('\nC2. The transparent backdrop option')
+const clear = await ctx.newPage()
+await clear.route(/\/api\/moment\?/, (r) => r.fulfill({
+  status: 200, contentType: 'application/json',
+  body: JSON.stringify({ ...MODEL_META, metadata: { ...MODEL_META.metadata, kismet_bg: 'transparent' } }),
+}))
+await clear.goto(ART, { waitUntil: 'domcontentloaded' })
+await clear.locator('button:has-text("view in 3D")').click()
+await clear.waitForSelector('model-viewer', { timeout: 30000 })
+await clear.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
+const clearBg = await clear.evaluate(() =>
+  getComputedStyle(document.querySelector('model-viewer')).backgroundColor)
+check('`transparent` lets the page show through the viewer',
+  clearBg === 'rgba(0, 0, 0, 0)', clearBg)
+await clear.screenshot({ path: path.join(SHOTS, '11-detail-transparent.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+await clear.close()
 
 // ───────────────── D. Reduced motion ─────────────────
 console.log('\nD. prefers-reduced-motion')

@@ -552,6 +552,32 @@ the browser check now measures the button box.
 Two of these four (17, 20) were invisible to every non-browser check, which is
 the same lesson as finding 15 arriving twice more.
 
+### Findings 21-22 — the artist's second round
+
+**21. The thumbnail and the in-app view are different contexts.** The artist's
+read, and it is correct: the shared image wants white (the presentation the
+NFT world already parses that way — Zora's is always white), while inside our
+own dark page a model can sit *in* the page rather than in a box. Coupling
+them forced one answer to both questions.
+
+Each `MODEL_BACKGROUNDS` entry now carries two colours behind one stored id:
+`poster` (always opaque — a JPEG has no alpha and it travels to surfaces whose
+surrounding colour is not ours) and `viewer` (may be `transparent`). The third
+option is exactly the artist's proposal: white thumbnail, transparent in app.
+The accepted cost is that promoting to 3D then crossfades the backdrop — which
+is why it is one option among three rather than the rule, and it rides the
+300 ms fade the still already had. `EVERY option has an opaque poster colour`
+is oracle-pinned so a future entry cannot bake transparency into a JPEG.
+
+**22. `shadow-intensity` defaults to 0.** Verified in the installed package:
+model-viewer renders **no shadow at all** unless asked, which is exactly why
+an untextured model reads as a flat silhouette — worst of all against the
+white default this branch just made standard. A grounding shadow is now on
+everywhere a model renders, including the mint preview, because the preview
+IS the poster source and the thumbnail would otherwise differ from what the
+artist posed. It lands in the capture for free: the shadow is part of the
+rendered scene, not a DOM layer.
+
 ## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:

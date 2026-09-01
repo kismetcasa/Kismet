@@ -35,7 +35,9 @@ import {
   MODEL_MAX_BYTES,
   asGlbFile,
   inspectGlbFile,
-  modelBackgroundCss,
+  MODEL_SHADOW_INTENSITY,
+  modelPosterBg,
+  modelViewerBg,
 } from '../lib/media/modelMedia.ts'
 
 let failures = 0
@@ -161,30 +163,37 @@ check('modelMedia: asGlbFile stamps the real MIME (browsers give us "")',
   asGlbFile(glbFile()).type === GLB_MIME)
 
 // ── 3. The authored backdrop ───────────────────────────────────────────────
-// Baked into the poster JPEG (no alpha), so the resolver must never answer
-// `transparent` — the live viewer has to reproduce the same backdrop the
-// still was captured on, including for moments minted before the field
-// existed.
-check('background: the default is white (the product-shot presentation)',
-  modelBackgroundCss(DEFAULT_MODEL_BACKGROUND) === '#ffffff')
-check('background: a missing kismet_bg falls back to the default, not transparent',
-  modelBackgroundCss(undefined) === '#ffffff', modelBackgroundCss(undefined))
-check('background: an unknown id falls back rather than breaking the viewer',
-  modelBackgroundCss('chartreuse') === '#ffffff')
-check('background: every option resolves to an OPAQUE colour',
-  MODEL_BACKGROUNDS.every((b) => /^#[0-9a-f]{6}$/i.test(b.css)),
-  JSON.stringify(MODEL_BACKGROUNDS.map((b) => b.css)))
-check('background: dark stays available for artists who want it',
-  modelBackgroundCss('dark') === '#111111')
+// The poster colour is baked into a JPEG that travels to surfaces we do not
+// control, so it must always be opaque; the viewer colour may be transparent
+// so a model can sit in the page. Those are different questions and the
+// artist answers them with one choice.
+check('backdrop: the default poster is white (the product-shot presentation)',
+  modelPosterBg(DEFAULT_MODEL_BACKGROUND) === '#ffffff')
+check('backdrop: a missing kismet_bg falls back to the default, not transparent',
+  modelPosterBg(undefined) === '#ffffff' && modelViewerBg(undefined) === '#ffffff')
+check('backdrop: an unknown id falls back rather than breaking the viewer',
+  modelPosterBg('chartreuse') === '#ffffff' && modelViewerBg('chartreuse') === '#ffffff')
+// The invariant that keeps thumbnails legible everywhere: NO option, present
+// or future, may bake transparency into a JPEG.
+check('backdrop: EVERY option has an opaque poster colour',
+  MODEL_BACKGROUNDS.every((b) => /^#[0-9a-f]{6}$/i.test(b.poster)),
+  JSON.stringify(MODEL_BACKGROUNDS.map((b) => b.poster)))
+check('backdrop: `transparent` means transparent IN THE VIEWER but white in the thumbnail',
+  modelViewerBg('transparent') === 'transparent' && modelPosterBg('transparent') === '#ffffff')
+check('backdrop: dark stays available for artists who want it',
+  modelPosterBg('dark') === '#111111' && modelViewerBg('dark') === '#111111')
 // The fallback must track DEFAULT_MODEL_BACKGROUND, not the array's first
 // entry — otherwise reordering MODEL_BACKGROUNDS silently changes what every
 // pre-kismet_bg moment renders on.
-const defaultCss = MODEL_BACKGROUNDS.find((b) => b.id === DEFAULT_MODEL_BACKGROUND)!.css
-check('background: the fallback IS the declared default, not the first entry',
-  modelBackgroundCss(undefined) === defaultCss && modelBackgroundCss('nope') === defaultCss,
-  `${modelBackgroundCss(undefined)} vs ${defaultCss}`)
-check('background: ids are unique (they are persisted in metadata)',
+const dflt = MODEL_BACKGROUNDS.find((b) => b.id === DEFAULT_MODEL_BACKGROUND)!
+check('backdrop: the fallback IS the declared default, not the first entry',
+  modelPosterBg(undefined) === dflt.poster && modelPosterBg('nope') === dflt.poster)
+check('backdrop: ids are unique (they are persisted in metadata)',
   new Set(MODEL_BACKGROUNDS.map((b) => b.id)).size === MODEL_BACKGROUNDS.length)
+// model-viewer ships shadow-intensity at 0, which is what makes an untextured
+// model read as a flat silhouette. Pin that we override it.
+check('backdrop: a grounding shadow is enabled (model-viewer defaults to none)',
+  Number(MODEL_SHADOW_INTENSITY) > 0, MODEL_SHADOW_INTENSITY)
 
 // ── 4. Classification + the fail-safe shape ────────────────────────────────
 // The exact metadata MintForm writes for a 3D moment.

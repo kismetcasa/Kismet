@@ -25,7 +25,7 @@ import {
   MODEL_BACKGROUNDS,
   MODEL_SOFT_WARN_BYTES,
   asGlbFile,
-  modelBackgroundCss,
+  modelPosterBg,
   type ModelBackgroundId,
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
@@ -1755,7 +1755,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       // previous model survive into the next one.
                       key={preview}
                       src={preview}
-                      background={modelBackgroundCss(modelBg)}
+                      background={modelPosterBg(modelBg)}
                       fileName={file!.name}
                       onPoster={setModelPoster}
                       onError={(msg) => toast.error('3D model', { description: msg })}
@@ -1776,8 +1776,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                             type="button"
                             onClick={() => setModelBg(bg.id)}
                             aria-pressed={modelBg === bg.id}
-                            aria-label={`${bg.label} background`}
-                            title={`${bg.label} background`}
+                            // "Backdrop: white thumbnail, transparent in app"
+                            // reads correctly; "<label> background" would not,
+                            // now that a label can be a whole sentence.
+                            aria-label={`Backdrop: ${bg.label}`}
+                            title={`Backdrop: ${bg.label}`}
                             // 24px hit area around a 16px swatch. The visual
                             // dot is what reads in a caption bar, but a 16px
                             // target is under WCAG 2.2 SC 2.5.8's 24px floor
@@ -1791,7 +1794,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                               className={`w-4 h-4 rounded-full border transition-colors ${
                                 modelBg === bg.id ? 'border-ink' : 'border-line'
                               }`}
-                              style={{ backgroundColor: bg.css }}
+                              style={{ background: bg.swatch }}
                             />
                           </button>
                         ))}
