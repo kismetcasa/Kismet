@@ -39,6 +39,7 @@ function notificationHref(n: Notification): string {
     case 'raffle_win':
     case 'raffle_ended':
     case 'file_update':
+    case 'experience_win':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
@@ -241,6 +242,21 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
             <p className="text-[10px] font-mono text-dim mt-0.5 truncate">&ldquo;{n.note}&rdquo;</p>
           )}
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">{time}</p>
+        </>
+      )
+    case 'experience_win':
+      // The payoff moment, styled like raffle_win: accent headline, bold title,
+      // no nested anchor (the row itself is the link). Leads with the ARTIST
+      // rather than the machine — a win is an introduction to whoever made the
+      // piece, which is the entire point of the surface.
+      return (
+        <>
+          <p className="text-xs font-mono text-accent truncate">
+            You won {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}!
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            {actorLabel ? `by ${actorLabel} · ` : ''}It&apos;s in your wallet. · {time}
+          </p>
         </>
       )
     default: {

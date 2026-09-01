@@ -38,6 +38,7 @@ const STATIC_ROUTES: MetadataRoute.Sitemap = [
   })),
   { url: `${SITE_URL}/mint`, changeFrequency: 'monthly', priority: 0.5 },
   { url: `${SITE_URL}/market`, changeFrequency: 'daily', priority: 0.6 },
+  { url: `${SITE_URL}/experience`, changeFrequency: 'daily', priority: 0.6 },
   { url: `${SITE_URL}/agent`, changeFrequency: 'monthly', priority: 0.5 },
 ]
 

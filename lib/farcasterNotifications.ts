@@ -552,6 +552,17 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
+    case 'experience_win': {
+      // Push copy for a machine win. Names the artist rather than the machine:
+      // the push exists to introduce the maker, and the artwork is already in
+      // the wallet by the time this fires.
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      return {
+        title: truncate('You won an artwork', TITLE_MAX),
+        body: truncate(`${subject} is yours${actorName ? ` — by ${actorName}` : ''}`, BODY_MAX),
+        targetUrl: momentUrl,
+      }
+    }
     default: {
       // Exhaustiveness — TS errors if NotificationType grows without a
       // new case here. Matches NotificationRow's same guard.

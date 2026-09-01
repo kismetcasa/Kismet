@@ -48,6 +48,7 @@ const FILTER_LABEL: Record<TypeFilter, string> = {
   raffle_win: 'raffle',
   raffle_ended: 'raffle',
   file_update: 'updates',
+  experience_win: 'experience',
 }
 
 const ORDER_KEY = 'kismetart:notif-tab-order'

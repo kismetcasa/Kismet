@@ -32,6 +32,13 @@ export const ALL_NOTIFICATION_TYPES = [
   // collection within 60s; the per-artwork SET NX notify-lock (24h) in the
   // fanout is the real dedup (COLLECTOR_DOWNLOADS_DESIGN.md §6.2).
   'file_update',
+  // Experience win (app/api/experience/play): the player's capsule opened onto
+  // this artwork and it has been minted to them. `actor` is the ARTIST, not the
+  // machine's creator — the win is an introduction to whoever made the piece,
+  // which is the whole point of the surface. Muteable, unlike the money types:
+  // the artwork is already in the wallet, so a missed notification costs
+  // discovery, not value.
+  'experience_win',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
