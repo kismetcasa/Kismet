@@ -562,6 +562,7 @@ console.log('\n5b. a machine id is claimed, not just checked')
     state: 'draft' as const,
     capsule: { collection: COLL, tokenId: '1' },
     capsuleMaxSupply: 100,
+    splitRecipients: [CREATOR, ART_B],
     createdAt: 1,
   }
   check('the first creator claims the id', (await store.createMachine(base)) === true)
@@ -579,6 +580,12 @@ console.log('\n5b. a machine id is claimed, not just checked')
   check('and only then is it listed',
     ((await store.listMachines(['live'])) as { id: string }[]).some((m) => m.id === 'contested'))
   check('while its identity is untouched by the flip', live.creator === CREATOR && live.name === 'first')
+  // The split must survive as part of the machine: an artist who cannot be paid
+  // must not be drawable, and nothing can check that later if the recipient set
+  // is discarded after the publish-time validation.
+  check('the split recipients persist with the machine',
+    Array.isArray(live.splitRecipients) && live.splitRecipients.length === 2)
+  check('and survive a state change', live.splitRecipients.includes(ART_B))
 }
 
 // ═══ 6. epoch seeds: fixed in advance, revealed only once closed ════════════
@@ -677,6 +684,108 @@ console.log('\n8. two machines cannot promise the same copy')
   check('releasing a pledge frees the headroom',
     (await store.otherPledges(COLL, 'x1', 'machine-one')) === 0)
   check('an unpledged edition is clear', (await store.otherPledges(COLL, 'x9', 'machine-one')) === 0)
+}
+
+// ═══ 8b. seeds committed a day AHEAD, not lazily on first play ══════════════
+console.log('\n8b. commit-ahead seeds')
+{
+  const M = 'ahead-machine'
+  const today = '2026-05-10'
+
+  check('no commitment exists before the machine is opened',
+    (await store.commitmentForEpoch(M, today)) === null)
+
+  const opened = await store.openEpochSeeds(M, today)
+  check('opening returns today\'s commitment', opened.commitment.length === 64)
+  check('and tomorrow\'s, already fixed', opened.next.epoch === '2026-05-11')
+  check('tomorrow\'s commitment is real, not a placeholder',
+    (await store.commitmentForEpoch(M, '2026-05-11')) === opened.next.commitment)
+
+  // THE PROPERTY THIS EXISTS FOR. A commitment created lazily on first play is
+  // created AFTER that player's capsule transaction — which is precisely the
+  // ordering commit-reveal is supposed to rule out. Because tomorrow's seed is
+  // fixed today, tomorrow's first player draws against a seed that predates any
+  // transaction they could possibly have made.
+  const tomorrowSeed = await store.seedForEpoch(M, '2026-05-11')
+  check('tomorrow\'s seed is already the committed one',
+    commitmentFor(tomorrowSeed.seed) === opened.next.commitment)
+
+  // Idempotent: calling again — including from a request that has already seen
+  // a player's transaction — cannot replace a fixed seed.
+  const again = await store.openEpochSeeds(M, today)
+  check('re-opening never rotates a live seed', again.commitment === opened.commitment)
+  check('nor the one committed ahead', again.next.commitment === opened.next.commitment)
+
+  // And rolling forward a day reuses yesterday's commitment rather than minting
+  // a fresh one, which is what makes "we published this yesterday" true.
+  const rolled = await store.openEpochSeeds(M, '2026-05-11')
+  check('the next day inherits the commitment published for it',
+    rolled.commitment === opened.next.commitment)
+  check('and commits the day after that', rolled.next.epoch === '2026-05-12')
+
+  check('a live seed still refuses to reveal', (await store.revealSeed(M, today, today)) === null)
+  check('a closed one still does',
+    (await store.revealSeed(M, today, '2026-05-11')) !== null)
+}
+
+// ═══ 8c. the browser-local capsule ledger ═══════════════════════════════════
+console.log('\n8c. local capsule ledger')
+{
+  // A tiny in-memory localStorage so the REAL module runs. The store can also
+  // THROW on read (private-mode Safari, blocked site data) and a capsule ledger
+  // must never be why a machine page fails to render, so that is exercised too.
+  const mem = new Map<string, string>()
+  let broken = false
+  ;(globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => { if (broken) throw new Error('blocked'); return mem.get(k) ?? null },
+    setItem: (k: string, v: string) => { if (broken) throw new Error('blocked'); mem.set(k, v) },
+    removeItem: (k: string) => { mem.delete(k) },
+  }
+
+  const pending = await import(new URL('../lib/experience/pendingCapsules.ts', import.meta.url).href)
+  const M = 'ledger'
+  const tx = (n: number) => '0x' + String(n).padStart(2, '0').repeat(32)
+
+  check('an empty ledger lists nothing', pending.listPendingCapsules(M).length === 0)
+
+  pending.rememberCapsule(M, { txHash: tx(1), units: 3, at: 1 })
+  const one = pending.listPendingCapsules(M)
+  check('a remembered capsule comes back', one.length === 1 && one[0].txHash === tx(1))
+  check('with its unit count', one[0].units === 3)
+
+  // Re-remembering the same transaction must not duplicate it — the play loop
+  // writes before every attempt.
+  pending.rememberCapsule(M, { txHash: tx(1), units: 3, at: 2 })
+  check('re-remembering does not duplicate', pending.listPendingCapsules(M).length === 1)
+
+  pending.rememberCapsule(M, { txHash: tx(2), units: 1, at: 3 })
+  check('newest first', pending.listPendingCapsules(M)[0].txHash === tx(2))
+  check('machines are kept apart', pending.listPendingCapsules('other').length === 0)
+
+  pending.clearPendingCapsule(M, tx(2))
+  const left = pending.listPendingCapsules(M)
+  check('clearing removes only that capsule', left.length === 1 && left[0].txHash === tx(1))
+  pending.clearPendingCapsule(M, tx(1))
+  check('clearing the last empties the machine', pending.listPendingCapsules(M).length === 0)
+
+  // Bounded, so an abandoned browser cannot grow it without limit.
+  for (let i = 0; i < 40; i++) pending.rememberCapsule(M, { txHash: tx(i), units: 1, at: i })
+  check('the ledger is bounded', pending.listPendingCapsules(M).length === 20)
+
+  // A corrupt or hostile value must read as empty rather than throw.
+  mem.set('kismetart:xp:pending', 'not json')
+  check('corrupt storage reads as empty', pending.listPendingCapsules(M).length === 0)
+  mem.set('kismetart:xp:pending', '[1,2,3]')
+  check('a non-object ledger reads as empty', pending.listPendingCapsules(M).length === 0)
+  mem.set('kismetart:xp:pending', JSON.stringify({ [M]: [{ txHash: 'nope', units: 1, at: 1 }] }))
+  check('a malformed hash is filtered out', pending.listPendingCapsules(M).length === 0)
+
+  broken = true
+  check('a storage that throws on read still returns a list', pending.listPendingCapsules(M).length === 0)
+  let threw = false
+  try { pending.rememberCapsule(M, { txHash: tx(9), units: 1, at: 1 }) } catch { threw = true }
+  check('and a write that throws is swallowed', !threw)
+  broken = false
 }
 
 // ═══ 9. operator identity: the grant and the signer must be the same account ══

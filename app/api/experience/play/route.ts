@@ -21,6 +21,7 @@ import {
   getMachine,
   getPool,
   getRemaining,
+  openEpochSeeds,
   recordPlay,
   releaseOne,
   seedForEpoch,
@@ -29,6 +30,7 @@ import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { isMomentHidden } from '@/lib/hiddenMoments'
+import { fetchArtworkMeta } from '@/lib/experience/artwork'
 
 /**
  * One play: prove a capsule, claim it exactly once, freeze the pool, draw,
@@ -163,13 +165,19 @@ export async function POST(req: NextRequest) {
   }
 
   const epoch = epochFor(now)
+  // openEpochSeeds, not seedForEpoch: it also opens the NEXT epoch, so tomorrow's
+  // commitment is public before anyone can transact against it. Idempotent (SET
+  // NX), and the read path calls it too, so by the time a play reaches here the
+  // seed has almost always been fixed for a full epoch already.
   const { seed } = await seedForEpoch(machineId, epoch)
+  const { commitment } = await openEpochSeeds(machineId, epoch)
   const sHash = snapshotHash(eligibleSnapshot)
   claim = await advanceClaim(claim, {
     state: 'frozen',
     snapshot: eligibleSnapshot,
     snapshotHash: sHash,
     epoch,
+    commitment,
   })
 
   // 5–7. Draw, consume, verify authority. The loop itself lives in
@@ -267,12 +275,20 @@ export async function POST(req: NextRequest) {
         : Promise.resolve(),
     ])
     if (claim.state === 'delivered') {
+      // Hydrate the title and cover so the notification (and the Farcaster push
+      // built from it) names the artwork rather than saying "an artwork". Best
+      // effort by construction: fetchArtworkMeta returns null on any failure and
+      // both fields are optional, so a metadata outage costs the notification its
+      // picture, never its delivery.
+      const meta = await fetchArtworkMeta(prize.collection, prize.tokenId)
       await writeNotification({
         type: 'experience_win',
         recipient: account,
         actor: prize.artist,
         tokenAddress: prize.collection,
         tokenId: prize.tokenId,
+        tokenName: meta?.name ?? undefined,
+        tokenImage: meta?.image ?? undefined,
         amount: 1,
       }).catch(bestEffort('xp.notifyWin', { machineId, txHash }))
     }

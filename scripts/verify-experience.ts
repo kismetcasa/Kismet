@@ -29,9 +29,16 @@ import {
   commitmentFor,
   drawHash,
   epochFor,
+  nextEpoch,
   snapshotHash,
   verifyDraw,
 } from '../lib/experience/fairness.ts'
+import {
+  artworkTitle,
+  formatOddsRatio,
+  formatProbability,
+  formatRemaining,
+} from '../lib/experience/format.ts'
 import type { PoolEntry, SnapshotEntry } from '../lib/experience/types.ts'
 
 let failures = 0
@@ -462,6 +469,69 @@ console.log('\n7. end-to-end reproducibility')
   )
   check('a redraw never returns the excluded piece', second?.tokenId !== serverPick!.tokenId)
   check('a redraw still returns something', !!second)
+}
+
+// ─── 8. Odds formatting: never round a real chance down to nothing ───────────
+console.log('\n8. odds formatting')
+{
+  // THE REGRESSION THIS PINS. `(p * 100).toFixed(1)` renders a live 0.04% prize
+  // as "0.0%" — a statement that a winnable piece cannot be won, on the one
+  // surface whose entire job is an accurate disclosure. Every positive
+  // probability must render as visibly positive.
+  const tiny = [0.0004, 0.00004, 0.000004, 1e-7, 1e-9]
+  check(
+    'no positive probability ever renders as 0%',
+    tiny.every((p) => formatProbability(p) !== '0%' && formatProbability(p) !== '0.0%'),
+    tiny.map((p) => `${p}->${formatProbability(p)}`).join(' '),
+  )
+  check('an impossible row does render as 0%', formatProbability(0) === '0%')
+  check('and so does a negative or broken one', formatProbability(NaN) === '0%' && formatProbability(-1) === '0%')
+
+  check('precision scales with magnitude (big)', formatProbability(0.5) === '50.0%')
+  check('precision scales with magnitude (mid)', formatProbability(0.025) === '2.50%')
+  check('precision scales with magnitude (small)', formatProbability(0.0004) === '0.040%')
+  check('below a thousandth of a percent degrades to an inequality, not a zero',
+    formatProbability(0.0000004) === '<0.001%')
+  check('certainty reads as 100%', formatProbability(1) === '100%')
+
+  check('the ratio form carries the figure a percentage rounds away',
+    formatOddsRatio(0.0004) === '1 in 2,500')
+  check('a certain row has no meaningful ratio', formatOddsRatio(1) === null)
+  check('nor does an impossible one', formatOddsRatio(0) === null)
+  check('ratio rounds to the nearest whole draw', formatOddsRatio(0.5) === '1 in 2')
+
+  check('unlimited supply reads as a word, not a glyph', formatRemaining(null) === 'unlimited')
+  check('one copy is singular', formatRemaining(1) === '1 left')
+  check('many copies are grouped', formatRemaining(12345) === '12,345 left')
+  check('exhausted reads as zero left', formatRemaining(0) === '0 left')
+
+  check('a titled artwork uses its title', artworkTitle('Dawn Chorus', '7') === 'Dawn Chorus')
+  check('an untitled one falls back to its token id', artworkTitle(null, '7') === '#7')
+  check('and whitespace is not a title', artworkTitle('   ', '7') === '#7')
+
+  // The formatter must agree with the table it formats: every drawable row in a
+  // real derived table renders as non-zero.
+  const table = deriveOdds([
+    snap({ tokenId: 'a', weight: 999_999 }),
+    snap({ tokenId: 'b', weight: 1 }),
+  ])
+  check('a 1-in-a-million row still renders visibly',
+    formatProbability(table[1].probability) !== '0%' && formatProbability(table[1].probability) !== '0.0%',
+    formatProbability(table[1].probability))
+}
+
+// ─── 9. Epoch arithmetic: seeds must be committable a day ahead ──────────────
+console.log('\n9. epoch arithmetic')
+{
+  check('an ordinary day advances', nextEpoch('2026-03-01') === '2026-03-02')
+  check('a month rolls over', nextEpoch('2026-01-31') === '2026-02-01')
+  check('a year rolls over', nextEpoch('2025-12-31') === '2026-01-01')
+  check('a leap day exists in a leap year', nextEpoch('2028-02-28') === '2028-02-29')
+  check('and does not in a common year', nextEpoch('2026-02-28') === '2026-03-01')
+  check('nextEpoch agrees with epochFor across the boundary',
+    nextEpoch(epochFor(Date.UTC(2026, 5, 30, 23, 59, 59))) === '2026-07-01')
+  check('epochs sort lexicographically, which revealSeed relies on',
+    '2026-01-31' < nextEpoch('2026-01-31') && nextEpoch('2025-12-31') > '2025-12-31')
 }
 
 console.log(

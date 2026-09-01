@@ -77,6 +77,11 @@ export interface ClaimRecord {
   /** Seed epoch this draw is bound to, recorded at freeze so verification uses
    *  the epoch that was live then rather than "today". */
   epoch?: string
+  /** The commitment that was public for `epoch` at the moment of the freeze.
+   *  Stored on the claim so a receipt is SELF-CONTAINED: a verifier can compare
+   *  the revealed seed against the commitment this play was actually served
+   *  under, instead of against whatever the server chooses to show later. */
+  commitment?: string
   /** Redraw counter — each attempt is an independent, separately verifiable
    *  draw over the same frozen snapshot. */
   attempt?: number
@@ -89,6 +94,23 @@ export interface ClaimRecord {
   /** Why a claim is pending — surfaced to the player and to ops. */
   pendingReason?: string
 }
+
+/** Every way a machine can fail its publish gate. Lives here rather than in
+ *  lib/experience/solvency so the Capsule Studio can type its problem list
+ *  without importing the checker's implementation — the codes are part of the
+ *  contract between the gate and the surfaces that report it. */
+export type SolvencyProblemCode =
+  | 'empty-pool'
+  | 'too-many-entries'
+  | 'too-many-artists'
+  | 'bad-weight'
+  | 'bad-supply'
+  | 'duplicate-entry'
+  | 'artist-not-in-split'
+  | 'pass-collection'
+  | 'over-headroom'
+  | 'undercollateralised'
+  | 'floor-not-creator'
 
 /** Machine visibility. `draft` is creator-only; `review` is queued for a
  *  curator; `live` is playable; `ended` keeps claims honourable but sells
@@ -108,6 +130,15 @@ export interface Machine {
   capsule: { collection: string; tokenId: string }
   /** Capsule maxSupply read at publish — the immutable liability ceiling. */
   capsuleMaxSupply: number | null
+  /** Lowercased split recipients, as validated at publish.
+   *
+   *  PERSISTED, not just checked. Every pool artist must be in the split —
+   *  an artist who cannot be paid must not be drawable — and that rule was
+   *  previously enforced once at creation and then forgotten, leaving nothing
+   *  able to answer "is this machine still paying the people in it?". A curator
+   *  reviewing a queued machine, and anyone auditing a live one, needs the
+   *  answer, so the set is part of the machine rather than a transient argument. */
+  splitRecipients: string[]
   createdAt: number
   /** Content hash bound at curator approval; a material edit returns to review. */
   approvedHash?: string

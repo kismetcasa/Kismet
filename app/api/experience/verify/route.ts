@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { commitmentFor, epochFor, verifyDraw } from '@/lib/experience/fairness'
+import { epochFor, verifyDraw } from '@/lib/experience/fairness'
 import { selectByHash } from '@/lib/experience/draw'
-import { getClaim, revealSeed } from '@/lib/experience/store'
+import { commitmentForEpoch, getClaim, revealSeed } from '@/lib/experience/store'
 
 /**
  * Public verification of a past draw.
@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
       reason: 'the seed for this play has not been revealed yet',
       revealsAfter: claim.epoch,
       epoch: claim.epoch,
+      commitment: claim.commitment ?? (await commitmentForEpoch(machineId, claim.epoch)),
       snapshotHash: claim.snapshotHash,
       snapshot: claim.snapshot,
       attempt: claim.attempt ?? 0,
@@ -66,9 +67,24 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  // The commitment must be the one this play was SERVED under, recorded on the
+  // claim at freeze — not one recomputed from the seed we are revealing. Hashing
+  // the revealed seed and comparing it to itself is a tautology that passes for
+  // any seed whatsoever, which would quietly reduce this endpoint to checking
+  // only the weight table. Claims frozen before `commitment` was recorded fall
+  // back to the epoch's stored commitment, which is still an independent read.
+  const commitment = claim.commitment ?? (await commitmentForEpoch(machineId, claim.epoch))
+  if (!commitment) {
+    return NextResponse.json({
+      verifiable: false,
+      reason: 'no published commitment was recorded for this play',
+      epoch: claim.epoch,
+    })
+  }
+
   const result = verifyDraw({
     serverSeed: seed,
-    commitment: commitmentFor(seed),
+    commitment,
     snapshot: claim.snapshot,
     snapshotHash: claim.snapshotHash,
     txHash: claim.txHash,
@@ -94,7 +110,7 @@ export async function GET(req: NextRequest) {
     ok: matches,
     epoch: claim.epoch,
     serverSeed: seed,
-    commitment: commitmentFor(seed),
+    commitment,
     snapshotHash: claim.snapshotHash,
     snapshot: claim.snapshot,
     txHash: claim.txHash,

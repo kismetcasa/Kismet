@@ -124,3 +124,20 @@ export function verifyDraw(params: {
 export function epochFor(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
+
+/** The epoch after this one.
+ *
+ *  Exists so a seed can be COMMITTED AHEAD. A commit–reveal scheme is only
+ *  worth anything if the commitment predates the client entropy, and our client
+ *  entropy is the player's capsule transaction. A seed created lazily on first
+ *  play is therefore created AFTER that player's transaction already exists —
+ *  the precise ordering the scheme is supposed to rule out. Opening epoch N+1
+ *  while N is live means every play draws against a seed that was published at
+ *  least a full epoch before the player could have transacted.
+ *
+ *  String arithmetic on the UTC date, via Date.UTC, so month and year rollovers
+ *  and leap days are the platform's problem rather than ours. */
+export function nextEpoch(epoch: string): string {
+  const [y, m, d] = epoch.split('-').map(Number)
+  return epochFor(Date.UTC(y, m - 1, d + 1))
+}

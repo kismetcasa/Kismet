@@ -13,11 +13,13 @@ import {
   createMachine,
   getMachine,
   listMachines,
+  openEpochSeeds,
   otherPledges,
   pledgeSupply,
   putPoolEntry,
   setMachineState,
 } from '@/lib/experience/store'
+import { epochFor } from '@/lib/experience/fairness'
 import type { Machine, PoolEntry } from '@/lib/experience/types'
 
 /**
@@ -80,6 +82,12 @@ export async function POST(req: NextRequest) {
     capsule?: { collection?: string; tokenId?: string }
     entries?: PoolEntry[]
     splitRecipients?: string[]
+    /** Validate everything and write nothing. The Capsule Studio calls this on
+     *  every edit so a creator sees the REAL verdict — live on-chain headroom
+     *  and rival machines' pledges included — before committing. Re-using the
+     *  publish path rather than approximating it client-side is the point: a
+     *  preview that can disagree with the gate is worse than no preview. */
+    dryRun?: boolean
   } | null
   if (!body) return errorResponse(400, 'Invalid body')
 
@@ -97,6 +105,7 @@ export async function POST(req: NextRequest) {
   // to address different machines.
   const capsuleTokenId = BigInt(rawCapsuleToken).toString()
 
+  const dryRun = body.dryRun === true
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
   const rawEntries = Array.isArray(body.entries) ? body.entries : []
@@ -157,6 +166,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, problems }, { status: 400 })
   }
 
+  // A dry run stops here, having proved exactly what a real publish would
+  // prove. Nothing has been written, no id is reserved and no supply is
+  // pledged, so a creator can iterate without leaving debris behind.
+  if (dryRun) {
+    return NextResponse.json({
+      ok: true,
+      dryRun: true,
+      problems: [],
+      capsule: { maxSupply: capsuleSupply.maxSupply, minted: capsuleSupply.minted },
+    })
+  }
+
   // Admin-created machines go live directly (that is the v1 platform season);
   // everyone else queues for curator review.
   const finalState: Machine['state'] = isAdmin ? 'live' : 'review'
@@ -167,6 +188,7 @@ export async function POST(req: NextRequest) {
     state: finalState,
     capsule: { collection: capsuleCollection.toLowerCase(), tokenId: capsuleTokenId },
     capsuleMaxSupply: capsuleSupply.maxSupply,
+    splitRecipients,
     createdAt: Date.now(),
   }
 
@@ -195,6 +217,11 @@ export async function POST(req: NextRequest) {
     // deleting the draft; an over-promised edition is not recoverable at all.
     await pledgeSupply(e.collection, e.tokenId, id, e.supply)
   }
+
+  // Open the epoch seeds at publish, so a machine's very first visitor is shown
+  // a commitment that already existed — see store.openEpochSeeds. Best effort:
+  // the read path opens them too, so a blip here costs nothing.
+  await openEpochSeeds(id, epochFor(Date.now())).catch(() => null)
 
   const published = await setMachineState(id, finalState)
 

@@ -29,18 +29,29 @@ export default async function ExperiencePage() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
-      <header className="mb-8">
-        <h1 className="text-lg font-mono tracking-wider text-ink">experience</h1>
-        <p className="text-[11px] font-mono text-muted mt-1">
-          capsule machines · published odds · every play returns an artwork
-        </p>
+      <header className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-mono tracking-wider text-ink">experience</h1>
+          <p className="text-[11px] font-mono text-muted mt-1">
+            capsule machines · published odds · every play returns an artwork
+          </p>
+        </div>
+        <Link
+          href="/experience/new"
+          className="shrink-0 px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
+        >
+          open a machine
+        </Link>
       </header>
 
       {machines.length === 0 ? (
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">no machines running yet</p>
           <p className="text-xs font-mono text-subtle mt-2">
-            an artist or curator can open one from their profile
+            any Pass holder can open one in the{' '}
+            <Link href="/experience/new" className="text-dim hover:text-ink underline">
+              capsule studio
+            </Link>
           </p>
         </div>
       ) : (

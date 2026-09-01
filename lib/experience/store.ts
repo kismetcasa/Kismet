@@ -1,7 +1,7 @@
 import 'server-only'
 import { redis } from '../redis'
 import { randomHex } from '../random'
-import { commitmentFor } from './fairness'
+import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
 import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, SnapshotEntry } from './types'
 
@@ -284,6 +284,37 @@ export async function seedForEpoch(machineId: string, epoch: string): Promise<{ 
   const won = await redis.set(key, fresh, { nx: true })
   const seed = won === 'OK' ? fresh : ((await redis.get<string>(key)) ?? fresh)
   return { seed, commitment: commitmentFor(seed) }
+}
+
+/**
+ * Open the seeds for this epoch AND the next one, and return both commitments.
+ *
+ * This is the function that makes the commitment meaningful. `seedForEpoch` on
+ * its own is lazy, so the first play of a machine-day would mint the seed AFTER
+ * that player's capsule transaction existed — a commitment published after the
+ * client entropy proves nothing, and is exactly the failure commit–reveal is
+ * supposed to prevent. Calling this from every READ path (the public machine
+ * payload) and at publish means a seed is always in place at least one epoch
+ * before anyone could transact against it.
+ *
+ * Both writes are `SET NX` underneath, so this is idempotent and can be called
+ * on every request: the first caller for an epoch fixes it and no later caller —
+ * including one that has already seen a player's transaction — can replace it.
+ */
+export async function openEpochSeeds(
+  machineId: string,
+  epoch: string,
+): Promise<{ epoch: string; commitment: string; next: { epoch: string; commitment: string } }> {
+  const upcoming = nextEpoch(epoch)
+  const [current, ahead] = await Promise.all([
+    seedForEpoch(machineId, epoch),
+    seedForEpoch(machineId, upcoming),
+  ])
+  return {
+    epoch,
+    commitment: current.commitment,
+    next: { epoch: upcoming, commitment: ahead.commitment },
+  }
 }
 
 /** Public commitment for an epoch without exposing the seed. Returns null when

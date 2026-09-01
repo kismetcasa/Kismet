@@ -16,7 +16,7 @@ import {
   entryKey,
   poolArtists,
 } from './draw'
-import type { PoolEntry } from './types'
+import type { PoolEntry, SolvencyProblemCode } from './types'
 
 export interface SolvencyInput {
   /** Immutable on-chain ceiling on how many capsules can ever exist. null =
@@ -44,18 +44,13 @@ export interface SolvencyInput {
   otherPledges: Record<string, number>
 }
 
-export type SolvencyProblem =
-  | { code: 'empty-pool'; detail: string }
-  | { code: 'too-many-entries'; detail: string }
-  | { code: 'too-many-artists'; detail: string }
-  | { code: 'bad-weight'; detail: string }
-  | { code: 'bad-supply'; detail: string }
-  | { code: 'duplicate-entry'; detail: string }
-  | { code: 'artist-not-in-split'; detail: string }
-  | { code: 'pass-collection'; detail: string }
-  | { code: 'over-headroom'; detail: string }
-  | { code: 'undercollateralised'; detail: string }
-  | { code: 'floor-not-creator'; detail: string }
+/** A problem and the sentence a creator reads about it. The code union lives in
+ *  ./types so the Capsule Studio can render a problem list without importing
+ *  this checker — every code here is part of the published contract. */
+export interface SolvencyProblem {
+  code: SolvencyProblemCode
+  detail: string
+}
 
 /** Total copies the pool can release. null = unbounded (a floor piece exists). */
 export function pledgedSupply(entries: PoolEntry[]): number | null {

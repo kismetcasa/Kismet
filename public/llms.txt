@@ -21,6 +21,7 @@ Kismet also runs as a Farcaster Mini App and can be operated from an AI assistan
 - [Mint an artwork](https://kismet.art/mint): Mint an image, video, animation, or text as an onchain ERC-1155 token on Base, stored permanently on Arweave.
 - [Market](https://kismet.art/market): Buy and sell listed artworks on the secondary market in ETH or USDC.
 - [Experience](https://kismet.art/experience): Play a capsule machine and receive an artwork from a Kismet artist. Odds are published before you play and every play returns a real artwork.
+- [Capsule studio](https://kismet.art/experience/new): Open your own capsule machine. Load artworks, set weights and supplies; the odds are derived from them and published automatically.
 - [AI agent](https://kismet.art/agent): Collect, buy, and list artworks from an AI assistant connected through Base MCP, approving each action in your own Base Account.
 
 ## Reference
