@@ -1,5 +1,5 @@
 import { formatCfileSize } from '@/lib/collectorFileTypes'
-import { MODEL_MAX_BYTES, isGlbFile } from './modelMedia'
+import { MODEL_MAX_BYTES, inspectGlbFile } from './modelMedia'
 
 /**
  * The mint form's MEDIA gate: the one place that decides whether a picked
@@ -25,6 +25,8 @@ export type MintMediaVerdict =
 
 /**
  * Extension fallback for files the OS hands over with an empty `File.type`.
+ * Split by kind rather than one combined pattern with a second video test
+ * layered on top: the video list would otherwise appear twice and drift.
  * Browsers derive `File.type` from a system MIME table that is not
  * guaranteed to be populated — `.mov`, `.heic` and files arriving from
  * archives or some Android pickers can all present as `''` — and those
@@ -33,8 +35,8 @@ export type MintMediaVerdict =
  * a `.glb`/`.zip`/`.pdf` from silently minting as an image, not to police
  * container formats the pipeline already tolerates.
  */
-const MEDIA_EXT =
-  /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|hei[cf]|ico|apng|svg|mp4|webm|mov|m4v|ogv|mkv|avi|mpe?g|3gp)$/
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|hei[cf]|ico|apng|svg)$/
+const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv|avi|mpe?g|3gp)$/
 
 export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
   const type = file.type.toLowerCase()
@@ -43,21 +45,31 @@ export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
 
   // Magic bytes, never the extension or the (absent) MIME — the same
   // discipline the collector-file detector uses, sharing its signature.
-  if (await isGlbFile(file)) {
+  const glb = await inspectGlbFile(file)
+  if (glb !== 'no') {
     if (file.size > MODEL_MAX_BYTES) {
       return {
         ok: false,
         reason: `3D models are capped at ${formatCfileSize(MODEL_MAX_BYTES)} — this one is ${formatCfileSize(file.size)}`,
       }
     }
+    // It calls itself a GLB; is it one we can expect to render? Rejected here
+    // rather than left to the viewer because a mint is irreversible and paid
+    // for — a truncated export should cost a toast, not an artwork.
+    if (glb === 'malformed') {
+      return {
+        ok: false,
+        reason: 'This .glb looks incomplete or is an older glTF version — re-export it as glTF 2.0 binary',
+      }
+    }
     return { ok: true, kind: 'model' }
   }
 
-  // Typeless-but-plausible media (see MEDIA_EXT). Checked AFTER the GLB
-  // sniff so a mislabeled model is still identified by its bytes.
-  if (MEDIA_EXT.test(file.name.toLowerCase())) {
-    return { ok: true, kind: file.name.toLowerCase().match(/\.(mp4|webm|mov|m4v|ogv|mkv|avi|mpe?g|3gp)$/) ? 'video' : 'image' }
-  }
+  // Typeless-but-plausible media (see VIDEO_EXT / IMAGE_EXT). Checked AFTER
+  // the GLB sniff so a mislabeled model is still identified by its bytes.
+  const name = file.name.toLowerCase()
+  if (VIDEO_EXT.test(name)) return { ok: true, kind: 'video' }
+  if (IMAGE_EXT.test(name)) return { ok: true, kind: 'image' }
 
   return { ok: false, reason: 'Use an image, video, gif, or a .glb 3D model' }
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
 import { videoGatewayUrls } from '@/lib/media/gateway'
@@ -26,6 +26,12 @@ import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
  *      path as any still, so the artwork looks right immediately instead of
  *      after a multi-megabyte download.
  *
+ * The still STAYS MOUNTED beneath the viewer until the model's own `load`
+ * fires — the `showPosterLayer` pattern MomentVideo already uses. Without
+ * it, tapping trades a finished artwork for an empty box for as long as a
+ * 30 MB download takes, which is worst on exactly the connections this
+ * feature is most exposed on. The progress readout covers the same case.
+ *
  * Exiting unmounts the element, which is what actually releases the context
  * — worth having on a sticky media column a viewer may scroll past.
  */
@@ -44,6 +50,26 @@ interface Props {
   onAllError?: () => void
 }
 
+/**
+ * Whether to auto-rotate. model-viewer has NO built-in reduced-motion
+ * handling (verified against the installed package), so `auto-rotate` spins
+ * indefinitely regardless of the OS setting — continuous, unstoppable motion
+ * is exactly what WCAG 2.2 SC 2.2.2 addresses. Gated on `no-preference`
+ * rather than `!reduce`, matching ProfileThemeBackdrop and globals.css so
+ * every motion path in the app agrees on UAs that report neither value.
+ */
+function useAllowsMotion(): boolean {
+  const [allow, setAllow] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: no-preference)')
+    const compute = () => setAllow(mq.matches)
+    compute()
+    mq.addEventListener('change', compute)
+    return () => mq.removeEventListener('change', compute)
+  }, [])
+  return allow
+}
+
 export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState<string | null>(null)
@@ -51,27 +77,33 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
   // all exhausted must NOT retract the "view in 3D" affordance, so it
   // degrades to the thumbhash blur in place rather than reporting upward.
   const [posterFailed, setPosterFailed] = useState(false)
+  const [modelLoaded, setModelLoaded] = useState(false)
+  const [progress, setProgress] = useState(0)
   // Gateway walk, mirroring useFallbackUrl. A GLB has the same fetch profile
   // as a video — one large binary pulled by an element we don't control — so
   // it takes videoGatewayUrls' rule verbatim: inside an iframe / WebKit-only
   // / RN webview a direct gateway fetch stalls on the shared HTTP/2 pool, so
   // lead with /api/img (no `w=`, which streams the bytes through untouched)
-  // and keep the direct gateways behind it.
+  // and keep the direct gateways behind it. Memoized because that helper
+  // reads `window.top` and sniffs the UA on every call.
   const [gatewayIndex, setGatewayIndex] = useState(0)
-  // Mirrored in a ref so the error handler can advance the walk without
-  // doing it inside a setState updater — updaters must stay pure (React
-  // may invoke one twice) and that one also has to decide "exhausted".
-  const gatewayIndexRef = useRef(0)
-  const urls = videoGatewayUrls(src)
+  const urls = useMemo(() => videoGatewayUrls(src), [src])
   const url = gatewayIndex < urls.length ? urls[gatewayIndex] : null
 
-  const elRef = useRef<HTMLElement | null>(null)
+  const allowsMotion = useAllowsMotion()
   const onAllErrorRef = useRef(onAllError)
   onAllErrorRef.current = onAllError
 
   const activate = useCallback(async () => {
     setPhase('loading')
     setMessage(null)
+    setModelLoaded(false)
+    setProgress(0)
+    // Restart the walk. The likeliest real failure here is an Arweave
+    // propagation 404 moments after a mint, which resolves on its own — so a
+    // retry that only re-hit the last exhausted gateway would be the single
+    // attempt least likely to succeed.
+    setGatewayIndex(0)
     try {
       // Defined before <model-viewer> renders; see the bundle note above.
       const mod = await import('@google/model-viewer')
@@ -89,28 +121,38 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
     }
   }, [])
 
-  // model-viewer reports load failures on its own `error` event. Attached
-  // with addEventListener via a callback ref rather than an `onError` prop:
+  // Events wired with addEventListener via a callback ref, NOT on*-props:
   // React's synthetic event system maps on*-props for known DOM elements,
   // NOT for custom elements, so the prop form would silently never fire.
+  // `gatewayIndex` is read from this closure and declared as a dep, so the
+  // walk keeps ONE source of truth; React re-runs the ref (cleanup first) on
+  // each step, which is also exactly when the element's `src` changes.
   const attach = useCallback((node: HTMLElement | null) => {
-    elRef.current = node
     if (!node) return
+    const onLoad = () => setModelLoaded(true)
+    const onProgress = (e: Event) => {
+      const total = (e as CustomEvent<{ totalProgress?: number }>).detail?.totalProgress
+      if (typeof total === 'number') setProgress(total)
+    }
     const onError = () => {
       // Walk to the next gateway before giving up — a 404 during Arweave
       // propagation, or one stalled host, shouldn't be terminal.
-      const next = gatewayIndexRef.current + 1
-      if (next < urls.length) {
-        gatewayIndexRef.current = next
-        setGatewayIndex(next)
+      if (gatewayIndex + 1 < urls.length) {
+        setGatewayIndex(gatewayIndex + 1)
         return
       }
       setPhase('error')
       setMessage('This 3D model could not be loaded.')
     }
+    node.addEventListener('load', onLoad)
+    node.addEventListener('progress', onProgress)
     node.addEventListener('error', onError)
-    return () => node.removeEventListener('error', onError)
-  }, [urls.length])
+    return () => {
+      node.removeEventListener('load', onLoad)
+      node.removeEventListener('progress', onProgress)
+      node.removeEventListener('error', onError)
+    }
+  }, [gatewayIndex, urls.length])
 
   // Nothing left to show: the model is unusable AND no still survived.
   const hasStill = !!poster && !posterFailed
@@ -120,19 +162,53 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
 
   const blur = thumbhashToBlurDataURL(thumbhash)
 
+  // One still layer, shared by the idle and active states — so promoting to
+  // 3D never re-fetches it — faded out only once the model has actually
+  // painted (a GLB with a transparent background would otherwise composite
+  // over it).
+  const still = hasStill ? (
+    <MomentImage
+      src={poster!}
+      alt={alt}
+      fill
+      className="object-contain"
+      sizes="(max-width: 768px) 100vw, 50vw"
+      priority
+      thumbhash={thumbhash}
+      onAllError={() => setPosterFailed(true)}
+    />
+  ) : (
+    <div
+      className="absolute inset-0 bg-surface bg-cover bg-center"
+      style={blur ? { backgroundImage: `url(${blur})` } : undefined}
+    />
+  )
+
   if (phase === 'active' && url) {
     return (
       <div className="absolute inset-0">
+        <div
+          className={`absolute inset-0 transition-opacity duration-300 ${
+            modelLoaded ? 'opacity-0' : 'opacity-100'
+          }`}
+        >
+          {still}
+        </div>
         {/* @ts-expect-error — custom element registered by the lazy import. */}
         <model-viewer
           ref={attach}
           src={url}
           alt={alt}
           camera-controls
-          auto-rotate
+          {...(allowsMotion ? { 'auto-rotate': true } : {})}
           touch-action="pan-y"
           style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
         />
+        {!modelLoaded && (
+          <p className="absolute bottom-4 left-0 right-0 text-center text-[11px] font-mono text-muted pointer-events-none">
+            loading 3D… {Math.round(progress * 100)}%
+          </p>
+        )}
         <button
           type="button"
           onClick={() => setPhase('idle')}
@@ -147,25 +223,9 @@ export function MomentModel({ src, poster, thumbhash, alt, onAllError }: Props) 
 
   return (
     <div className="absolute inset-0">
-      {poster && !posterFailed ? (
-        <MomentImage
-          src={poster}
-          alt={alt}
-          fill
-          className="object-contain"
-          sizes="(max-width: 768px) 100vw, 50vw"
-          priority
-          thumbhash={thumbhash}
-          onAllError={() => setPosterFailed(true)}
-        />
-      ) : (
-        <div
-          className="absolute inset-0 bg-surface bg-cover bg-center"
-          style={blur ? { backgroundImage: `url(${blur})` } : undefined}
-        />
-      )}
-      {/* The affordance. Centered over the still so it reads as "this
-          artwork is 3D", not as a stray control. */}
+      {still}
+      {/* The affordance. Sits over the still so it reads as "this artwork is
+          3D", not as a stray control. */}
       <div className="absolute inset-0 flex items-end justify-center p-4 pointer-events-none">
         <button
           type="button"

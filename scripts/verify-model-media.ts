@@ -23,13 +23,13 @@
  *        scripts/verify-model-media.ts
  */
 
-import { GLB_MAGIC, GLB_MIME, hasGlbMagic } from '../lib/glbFormat.ts'
+import { GLB_MAGIC, GLB_MIME, hasGlbMagic, isWellFormedGlbHeader } from '../lib/glbFormat.ts'
 import { CFILE_KIND_META } from '../lib/collectorFileTypes.ts'
 import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
-import { checkMintMedia } from '../lib/media/mintMedia.ts'
-import { MODEL_MAX_BYTES, asGlbFile, isGlbFile } from '../lib/media/modelMedia.ts'
+import { checkCoverImage, checkMintMedia, checkReplaceMedia } from '../lib/media/mintMedia.ts'
+import { MODEL_MAX_BYTES, asGlbFile, inspectGlbFile } from '../lib/media/modelMedia.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -43,10 +43,15 @@ const check = (name: string, cond: boolean, detail = ''): void => {
 const GLB = 'ar://model-txid'
 const STILL = 'ar://poster-txid'
 
-// Bytes that pass the magic test, padded past the sniff window.
-const glbBytes = (size = 64): Uint8Array => {
+// A well-formed glTF 2.0 binary header (magic + version 2 + declared total
+// length) followed by filler, so these fixtures pass the mint gate's header
+// check as well as the magic test.
+const glbBytes = (size = 64, { version = 2, declaredLength = size } = {}): Uint8Array => {
   const b = new Uint8Array(size)
   b.set(GLB_MAGIC)
+  const view = new DataView(b.buffer)
+  view.setUint32(4, version, true)
+  view.setUint32(8, declaredLength, true)
   return b
 }
 const glbFile = (name = 'sculpture.glb', size = 64): File =>
@@ -100,10 +105,51 @@ check('mint gate: a GLB at exactly MODEL_MAX_BYTES is allowed',
 
 // Typeless-but-plausible media keeps working — the gate must not regress the
 // uploads that worked before it existed.
+// Both branches of the split IMAGE_EXT / VIDEO_EXT lists, so a future edit
+// that drops an extension from one of them fails here rather than silently
+// starting to reject uploads that used to work.
 const mov = await gate(new File([new Uint8Array(4)], 'clip.mov'))
 check('mint gate: a typeless .mov still passes, as video', mov.ok && mov.kind === 'video')
+const heic = await gate(new File([new Uint8Array(4)], 'shot.heic'))
+check('mint gate: a typeless .heic still passes, as image', heic.ok && heic.kind === 'image')
 
-check('modelMedia: isGlbFile reads magic bytes', await isGlbFile(glbFile()))
+// The two derived gates. checkReplaceMedia guards the edit path, whose
+// non-video branch writes the upload straight into `image`; checkCoverImage
+// guards slots that render a still.
+const replaceGlb = await checkReplaceMedia(glbFile())
+check('replace gate: refuses a model (that path has no poster capture)', !replaceGlb.ok)
+check('replace gate: still admits an image',
+  (await checkReplaceMedia(new File([new Uint8Array(4)], 'a.png', { type: 'image/png' }))).ok)
+check('cover gate: refuses a model', !(await checkCoverImage(glbFile())).ok)
+check('cover gate: refuses a video (a cover renders as a still)',
+  !(await checkCoverImage(new File([new Uint8Array(4)], 'a.mp4', { type: 'video/mp4' }))).ok)
+check('cover gate: admits a gif',
+  (await checkCoverImage(new File([new Uint8Array(4)], 'a.gif', { type: 'image/gif' }))).ok)
+
+// Header validation — the checks that stop a broken export from reaching
+// permanent storage. Each of these files passes the magic test, so only the
+// header tells them apart.
+check('header: a well-formed glTF 2.0 header is accepted',
+  isWellFormedGlbHeader(glbBytes(64), 64))
+check('header: a TRUNCATED file (declared length > real bytes) is rejected',
+  !isWellFormedGlbHeader(glbBytes(64, { declaredLength: 4096 }), 64))
+check('header: trailing padding (declared length < real bytes) is allowed',
+  isWellFormedGlbHeader(glbBytes(64, { declaredLength: 48 }), 64))
+check('header: glTF 1.0 binary is rejected',
+  !isWellFormedGlbHeader(glbBytes(64, { version: 1 }), 64))
+check('header: a zero declared length is rejected',
+  !isWellFormedGlbHeader(glbBytes(64, { declaredLength: 0 }), 64))
+check('header: magic without a full 12-byte header is rejected',
+  !isWellFormedGlbHeader(new Uint8Array([...GLB_MAGIC, 2, 0, 0, 0]), 8))
+
+check('mint gate: a truncated GLB is rejected before it can be minted',
+  !(await gate(new File([glbBytes(64, { declaredLength: 999999 })], 'broken.glb'))).ok)
+
+check('modelMedia: inspectGlbFile accepts a well-formed GLB',
+  (await inspectGlbFile(glbFile())) === 'ok')
+check('modelMedia: inspectGlbFile separates "not a GLB" from "malformed GLB"',
+  (await inspectGlbFile(new File([new Uint8Array([1, 2, 3, 4])], 'x.bin'))) === 'no' &&
+  (await inspectGlbFile(new File([glbBytes(64, { version: 1 })], 'old.glb'))) === 'malformed')
 check('modelMedia: asGlbFile stamps the real MIME (browsers give us "")',
   asGlbFile(glbFile()).type === GLB_MIME)
 

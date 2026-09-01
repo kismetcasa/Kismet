@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { trackFunnel } from '@/lib/funnel'
 import { MomentImage } from './MomentImage'
 import { SplitsEditor } from './SplitsEditor'
@@ -299,7 +299,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     inputRef: fileInputRef,
     onChange: handleFileChange,
     onDrop: handleDrop,
-    clear: clearFileInner,
+    clear: clearFile,
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Maximum file size is 420 MB' }),
@@ -310,14 +310,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     accept: async (f) => {
       const verdict = await checkMintMedia(f)
       if (!verdict.ok) return verdict.reason
-      if (verdict.kind === 'model') {
-        modelPickRef.current = f
-        if (f.size > MODEL_SOFT_WARN_BYTES) {
-          toast.warning('Large 3D model', {
-            description: `${formatCfileSize(f.size)} may fail to load on phones — consider Draco compression`,
-          })
-        }
-      }
+      if (verdict.kind === 'model') modelPickRef.current = f
       return null
     },
     onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
@@ -329,13 +322,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // reports "could not capture" until B's own capture lands, which is the
   // safe answer rather than a silently mismatched artwork.
   const [modelPoster, setModelPoster] = useState<File | null>(null)
-  useEffect(() => { setModelPoster(null) }, [file])
-  const isModelPick = !!file && modelPickRef.current === file
-  const clearFile = useCallback(() => {
-    modelPickRef.current = null
+  useEffect(() => {
     setModelPoster(null)
-    clearFileInner()
-  }, [clearFileInner])
+    // Warn HERE rather than inside the gate: the gate can run for a pick that
+    // a faster second drop supersedes, and warning about a file that never
+    // became the media would be a lie. By this point `file` is installed.
+    if (file && modelPickRef.current === file && file.size > MODEL_SOFT_WARN_BYTES) {
+      toast.warning('Large 3D model', {
+        description: `${formatCfileSize(file.size)} may fail to load on phones — consider Draco compression`,
+      })
+    }
+  }, [file])
+  // No explicit reset needed on clear: `file` going null makes this false
+  // whatever the ref holds, and the effect above drops the poster. That
+  // self-cleaning property is the reason the verdict is compared by identity
+  // rather than stored as a boolean.
+  const isModelPick = !!file && modelPickRef.current === file
   // Verified-upload session caches (see UploadedMediaSession above). Refs,
   // not state: they never drive rendering and must survive across submit
   // attempts. jsonUploadRef maps serialized-JSON content → its uploaded
@@ -1730,16 +1732,25 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                   // framing the artist lands on is captured and becomes
                   // `metadata.image`, which is what every feed card, OG card
                   // and embed actually renders. See components/ModelPreview.
-                  <ModelPreview
-                    // Keyed so a swap remounts rather than re-pointing a live
-                    // element: no camera pose, buffers or GPU memory from the
-                    // previous model survive into the next one.
-                    key={preview}
-                    src={preview}
-                    fileName={file!.name}
-                    onPoster={setModelPoster}
-                    onError={(msg) => toast.error('3D model', { description: msg })}
-                  />
+                  <>
+                    <ModelPreview
+                      // Keyed so a swap remounts rather than re-pointing a live
+                      // element: no camera pose, buffers or GPU memory from the
+                      // previous model survive into the next one.
+                      key={preview}
+                      src={preview}
+                      fileName={file!.name}
+                      onPoster={setModelPoster}
+                      onError={(msg) => toast.error('3D model', { description: msg })}
+                    />
+                    {/* Without this the poster capture is invisible: the
+                        artist has no way to know the angle they leave the
+                        model at is the thumbnail every feed, share card and
+                        embed will show. */}
+                    <p className="absolute bottom-0 inset-x-0 px-3 py-2 bg-[#0d0d0d]/85 text-[10px] font-mono text-muted text-center">
+                      drag to pose — this view becomes the thumbnail
+                    </p>
+                  </>
                 ) : file?.type.startsWith('video/') ? (
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
                 ) : (

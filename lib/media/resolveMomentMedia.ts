@@ -42,6 +42,13 @@ function isGifUrl(url?: string): boolean {
 
 // Extension test for the external-mint case; ar:// carries no extension, so
 // `content.mime` is the primary signal (see resolveModelSrc).
+//
+// `.gltf` is included even though the JSON flavour usually references its
+// geometry and textures by RELATIVE path, which cannot resolve against a
+// hash-addressed gateway URL. Claiming it anyway is still the better answer:
+// the moment keeps rendering its `image` still exactly as it would have
+// under the image branch, and a self-contained (data-URI-embedded) glTF
+// actually loads. A tap that fails leaves the still on screen.
 function isModelUrl(url?: string): boolean {
   return !!url && /\.(glb|gltf)$/.test(url.split(/[?#]/, 1)[0]!.toLowerCase())
 }

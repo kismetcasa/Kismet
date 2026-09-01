@@ -336,7 +336,114 @@ unchanged, proving the shared-identity refactor was behaviour-neutral.
 Full `npm run check` — typecheck, lint, the bundle guard and every
 `verify:*` suite — passes on a clean build.
 
-## 12. Open product question
+## 12. Line-by-line audit (post-implementation)
+
+Every committed line re-read adversarially, asking whether it earns its keep.
+Fourteen findings; all fixed.
+
+**Dead code — written, never used.**
+
+- `hasGlbExt()` had zero callers, and its own doc comment claimed uses ("the
+  drop zone's hint text and the `accept` attribute") that were literals and
+  `GLB_EXT` respectively. Deleted.
+- `MomentModel`'s `elRef` was assigned on every ref attach and never read.
+  Deleted.
+- `MintForm`'s `clearFile` wrapper: both statements were provably redundant.
+  `isModelPick` compares the gate's verdict *by identity* against `file`, so a
+  null `file` already makes it false whatever the ref holds; and the
+  `[file]` effect already drops the poster. The wrapper existed only because
+  I hadn't followed my own design through. Deleted — along with the
+  `useCallback` import it was the sole user of.
+
+**Redundancy and drift hazards.**
+
+- `checkMintMedia` matched one combined extension pattern, then re-matched a
+  *second copy* of the video subset to pick the kind — the video list written
+  twice, one edit away from disagreeing with itself. Split into `IMAGE_EXT` /
+  `VIDEO_EXT` and composed; both branches oracle-pinned.
+- `MomentModel` kept `gatewayIndex` in both state and a ref. The ref existed
+  to avoid an impure `setState` updater, but putting `gatewayIndex` in the
+  ref-callback's deps solves the same problem with one source of truth.
+- `videoGatewayUrls(src)` ran on every render — it reads `window.top` inside a
+  try/catch and sniffs the UA. Now memoized on `[src]`.
+- `isGlbFile` and `isMintableGlbFile` were always called together and each
+  read the file's head separately, so reaching one decision cost two reads.
+  Collapsed into `inspectGlbFile`, a single read returning a three-way
+  `'no' | 'malformed' | 'ok'` — which is the shape the caller actually needs,
+  since "not a model" and "a model we can't render" are different answers.
+- `useFileUpload` held `opts` in a ref so its `accept` could be a `useCallback`
+  with `[]` deps. Nothing needed that stability — `accept` is only reached
+  through the `onChange`/`onDrop` closures, which are rebuilt every render
+  regardless. The memoization existed only to create the stale-closure problem
+  the ref then solved. Both removed; `opts` is read straight from the current
+  render.
+
+**Behavioural corrections.**
+
+- Retry after an exhausted gateway walk only re-hit the *last* gateway. The
+  likeliest real failure here is an Arweave propagation 404 moments after a
+  mint, so the retry now restarts the walk.
+- The large-model warning toast fired from inside the gate, which can run for
+  a pick a faster second drop supersedes — warning about a file that never
+  became the media. Moved to the `[file]` effect, after the pick is installed.
+- The `/api/img` comment claimed a model "must not reach sharp". Reading the
+  route showed sharp's throw is already caught and degrades to a byte
+  pass-through, so the guard saves a wasted 100 MB buffer and a scarce compute
+  slot — not a crash. Comment corrected to say what is actually true, and to
+  note that an *untagged* model still takes the old path (which is why
+  `asGlbFile` tags them at upload).
+
+**Gaps the audit surfaced, now closed.**
+
+- **The still vanished on tap.** Promoting to 3D swapped a finished artwork
+  for an empty box for the length of a multi-megabyte download — worst on
+  exactly the connections this feature is most exposed on. The still now stays
+  mounted beneath the viewer and fades out only on the model's own `load`
+  (the `showPosterLayer` pattern `MomentVideo` already uses), and the
+  `progress` event drives a percentage.
+- **`auto-rotate` ignored `prefers-reduced-motion`.** Verified against the
+  installed package: model-viewer has no built-in handling, so it span
+  indefinitely regardless of the OS setting — continuous unstoppable motion,
+  which is what WCAG 2.2 SC 2.2.2 addresses. Now gated on `no-preference`,
+  matching `ProfileThemeBackdrop` and `globals.css`.
+- **A truncated GLB minted successfully** and only failed later in the
+  viewer. The 4-byte magic is all the collector-file detector needs (it
+  re-serves bytes it never parses), but a mint is irreversible and paid for.
+  The gate now reads the full 12-byte glTF header and rejects a declared
+  length exceeding the real byte count (truncation) or a version other than 2.
+  Deliberately `<=` rather than `==` so trailing-padded files that render fine
+  aren't rejected more strictly than the renderer does.
+- **The poster capture was invisible to the artist.** Nothing told them the
+  angle they leave the model at becomes the thumbnail every feed and share
+  card shows. A caption now says so.
+
+**Also confirmed:** `react-hooks/exhaustive-deps` is not enabled in this
+repo's ESLint config, so hook dependency arrays are unchecked by tooling and
+were verified by hand.
+
+## 13. Still left to be desired
+
+Known and deliberate, in rough priority order:
+
+1. **No AR.** iOS Quick Look needs USDZ; converting GLB→USDZ server-side means
+   `usdzconvert` or Blender — the one part of this feature that would add a
+   real backend dependency. Android's Scene Viewer takes GLB directly, so an
+   Android-only `ar` mode is available cheaply if wanted.
+2. **The `3D` badge is only on `MomentCard`.** `MarketOvals`, `FeaturedMoment`
+   and `PatronArtworkShowcase` render a model's still with no indication it is
+   3D. Correct, just a missed signal — the homepage hero is the one worth
+   reconsidering.
+3. **No lighting or environment control.** model-viewer's neutral default may
+   not match an artist's intent; `environment-image`, `exposure` and
+   `shadow-intensity` are all available and none are exposed.
+4. **A 3D moment cannot be created by the edit flow or the agent API.** Both
+   would need their own poster-capture step. Refused explicitly rather than
+   half-supported.
+5. **Poster resolution tracks the preview's rendered size** (~500–1900 px). A
+   fixed-size capture would need a second parse of the model or visible resize
+   jank, both worse trades against the mobile-memory risk.
+
+## 14. Open product question
 
 GLB is currently a **collector-gated download**. If a GLB can also be public
 primary media, the bytes sit world-readable on Arweave and the gating premise

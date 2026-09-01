@@ -1,4 +1,4 @@
-import { GLB_EXT, GLB_MIME, hasGlbMagic } from '@/lib/glbFormat'
+import { GLB_HEADER_BYTES, GLB_MIME, hasGlbMagic, isWellFormedGlbHeader } from '@/lib/glbFormat'
 
 /**
  * Primary-media helpers for 3D moments (GLB / Binary glTF), the mint-side
@@ -35,32 +35,34 @@ export const MODEL_MAX_BYTES = 30 * 1024 * 1024
  *  Mini App webview starts to be a real risk rather than a theoretical one. */
 export const MODEL_SOFT_WARN_BYTES = 8 * 1024 * 1024
 
-/** Bytes needed to identify a GLB — the 4-byte glTF header magic. */
-const SNIFF_BYTES = 4
-
 /**
- * Is this file actually a GLB? Magic bytes only.
+ * Three-way verdict, from ONE read of the file's first 12 bytes:
  *
- * Neither of the cheap signals is trustworthy: `.glb` has no registered
- * browser MIME so `File.type` is `''` for a real GLB (which is exactly how a
- * dropped model used to slip through the mint form's `accept` filter and
- * mint as a broken `image:`), and the extension is whatever the file was
- * named. Same discipline as the collector-file detector, sharing the same
- * signature constant.
+ *   'no'        — not a GLB; the caller should go on classifying it
+ *   'malformed' — claims to be one, but not one we can expect to render
+ *   'ok'        — a glTF 2.0 binary whose header agrees with its byte count
+ *
+ * Three-way rather than two predicates because "is it a model?" and "will it
+ * render?" are always asked together, and answering them separately meant
+ * reading the file twice to reach one decision.
+ *
+ * Magic bytes decide the first question — neither cheap signal is
+ * trustworthy. `.glb` has no registered browser MIME, so `File.type` is `''`
+ * for a real GLB (exactly how a dropped model used to slip through the mint
+ * form's `accept` filter and mint as a broken `image:`), and the extension is
+ * whatever the file happened to be named.
  */
-export async function isGlbFile(file: File): Promise<boolean> {
-  try {
-    const head = new Uint8Array(await file.slice(0, SNIFF_BYTES).arrayBuffer())
-    return hasGlbMagic(head)
-  } catch {
-    return false
-  }
-}
+export type GlbVerdict = 'no' | 'malformed' | 'ok'
 
-/** Cheap pre-filter for the drop zone's hint text and the `accept` attribute.
- *  Never a substitute for isGlbFile — see above. */
-export function hasGlbExt(name: string): boolean {
-  return name.toLowerCase().endsWith(GLB_EXT)
+export async function inspectGlbFile(file: File): Promise<GlbVerdict> {
+  let head: Uint8Array
+  try {
+    head = new Uint8Array(await file.slice(0, GLB_HEADER_BYTES).arrayBuffer())
+  } catch {
+    return 'no'
+  }
+  if (!hasGlbMagic(head)) return 'no'
+  return isWellFormedGlbHeader(head, file.size) ? 'ok' : 'malformed'
 }
 
 /**

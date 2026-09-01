@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * File picker + drop-zone state with automatic blob-URL lifecycle:
@@ -42,36 +42,36 @@ export function useFileUpload(
   // itself over a later pick (drop twice quickly and the second wins).
   const pickRef = useRef(0)
 
-  // Keep the latest callbacks addressable without making `accept` below
-  // depend on identities most callers redefine every render.
-  const optsRef = useRef(opts)
-  optsRef.current = opts
-
   const setUrl = (url: string | null) => {
     if (urlRef.current) URL.revokeObjectURL(urlRef.current)
     urlRef.current = url
     setPreview(url)
   }
 
-  const accept = useCallback(async (f: File | undefined) => {
+  // Deliberately NOT memoized. It is only ever reached through the
+  // `onChange` / `onDrop` closures below, which are rebuilt every render
+  // anyway, so a stable identity would buy nothing — and buying it would mean
+  // holding `opts` in a ref to dodge the stale-closure problem that
+  // memoization itself creates. Reading `opts` straight from this render is
+  // both simpler and always current.
+  const accept = async (f: File | undefined) => {
     if (!f) return
-    const o = optsRef.current
     const token = ++pickRef.current
-    if (o.maxBytes && f.size > o.maxBytes) { o.onTooLarge?.(); return }
-    if (o.accept) {
+    if (opts.maxBytes && f.size > opts.maxBytes) { opts.onTooLarge?.(); return }
+    if (opts.accept) {
       let reason: string | null
       try {
-        reason = await o.accept(f)
+        reason = await opts.accept(f)
       } catch {
         reason = 'That file could not be read'
       }
       // A newer pick landed while we were sniffing — drop this one silently.
       if (token !== pickRef.current) return
-      if (reason !== null) { o.onRejected?.(f, reason); return }
+      if (reason !== null) { opts.onRejected?.(f, reason); return }
     }
     setFile(f)
     setUrl(URL.createObjectURL(f))
-  }, [])
+  }
 
   // Release the blob on unmount so it doesn't pin memory until full GC.
   useEffect(() => () => {
