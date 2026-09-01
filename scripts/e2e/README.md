@@ -42,7 +42,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (44)
+## What it asserts (46)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -69,6 +69,22 @@ node scripts/e2e/model-media.mjs
   defeated by a blank-but-valid capture.
 - **Feed** — a 3D moment renders its still, and no `model-viewer` is ever
   mounted in a feed.
+
+## Determinism
+
+Two races were removed after they produced misleading results, and both are
+worth knowing about if you extend this file:
+
+- The media input is **server-rendered**, so `setInputFiles` can land before
+  hydration and change nothing. That does not fail loudly — it turns "no
+  preview mounted" into a *vacuous pass*. Use `pickMedia()`, which retries
+  until the app has demonstrably reacted (a preview or a toast).
+- A freshly started server compiles a large lazy chunk on the first `/mint`
+  request, so the run warms the route before asserting.
+
+Assertions that depend on an element existing are guarded on that fact
+explicitly, for the same reason: `document.querySelector(x)?.loaded !== true`
+is trivially true when `x` is absent.
 
 ## Known gap
 

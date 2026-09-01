@@ -73,6 +73,27 @@ await ctx.route('**/api/img**', (route) => {
   return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
 })
 
+/**
+ * Set the media input and WAIT FOR THE APP TO HAVE REACTED — a preview
+ * mounted, or a rejection toast. The file input is server-rendered, so
+ * setInputFiles can land before hydration and change nothing at all; that
+ * race silently turns "no preview mounted" into a vacuous pass. Retrying
+ * until an outcome is observed is the only deterministic signal available,
+ * since nothing else in this form is client-only.
+ */
+const pickMedia = async (pg, file, ms = 25000) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    await pg.setInputFiles(MEDIA_INPUT, path.join(DIR, file))
+    for (let i = 0; i < 12; i++) {
+      await pg.waitForTimeout(250)
+      if ((await pg.locator('model-viewer').count()) > 0) return 'preview'
+      if ((await pg.locator('[data-sonner-toast]').count()) > 0) return 'toast'
+    }
+  }
+  return 'timeout'
+}
+
 const stillOpacityOf = async (pg) => pg.evaluate(() => {
   const mv = document.querySelector('model-viewer')
   const layer = mv?.parentElement?.querySelector('div')
@@ -110,7 +131,7 @@ await page.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
 const MEDIA_INPUT = 'input[accept*="model/gltf-binary"]'
 await page.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
 check('media input advertises .glb in its accept list', true)
-await page.setInputFiles(MEDIA_INPUT, path.join(DIR, 'cube.glb'))
+check('a valid GLB is accepted and previewed', (await pickMedia(page, 'cube.glb')) === 'preview')
 
 await page.waitForSelector('model-viewer', { timeout: 30000 })
 await page.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
@@ -238,6 +259,18 @@ const after = await page.evaluate(async () => {
 check('posing changes what would be captured', after !== before, `${before} -> ${after}`)
 await page.screenshot({ path: path.join(SHOTS, '02-mint-posed.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
 
+// A rapid re-pick must land on the LAST file. useFileUpload guards this with
+// a monotonic token, because `accept` is async (it sniffs magic bytes) and a
+// slow verdict on an earlier pick must never install over a later one.
+// Untested until now — the token is invisible to every static check.
+await page.setInputFiles(MEDIA_INPUT, path.join(DIR, 'cube.glb'))
+await page.setInputFiles(MEDIA_INPUT, path.join(DIR, 'archive.zip'))
+await page.setInputFiles(MEDIA_INPUT, path.join(DIR, 'cube.glb'))
+await page.waitForTimeout(1500)
+check('a rapid re-pick settles on the last valid file, not a stale verdict',
+  (await page.locator('model-viewer').count()) === 1,
+  String(await page.locator('model-viewer').count()))
+
 // ───────────────────── B. Mint gate: rejections ─────────────────────
 console.log('\nB. Mint gate — rejections')
 // Clear the accepted model via the form's own × rather than reloading. A
@@ -253,7 +286,7 @@ for (const [file, expect] of [
   ['truncated.glb', 'looks incomplete or is an older glTF version'],
   ['v1.glb', 'looks incomplete or is an older glTF version'],
 ]) {
-  await page.setInputFiles(MEDIA_INPUT, path.join(DIR, file))
+  await pickMedia(page, file)
   // Match on the EXPECTED TEXT rather than `.first()`: sonner mounts a toast
   // element before its content paints, and a toast still animating out from
   // the previous case would otherwise be picked up as an empty string.
@@ -373,17 +406,21 @@ await bad.addInitScript(() => {
     return orig.apply(this, a)
   }
 })
-await bad.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
+await bad.goto(`${BASE}/mint`, { waitUntil: 'load' })
 await bad.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
-await bad.setInputFiles(MEDIA_INPUT, path.join(DIR, 'corrupt.glb'))
-await bad.waitForSelector('model-viewer', { timeout: 20000 }).catch(() => {})
+const badOutcome = await pickMedia(bad, 'corrupt.glb')
+const mounted = (await bad.locator('model-viewer').count()) === 1
 check('a header-valid but corrupt GLB still reaches the preview (the gate reads the header only)',
-  (await bad.locator('model-viewer').count()) === 1)
+  mounted, badOutcome)
 await bad.waitForTimeout(6000)
+// Guarded on `mounted`: with no element, `?.loaded !== true` and a zero
+// composite count are both trivially true, and the section would pass while
+// testing nothing.
 check('...and it genuinely never loads',
-  await bad.evaluate(() => document.querySelector('model-viewer')?.loaded !== true))
+  mounted && (await bad.evaluate(() => document.querySelector('model-viewer')?.loaded !== true)))
 const composites = await bad.evaluate(() => window.__composites)
-check('NO poster is captured for a model that never rendered', composites === 0, String(composites))
+check('NO poster is captured for a model that never rendered',
+  mounted && composites === 0, String(composites))
 await bad.close()
 
 // ───────── E. Slow load: still stays, progress shows ─────────
