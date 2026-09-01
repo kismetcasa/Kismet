@@ -50,6 +50,10 @@ export const MODEL_SOFT_WARN_BYTES = 8 * 1024 * 1024
  * rendered transparent over the page, tapping "view in 3D" would swap a white
  * still for a model on black, which reads as a bug rather than a choice.
  */
+/** `id` is PERSISTED (it ships in `metadata.kismet_bg` and is permanent);
+ *  `label` is UI copy. They read identically today, and are kept apart on
+ *  purpose so renaming what the swatch says can never rewrite what is stored
+ *  with somebody's artwork. */
 export const MODEL_BACKGROUNDS = [
   { id: 'white', label: 'white', css: '#ffffff' },
   { id: 'dark', label: 'dark', css: '#111111' },
@@ -69,7 +73,12 @@ export const DEFAULT_MODEL_BACKGROUND: ModelBackgroundId = 'white'
  * poster was captured on.
  */
 export function modelBackgroundCss(id: string | undefined): string {
-  return (MODEL_BACKGROUNDS.find((b) => b.id === id) ?? MODEL_BACKGROUNDS[0]).css
+  // Resolved through DEFAULT_MODEL_BACKGROUND, not MODEL_BACKGROUNDS[0]:
+  // those happen to be the same entry today, and indexing would let a
+  // reordering of the array silently change the fallback while this
+  // function's contract still claimed "the default".
+  const fallback = MODEL_BACKGROUNDS.find((b) => b.id === DEFAULT_MODEL_BACKGROUND)!
+  return (MODEL_BACKGROUNDS.find((b) => b.id === id) ?? fallback).css
 }
 
 /**

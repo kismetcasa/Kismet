@@ -200,6 +200,13 @@ check('model-viewer\'s PNG preserves alpha (the composite source)', rawPngAlpha 
 await page.locator('button[aria-label="dark background"]').click()
 const darkCorner = await waitCorner(page, isDark)
 check('choosing "dark" actually changes the backdrop', isDark(darkCorner), JSON.stringify(darkCorner))
+// WCAG 2.2 SC 2.5.8: 24px minimum, and these sit too close together to claim
+// the spacing exemption. verify:a11y only scans text contrast, so nothing
+// else in the suite can see this.
+const swatch = await page.locator('button[aria-label="dark background"]').boundingBox()
+check('the backdrop swatches meet the 24px minimum target size',
+  swatch.width >= 24 && swatch.height >= 24,
+  `${Math.round(swatch.width)}x${Math.round(swatch.height)}`)
 await page.screenshot({ path: path.join(SHOTS, '10-mint-dark-bg.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
 await page.locator('button[aria-label="white background"]').click()
 check('switching back returns the preview to white', isWhite(await waitCorner(page, isWhite)))
@@ -307,6 +314,39 @@ await normal.waitForTimeout(1200)
 check('auto-rotate is ON with no motion preference',
   await normal.evaluate(() => document.querySelector('model-viewer')?.hasAttribute('auto-rotate')) === true)
 await normal.close()
+
+// ───────── D2. A model that never loads must bank NO poster ─────────
+// A GLB with a valid 12-byte header and corrupt chunks passes the mint gate
+// (which reads only the header) and then fails to render. Capturing in that
+// state produces a blank-but-valid JPEG, which would defeat the mint's
+// "refuse rather than ship a posterless 3D moment" guard — the poster is not
+// null, just empty. Instrument the composite so a pre-load capture cannot be
+// reintroduced silently.
+console.log('\nD2. A model that never loads')
+const corrupt = Buffer.concat([GLB.subarray(0, 12), Buffer.alloc(GLB.length - 12, 0x41)])
+corrupt.writeUInt32LE(corrupt.length, 8)
+fs.writeFileSync(path.join(DIR, 'corrupt.glb'), corrupt)
+const bad = await ctx.newPage()
+await bad.addInitScript(() => {
+  window.__composites = 0
+  const orig = HTMLCanvasElement.prototype.toBlob
+  HTMLCanvasElement.prototype.toBlob = function (...a) {
+    window.__composites++
+    return orig.apply(this, a)
+  }
+})
+await bad.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
+await bad.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
+await bad.setInputFiles(MEDIA_INPUT, path.join(DIR, 'corrupt.glb'))
+await bad.waitForSelector('model-viewer', { timeout: 20000 }).catch(() => {})
+check('a header-valid but corrupt GLB still reaches the preview (the gate reads the header only)',
+  (await bad.locator('model-viewer').count()) === 1)
+await bad.waitForTimeout(6000)
+check('...and it genuinely never loads',
+  await bad.evaluate(() => document.querySelector('model-viewer')?.loaded !== true))
+const composites = await bad.evaluate(() => window.__composites)
+check('NO poster is captured for a model that never rendered', composites === 0, String(composites))
+await bad.close()
 
 // ───────── E. Slow load: still stays, progress shows ─────────
 // The 856-byte fixture loads instantly, so the loading state this feature

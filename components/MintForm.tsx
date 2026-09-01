@@ -1778,11 +1778,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                             aria-pressed={modelBg === bg.id}
                             aria-label={`${bg.label} background`}
                             title={`${bg.label} background`}
-                            className={`w-4 h-4 rounded-full border transition-colors ${
-                              modelBg === bg.id ? 'border-ink' : 'border-line hover:border-dim'
-                            }`}
-                            style={{ backgroundColor: bg.css }}
-                          />
+                            // 24px hit area around a 16px swatch. The visual
+                            // dot is what reads in a caption bar, but a 16px
+                            // target is under WCAG 2.2 SC 2.5.8's 24px floor
+                            // — and too close to its neighbour to earn the
+                            // spacing exemption. Same reason the card
+                            // overlays use min-w-9.
+                            className="min-w-6 min-h-6 flex items-center justify-center"
+                          >
+                            <span
+                              aria-hidden
+                              className={`w-4 h-4 rounded-full border transition-colors ${
+                                modelBg === bg.id ? 'border-ink' : 'border-line'
+                              }`}
+                              style={{ backgroundColor: bg.css }}
+                            />
+                          </button>
                         ))}
                       </div>
                     </div>

@@ -516,6 +516,42 @@ the rendered element's corner is the chosen colour, model-viewer's own JPEG is
 black, and its PNG has alpha 0. If anyone "simplifies" the capture back to a
 direct JPEG, that middle assertion is what fails.
 
+### Findings 17-20 — reviewing the backdrop commit
+
+**17. A model that never loads banked a blank poster.** The re-capture effect
+fired on `ready`, not on `load`, so a GLB with a valid 12-byte header and
+corrupt chunks — which passes the gate, because the gate reads only the header
+— produced a picture of an *empty scene*, composited onto the backdrop into a
+perfectly valid-looking blank JPEG. That defeats the mint's "refuse rather
+than ship a posterless 3D moment" guard, because the poster is not null, just
+blank: the artist would have minted a white square.
+
+Proven, not reasoned: instrumenting `canvas.toBlob` showed **2 composites** on
+a model where `loaded` never became true. Fixed by gating the effect on a
+`loadedRef` set in the `load` handler, and the browser check now asserts zero
+composites for exactly that file.
+
+**18. The re-capture delay was cargo.** The effect waited 120 ms "once the new
+colour has painted" — but `capture` fills the colour itself (`ctx.fillStyle =
+background`) and never reads the painted DOM. The timer and its justification
+were both wrong. Removed.
+
+**19. The fallback had two sources of truth.** `modelBackgroundCss` fell back
+to `MODEL_BACKGROUNDS[0]` while its contract said "the default". Those are the
+same entry today; reordering the array would have silently changed what every
+pre-`kismet_bg` moment renders on, with the comment still claiming otherwise.
+Now resolved through `DEFAULT_MODEL_BACKGROUND` and oracle-pinned.
+
+**20. The backdrop swatches were 16px targets.** Under WCAG 2.2 SC 2.5.8's
+24px minimum, and too close together to claim the spacing exemption — while
+this codebase already uses `min-w-9` hit areas on its card overlays for
+precisely this reason. Now a 24px hit area around the 16px visual dot.
+`verify:a11y` scans text contrast only, so nothing in the suite could see it;
+the browser check now measures the button box.
+
+Two of these four (17, 20) were invisible to every non-browser check, which is
+the same lesson as finding 15 arriving twice more.
+
 ## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:

@@ -187,7 +187,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
   ) : (
     <div
       className="absolute inset-0 bg-cover bg-center"
-      style={blur ? { backgroundImage: `url(${blur})`, backgroundColor: bg } : { backgroundColor: bg }}
+      style={{ backgroundColor: bg, ...(blur ? { backgroundImage: `url(${blur})` } : {}) }}
     />
   )
 

@@ -176,6 +176,15 @@ check('background: every option resolves to an OPAQUE colour',
   JSON.stringify(MODEL_BACKGROUNDS.map((b) => b.css)))
 check('background: dark stays available for artists who want it',
   modelBackgroundCss('dark') === '#111111')
+// The fallback must track DEFAULT_MODEL_BACKGROUND, not the array's first
+// entry — otherwise reordering MODEL_BACKGROUNDS silently changes what every
+// pre-kismet_bg moment renders on.
+const defaultCss = MODEL_BACKGROUNDS.find((b) => b.id === DEFAULT_MODEL_BACKGROUND)!.css
+check('background: the fallback IS the declared default, not the first entry',
+  modelBackgroundCss(undefined) === defaultCss && modelBackgroundCss('nope') === defaultCss,
+  `${modelBackgroundCss(undefined)} vs ${defaultCss}`)
+check('background: ids are unique (they are persisted in metadata)',
+  new Set(MODEL_BACKGROUNDS.map((b) => b.id)).size === MODEL_BACKGROUNDS.length)
 
 // ── 4. Classification + the fail-safe shape ────────────────────────────────
 // The exact metadata MintForm writes for a 3D moment.

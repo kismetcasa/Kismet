@@ -82,6 +82,15 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
   // resolves, and reporting then would re-attach the OLD model's still to the
   // NEW pick — the parent has just cleared it precisely to avoid that.
   const liveRef = useRef(true)
+  // Whether the scene actually has a model in it. Capturing before `load`
+  // yields a picture of an EMPTY scene — which, once composited, is a
+  // perfectly valid-looking blank JPEG. That would bank a poster for a model
+  // that never rendered and silently defeat the mint's "refuse rather than
+  // ship a posterless 3D moment" guard, because the poster is not null, it is
+  // just blank. Verified reachable: a GLB with a valid 12-byte header and
+  // corrupt chunks passes the gate, never loads, and used to produce two
+  // captures anyway.
+  const loadedRef = useRef(false)
   useEffect(() => {
     liveRef.current = true
     return () => { liveRef.current = false }
@@ -155,12 +164,12 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
   }, [fileName, background])
 
   // The backdrop is baked into the capture, so changing it invalidates the
-  // banked poster. Re-capture once the new colour has painted.
+  // banked poster. No delay: `capture` fills the colour itself rather than
+  // reading the painted DOM, so there is nothing to wait for.
   useEffect(() => {
-    if (!ready) return
-    const t = setTimeout(() => { void capture() }, 120)
-    return () => clearTimeout(t)
-  }, [background, ready, capture])
+    if (!loadedRef.current) return
+    void capture()
+  }, [background, capture])
 
   // Event wiring via a callback ref + addEventListener, NOT on*-props:
   // React's synthetic event system maps on*-props for known DOM elements
@@ -169,7 +178,10 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
     elRef.current = node as ModelViewerElement | null
     if (!node) return
     let idle: ReturnType<typeof setTimeout> | undefined
-    const onLoad = () => { void capture() }
+    const onLoad = () => {
+      loadedRef.current = true
+      void capture()
+    }
     const onCameraChange = (e: Event) => {
       // Only the artist's own orbiting should re-frame the poster; the
       // implicit camera settle after load already rides the `load` capture.
