@@ -668,9 +668,11 @@ Known and deliberate, in rough priority order:
    through one builder, `modelMomentFields`, pinned by `verify:model-media`
    and `verify:agent`. Neither flow is driven in a browser: the edit flow needs
    a creator session and an on-chain write, the agent path a signing wallet.
-5. **Poster resolution tracks the preview's rendered size** (~500–1900 px). A
-   fixed-size capture would need a second parse of the model or visible resize
-   jank, both worse trades against the mobile-memory risk.
+5. **Poster resolution tracks the preview's rendered size** (~500–1900 px),
+   deterministically: the render scale is pinned to 1 while posing (2026-09-02),
+   so load can no longer halve a capture. A fixed-size capture would need a
+   second parse of the model or visible resize jank, both worse trades against
+   the mobile-memory risk.
 
 ## 15. Product question — resolved (2026-09-02)
 
@@ -707,6 +709,6 @@ Status as shipped. "Closed" means the code and an assertion both hold it;
 | 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
 | 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
 | 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
-| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, and materially better since finding 15.** The preview is now a true square at the form column's width, so capture is roughly 620–1900 px square rather than 150 px tall. Same convention as `extractVideoPoster` (native size); a fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
+| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, now deterministic (2026-09-02).** Capture is the element's CSS size × devicePixelRatio, no longer load-dependent: the renderer's dynamic scale is pinned to 1 while `ModelPreview` is mounted (restored on unmount, so the live viewer stays adaptive) after an E2E run under CPU load caught a 755 px capture where 956 px was expected. A fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
 | 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Closed (2026-09-02).** The edit flow reuses the mint form's pose-and-capture; the agent API requires a caller-supplied poster. One builder (`modelMomentFields`) writes the shape for all three producers, oracle-pinned. |
 | 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |

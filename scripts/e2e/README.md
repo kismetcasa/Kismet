@@ -46,7 +46,10 @@ node scripts/e2e/model-media.mjs
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
-  OG hero, posing changes what would be captured, the pose hint is visible.
+  OG hero (deterministic: the preview pins the renderer's dynamic scale to 1
+  while mounted — under CPU load it otherwise halves, and this suite caught a
+  755px capture that way), posing changes what would be captured, the pose
+  hint is visible.
 - **Gate** — a zip, a truncated GLB and a glTF 1.0 binary are each rejected
   with the right copy and leave no preview mounted.
 - **Detail** — the still paints first, no WebGL exists before the tap, tapping
