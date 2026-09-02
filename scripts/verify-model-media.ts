@@ -28,7 +28,7 @@ import { CFILE_KIND_META } from '../lib/collectorFileTypes.ts'
 import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
-import { checkCoverImage, checkMintMedia, checkReplaceMedia } from '../lib/media/mintMedia.ts'
+import { checkCoverImage, checkMintMedia } from '../lib/media/mintMedia.ts'
 import {
   DEFAULT_MODEL_BACKGROUND,
   MODEL_BACKGROUNDS,
@@ -38,6 +38,8 @@ import {
   MODEL_SHADOW_INTENSITY,
   modelPosterBg,
   modelViewerBg,
+  modelMomentFields,
+  isModelBackgroundId,
 } from '../lib/media/modelMedia.ts'
 
 let failures = 0
@@ -122,13 +124,9 @@ check('mint gate: a typeless .mov still passes, as video', mov.ok && mov.kind ==
 const heic = await gate(new File([new Uint8Array(4)], 'shot.heic'))
 check('mint gate: a typeless .heic still passes, as image', heic.ok && heic.kind === 'image')
 
-// The two derived gates. checkReplaceMedia guards the edit path, whose
-// non-video branch writes the upload straight into `image`; checkCoverImage
-// guards slots that render a still.
-const replaceGlb = await checkReplaceMedia(glbFile())
-check('replace gate: refuses a model (that path has no poster capture)', !replaceGlb.ok)
-check('replace gate: still admits an image',
-  (await checkReplaceMedia(new File([new Uint8Array(4)], 'a.png', { type: 'image/png' }))).ok)
+// The derived cover gate guards slots that render a still. (The edit flow's
+// media-replace picker runs checkMintMedia itself: it has the same
+// pose-and-capture step as the mint form, so a model is a valid pick there.)
 check('cover gate: refuses a model', !(await checkCoverImage(glbFile())).ok)
 check('cover gate: refuses a video (a cover renders as a still)',
   !(await checkCoverImage(new File([new Uint8Array(4)], 'a.mp4', { type: 'video/mp4' }))).ok)
@@ -202,6 +200,20 @@ const minted = {
   animation_url: GLB,
   content: { uri: GLB, mime: GLB_MIME },
 }
+// The three producers — mint form, edit flow, agent mint — write this shape
+// through ONE builder; pin the builder to the fixture so none can drift.
+const built = modelMomentFields({ modelUri: GLB, posterUri: STILL, background: 'white' })
+check('builder: modelMomentFields writes exactly the minted shape, plus kismet_bg',
+  built.image === STILL && built.animation_url === GLB && built.content.uri === GLB &&
+    built.content.mime === GLB_MIME && built.kismet_bg === 'white' && !('kismet_thumbhash' in built))
+check('builder: an unknown backdrop id resolves to the default and never persists',
+  modelMomentFields({ modelUri: GLB, posterUri: STILL, background: 'plaid' }).kismet_bg === DEFAULT_MODEL_BACKGROUND)
+check('builder: the thumbhash rides along when present',
+  modelMomentFields({ modelUri: GLB, posterUri: STILL, thumbhash: 'th' }).kismet_thumbhash === 'th')
+check('builder: isModelBackgroundId admits every option and nothing else',
+  MODEL_BACKGROUNDS.every((b) => isModelBackgroundId(b.id)) && !isModelBackgroundId('plaid') && !isModelBackgroundId(undefined))
+check('builder: the built shape classifies as `model` with the still as src',
+  resolveMomentMedia(built).kind === 'model' && resolveMomentMedia(built).src === STILL)
 const r = resolveMomentMedia(minted)
 check('resolve: a Kismet 3D mint classifies as `model`', r.kind === 'model', r.kind)
 check('resolve: modelSrc is the GLB', r.modelSrc === GLB, String(r.modelSrc))

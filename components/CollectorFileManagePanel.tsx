@@ -29,9 +29,13 @@ interface Props {
   onClose: () => void
   /** Reflects attach/replace/rollback/detach into the page card. */
   onFileChange: (file: CfilePublic | null) => void
+  /** The artwork's primary media is a 3D model. Its bytes are public (they ARE
+   *  the artwork, readable from the token metadata), so the panel says what a
+   *  gated file can still add — GLB_3D_VIEWER_DESIGN.md §15. */
+  primaryIsModel?: boolean
 }
 
-export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange }: Props) {
+export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange, primaryIsModel }: Props) {
   const { ensureSession } = useUploadSession()
   const [view, setView] = useState<CfileManageView | null>(null)
   const [loading, setLoading] = useState(true)
@@ -222,6 +226,14 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
               Attach a file ({CFILE_KIND_LABEL}) that collectors of this artwork can
               download. Up to 16 MB; replace it any time — collectors get notified
               and can re-download.
+              {primaryIsModel && (
+                <>
+                  {' '}
+                  The 3D model itself is already public — it is the artwork, readable
+                  from its metadata by anyone — so gate something it does not give
+                  away: source files, a ROM, a print-resolution export.
+                </>
+              )}
             </p>
           )}
 

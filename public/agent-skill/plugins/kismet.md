@@ -39,9 +39,10 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
 | Discover / manifest | Direct GET | `web_request` if allowlisted, else user-pasted GET |
-| Collect / buy / list (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| Collect / buy (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
-| Record settlement | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
+| Record settlement (collect / buy) | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
 
 ## Endpoints
 
@@ -53,7 +54,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held artwork. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `price?`, `currency?`, `editions?`, `collection?` |
+| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?` |
 
 Every prepare returns an envelope:
 

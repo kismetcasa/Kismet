@@ -32,6 +32,5 @@ each row's `nextAction` to collect (→ `references/collect.md`).
 
 ## Ranking
 
-This is the free tier (recency/availability). A richer **curated** tier
-(taste-matching, cross-source ranking) is planned as an x402-paid upgrade; when
-available it will require a small USDC payment per query with a `maxPayment` cap.
+Rows are ordered by recency and availability. There is no taste or relevance
+ranking.

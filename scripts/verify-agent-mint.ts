@@ -40,6 +40,19 @@ console.log('buildMomentMetadata — per media kind')
   ok(!('image' in vidNoPoster) && vidNoPoster.animation_url === AR('mp4') && vidNoPoster.content?.mime === 'video/mp4',
     'posterless video → no image, still animation_url + default mime')
 
+  // 3D: the video shape with the GLB in the MP4 slot, plus the backdrop — via
+  // the same builder the mint form and the edit flow use (modelMomentFields).
+  const model = buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still'), background: 'dark' })
+  ok(model.image === AR('still') && model.animation_url === AR('glb') && model.content?.uri === AR('glb') && model.content?.mime === 'model/gltf-binary' && model.kismet_bg === 'dark',
+    'model → poster image + animation_url + content{model/gltf-binary} + kismet_bg')
+  ok(buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still') }).kismet_bg === 'white',
+    'model → backdrop defaults to white')
+  ok(buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still'), background: 'plaid' }).kismet_bg === 'white',
+    'model → an unknown backdrop id resolves to the default, never persists')
+  let posterless = false
+  try { buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb') }) } catch { posterless = true }
+  ok(posterless, 'model without a poster is not a buildable moment')
+
   const txt = buildMomentMetadata({ name: 'A', description: 'd', kind: 'text', coverUri: AR('cover') })
   ok(txt.image === AR('cover') && !('animation_url' in txt), 'text → cover image only (words go in tokenContent)')
 }
@@ -113,6 +126,21 @@ console.log('\ningestMintMedia — accepts data: + ar://|ipfs://, rejects remote
 
   const bad = ingestMintMedia('data:text/plain;base64,aGk=')
   ok('error' in bad, 'unsupported mime → rejected')
+
+  // A GLB is identified by its bytes (magic + header), exactly like the app's
+  // mint gate: labelled, unlabelled, truncated and passthrough.
+  const glbBytes = Buffer.alloc(24)
+  glbBytes.write('glTF', 0, 'ascii'); glbBytes.writeUInt32LE(2, 4); glbBytes.writeUInt32LE(24, 8)
+  const glb = ingestMintMedia(`data:model/gltf-binary;base64,${glbBytes.toString('base64')}`)
+  ok(!('error' in glb) && glb.kind === 'model' && glb.mime === 'model/gltf-binary' && !!glb.bytes, 'data:model/gltf-binary → model kind')
+  const sniffed = ingestMintMedia(`data:application/octet-stream;base64,${glbBytes.toString('base64')}`)
+  ok(!('error' in sniffed) && sniffed.kind === 'model' && sniffed.mime === 'model/gltf-binary', 'octet-stream with glTF magic → model (bytes, not label)')
+  const truncated = Buffer.from(glbBytes); truncated.writeUInt32LE(999, 8)
+  ok('error' in ingestMintMedia(`data:model/gltf-binary;base64,${truncated.toString('base64')}`), 'truncated GLB → rejected before any spend')
+  const v1 = Buffer.from(glbBytes); v1.writeUInt32LE(1, 4)
+  ok('error' in ingestMintMedia(`data:model/gltf-binary;base64,${v1.toString('base64')}`), 'glTF 1.0 binary → rejected')
+  const passModel = ingestMintMedia('ar://abc', 'model')
+  ok(!('error' in passModel) && passModel.kind === 'model' && passModel.mime === 'model/gltf-binary', 'ar:// with declared model → model passthrough')
 }
 
 console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — agent mint builders: ${passed} passed, ${failed} failed`)

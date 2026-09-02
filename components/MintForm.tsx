@@ -22,7 +22,6 @@ import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { checkMintMedia } from '@/lib/media/mintMedia'
 import {
   DEFAULT_MODEL_BACKGROUND,
-  MODEL_BACKGROUNDS,
   MODEL_SOFT_WARN_BYTES,
   asGlbFile,
   modelPosterBg,
@@ -30,6 +29,7 @@ import {
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
 import { ModelPreview } from './ModelPreview'
+import { ModelPoseBar } from './ModelPoseBar'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { loadPersistedUpload, savePersistedUpload, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
@@ -1760,46 +1760,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       onPoster={setModelPoster}
                       onError={(msg) => toast.error('3D model', { description: msg })}
                     />
-                    {/* Both authored decisions in one bar. Without the hint the
-                        poster capture is invisible — the artist has no way to
-                        know the angle they leave the model at is the thumbnail
-                        every feed, share card and embed will show; and the
-                        backdrop is baked into that same JPEG. */}
-                    <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-[#0d0d0d]/85 flex items-center justify-between gap-3">
-                      <p className="text-[10px] font-mono text-muted truncate">
-                        drag to pose — this view becomes the thumbnail
-                      </p>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {MODEL_BACKGROUNDS.map((bg) => (
-                          <button
-                            key={bg.id}
-                            type="button"
-                            onClick={() => setModelBg(bg.id)}
-                            aria-pressed={modelBg === bg.id}
-                            // "Backdrop: white thumbnail, transparent in app"
-                            // reads correctly; "<label> background" would not,
-                            // now that a label can be a whole sentence.
-                            aria-label={`Backdrop: ${bg.label}`}
-                            title={`Backdrop: ${bg.label}`}
-                            // 24px hit area around a 16px swatch. The visual
-                            // dot is what reads in a caption bar, but a 16px
-                            // target is under WCAG 2.2 SC 2.5.8's 24px floor
-                            // — and too close to its neighbour to earn the
-                            // spacing exemption. Same reason the card
-                            // overlays use min-w-9.
-                            className="min-w-6 min-h-6 flex items-center justify-center"
-                          >
-                            <span
-                              aria-hidden
-                              className={`w-4 h-4 rounded-full border transition-colors ${
-                                modelBg === bg.id ? 'border-ink' : 'border-line'
-                              }`}
-                              style={{ background: bg.swatch }}
-                            />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                    <ModelPoseBar value={modelBg} onChange={setModelBg} />
                   </>
                 ) : file?.type.startsWith('video/') ? (
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
@@ -2412,7 +2373,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           <p className="text-xs text-muted font-mono mt-1 truncate">
             {cfileFile
               ? `${cfileFile.name} \u00b7 ${formatCfileSize(cfileFile.size)}`
-              : 'optional zip, pdf or glb \u2014 only collectors can download it'}
+              : isModelPick
+                // The model IS the artwork and sits world-readable on Arweave,
+                // so gating the same file adds nothing (GLB_3D_VIEWER_DESIGN.md
+                // §15) — say what a collector file can still be.
+                ? 'the 3D model itself is public \u2014 gate something it doesn\u2019t give away: source files, a ROM, a print-res export'
+                : 'optional zip, pdf, glb or Game Boy ROM \u2014 only collectors can download it'}
           </p>
         </div>
         <input

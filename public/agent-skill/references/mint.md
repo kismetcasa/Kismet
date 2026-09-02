@@ -25,8 +25,8 @@ POST BASE/api/agent/prepare-mint
   "account": "0xYourBaseAccount",   // the artist; must hold a Kismet Pass
   "name": "My Artwork",             // required — the title
   "description": "…",               // optional
-  "media": "data:image/png;base64,…",  // image/video: a data: URI (the bytes) or an ar://|ipfs:// URI
-  "mediaType": "image",             // "image" | "video" | "text" (optional; inferred from the media)
+  "media": "data:image/png;base64,…",  // image, video or 3D model (.glb): a data: URI (the bytes) or an ar://|ipfs:// URI
+  "mediaType": "image",             // "image" | "video" | "model" | "text" (optional; inferred from the bytes — pass it for an ar://|ipfs:// URI)
   "price": "0",                     // human decimal string; "0" = free (default)
   "currency": "eth",                // "eth" | "usdc" (default eth)
   "editions": 100,                  // optional; omit for an open edition
@@ -46,6 +46,15 @@ For a **writing artwork**, omit `media` and pass the text instead:
 For a **video**, you may pass an optional `poster` (a `data:` or `ar://|ipfs://`
 image) — Kismet can't extract a poster frame server-side the way the app does, so
 feeds show a placeholder without one.
+
+For a **3D model** (`.glb`, glTF 2.0 binary, up to 25 MB), `poster` is
+**required**: a still of the model that feeds, share cards and embeds show
+(Kismet cannot render a GLB server-side). `background` records the backdrop
+the still was shot on so the artwork page's viewer matches it: `"white"`
+(default), `"dark"`, or `"transparent"` (white thumbnail, transparent in-app
+viewer). Render the poster on that same backdrop. The moment carries the video
+metadata shape with the GLB as `animation_url` and `content.mime`
+`model/gltf-binary`.
 
 > **POST-only, and no remote URLs.** Unlike collect/buy/list, mint is not on the
 > GET-paste rung: it spends (it hosts the media on Arweave), and a GET that

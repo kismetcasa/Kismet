@@ -1,5 +1,7 @@
 import 'server-only'
 
+import { GLB_HEADER_BYTES, GLB_MIME, hasGlbMagic, isWellFormedGlbHeader } from '@/lib/glbFormat'
+
 /**
  * Ingest the media an MCP mint refers to, into raw bytes we can re-host on
  * Arweave (or a passthrough of an already-permanent URI). The app streams media
@@ -24,7 +26,7 @@ const MAX_MEDIA_BYTES = 25 * 1024 * 1024 // MCP cap; larger files → the Kismet
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/avif'])
 const VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime'])
 
-export type MediaKind = 'image' | 'video'
+export type MediaKind = 'image' | 'video' | 'model'
 
 export interface IngestResult {
   /** An already-permanent URI supplied by the caller — nothing to upload. */
@@ -39,7 +41,12 @@ function kindOf(mime: string): MediaKind | null {
   const m = mime.split(';')[0].trim().toLowerCase()
   if (IMAGE_MIMES.has(m)) return 'image'
   if (VIDEO_MIMES.has(m)) return 'video'
+  if (m === GLB_MIME) return 'model'
   return null
+}
+
+function passthroughMime(kind: MediaKind): string {
+  return kind === 'video' ? 'video/mp4' : kind === 'model' ? GLB_MIME : 'image/*'
 }
 
 export function ingestMintMedia(
@@ -50,19 +57,32 @@ export function ingestMintMedia(
   //    declared kind (default image, the common case).
   if (media.startsWith('ar://') || media.startsWith('ipfs://')) {
     const kind = declaredKind ?? 'image'
-    return { passthroughUri: media, mime: kind === 'video' ? 'video/mp4' : 'image/*', kind }
+    return { passthroughUri: media, mime: passthroughMime(kind), kind }
   }
 
   // 2. data: URI → decode locally (no network).
   if (media.startsWith('data:')) {
     const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(media)
     if (!m) return { error: 'Malformed data URI' }
-    const mime = m[1]
+    let mime = m[1]
     const bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]))
-    const kind = kindOf(mime)
-    if (!kind) return { error: `Unsupported media type "${mime}" — image/* or video/* only` }
+    let kind = kindOf(mime)
+    // A GLB is identified by its bytes, as everywhere else in this codebase:
+    // `.glb` has no registered browser MIME, so an assistant that read the
+    // file from disk will often label it application/octet-stream.
+    if (!kind && hasGlbMagic(bytes)) {
+      kind = 'model'
+      mime = GLB_MIME
+    }
+    if (!kind) return { error: `Unsupported media type "${mime}" — image/*, video/* or model/gltf-binary (.glb) only` }
     if (bytes.length > MAX_MEDIA_BYTES) {
       return { error: `Media too large (${(bytes.length / 1048576).toFixed(1)} MB); MCP mint caps at 25 MB — use the Kismet app for larger files` }
+    }
+    // Same header checks the app's mint gate runs (lib/media/mintMedia): a
+    // truncated export or a glTF 1.0 binary would otherwise be hosted on
+    // Arweave and minted before the viewer discovered it cannot render.
+    if (kind === 'model' && !isWellFormedGlbHeader(bytes.subarray(0, GLB_HEADER_BYTES), bytes.length)) {
+      return { error: 'This .glb looks incomplete or is an older glTF version — re-export it as glTF 2.0 binary' }
     }
     return { bytes, mime, kind }
   }

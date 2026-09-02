@@ -11,6 +11,7 @@ import { consumeUserQuota } from '@/lib/userQuota'
 import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 import { issueIntentNonce } from '@/lib/intentAuth'
 import { ingestMintMedia, type MediaKind } from '@/lib/agent/mintMedia'
+import { isModelBackgroundId } from '@/lib/media/modelMedia'
 import { uploadBytesToArweave, uploadJsonToArweave } from '@/lib/arweave/uploadServer'
 import { buildMomentMetadata, buildMintEnvelope, type MintMediaKind, type MintParams } from '@/lib/agent/mint'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
@@ -47,6 +48,13 @@ export const runtime = 'nodejs'
  * salesConfig, metadata shape, CREATE_REFERRAL, MintIntent typed data — so there
  * is zero drift between minting in the Kismet app and minting from an assistant.
  * App defaults apply (free, ETH, open edition, artist keeps a copy).
+ *
+ * 3D (GLB) media is accepted on the same terms as video, with one difference
+ * that follows from "a server can't do what a browser does": the app captures
+ * a model's poster from the posed preview (components/ModelPreview), and a
+ * server cannot render a GLB, so here the poster is caller-supplied and
+ * REQUIRED — it is what every feed, share card and embed shows. `background`
+ * records the backdrop it was shot on for the artwork page's viewer.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
@@ -80,7 +88,7 @@ const firstString = (...vals: unknown[]): string =>
 function normalizeKind(raw: unknown): MintMediaKind | null {
   if (typeof raw !== 'string') return null
   const k = raw.trim().toLowerCase()
-  return k === 'image' || k === 'video' || k === 'text' ? k : null
+  return k === 'image' || k === 'video' || k === 'model' || k === 'text' ? k : null
 }
 
 async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
@@ -226,28 +234,43 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   }
 
   // ── ingest media (data: bytes or ar://|ipfs:// passthrough — no remote fetch) ──
-  const kind: MintMediaKind = isText ? 'text' : (explicitKind === 'image' || explicitKind === 'video' ? explicitKind : 'image')
+  const kind: MintMediaKind = isText ? 'text' : (explicitKind ?? 'image')
   let mediaUri: string | undefined
   let posterUri: string | undefined
   let mediaMime: string | undefined
   let mediaBytes = 0
   let resolvedKind: MintMediaKind = kind
 
+  // 3D only: the backdrop the poster was shot on, replayed by the viewer.
+  // Validated up front (cheap) so a typo fails before any Arweave spend.
+  const backgroundRaw = firstString(body.background)
+  if (backgroundRaw && !isModelBackgroundId(backgroundRaw)) {
+    return errorResponse(400, 'background must be "white", "dark" or "transparent"')
+  }
+
   if (!isText) {
-    const declared: MediaKind | undefined = kind === 'video' ? 'video' : kind === 'image' ? 'image' : undefined
+    const declared: MediaKind | undefined = kind === 'text' ? undefined : kind
     const ingested = ingestMintMedia(media, declared)
     if ('error' in ingested) return errorResponse(400, ingested.error)
     resolvedKind = ingested.kind // authoritative kind from the actual mime
     mediaMime = ingested.mime
     if (ingested.bytes) mediaBytes += ingested.bytes.length
 
-    // Optional video poster: an already-permanent URI or a data: URI. Browser-
-    // canvas poster extraction isn't reproducible server-side, so the poster is
-    // caller-supplied (optional).
+    // Poster: an already-permanent URI or a data: URI. Browser-canvas poster
+    // extraction isn't reproducible server-side, so the poster is caller-
+    // supplied — optional for video, REQUIRED for a model (a posterless 3D
+    // moment is invisible on every surface but the artwork page; the app
+    // refuses the same case at submit).
     const poster = firstString(body.poster, body.posterUri)
+    if (resolvedKind === 'model' && !poster) {
+      return errorResponse(
+        400,
+        'poster is required for a 3D model — a still image of it (data: URI or ar://|ipfs://), shot on the same backdrop as `background`; it is what feeds, share cards and embeds show',
+      )
+    }
     let posterBytesBuf: Buffer | undefined
     let posterMime = 'image/png'
-    if (resolvedKind === 'video' && poster) {
+    if ((resolvedKind === 'video' || resolvedKind === 'model') && poster) {
       const ip = ingestMintMedia(poster, 'image')
       if ('error' in ip) return errorResponse(400, `poster: ${ip.error}`)
       if (ip.kind !== 'image') return errorResponse(400, 'poster must be an image')
@@ -287,6 +310,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     posterUri,
     mime: mediaMime,
     coverUri: textCover,
+    ...(backgroundRaw ? { background: backgroundRaw } : {}),
   })
 
   let tokenMetadataURI: string
@@ -295,9 +319,9 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     tokenMetadataURI = await uploadJsonToArweave(metadata)
     if (isAutoDeploy) {
       // Auto-deploy: the moment's cover doubles as the collection cover (image
-      // moment → its image; video → its poster; text → the generated cover).
+      // moment → its image; video / 3D → its poster; text → the generated cover).
       const collectionCover =
-        resolvedKind === 'text' ? textCover : resolvedKind === 'video' ? posterUri : mediaUri
+        resolvedKind === 'text' ? textCover : resolvedKind === 'video' || resolvedKind === 'model' ? posterUri : mediaUri
       const collectionMetadata = {
         name: collectionName,
         description,

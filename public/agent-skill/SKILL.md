@@ -19,16 +19,15 @@ surface. Popup-less *budgeted* collecting (a "Kismet collecting account") is a
 separate Kismet-native flow, not part of this skill.
 
 > [!IMPORTANT]
-> ## STOP — COMPLETE BASE MCP ONBOARDING FIRST
->
-> Before calling any Kismet endpoint, complete the Base MCP onboarding flow:
+> Complete Base MCP onboarding before calling any Kismet endpoint — Base MCP's
+> own skill runs onboarding at the start of every conversation that touches it:
 >
 > 1. Call `get_wallets` (Detection) — confirms the Base Account address every
 >    prepare call needs.
 > 2. Present the wallet status and the Base MCP disclaimer (Onboarding).
 >
 > If no Base MCP wallet tools are callable, Base MCP isn't connected — point the
-> user to `https://docs.base.org/agents/quickstart` and stop.
+> user to `https://docs.base.org/ai-agents/quickstart` and stop.
 
 ## Setup (once)
 
@@ -117,15 +116,18 @@ Follow Base MCP's documented fallback ladder, in order:
 1. **Harness HTTP tool first** (Claude Code, Cursor, Codex — shell or fetch):
    call any endpoint directly, GET or POST. No allowlist applies.
 2. **Base MCP `web_request`** — reaches only **allowlisted partner hosts**
-   (GET and POST). Kismet is not yet on the allowlist; if `web_request`
-   rejects the host, don't retry through it — move down the ladder.
+   (GET and POST). Kismet is not a native Base MCP plugin, so expect it to
+   reject the Kismet host; if it does, don't retry through it — move down the
+   ladder.
 3. **GET user-paste (Claude.ai / ChatGPT consumer apps)**: these surfaces can
    fetch URLs the user pastes, GET only. Construct the prepare URL with all
    parameters in the query string, show it to the user, and ask them to paste
    the JSON response back — then continue with `send_calls` as normal.
-   Recording (step 5) is POST-only and unreachable here: skip it and say
-   recording will lag; the on-chain result stands (`/api/collect` verifies
-   on-chain when it eventually runs, so nothing is lost).
+   Recording (step 5) is POST-only and unreachable here. For collect and buy,
+   skip it and say recording will lag; the on-chain result stands (the record
+   routes verify the receipt when they eventually run, so nothing is lost).
+   For list, the record call is what publishes the listing — the signed order
+   exists nowhere else — so use rung 4 instead of signing here.
 4. **UI deep-link, last resort** (e.g. the batch endpoint on a chat-only
    surface): send the user to the artwork or collection page on Kismet
    (`BASE/artwork/<collection>/<tokenId>`) to finish in-app.

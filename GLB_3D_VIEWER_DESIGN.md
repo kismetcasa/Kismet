@@ -578,6 +578,68 @@ IS the poster source and the thumbnail would otherwise differ from what the
 artist posed. It lands in the capture for free: the shadow is part of the
 rendered scene, not a DOM layer.
 
+### Post-merge verification
+
+Verified against the merged `main` (PR #680), not the branch: the merged tree
+is byte-identical to what was reviewed, `npm run build` and the full
+`npm run check` both exit 0, and the browser check passes 44/44.
+
+**Bundle cost, measured rather than estimated.** Building `0ce7503` (main
+before any of this) and diffing route totals against merged main attributes
+the whole feature at:
+
+| Route | Delta |
+|---|---|
+| `/artwork/[address]/[tokenId]` | **+7,446 B (+0.57%)** |
+| `/mint` | +7,054 B (+0.52%) |
+| `/collection/[address]` | +4,757 B (+0.36%) |
+| `/layout` | +191 B (+0.01%) |
+| 31 of 39 routes | unchanged |
+
+`model-viewer` appears in **no route manifest** — still fully lazy. Note for
+whoever owns the guard: `bundle-baseline.json` is stale from *other* merged
+work (`/layout` was already +4.5% over baseline before this branch existed),
+so the guard's 10% headroom is eroding for reasons unrelated to 3D.
+
+**2026-09-02 follow-up (badge, edit-flow and agent 3D parity, ROM kinds,
+prompt audit).** Measured the same way — a control build of `744c748` (the
+branch before this work) diffed against this build, route by route:
+
+| Route | Delta vs control |
+|---|---|
+| `/artwork/[address]/[tokenId]` (+ its modal) | **+6,077 B (+0.46%)** |
+| `/mint` | +507 B (+0.04%) |
+| every other route | ≤ +279 B; 22 of 38 shrank slightly |
+
+The artwork route pays for the edit flow's 3D branch and the shared pose
+bar; `ModelPreview` itself is code-split there (`next/dynamic`, ssr:false)
+and `model-viewer` is still in no route manifest. The committed
+`bundle-baseline.json` had drifted **+35,989 B on the artwork route before
+this branch** (other merged work), which is why the naive guard reading was
++3.3%; the baseline is regenerated in this PR so the 10% guard measures from
+today's sizes.
+
+The browser check (scripts/e2e) now runs **49 assertions**, all passing on
+this build: the three new ones render a real `MomentCard` grid from the
+intercepted timeline on the profile page, assert the `3D` badge on the card,
+and confirm no `model-viewer` mounts in that grid either. The stubbed timeline
+row's `creator` had to become a `MomentAdmin` object — the card reads
+`creator.address` for its avatar, and a string there crashed the page — which
+the older ovals-only feed check never exercised.
+
+
+Two findings from that pass, both fixed:
+
+- **`readGlbHeader` was an exported function nobody imported** — used only by
+  `isWellFormedGlbHeader` beside it. Now module-private; the two verdict types
+  next to it stay exported because they appear in four exported signatures and
+  are the documented return contract.
+- **The browser check had a cold-start race.** On a freshly started server the
+  first `/mint` request compiles a large lazy chunk, and a cold run could lose
+  the 30s selector race — a red that says nothing about the code. It now warms
+  the route first; re-verified passing 44/44 from a deliberately colder start
+  than the one that failed.
+
 ## 14. Still left to be desired
 
 Known and deliberate, in rough priority order:
@@ -586,30 +648,50 @@ Known and deliberate, in rough priority order:
    `usdzconvert` or Blender — the one part of this feature that would add a
    real backend dependency. Android's Scene Viewer takes GLB directly, so an
    Android-only `ar` mode is available cheaply if wanted.
-2. **The `3D` badge is only on `MomentCard`.** `MarketOvals`, `FeaturedMoment`
-   and `PatronArtworkShowcase` render a model's still with no indication it is
-   3D. Correct, just a missed signal — the homepage hero is the one worth
-   reconsidering.
+2. **The `3D` badge is on `MomentCard` and the homepage hero (2026-09-02).**
+   Both render `components/ModelBadge` — one definition; the feed placement
+   is asserted in the browser E2E. `MarketOvals` is 44px ovals with no room
+   for a badge, and `PatronArtworkShowcase` is contractually "the image
+   alone" — both render a model's still correctly and stay unadorned on
+   purpose.
 3. **No lighting or environment control.** model-viewer's neutral default may
    not match an artist's intent; `environment-image`, `exposure` and
    `shadow-intensity` are all available and none are exposed.
-4. **A 3D moment cannot be created by the edit flow or the agent API.** Both
-   would need their own poster-capture step. Refused explicitly rather than
-   half-supported.
-5. **Poster resolution tracks the preview's rendered size** (~500–1900 px). A
-   fixed-size capture would need a second parse of the model or visible resize
-   jank, both worse trades against the mobile-memory risk.
+4. **The edit flow and the agent API create 3D moments (2026-09-02).** The
+   edit flow reuses the mint form's pose-and-capture verbatim (`ModelPreview`
+   + the shared `ModelPoseBar`, the identity-tracked pick, the same refusal
+   without a capture) and now carries `kismet_bg` through every edit — a
+   title-only edit used to rebuild the metadata without it and silently reset
+   the backdrop. The agent API accepts a GLB (bytes-identified, header-checked,
+   25 MB) with a caller-supplied `poster` — a server cannot render one, so it
+   is required — and a `background`. All three producers write the shape
+   through one builder, `modelMomentFields`, pinned by `verify:model-media`
+   and `verify:agent`. Neither flow is driven in a browser: the edit flow needs
+   a creator session and an on-chain write, the agent path a signing wallet.
+5. **Poster resolution tracks the preview's rendered size** (~500–1900 px),
+   deterministically: the render scale is pinned to 1 while posing (2026-09-02),
+   so load can no longer halve a capture. A fixed-size capture would need a
+   second parse of the model or visible resize jank, both worse trades against
+   the mobile-memory risk.
 
-## 15. Open product question
+## 15. Product question — resolved (2026-09-02)
 
-GLB is currently a **collector-gated download**. If a GLB can also be public
-primary media, the bytes sit world-readable on Arweave and the gating premise
-partially collapses for an artist who does both.
+GLB is both public primary media and a collector-gated download, and those
+are two different products: "the work is 3D" versus "collectors get a file".
+An artist can want either, or both with different files — Andrea's own
+concept is exactly that (a public 3D Game Boy, a gated `.gb` cartridge). The
+one footgun is gating the same file that already sits world-readable on
+Arweave as the artwork.
 
-These are two different products — "the work is 3D" versus "collectors get the
-model file" — and an artist could legitimately want either, or both with
-different models (a display-res GLB public, the full-res source gated). Worth
-an explicit decision rather than letting it fall out of the implementation.
+Decision: support both, and make the trade-off visible at the two moments an
+artist chooses. The mint form's collector-download slot, when the primary
+media is a model, says the model itself is public and to gate something it
+does not give away (source files, a ROM, a print-res export); the artwork
+page's manage panel says the same when the artwork is 3D
+(`primaryIsModel`). Nothing is gated or refused — the artist decides with
+the facts in front of them. The cartridge itself is a first-class collector
+file now (`.gb`/`.gbc`, COLLECTOR_DOWNLOADS_DESIGN.md), so the concept ships
+without a zip.
 
 ---
 
@@ -627,6 +709,6 @@ Status as shipped. "Closed" means the code and an assertion both hold it;
 | 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
 | 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
 | 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
-| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, and materially better since finding 15.** The preview is now a true square at the form column's width, so capture is roughly 620–1900 px square rather than 150 px tall. Same convention as `extractVideoPoster` (native size); a fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
-| 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Accepted, deliberate.** Both would need their own poster-capture step; refusing with a reason beats half-supporting it. |
+| 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, now deterministic (2026-09-02).** Capture is the element's CSS size × devicePixelRatio, no longer load-dependent: the renderer's dynamic scale is pinned to 1 while `ModelPreview` is mounted (restored on unmount, so the live viewer stays adaptive) after an E2E run under CPU load caught a 755 px capture where 956 px was expected. A fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
+| 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Closed (2026-09-02).** The edit flow reuses the mint form's pose-and-capture; the agent API requires a caller-supplied poster. One builder (`modelMomentFields`) writes the shape for all three producers, oracle-pinned. |
 | 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |

@@ -42,11 +42,14 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (44)
+## What it asserts (49)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
-  OG hero, posing changes what would be captured, the pose hint is visible.
+  OG hero (deterministic: the preview pins the renderer's dynamic scale to 1
+  while mounted — under CPU load it otherwise halves, and this suite caught a
+  755px capture that way), posing changes what would be captured, the pose
+  hint is visible.
 - **Gate** — a zip, a truncated GLB and a glTF 1.0 binary are each rejected
   with the right copy and leave no preview mounted.
 - **Detail** — the still paints first, no WebGL exists before the tap, tapping
@@ -67,12 +70,36 @@ node scripts/e2e/model-media.mjs
 - **A model that never loads** — a header-valid but corrupt GLB reaches the
   preview, never loads, and banks NO poster, so the mint's refusal cannot be
   defeated by a blank-but-valid capture.
-- **Feed** — a 3D moment renders its still, and no `model-viewer` is ever
-  mounted in a feed.
+- **Feed** — a 3D moment renders its still in the market ovals and no
+  `model-viewer` is ever mounted in a feed; on the profile page, which fetches
+  its timeline from the browser, a real `MomentCard` grid renders from the
+  stubbed data and the card carries the `3D` badge.
 
-## Known gap
+## Determinism
 
-`MomentCard`'s `3D` badge is not covered: every page that renders that
-component needs SSR data or on-chain reads that cannot be stubbed from the
-browser. Its condition (`media.kind === 'model'`) is pinned by
-`verify:model-media`; the markup itself is unverified in a browser.
+Two races were removed after they produced misleading results, and both are
+worth knowing about if you extend this file:
+
+- The media input is **server-rendered**, so `setInputFiles` can land before
+  hydration and change nothing. That does not fail loudly — it turns "no
+  preview mounted" into a *vacuous pass*. Use `pickMedia()`, which retries
+  until the app has demonstrably reacted (a preview or a toast).
+- A freshly started server compiles a large lazy chunk on the first `/mint`
+  request, so the run warms the route before asserting.
+
+Assertions that depend on an element existing are guarded on that fact
+explicitly, for the same reason: `document.querySelector(x)?.loaded !== true`
+is trivially true when `x` is absent.
+
+## Known gaps
+
+- The homepage hero's `3D` badge is fed by a server-side timeline fetch that
+  the browser cannot intercept (seeded, the featured feed never fetches on the
+  client). It renders the same `components/ModelBadge` the feed card does, so
+  the markup is covered by the profile-grid assertion; only the hero's
+  placement is unverified in a browser.
+- The edit flow's 3D media replacement (pose, capture, save) needs a creator
+  session and an on-chain write, so it is not driven here. Its pieces are the
+  mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
+  `modelMomentFields` builder — each of which this file or `verify:model-media`
+  covers; the wiring itself is unverified in a browser.

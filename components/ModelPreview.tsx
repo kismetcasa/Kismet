@@ -28,9 +28,13 @@ import { MODEL_SHADOW_INTENSITY } from '@/lib/media/modelMedia'
  * two rAFs specifically to "wait for shaders to compile and pixels to be
  * drawn" — so the first frame exists by the time we are called.
  *
- * Resolution tracks the element's rendered size (CSS px x devicePixelRatio x
- * model-viewer's dynamic render scale, which degrades to 0.5x under sustained
- * load). At the mint form's column width that lands roughly 500-1900px —
+ * Resolution is the element's rendered size (CSS px x devicePixelRatio), and
+ * deterministically so: while this preview is mounted the renderer's dynamic
+ * render scale is pinned to 1 (see the import effect), because the scale is
+ * load-adaptive — on a busy machine it halves, and a browser E2E run under
+ * CPU load caught it capturing 755px instead of 956px. A frame-rate dip
+ * while posing is a fair price; a permanently lower-resolution poster is
+ * not. At the mint form's column width capture lands roughly 500-1900px —
  * comfortably above every consumer, since the OG hero draws at 800x800 and
  * /api/img downscales to 2048. Same convention as extractVideoPoster, which
  * captures at the video's native size rather than a fixed one.
@@ -99,6 +103,10 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
 
   useEffect(() => {
     let cancelled = false
+    // The render-scale pin below is a STATIC on the shared renderer singleton,
+    // so it must be undone when this preview unmounts — the artwork page's
+    // live viewer (MomentModel) wants the adaptive behaviour back.
+    let restoreScale: (() => void) | undefined
     ;(async () => {
       try {
         // The custom element must be defined before <model-viewer> renders.
@@ -114,12 +122,25 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
         // public/model-decoders/README.md.
         mod.ModelViewerElement.dracoDecoderLocation = '/model-decoders/draco/'
         mod.ModelViewerElement.ktx2TranscoderLocation = '/model-decoders/basis/'
+        // Pin the dynamic render scale to full resolution while posing. The
+        // renderer degrades scale under load, and toBlob captures at the
+        // DEGRADED size — so without this, an artist on a busy machine bakes
+        // a half-resolution poster into a permanent artwork. Scoped to this
+        // preview's lifetime: the live viewer keeps adaptive scaling.
+        if (!cancelled) {
+          const prev = mod.ModelViewerElement.minimumRenderScale
+          mod.ModelViewerElement.minimumRenderScale = 1
+          restoreScale = () => { mod.ModelViewerElement.minimumRenderScale = prev }
+        }
         if (!cancelled) setReady(true)
       } catch {
         if (!cancelled) onErrorRef.current('Could not load the 3D viewer — check your connection and retry.')
       }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      restoreScale?.()
+    }
   }, [])
 
   const capture = useCallback(async () => {

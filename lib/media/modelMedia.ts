@@ -102,6 +102,37 @@ export function modelViewerBg(id: string | undefined): string {
   return entry(id).viewer
 }
 
+export function isModelBackgroundId(id: unknown): id is ModelBackgroundId {
+  return typeof id === 'string' && MODEL_BACKGROUNDS.some((b) => b.id === id)
+}
+
+/**
+ * The metadata fields that make a moment a 3D moment: the video shape with
+ * the GLB where the MP4 would be, plus the backdrop the still was shot on.
+ *
+ * ONE definition for the three producers — the mint form, the edit flow and
+ * the agent mint — so no path can write a model whose shape drifts from what
+ * resolveMomentMedia classifies. `image` is the captured still, and every
+ * static surface renders exactly that; only the artwork page ever reads
+ * `animation_url`. The poster is therefore not optional: a posterless 3D
+ * moment is invisible on every surface but one.
+ */
+export function modelMomentFields(input: {
+  modelUri: string
+  posterUri: string
+  thumbhash?: string
+  /** A MODEL_BACKGROUNDS id; anything else resolves to the default. */
+  background?: string
+}) {
+  return {
+    image: input.posterUri,
+    animation_url: input.modelUri,
+    content: { uri: input.modelUri, mime: GLB_MIME },
+    ...(input.thumbhash ? { kismet_thumbhash: input.thumbhash } : {}),
+    kismet_bg: entry(input.background).id,
+  }
+}
+
 /**
  * Contact-shadow strength for every 3D surface.
  *

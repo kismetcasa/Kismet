@@ -18,12 +18,13 @@ import { CREATE_REFERRAL } from '@/lib/config'
 import { USDC_BASE, OPEN_EDITION_MINT_SIZE } from '@/lib/zoraMint'
 import { priceToBaseUnits } from './list'
 import { buildMintIntent, KISMET_INTENT_DOMAIN, MINT_INTENT_TYPES, type MintBody } from '@/lib/intent'
+import { modelMomentFields } from '@/lib/media/modelMedia'
 import type { AgentActionEnvelope } from './types'
 
 /** saleEnd sentinel = "never" (max uint64), matching MintForm's OPEN_ENDED_SALE. */
 const OPEN_ENDED_SALE = OPEN_EDITION_MINT_SIZE.toString()
 
-export type MintMediaKind = 'image' | 'video' | 'text'
+export type MintMediaKind = 'image' | 'video' | 'model' | 'text'
 
 export interface MomentMetadata {
   name: string
@@ -31,6 +32,9 @@ export interface MomentMetadata {
   image?: string
   animation_url?: string
   content?: { uri: string; mime: string }
+  kismet_thumbhash?: string
+  /** 3D moments: the backdrop the poster was shot on (lib/media/modelMedia). */
+  kismet_bg?: string
 }
 
 /**
@@ -38,25 +42,41 @@ export interface MomentMetadata {
  * MintForm uploads:
  *  - image  → { image }
  *  - video  → { image?(poster), animation_url, content:{uri,mime} }
+ *  - model  → { image(poster), animation_url(GLB), content:{uri,model/gltf-binary},
+ *               kismet_bg } — the video shape with the GLB where the MP4 goes,
+ *               via the ONE builder every 3D producer shares (modelMomentFields)
  *  - text   → { image?(cover) }  (the words live in tokenContent, not here)
  * A video with no poster omits `image` (feeds fall back to the play placeholder)
  * — the poster/thumbhash/transcode enrichments are browser-canvas-only and are
- * intentionally not reproduced server-side (see file header).
+ * intentionally not reproduced server-side (see file header). A MODEL with no
+ * poster is not a valid input: the route refuses it before any spend.
  */
 export function buildMomentMetadata(input: {
   name: string
   description: string
   kind: MintMediaKind
-  /** image kind → the image URI; video kind → the video URI; text kind → unused. */
+  /** image kind → the image URI; video/model kind → the video/GLB URI; text kind → unused. */
   mediaUri?: string
-  /** video kind → optional poster still shown in feeds. */
+  /** video kind → optional poster still shown in feeds; model kind → required. */
   posterUri?: string
   /** video kind → mime for the `content` hint (defaults video/mp4). */
   mime?: string
   /** text kind → optional cover image. */
   coverUri?: string
+  /** model kind → a MODEL_BACKGROUNDS id (default white). */
+  background?: string
 }): MomentMetadata {
   const { name, description, kind } = input
+  if (kind === 'model') {
+    if (!input.mediaUri || !input.posterUri) {
+      throw new Error('a 3D moment needs both the model and its poster')
+    }
+    return {
+      name,
+      description,
+      ...modelMomentFields({ modelUri: input.mediaUri, posterUri: input.posterUri, background: input.background }),
+    }
+  }
   if (kind === 'video') {
     return {
       name,
