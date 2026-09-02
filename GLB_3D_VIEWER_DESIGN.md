@@ -601,6 +601,33 @@ whoever owns the guard: `bundle-baseline.json` is stale from *other* merged
 work (`/layout` was already +4.5% over baseline before this branch existed),
 so the guard's 10% headroom is eroding for reasons unrelated to 3D.
 
+**2026-09-02 follow-up (badge, edit-flow and agent 3D parity, ROM kinds,
+prompt audit).** Measured the same way — a control build of `744c748` (the
+branch before this work) diffed against this build, route by route:
+
+| Route | Delta vs control |
+|---|---|
+| `/artwork/[address]/[tokenId]` (+ its modal) | **+6,077 B (+0.46%)** |
+| `/mint` | +507 B (+0.04%) |
+| every other route | ≤ +279 B; 22 of 38 shrank slightly |
+
+The artwork route pays for the edit flow's 3D branch and the shared pose
+bar; `ModelPreview` itself is code-split there (`next/dynamic`, ssr:false)
+and `model-viewer` is still in no route manifest. The committed
+`bundle-baseline.json` had drifted **+35,989 B on the artwork route before
+this branch** (other merged work), which is why the naive guard reading was
++3.3%; the baseline is regenerated in this PR so the 10% guard measures from
+today's sizes.
+
+The browser check (scripts/e2e) now runs **49 assertions**, all passing on
+this build: the three new ones render a real `MomentCard` grid from the
+intercepted timeline on the profile page, assert the `3D` badge on the card,
+and confirm no `model-viewer` mounts in that grid either. The stubbed timeline
+row's `creator` had to become a `MomentAdmin` object — the card reads
+`creator.address` for its avatar, and a string there crashed the page — which
+the older ovals-only feed check never exercised.
+
+
 Two findings from that pass, both fixed:
 
 - **`readGlbHeader` was an exported function nobody imported** — used only by

@@ -459,7 +459,9 @@ const MODEL_MOMENT = {
   address: '0x00000000000000000000000000000000000000aa',
   token_id: '1',
   metadata: MODEL_META.metadata,
-  creator: '0x000000000000000000000000000000000000dEaD',
+  // A MomentAdmin, not a string: MomentCard reads creator.address for the
+  // avatar (a string here crashed the profile grid with `undefined.replace`).
+  creator: { address: '0x000000000000000000000000000000000000dEaD', username: null, avatarUrl: null },
 }
 await ctx.route(/\/api\/timeline/, (r) => r.fulfill({
   status: 200, contentType: 'application/json',
@@ -477,13 +479,26 @@ check('a 3D moment renders its still on the feed surface', !!tileImg, String(til
 // THE load-bearing rule for this feature.
 check('NO model-viewer is mounted anywhere in a feed',
   (await feed.locator('model-viewer').count()) === 0)
-// The badge is the only feed-level signal that a still is 3D. The timeline
-// interception above is what feeds the cards, so the markup — shared with the
-// homepage hero via components/ModelBadge — is asserted here in a browser.
-check('the feed card carries the 3D badge',
-  (await feed.locator('[aria-label="3D artwork"]').count()) >= 1)
 await feed.screenshot({ path: path.join(SHOTS, '07-feed-still.png'), clip: { x: 0, y: 80, width: 900, height: 500 } })
 await feed.close()
+
+// ── F2. A MomentCard grid, fed by the intercepted timeline ────────────────
+// /discover is the market view (ovals, no cards) and the homepage seeds its
+// featured feed server-side — seeded, it never fetches on the client, so the
+// interception can't reach it. The profile page fetches
+// `/api/timeline?creator=…` from the browser, so this is where a real
+// MomentCard renders from stubbed data, badge included. The badge markup is
+// shared with the homepage hero (components/ModelBadge).
+const profile = await ctx.newPage()
+await profile.goto(`${BASE}/profile/0x000000000000000000000000000000000000dEaD`, { waitUntil: 'domcontentloaded' })
+const cardMounted = await profile.waitForSelector('article', { timeout: 30000 }).then(() => true).catch(() => false)
+check('a MomentCard grid renders from the intercepted timeline (profile page)', cardMounted)
+check('the feed card carries the 3D badge',
+  cardMounted && (await profile.locator('article [aria-label="3D artwork"]').count()) >= 1)
+check('NO model-viewer is mounted in the profile grid either',
+  (await profile.locator('model-viewer').count()) === 0)
+await profile.screenshot({ path: path.join(SHOTS, '08-profile-badge.png'), clip: { x: 0, y: 80, width: 900, height: 700 } })
+await profile.close()
 
 await browser.close()
 console.log(fails === 0 ? '\nE2E: all assertions passed' : `\nE2E: ${fails} assertion(s) failed`)

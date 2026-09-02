@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
@@ -35,7 +36,6 @@ import {
   type ModelBackgroundId,
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
-import { ModelPreview } from './ModelPreview'
 import { ModelPoseBar } from './ModelPoseBar'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -70,6 +70,14 @@ import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
+
+// The 3D pose-and-capture box is creator-only and needs a picked model before
+// it can render anything, so it is code-split (ssr:false) to keep
+// components/ModelPreview off the artwork route's initial JS — the Mini App's
+// hottest route. ModelPreview lazy-loads model-viewer itself; this keeps the
+// wrapper and its capture code out too. Same pattern as ProfileView's
+// AgentCollectEntry.
+const ModelPreview = dynamic(() => import('./ModelPreview').then((m) => m.ModelPreview), { ssr: false })
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentModel } from './MomentModel'
 import { MomentVideo } from './MomentVideo'

@@ -42,7 +42,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (47)
+## What it asserts (49)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -67,8 +67,10 @@ node scripts/e2e/model-media.mjs
 - **A model that never loads** — a header-valid but corrupt GLB reaches the
   preview, never loads, and banks NO poster, so the mint's refusal cannot be
   defeated by a blank-but-valid capture.
-- **Feed** — a 3D moment renders its still, no `model-viewer` is ever
-  mounted in a feed, and the card carries the `3D` badge.
+- **Feed** — a 3D moment renders its still in the market ovals and no
+  `model-viewer` is ever mounted in a feed; on the profile page, which fetches
+  its timeline from the browser, a real `MomentCard` grid renders from the
+  stubbed data and the card carries the `3D` badge.
 
 ## Determinism
 
@@ -89,9 +91,10 @@ is trivially true when `x` is absent.
 ## Known gaps
 
 - The homepage hero's `3D` badge is fed by a server-side timeline fetch that
-  the browser cannot intercept. It renders the same `components/ModelBadge`
-  the feed card does, so the markup is covered by the feed assertion; only the
-  hero's placement is unverified in a browser.
+  the browser cannot intercept (seeded, the featured feed never fetches on the
+  client). It renders the same `components/ModelBadge` the feed card does, so
+  the markup is covered by the profile-grid assertion; only the hero's
+  placement is unverified in a browser.
 - The edit flow's 3D media replacement (pose, capture, save) needs a creator
   session and an on-chain write, so it is not driven here. Its pieces are the
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
