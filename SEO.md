@@ -65,11 +65,14 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
    its Offer uses crypto tickers (ETH/USDC) for priceCurrency — explicitly
    allowed by schema.org, but Google's price display for non-ISO-4217
    currencies is best-effort, so observe how the test renders it.
-4. **Socials — done.** `SAME_AS` (lib/structuredData.ts) and the footer carry
-   the owner-confirmed profiles: x.com/kismetdotart, farcaster.xyz/kismet, and
-   www.kismetcasa.xyz. Keep the two lists in sync if they ever change. The
-   reciprocal link — kismetcasa.xyz linking to kismet.art — is the
-   highest-authority backlink the team controls; add it on that site.
+4. **Socials — done.** `SAME_AS` (lib/structuredData.ts) carries the
+   owner-confirmed profiles of Kismet itself (x.com/kismetdotart,
+   farcaster.xyz/kismet); www.kismetcasa.xyz rides the `parentOrganization`
+   edge instead (it's a different entity — see "Cross-site SEO with
+   kismetcasa.xyz" below). The footer shows all three visibly. Keep the
+   lists in sync if they ever change. The reciprocal link — kismetcasa.xyz
+   linking to kismet.art — is the highest-authority backlink the team
+   controls; the cross-site section below is the checklist for that side.
 5. **Monitor.** Watch Search Console Coverage/Indexing (how many moments get
    indexed — the thin-content signal), Core Web Vitals, and the queries you
    surface for. Track AI visibility separately (share-of-answer tools).
@@ -136,6 +139,99 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   first, pointed at the anchor, then dropped (2026-08) as redundant next to
   the footer's existing `/learn` link; the operator section stays reachable
   via the permanent `/about` 308 and from `/learn` itself.
+
+## Cross-site SEO with kismetcasa.xyz
+
+kismet.art (the platform) and www.kismetcasa.xyz (Kismet Casa, the residency
+organization that builds and operates it) are two properties of one team, and
+set up correctly they compound: links pass authority in both directions, and
+explicit entity markup lets Google merge them into one knowledge-graph
+neighborhood, so trust signals ("who runs this site") earned by either domain
+accrue to both. "Kismet" is a crowded term — the Casa relationship is also a
+disambiguation signal that helps engines pick *this* Kismet.
+
+**The entity model.** Each site is the authoritative home of its own entity,
+and each declares the relationship to the other:
+
+- kismet.art emits `Organization "Kismet"` (`https://kismet.art/#organization`)
+  with `parentOrganization` → `Organization "Kismet Casa"`
+  (`https://www.kismetcasa.xyz/#organization`). Implemented in
+  lib/structuredData.ts; pinned by verify-structured-data. Kismet Casa is
+  deliberately NOT in `sameAs` — sameAs asserts "same entity", and claiming
+  both sameAs and parentOrganization for one URL is a contradiction that
+  muddies both entities.
+- kismetcasa.xyz must emit the inverse under the SAME `@id`s — the shared
+  `@id` is the join key. Copy-paste for that site's `<head>` (server-rendered,
+  not JS-injected):
+
+  ```html
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": "https://www.kismetcasa.xyz/#organization",
+    "name": "Kismet Casa",
+    "url": "https://www.kismetcasa.xyz",
+    "description": "Kismet Casa runs hybrid residencies for artists and developers producing experiences that bridge IRL and onchain, and builds and operates Kismet.",
+    "sameAs": [],
+    "subOrganization": {
+      "@type": "Organization",
+      "@id": "https://kismet.art/#organization",
+      "name": "Kismet",
+      "url": "https://kismet.art"
+    }
+  }
+  </script>
+  ```
+
+  Fill `sameAs` with Kismet Casa's OWN confirmed profiles (its X/Farcaster/
+  Instagram — not Kismet's). If either `@id` ever changes on one site it must
+  change on both, or the join silently breaks.
+
+**Checklist for the kismetcasa.xyz side** (owner action — that site is not in
+this repo):
+
+1. **Reciprocal link, site-wide.** A visible footer (or nav) link to
+   `https://kismet.art` on every page, with descriptive anchor text — "Kismet
+   — onchain art marketplace" or similar, not a bare URL or "here". Leave it
+   dofollow (the default). This is the single highest-value item: kismet.art
+   already links kismetcasa.xyz site-wide, so this completes the exchange.
+2. **One in-content editorial link.** A sentence in the main home/about copy
+   describing Kismet with a contextual link — in-content links carry more
+   weight than footer boilerplate.
+3. **The JSON-LD above**, server-rendered on at least the homepage.
+4. **Deep-link residency content.** When Kismet Casa writes about residency
+   artists, drops, or FarCon programming, link the artist's
+   `kismet.art/profile/<address>` and the specific
+   `kismet.art/artwork/<address>/<tokenId>` pages — not just the homepage.
+   Deep links push authority to the long-tail pages that need it most and
+   are the most natural anchors. (Old `/moment/…` links still work via a
+   permanent 308, but emit `/artwork/…` directly.)
+5. **Divide the query space; never duplicate content.** kismetcasa.xyz owns
+   residency/organization/IRL intents ("art residency", "Kismet Casa");
+   kismet.art owns platform intents ("mint onchain art", "onchain art
+   marketplace"). Don't copy the /learn guides over — near-duplicate pages on
+   two domains split ranking signals and can suppress both. Where one site
+   needs the other's topic, link to it instead of rewriting it.
+6. **Consistent entity facts.** Same spelling ("Kismet Casa"), same logo
+   where possible, and each site lists its own socials consistently —
+   contradictory facts are what stall entity merging.
+7. **Console coverage for that domain too.** Verify www.kismetcasa.xyz in
+   Google Search Console AND Bing Webmaster Tools, submit its sitemap — same
+   Bing-≈-ChatGPT rationale as item 1 above.
+8. **Optional: llms.txt on kismetcasa.xyz** with the same one-line
+   description of Kismet used in ours (public/llms.txt), so AI crawlers get
+   the same story from both sides.
+
+**What's already done on the kismet.art side:** site-wide footer link +
+`/learn#who-runs-kismet` operator section with contextual links (the E-E-A-T
+surface), the `parentOrganization` edge, and an explicit operator line in
+public/llms.txt.
+
+**Verify after the other site ships:** run kismetcasa.xyz's homepage through
+validator.schema.org (both Organization nodes should show the paired
+sub/parent edges), and `curl -s https://www.kismetcasa.xyz | grep kismet.art`
+to confirm the link is in the server HTML, not injected by JS.
 
 ## Realistic timelines
 

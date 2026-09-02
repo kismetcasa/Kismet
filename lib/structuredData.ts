@@ -17,13 +17,37 @@ const WEBSITE_ID = `${SITE_URL}/#website`
 
 // Verified public brand profiles for the entity (sameAs) — reinforces
 // knowledge-panel / entity resolution. Owner-confirmed URLs only (a wrong
-// sameAs misattributes the brand): the platform's X and Farcaster profiles,
-// plus the Kismet Casa site — the organization behind the platform.
+// sameAs misattributes the brand), and only profiles OF KISMET ITSELF:
+// sameAs asserts "this URL is the same entity". Kismet Casa's site is NOT
+// here for exactly that reason — it's a different (parent) entity, modeled
+// via parentOrganization below.
 const SAME_AS: string[] = [
   'https://x.com/kismetdotart',
   'https://farcaster.xyz/kismet',
-  'https://www.kismetcasa.xyz',
 ]
+
+// Kismet Casa — the residency organization that builds and operates Kismet
+// (the visible story at /learn#who-runs-kismet). Emitted as
+// parentOrganization, the schema.org edge for exactly this relationship.
+// The @id is the CROSS-SITE JOIN KEY: kismetcasa.xyz must emit its own
+// Organization node under this same @id (with the inverse subOrganization
+// edge pointing at ORG_ID) so both sites' graphs resolve to one pair of
+// linked entities. See SEO.md "Cross-site SEO with kismetcasa.xyz" — change
+// either @id and the join silently breaks.
+export const KISMET_CASA_URL = 'https://www.kismetcasa.xyz'
+const KISMET_CASA_ID = `${KISMET_CASA_URL}/#organization`
+
+function kismetCasaNode(): Record<string, unknown> {
+  return {
+    '@type': 'Organization',
+    '@id': KISMET_CASA_ID,
+    name: 'Kismet Casa',
+    url: KISMET_CASA_URL,
+    // Mirrors the /learn operator copy — factual, owner-confirmed.
+    description:
+      'Kismet Casa runs hybrid residencies for artists and developers producing experiences that bridge IRL and onchain, and builds and operates Kismet.',
+  }
+}
 
 // The Organization node. Shared by reference (@id) from WebSite, breadcrumbs,
 // and product/offer sellers so the whole graph resolves to one entity.
@@ -46,6 +70,7 @@ export function organizationNode(): Record<string, unknown> {
     description:
       'Kismet is an onchain art platform on Base where artists mint artworks, create collections, and collectors discover, collect, and trade digital art.',
     ...(SAME_AS.length ? { sameAs: SAME_AS } : {}),
+    parentOrganization: kismetCasaNode(),
   }
 }
 
