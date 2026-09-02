@@ -18,19 +18,31 @@ export const CFILE_MAX_BYTES = 16 * 1024 * 1024
  *  `glb` is the one kind whose identity is shared with ANOTHER feature
  *  (primary mint media also accepts GLB), so its ext/MIME/magic live in
  *  lib/glbFormat and are re-exported into both registries — the two paths
- *  must never disagree about what a GLB is. */
-export type CfileKind = 'zip' | 'pdf' | 'glb' | 'svg'
+ *  must never disagree about what a GLB is.
+ *
+ *  `gb` / `gbc` are Game Boy cartridge images. The first collector file ever
+ *  requested was one (COLLECTOR_DOWNLOADS_DESIGN.md §0: a playable pixel-art
+ *  gallery), and a cartridge inside a zip has to be extracted before a
+ *  handheld or an emulator can run it, whereas a bare `.gb` is dropped
+ *  straight onto the device — and it is the exact input the Play route (§7)
+ *  will want. No IANA type exists for either; the MIMEs are the
+ *  shared-mime-info names desktop OSes and emulators key on. */
+export type CfileKind = 'zip' | 'pdf' | 'glb' | 'svg' | 'gb' | 'gbc'
 
 export const CFILE_KIND_META: Record<CfileKind, { ext: string; mime: string }> = {
   zip: { ext: '.zip', mime: 'application/zip' },
   pdf: { ext: '.pdf', mime: 'application/pdf' },
   glb: { ext: GLB_EXT, mime: GLB_MIME },
   svg: { ext: '.svg', mime: 'image/svg+xml' },
+  gb: { ext: '.gb', mime: 'application/x-gameboy-rom' },
+  gbc: { ext: '.gbc', mime: 'application/x-gameboy-color-rom' },
 }
 
 /** Kinds the in-page viewer renders. PDF is deliberately absent (it opens
  *  natively everywhere; honest in-page rendering on iOS would cost a pdf.js
- *  dependency for convenience alone) and zip has nothing to render. */
+ *  dependency for convenience alone), zip has nothing to render, and a
+ *  cartridge needs the emulator route (COLLECTOR_DOWNLOADS_DESIGN.md §7),
+ *  which is its own build — until then a ROM is download-only. */
 export const CFILE_VIEWABLE_KINDS: readonly CfileKind[] = ['glb', 'svg']
 
 export function isViewableCfileKind(kind: CfileKind | undefined): boolean {
@@ -42,7 +54,7 @@ export const CFILE_ACCEPT_ATTR = [
   ...CFILE_ACCEPT_EXTS,
   ...Object.values(CFILE_KIND_META).map((m) => m.mime),
 ].join(',')
-export const CFILE_KIND_LABEL = 'zip, PDF, 3D model (.glb) or SVG'
+export const CFILE_KIND_LABEL = 'zip, PDF, 3D model (.glb), SVG or Game Boy ROM (.gb/.gbc)'
 
 export function hasAcceptedCfileExt(name: string): boolean {
   const lower = name.toLowerCase()

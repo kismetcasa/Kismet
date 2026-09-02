@@ -105,32 +105,55 @@ export function decodeCfileChunks(chunks: string[], size: number): Buffer {
 export { CFILE_MAX_BYTES }
 
 /**
- * Accepted collector-file formats, keyed by KIND. Detection is by leading
- * magic bytes ONLY — never by claimed extension or Content-Type header —
- * and the detected kind then dictates both the forced filename extension
- * and the served Content-Type, so name, bytes, and headers can never
- * disagree. A typo filter, not a content control (JAR/DOCX share the zip
- * magic; a PDF's tail matters more than its head) — the real controls are
- * the forced extension, `attachment`, `nosniff`, and the admin kill-switch
- * (design §10.2).
+ * Accepted collector-file formats, keyed by KIND. Detection is by magic
+ * bytes at a fixed offset ONLY — never by claimed extension or Content-Type
+ * header — and the detected kind then dictates both the forced filename
+ * extension and the served Content-Type, so name, bytes, and headers can
+ * never disagree. A typo filter, not a content control (JAR/DOCX share the
+ * zip magic; a PDF's tail matters more than its head) — the real controls
+ * are the forced extension, `attachment`, `nosniff`, and the admin
+ * kill-switch (design §10.2).
  *
  *   zip  PK\x03\x04             (empty-archive PK\x05\x06 rejected)
  *   pdf  %PDF-                  (ISO 32000 header, offset 0)
  *   glb  glTF                   (Binary glTF magic 0x46546C67 LE — the
  *                                12-byte header per the IANA
  *                                model/gltf-binary registration)
+ *   gbc  Nintendo logo @0x104   (Game Boy cartridge header; CGB flag bit 7
+ *   gb   Nintendo logo @0x104    at 0x143 set = Color cartridge. Offset 0 is
+ *                                arbitrary code — the logo is the one byte
+ *                                run every cartridge must carry, because the
+ *                                boot ROM refuses to start without it)
  *   svg  <svg root element        (XML TEXT — no fixed signature; sniffed
  *                                only after every binary matcher fails)
  */
 export type { CfileKind }
 export { CFILE_VIEWABLE_KINDS, isViewableCfileKind }
 
+/** First bytes of the 48-byte Nintendo logo bitmap at 0x104. Eight is plenty:
+ *  the full logo is a fixed constant, so any prefix is as discriminating as
+ *  the shorter zip/pdf signatures above. */
+const GB_LOGO_HEAD = [0xce, 0xed, 0x66, 0x66, 0xcc, 0x0d, 0x00, 0x0b]
+const GB_LOGO_AT = 0x104
+/** CGB flag byte: 0x80 = runs on both, 0xC0 = Color only; bit 7 either way. */
+const GB_CGB_FLAG_AT = 0x143
+
 /** Identity (ext/mime) comes from the client-safe map; this adds the byte
- *  signatures the server detects with. SVG has none — see sniffSvg. */
-export const CFILE_KINDS: Record<CfileKind, { ext: string; mime: string; magic?: number[] }> = {
+ *  signatures the server detects with. SVG has none — see sniffSvg.
+ *  `magicAt` defaults to 0; `requireBit` is an extra byte test after the
+ *  magic matches, and matchers run in this order — `gbc` sits before `gb`
+ *  so the flagged Color cartridge wins over the plain matcher on the same
+ *  logo, and both sit after zip/pdf/glb so a container that happens to
+ *  carry a logo at 0x104 keeps its real kind. */
+export const CFILE_KINDS: Record<
+  CfileKind,
+  { ext: string; mime: string; magic?: number[]; magicAt?: number; requireBit?: { at: number; mask: number } }
+> = {
   zip: { ...CFILE_KIND_META.zip, magic: [0x50, 0x4b, 0x03, 0x04] },
   pdf: { ...CFILE_KIND_META.pdf, magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
   glb: { ...CFILE_KIND_META.glb, magic: [...GLB_MAGIC] }, // glTF (lib/glbFormat)
+  gbc: { ...CFILE_KIND_META.gbc, magic: [...GB_LOGO_HEAD], magicAt: GB_LOGO_AT, requireBit: { at: GB_CGB_FLAG_AT, mask: 0x80 } },
+  gb: { ...CFILE_KIND_META.gb, magic: [...GB_LOGO_HEAD], magicAt: GB_LOGO_AT },
   svg: { ...CFILE_KIND_META.svg },
 }
 
@@ -185,7 +208,13 @@ function sniffSvg(head: Buffer): boolean {
 export function detectCfileKind(head: Buffer): CfileKind | null {
   for (const [kind, meta] of Object.entries(CFILE_KINDS) as [CfileKind, (typeof CFILE_KINDS)[CfileKind]][]) {
     const magic = meta.magic
-    if (magic && head.length >= magic.length && magic.every((b, i) => head[i] === b)) return kind
+    if (!magic) continue
+    const at = meta.magicAt ?? 0
+    if (head.length < at + magic.length) continue
+    if (!magic.every((b, i) => head[at + i] === b)) continue
+    const bit = meta.requireBit
+    if (bit && !(head.length > bit.at && ((head[bit.at] ?? 0) & bit.mask) !== 0)) continue
+    return kind
   }
   return sniffSvg(head) ? 'svg' : null
 }
