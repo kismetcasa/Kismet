@@ -39,9 +39,10 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
 | Discover / manifest | Direct GET | `web_request` if allowlisted, else user-pasted GET |
-| Collect / buy / list (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| Collect / buy (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
-| Record settlement | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
+| Record settlement (collect / buy) | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
 
 ## Endpoints
 
