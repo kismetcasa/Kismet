@@ -3,7 +3,8 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Copy, Check, EyeOff, ArrowUpRight, Pin, Box } from 'lucide-react'
+import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
+import { ModelBadge } from './ModelBadge'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
@@ -586,22 +587,12 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           className="absolute top-1.5 left-1.5"
         />
         {media.kind === 'model' && (
-          <span
-            role="img"
-            aria-label="3D artwork"
-            title="3D artwork"
-            // Top-right is the hidden badge's corner (admin star = top-left,
-            // pin = bottom-left, valid-Pass = bottom-right — every corner is
-            // spoken for). The hidden badge only ever renders for the
-            // creator's own hidden mint, so step aside for it rather than
-            // claiming a fifth position no other overlay uses.
-            className={`pointer-events-none absolute top-2 z-10 flex items-center gap-1 px-1.5 py-0.5 bg-[#0d0d0d]/80 border border-line text-[9px] font-mono uppercase tracking-wider text-dim ${
-              isOwnMoment && moment.hidden ? 'right-9' : 'right-2'
-            }`}
-          >
-            <Box size={9} strokeWidth={1.5} />
-            3D
-          </span>
+          // Top-right is the hidden badge's corner (admin star = top-left,
+          // pin = bottom-left, valid-Pass = bottom-right — every corner is
+          // spoken for). The hidden badge only ever renders for the
+          // creator's own hidden mint, so step aside for it rather than
+          // claiming a fifth position no other overlay uses.
+          <ModelBadge className={`absolute top-2 ${isOwnMoment && moment.hidden ? 'right-9' : 'right-2'}`} />
         )}
         {isOwnMoment && moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">

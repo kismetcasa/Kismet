@@ -477,6 +477,11 @@ check('a 3D moment renders its still on the feed surface', !!tileImg, String(til
 // THE load-bearing rule for this feature.
 check('NO model-viewer is mounted anywhere in a feed',
   (await feed.locator('model-viewer').count()) === 0)
+// The badge is the only feed-level signal that a still is 3D. The timeline
+// interception above is what feeds the cards, so the markup — shared with the
+// homepage hero via components/ModelBadge — is asserted here in a browser.
+check('the feed card carries the 3D badge',
+  (await feed.locator('[aria-label="3D artwork"]').count()) >= 1)
 await feed.screenshot({ path: path.join(SHOTS, '07-feed-still.png'), clip: { x: 0, y: 80, width: 900, height: 500 } })
 await feed.close()
 

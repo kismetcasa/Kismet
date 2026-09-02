@@ -25,7 +25,18 @@ import { useComment } from '@/hooks/useComment'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
-import { checkCoverImage, checkReplaceMedia } from '@/lib/media/mintMedia'
+import { checkCoverImage, checkMintMedia } from '@/lib/media/mintMedia'
+import {
+  DEFAULT_MODEL_BACKGROUND,
+  MODEL_SOFT_WARN_BYTES,
+  asGlbFile,
+  isModelBackgroundId,
+  modelPosterBg,
+  type ModelBackgroundId,
+} from '@/lib/media/modelMedia'
+import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
+import { ModelPreview } from './ModelPreview'
+import { ModelPoseBar } from './ModelPoseBar'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
@@ -55,7 +66,7 @@ import { RaffleButton } from './RaffleButton'
 import { CollectorFileCard } from './CollectorFileCard'
 import { CollectorFileManagePanel } from './CollectorFileManagePanel'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
-import type { CfilePublic } from '@/lib/collectorFileTypes'
+import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
@@ -241,8 +252,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // so the original ar:// is valid forever and re-uploading it only burns
   // Turbo credits → the "Insufficient balance" 402 artists hit when restoring
   // a large video they'd previously minted).
+  // A 3D pick is remembered by identity, exactly as the mint form does: a GLB
+  // has no positive `File.type` to re-test later, so the gate's verdict is the
+  // only authority on "this pick is a model" (lib/media/mintMedia).
+  const modelPickRef = useRef<File | null>(null)
   const {
     file: mediaFile,
+    preview: mediaPreview,
     inputRef: mediaInputRef,
     onChange: handleMediaFile,
     clear: clearMedia,
@@ -254,11 +270,33 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     // the non-video branch of the save below uploads whatever was picked and
     // writes its URI straight into `image` — a permanently broken artwork.
     accept: async (f) => {
-      const verdict = await checkReplaceMedia(f)
-      return verdict.ok ? null : verdict.reason
+      const verdict = await checkMintMedia(f)
+      if (!verdict.ok) return verdict.reason
+      if (verdict.kind === 'model') modelPickRef.current = f
+      return null
     },
     onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
   })
+  const isModelPick = !!mediaFile && modelPickRef.current === mediaFile
+  // The posed capture for a 3D pick (components/ModelPreview) and the backdrop
+  // it is shot on — the mint form's contract, verbatim: the poster belongs to
+  // one file and is dropped whenever the pick changes, so a swapped-in model
+  // can never ship the previous model's still. The backdrop starts at what the
+  // artwork already has, so re-posing a 3D moment keeps its look unless the
+  // artist changes it.
+  const [modelPoster, setModelPoster] = useState<File | null>(null)
+  const [modelBg, setModelBg] = useState<ModelBackgroundId>(() => {
+    const current = initialDetail?.metadata?.kismet_bg
+    return isModelBackgroundId(current) ? current : DEFAULT_MODEL_BACKGROUND
+  })
+  useEffect(() => {
+    setModelPoster(null)
+    if (mediaFile && modelPickRef.current === mediaFile && mediaFile.size > MODEL_SOFT_WARN_BYTES) {
+      toast.warning('Large 3D model', {
+        description: `${formatCfileSize(mediaFile.size)} may fail to load on phones — consider Draco compression`,
+      })
+    }
+  }, [mediaFile])
   const [mediaMode, setMediaMode] = useState<'upload' | 'url'>('upload')
   const [existingMediaUrl, setExistingMediaUrl] = useState('')
   const [existingMediaType, setExistingMediaType] = useState<'video' | 'gif' | 'image'>('video')
@@ -1024,6 +1062,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       let animationUri = detail.metadata.animation_url
       let contentField: { uri?: string; mime?: string } | undefined = detail.metadata.content
       let thumbhash = detail.metadata.kismet_thumbhash
+      // The backdrop a 3D moment's poster was shot on. Carried like the
+      // thumbhash: rebuilding the metadata from scratch used to drop it, so a
+      // title edit silently reset the artist's chosen backdrop to the default.
+      let bg = detail.metadata.kismet_bg
 
       // 1a) RE-POINT MEDIA — point the moment at content already on Arweave.
       // No upload: Arweave is content-addressed, so re-sending bytes only
@@ -1069,7 +1111,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         if (persisted) {
           if (persisted.animationUri) {
             animationUri = persisted.animationUri
-            contentField = { uri: persisted.animationUri, mime: 'video/mp4' }
+            // The banked upload keeps no mime; the pick identity says which
+            // binding it was (a model is the only non-MP4 animation here).
+            contentField = { uri: persisted.animationUri, mime: isModelPick ? GLB_MIME : 'video/mp4' }
+            if (isModelPick) bg = modelBg
             // Poster only applies when no cover is set (the cover block wins).
             if (!coverFile) {
               if (persisted.imageUri) {
@@ -1079,8 +1124,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 // The banked attempt had a cover, so no poster was made. Extract
                 // one now from the re-selected file so a cover-removed retry
                 // still gets a real video frame, not the stale pre-edit image.
+                // A model's poster is the posed capture, not a frame — and it is
+                // not optional (see the fresh branch below).
+                if (isModelPick && !modelPoster) {
+                  throw new Error('Could not capture a preview image of this model — scroll it into view, rotate it once, and try again')
+                }
                 try {
-                  const poster = await extractVideoPoster(mediaFile)
+                  const poster = isModelPick ? modelPoster : await extractVideoPoster(mediaFile)
                   if (poster) {
                     const tp = generateThumbhash(poster)
                     imageUri = await uploadToArweave(poster)
@@ -1140,6 +1190,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             } catch (err) {
               console.warn('[MomentDetailView] poster extraction failed', err)
             }
+          }
+        } else if (isModelPick) {
+          // 3D — the mint form's model binding, in effect verbatim: the GLB is
+          // the animation, the posed capture is the still every other surface
+          // renders, and the backdrop rides along in kismet_bg. The poster is
+          // not optional: a posterless 3D moment is invisible everywhere but
+          // this page (components/ModelPreview explains the capture).
+          if (!modelPoster) {
+            throw new Error('Could not capture a preview image of this model — scroll it into view, rotate it once, and try again')
+          }
+          toast.loading('Uploading model…', { id: 'edit-meta' })
+          animationUri = await uploadToArweave(asGlbFile(mediaFile))
+          contentField = { uri: animationUri, mime: GLB_MIME }
+          bg = modelBg
+          if (!coverFile) {
+            const tp = generateThumbhash(modelPoster)
+            imageUri = await uploadToArweave(modelPoster)
+            freshMediaImage = imageUri
+            thumbhash = (await tp) ?? thumbhash
           }
         } else if (isGif) {
           let done = false
@@ -1229,6 +1298,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         ...(animationUri ? { animation_url: animationUri } : {}),
         ...(contentField ? { content: contentField } : {}),
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+        // Only a 3D binding carries a backdrop; a re-point or upload of any
+        // other kind drops it along with the model.
+        ...(contentField?.mime === GLB_MIME && bg ? { kismet_bg: bg } : {}),
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })
@@ -1808,35 +1880,55 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     </button>
                   </div>
                   {mediaMode === 'upload' ? (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => mediaInputRef.current?.click()}
-                        disabled={savingMeta}
-                        className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
-                      >
-                        change media
-                      </button>
-                      {mediaFile && (
-                        <>
-                          <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
-                          <button
-                            type="button"
-                            onClick={clearMedia}
-                            disabled={savingMeta}
-                            className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
-                          >
-                            keep current
-                          </button>
-                        </>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => mediaInputRef.current?.click()}
+                          disabled={savingMeta}
+                          className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
+                        >
+                          change media
+                        </button>
+                        {mediaFile && (
+                          <>
+                            <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
+                            <button
+                              type="button"
+                              onClick={clearMedia}
+                              disabled={savingMeta}
+                              className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
+                            >
+                              keep current
+                            </button>
+                          </>
+                        )}
+                        <input
+                          ref={mediaInputRef}
+                          type="file"
+                          accept={`image/*,video/*,.gif,${GLB_EXT},${GLB_MIME}`}
+                          onChange={handleMediaFile}
+                          className="hidden"
+                        />
+                      </div>
+                      {/* A 3D replacement gets the same pose-and-capture box the
+                          mint form has. Nothing else in this panel previews a
+                          file; a model needs it because the framing the artist
+                          leaves it at IS the new thumbnail. Keyed so a swap
+                          remounts rather than re-pointing a live element. */}
+                      {isModelPick && mediaPreview && (
+                        <div className="relative bg-surface border border-line overflow-hidden">
+                          <ModelPreview
+                            key={mediaPreview}
+                            src={mediaPreview}
+                            background={modelPosterBg(modelBg)}
+                            fileName={mediaFile!.name}
+                            onPoster={setModelPoster}
+                            onError={(msg) => toast.error('3D model', { description: msg })}
+                          />
+                          <ModelPoseBar value={modelBg} onChange={setModelBg} />
+                        </div>
                       )}
-                      <input
-                        ref={mediaInputRef}
-                        type="file"
-                        accept="image/*,video/*,.gif"
-                        onChange={handleMediaFile}
-                        className="hidden"
-                      />
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1.5">
@@ -2051,6 +2143,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <CollectorFileManagePanel
                 collection={address}
                 tokenId={tokenId}
+                primaryIsModel={isModel}
                 onClose={() => setManagingFile(false)}
                 onFileChange={setCfile}
               />

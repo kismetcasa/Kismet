@@ -54,7 +54,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held artwork. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `price?`, `currency?`, `editions?`, `collection?` |
+| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?` |
 
 Every prepare returns an envelope:
 

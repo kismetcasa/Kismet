@@ -75,25 +75,6 @@ export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
 }
 
 /**
- * Gate for the artwork EDIT flow's media-replace picker.
- *
- * Identical to checkMintMedia except that a model is refused, because that
- * path cannot express one: its non-video branch uploads the picked file and
- * writes the returned URI straight into `image` (MomentDetailView's save),
- * which for a GLB is precisely the broken-artwork outcome checkMintMedia
- * exists to prevent. Refusing with a reason beats silently breaking an
- * artwork that currently works — swapping 3D in would need the same
- * poster-capture step the mint form has.
- */
-export async function checkReplaceMedia(file: File): Promise<MintMediaVerdict> {
-  const verdict = await checkMintMedia(file)
-  if (verdict.ok && verdict.kind === 'model') {
-    return { ok: false, reason: 'A 3D model can only be set when the artwork is first minted' }
-  }
-  return verdict
-}
-
-/**
  * Gate for cover / poster pickers (the edit flow's "change cover", collection
  * covers). A cover is rendered as a still everywhere it appears, so video and
  * 3D are both refused rather than uploaded into an <img> slot.
