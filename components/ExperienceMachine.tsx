@@ -76,6 +76,12 @@ interface MachinePayload {
   recentPlays: { player: string; txHash: string }[]
 }
 
+interface DiscoveredCapsule {
+  txHash: string
+  units: number
+  owedUnits: number[]
+}
+
 interface ClaimRow {
   txHash: string
   unitIndex: number
@@ -118,6 +124,8 @@ export function ExperienceMachine({ id }: { id: string }) {
   const [claims, setClaims] = useState<ClaimRow[]>([])
   const [spark, setSpark] = useState(0)
   const [local, setLocal] = useState<PendingCapsule[]>([])
+  const [discovered, setDiscovered] = useState<DiscoveredCapsule[]>([])
+  const [redeemHash, setRedeemHash] = useState('')
   const [resuming, setResuming] = useState<string | null>(null)
   // Guards against a second play being dispatched while one is mid-flight —
   // the reveal keeps the button mounted, and a double tap would pay twice.
@@ -143,25 +151,53 @@ export function ExperienceMachine({ id }: { id: string }) {
     [id],
   )
 
+  // The chain-side recovery net: every capsule mint of this machine's token to
+  // this player, read from TransferSingle logs server-side — which is what
+  // makes a capsule minted on zora.co (or on another device) show up here with
+  // no record of ours involved at all.
+  const loadDiscovered = useCallback(
+    (addr: string) => {
+      fetch(`/api/experience/discover?machineId=${id}&account=${addr}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((d: { capsules: DiscoveredCapsule[] }) => setDiscovered(d.capsules ?? []))
+        .catch(() => {})
+    },
+    [id],
+  )
+
   useEffect(() => { load() }, [load])
   useEffect(() => { setLocal(listPendingCapsules(id)) }, [id])
-  useEffect(() => { if (account) loadClaims(account) }, [account, loadClaims])
+  useEffect(() => {
+    if (!account) return
+    loadClaims(account)
+    loadDiscovered(account)
+  }, [account, loadClaims, loadDiscovered])
 
   /** Open one already-paid unit. Shared by the fresh-play loop and by the
    *  recovery buttons, so a resumed capsule takes exactly the path a live one
    *  does and the two cannot drift. */
   const openUnit = useCallback(
-    async (txHash: string, unitIndex: number, addr: string): Promise<Prize | null> => {
+    async (
+      txHash: string,
+      unitIndex: number,
+      addr: string,
+    ): Promise<{ prize: Prize | null; units: number | null }> => {
       const r = await fetch('/api/experience/play', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ machineId: id, txHash, account: addr, unitIndex }),
       })
       const body = await r.json().catch(() => null)
-      if (!r.ok || !body?.ok) return null
-      if (body.claim?.state === 'delivered' && body.claim.prize) return body.claim.prize as Prize
+      if (!r.ok || !body?.ok) return { prize: null, units: null }
+      // `units` is the on-chain quantity the server proved for the WHOLE
+      // transaction — the only way to know how many plays a pasted or
+      // discovered hash covers.
+      const units = Number.isInteger(body.units) ? (body.units as number) : null
+      if (body.claim?.state === 'delivered' && body.claim.prize) {
+        return { prize: body.claim.prize as Prize, units }
+      }
       if (body.claim?.pendingReason) setPendingReason(body.claim.pendingReason)
-      return null
+      return { prize: null, units }
     },
     [id],
   )
@@ -206,8 +242,8 @@ export function ExperienceMachine({ id }: { id: string }) {
       const prizes: Prize[] = []
       for (let unit = 0; unit < pull; unit++) {
         setProgress({ done: unit, total: pull })
-        const prize = await openUnit(res.hash, unit, addr).catch(() => null)
-        if (prize) { prizes.push(prize); setWon([...prizes]) }
+        const opened = await openUnit(res.hash, unit, addr).catch(() => null)
+        if (opened?.prize) { prizes.push(opened.prize); setWon([...prizes]) }
       }
       setProgress(null)
 
@@ -247,17 +283,36 @@ export function ExperienceMachine({ id }: { id: string }) {
    *  closed mid-reveal can leave several owed under one hash. Resuming only unit
    *  0 would silently strand the rest. */
   const resume = useCallback(
-    async (txHash: string, firstUnit: number, units = 1) => {
+    async (txHash: string, unitList: number[] | 'probe') => {
       const addr = account ?? (await ensureConnected())
       if (!addr) return
       setAccount(addr)
-      setResuming(`${txHash}:${firstUnit}`)
+      const tag = `${txHash}:${unitList === 'probe' ? 'probe' : unitList[0] ?? 0}`
+      setResuming(tag)
       const recovered: Prize[] = []
       let reason: string | null = null
       try {
-        for (let unit = firstUnit; unit < firstUnit + units; unit++) {
-          const prize = await openUnit(txHash, unit, addr).catch(() => null)
-          if (prize) { recovered.push(prize); continue }
+        // 'probe' is the pasted-hash path: nothing local knows how many plays
+        // the transaction covers, so open unit 0 first and let the server's
+        // on-chain proof report the total, then open the rest.
+        let units: number[]
+        if (unitList === 'probe') {
+          const first = await openUnit(txHash, 0, addr).catch(() => null)
+          if (!first) {
+            setPhase('pending')
+            setPendingReason('That transaction could not be verified as a capsule for this machine.')
+            return
+          }
+          if (first.prize) recovered.push(first.prize)
+          const total = Math.min(first.units ?? 1, 20)
+          units = Array.from({ length: Math.max(0, total - 1) }, (_, i) => i + 1)
+        } else {
+          units = unitList
+        }
+
+        for (const unit of units) {
+          const opened = await openUnit(txHash, unit, addr).catch(() => null)
+          if (opened?.prize) { recovered.push(opened.prize); continue }
           const r = await fetch('/api/experience/resume', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -277,6 +332,10 @@ export function ExperienceMachine({ id }: { id: string }) {
           setPhase('won')
           setPendingReason(reason)
           if (!reason) clearPendingCapsule(id, txHash)
+        } else if (unitList === 'probe' && units.length === 0 && recovered.length === 0) {
+          // A single-unit pasted hash whose play pended: the reason is already
+          // set by openUnit; keep the pending face.
+          setPhase('pending')
         } else {
           setPhase('pending')
           setPendingReason(reason ?? 'Still working on it — try again shortly.')
@@ -284,11 +343,12 @@ export function ExperienceMachine({ id }: { id: string }) {
       } finally {
         setResuming(null)
         loadClaims(addr)
+        loadDiscovered(addr)
         setLocal(listPendingCapsules(id))
         load()
       }
     },
-    [account, ensureConnected, id, load, loadClaims, openUnit],
+    [account, ensureConnected, id, load, loadClaims, loadDiscovered, openUnit],
   )
 
   if (loadError) {
@@ -311,10 +371,29 @@ export function ExperienceMachine({ id }: { id: string }) {
 
   const playable = data.machine.state === 'live'
   const busy = phase === 'paying' || phase === 'opening'
-  // Everything still owed: the server's record, plus any capsule this browser
-  // paid for that the server never got to hear about.
+  // Everything still owed, from three records that each cover a hole in the
+  // others, deduplicated by transaction:
+  //   1. the server's claims — durable, cross-device, but only for plays the
+  //      server has heard of;
+  //   2. chain discovery — capsules minted through ANY frontend, read from
+  //      TransferSingle logs, minus units with a claim row of their own;
+  //   3. this browser's local ledger — the narrow window between a mint
+  //      landing here and the server recording anything, minus whatever the
+  //      other two already cover.
   const unresolved = claims.filter((c) => c.unresolved)
-  const orphaned = local.filter((c) => !claims.some((k) => k.txHash === c.txHash))
+  const discoveredOwed = discovered
+    .map((d) => ({
+      ...d,
+      owedUnits: d.owedUnits.filter(
+        (u) => !claims.some((k) => k.txHash === d.txHash && k.unitIndex === u),
+      ),
+    }))
+    .filter((d) => d.owedUnits.length > 0)
+  const orphaned = local.filter(
+    (c) =>
+      !claims.some((k) => k.txHash === c.txHash) &&
+      !discovered.some((d) => d.txHash === c.txHash),
+  )
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -386,7 +465,7 @@ export function ExperienceMachine({ id }: { id: string }) {
             <div className="mt-5 flex flex-wrap gap-2 justify-center">
               {lastTx && (
                 <button
-                  onClick={() => resume(lastTx, 0)}
+                  onClick={() => resume(lastTx, 'probe')}
                   disabled={!!resuming}
                   className="px-4 py-2 text-xs font-mono tracking-widest uppercase border border-line text-dim hover:text-ink disabled:opacity-40"
                 >
@@ -436,7 +515,7 @@ export function ExperienceMachine({ id }: { id: string }) {
       </div>
 
       {/* Anything paid for and not yet delivered, from either record. */}
-      {(unresolved.length > 0 || orphaned.length > 0) && (
+      {(unresolved.length > 0 || orphaned.length > 0 || discoveredOwed.length > 0) && (
         <section className="mt-4 border border-[#4a3a1a] bg-[#1a1408] p-4">
           <h2 className="text-[11px] font-mono uppercase tracking-widest text-[#ffcf70] mb-2">
             still opening
@@ -451,11 +530,25 @@ export function ExperienceMachine({ id }: { id: string }) {
                   {c.txHash.slice(0, 10)}… · unit {c.unitIndex} · {c.state}
                 </span>
                 <button
-                  onClick={() => resume(c.txHash, c.unitIndex)}
+                  onClick={() => resume(c.txHash, [c.unitIndex])}
                   disabled={resuming === `${c.txHash}:${c.unitIndex}`}
                   className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
                 >
                   {resuming === `${c.txHash}:${c.unitIndex}` ? 'opening…' : 'open'}
+                </button>
+              </div>
+            ))}
+            {discoveredOwed.map((d) => (
+              <div key={`d:${d.txHash}`} className="flex items-center gap-3">
+                <span className="flex-1 min-w-0 text-[10px] font-mono text-subtle truncate">
+                  {d.txHash.slice(0, 10)}… · {d.owedUnits.length} of {d.units} unopened
+                </span>
+                <button
+                  onClick={() => resume(d.txHash, d.owedUnits)}
+                  disabled={resuming === `${d.txHash}:${d.owedUnits[0]}`}
+                  className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
+                >
+                  {resuming === `${d.txHash}:${d.owedUnits[0]}` ? 'opening…' : 'open'}
                 </button>
               </div>
             ))}
@@ -465,11 +558,11 @@ export function ExperienceMachine({ id }: { id: string }) {
                   {c.txHash.slice(0, 10)}… · {c.units} capsule{c.units === 1 ? '' : 's'} · not opened
                 </span>
                 <button
-                  onClick={() => resume(c.txHash, 0, c.units)}
-                  disabled={resuming === `${c.txHash}:0`}
+                  onClick={() => resume(c.txHash, 'probe')}
+                  disabled={resuming === `${c.txHash}:probe`}
                   className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
                 >
-                  {resuming === `${c.txHash}:0` ? 'opening…' : 'open'}
+                  {resuming === `${c.txHash}:probe` ? 'opening…' : 'open'}
                 </button>
               </div>
             ))}
@@ -568,6 +661,39 @@ export function ExperienceMachine({ id }: { id: string }) {
           </Link>
         </section>
       )}
+
+      {/* The floor under every recovery path. Discovery needs the RPC to answer
+          and a connected wallet; this needs neither fact about us to be true —
+          any capsule transaction hash, from any frontend, any device, opens
+          through the same verified play route. */}
+      <section className="mt-6">
+        <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">
+          minted a capsule elsewhere?
+        </h2>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={redeemHash}
+            onChange={(e) => setRedeemHash(e.target.value.trim())}
+            placeholder="paste its transaction hash (0x…)"
+            spellCheck={false}
+            aria-label="Capsule transaction hash to redeem"
+            className="flex-1 min-w-0 bg-transparent border border-line px-3 py-2 text-[11px] font-mono text-ink placeholder:text-subtle focus:outline-none focus:border-dim"
+          />
+          <button
+            onClick={() => {
+              if (/^0x[0-9a-fA-F]{64}$/.test(redeemHash)) resume(redeemHash, 'probe')
+            }}
+            disabled={!!resuming || !/^0x[0-9a-fA-F]{64}$/.test(redeemHash)}
+            className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
+          >
+            {resuming === `${redeemHash}:probe` ? 'opening…' : 'redeem'}
+          </button>
+        </div>
+        <p className="text-[10px] font-mono text-subtle mt-1.5">
+          Capsules minted on zora.co or anywhere else work here — the play is proved against the
+          transaction itself.
+        </p>
+      </section>
 
       {data.recentPlays.length > 0 && (
         <section className="mt-6">

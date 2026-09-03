@@ -788,6 +788,59 @@ console.log('\n8c. local capsule ledger')
   broken = false
 }
 
+// ═══ 8d. capsule discovery: grouping mints found on-chain ═══════════════════
+console.log('\n8d. capsule discovery')
+{
+  // groupCapsuleMints is the pure half of the zora.co recovery path: raw
+  // TransferSingle rows in, per-transaction {txHash, units} out. The I/O half
+  // (the getLogs call) is a thin wrapper that is deliberately NOT exercised
+  // here — a hermetic oracle must not depend on an RPC answering.
+  const discovery = await import(new URL('../lib/experience/discovery.ts', import.meta.url).href)
+  const group = discovery.groupCapsuleMints as (
+    rows: { transactionHash: string | null; blockNumber: bigint | null; from: string; to: string; id: bigint; value: bigint }[],
+    tokenId: string,
+    account: string,
+  ) => { txHash: string; units: number; blockNumber: number }[]
+
+  const ME = '0x' + 'ab'.repeat(20)
+  const THEM = '0x' + 'cd'.repeat(20)
+  const ZERO_A = '0x' + '0'.repeat(40)
+  const T1 = '0x' + '11'.repeat(32)
+  const T2 = '0x' + '22'.repeat(32)
+  const row = (over: Partial<{ transactionHash: string | null; blockNumber: bigint | null; from: string; to: string; id: bigint; value: bigint }> = {}) => ({
+    transactionHash: T1, blockNumber: 100n, from: ZERO_A, to: ME, id: 7n, value: 1n, ...over,
+  })
+
+  const single = group([row()], '7', ME)
+  check('one mint log becomes one capsule', single.length === 1 && single[0].units === 1)
+  check('with its transaction hash lowercased', single[0].txHash === T1.toLowerCase())
+
+  check('two logs in one transaction SUM their units',
+    group([row({ value: 2n }), row({ value: 3n })], '7', ME)[0]?.units === 5)
+
+  const multi = group([row(), row({ transactionHash: T2, blockNumber: 200n })], '7', ME)
+  check('separate transactions stay separate', multi.length === 2)
+  check('newest block first', multi[0].txHash === T2.toLowerCase())
+
+  // THE FILTER THAT MATTERS: TransferSingle's tokenId lives in the DATA, not
+  // the topics, so the log query cannot exclude a different edition minted on
+  // the same collection — only this decode-side check keeps edition 8's mints
+  // from being counted as capsules for edition 7's machine.
+  check('a different edition on the same collection is excluded',
+    group([row({ id: 8n })], '7', ME).length === 0)
+  check('a secondary transfer (non-genesis) is excluded',
+    group([row({ from: THEM })], '7', ME).length === 0)
+  check('someone else\'s mint is excluded', group([row({ to: THEM })], '7', ME).length === 0)
+  check('account matching is case-insensitive',
+    group([row({ to: ME.toUpperCase().replace('0X', '0x') })], '7', ME).length === 1)
+  check('a null transaction hash is skipped', group([row({ transactionHash: null })], '7', ME).length === 0)
+
+  check('a zero-value log still counts as one unit', group([row({ value: 0n })], '7', ME)[0]?.units === 1)
+  check('an absurd value clamps to one unit',
+    group([row({ value: 10_000_000_000n })], '7', ME)[0]?.units === 1)
+  check('an empty log set is an empty result', group([], '7', ME).length === 0)
+}
+
 // ═══ 9. operator identity: the grant and the signer must be the same account ══
 console.log('\n9. operator identity')
 {

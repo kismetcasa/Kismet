@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
   if (won === null) return errorResponse(503, 'Play temporarily unavailable')
   if (!won) {
     const existing = await getClaim(machineId, txHash, unitIndex)
-    if (existing) return NextResponse.json({ ok: true, replay: true, claim: publicClaim(existing) })
+    if (existing) return NextResponse.json({ ok: true, replay: true, units: proof.units, claim: publicClaim(existing) })
     return errorResponse(409, 'Claim in progress')
   }
 
@@ -214,7 +214,7 @@ export async function POST(req: NextRequest) {
       pendingReason: 'no eligible artwork available',
     })
     console.error('[xp] pool failure', { machineId, txHash, unitIndex, attempt })
-    return NextResponse.json({ ok: true, pending: true, claim: publicClaim(claim) })
+    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(claim) })
   }
 
   claim = await advanceClaim(claim, {
@@ -294,7 +294,10 @@ export async function POST(req: NextRequest) {
     }
   })
 
-  return NextResponse.json({ ok: true, claim: publicClaim(claim) })
+  // `units` is the proved on-chain quantity for the WHOLE transaction — the
+  // client uses it to open the remaining units of a capsule it did not mint
+  // itself (a pasted or discovered hash arrives with no local unit count).
+  return NextResponse.json({ ok: true, units: proof.units, claim: publicClaim(claim) })
 }
 
 /** The claim as a player may see it. The snapshot and its hash are public — they

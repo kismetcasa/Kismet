@@ -19,6 +19,7 @@ import {
   putPoolEntry,
   setMachineState,
 } from '@/lib/experience/store'
+import { serverBaseClient } from '@/lib/rpc'
 import { epochFor } from '@/lib/experience/fairness'
 import type { Machine, PoolEntry } from '@/lib/experience/types'
 
@@ -108,6 +109,32 @@ export async function POST(req: NextRequest) {
   const dryRun = body.dryRun === true
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
+  // One capsule token, one machine. Claims are keyed per (machineId, txHash,
+  // unit), so two machines sharing a capsule would let every capsule buyer draw
+  // from BOTH pools on one payment — a double-spend the per-machine claim key
+  // cannot see. Delisted machines are exempt: their sales are over, and holding
+  // the token hostage to a moderation action would be backwards.
+  const capsuleTaken = (await listMachines()).some(
+    (m) =>
+      m.state !== 'delisted' &&
+      m.capsule.collection === capsuleCollection.toLowerCase() &&
+      m.capsule.tokenId === capsuleTokenId,
+  )
+  if (capsuleTaken) {
+    return NextResponse.json(
+      {
+        ok: false,
+        problems: [
+          {
+            code: 'capsule-in-use',
+            detail: 'another machine already uses this capsule token — mint a fresh capsule for this one',
+          },
+        ],
+      },
+      { status: 400 },
+    )
+  }
+
   const rawEntries = Array.isArray(body.entries) ? body.entries : []
   if (rawEntries.length === 0) return errorResponse(400, 'A machine needs at least one artwork')
   if (rawEntries.length > MAX_POOL_ENTRIES) return errorResponse(400, 'Too many artworks')
@@ -132,8 +159,14 @@ export async function POST(req: NextRequest) {
     .map((a) => a.toLowerCase())
 
   // The capsule's on-chain maxSupply IS the liability ceiling — immutable, and
-  // therefore a real bound rather than a promise.
-  const capsuleSupply = await readCapsuleSupply(capsuleCollection.toLowerCase(), capsuleTokenId)
+  // therefore a real bound rather than a promise. The block number is recorded
+  // alongside so capsule discovery can bound its log scan to the season
+  // (capsules cannot be minted before the machine exists); best-effort because
+  // discovery has a lookback fallback and paste-a-hash behind that.
+  const [capsuleSupply, createdBlock] = await Promise.all([
+    readCapsuleSupply(capsuleCollection.toLowerCase(), capsuleTokenId),
+    serverBaseClient().getBlockNumber().then(Number).catch(() => undefined),
+  ])
   if (!capsuleSupply) return errorResponse(400, 'Could not read the capsule token on-chain')
 
   // Live headroom per entry, plus what OTHER machines have already pledged
@@ -188,6 +221,7 @@ export async function POST(req: NextRequest) {
     state: finalState,
     capsule: { collection: capsuleCollection.toLowerCase(), tokenId: capsuleTokenId },
     capsuleMaxSupply: capsuleSupply.maxSupply,
+    ...(createdBlock ? { createdBlock } : {}),
     splitRecipients,
     createdAt: Date.now(),
   }

@@ -111,6 +111,12 @@ export type SolvencyProblemCode =
   | 'over-headroom'
   | 'undercollateralised'
   | 'floor-not-creator'
+  /** Emitted by the create route, not checkSolvency (it needs the machine
+   *  list, which the pure checker must not read): another live machine already
+   *  uses this capsule token. Claims are keyed per (machine, tx, unit), so two
+   *  machines sharing one capsule would let a single paid mint play on BOTH —
+   *  a cross-machine double-spend of the capsule itself. */
+  | 'capsule-in-use'
 
 /** Machine visibility. `draft` is creator-only; `review` is queued for a
  *  curator; `live` is playable; `ended` keeps claims honourable but sells
@@ -130,6 +136,14 @@ export interface Machine {
   capsule: { collection: string; tokenId: string }
   /** Capsule maxSupply read at publish — the immutable liability ceiling. */
   capsuleMaxSupply: number | null
+  /** Base block number at publish, recorded best-effort. Bounds the
+   *  capsule-discovery log scan (lib/experience/discovery): capsules can only
+   *  be minted after the machine exists, so `fromBlock = createdBlock` makes
+   *  the scan exact and tight instead of a lookback guess. Absent on machines
+   *  published before the field existed, or when the read failed — discovery
+   *  then falls back to a bounded lookback and the paste-a-hash path covers
+   *  anything older. */
+  createdBlock?: number
   /** Lowercased split recipients, as validated at publish.
    *
    *  PERSISTED, not just checked. Every pool artist must be in the split —
