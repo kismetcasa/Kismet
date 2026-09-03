@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import Link from 'next/link'
 import { formatRelativeTime, isPlatformCollectComment, normalizeMomentComments, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
-import { fetchCreatorProfilesBatch } from '@/lib/profileCache'
+import { fetchCreatorProfilesBatch, invalidateUnresolvedProfiles } from '@/lib/profileCache'
 import { getCachedComments, getCachedCommentsHasMore, setCachedComments } from '@/lib/momentCache'
 import { ProfileAvatar } from './ProfileAvatar'
 
@@ -51,6 +51,12 @@ function dedupeActivity(rows: MomentComment[]): MomentComment[] {
   })
 }
 
+// Delay before the one-shot re-resolve of senders whose identity came back
+// unresolved. Long enough for the profiles route's bounded inline resolution
+// (500ms budget) and its background warms to land in Redis; short enough that
+// a viewer actually sees the upgrade.
+const PROFILE_RETRY_DELAY_MS = 2_500
+
 interface Props {
   address: string
   tokenId: string
@@ -88,7 +94,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
   // can't stall it. null until page 0 (or a cache-restore load-more) seeds it.
   const commentOffsetRef = useRef<number | null>(null)
   const seenCommentsRef = useRef<Set<string> | null>(null)
-  const [commentSenderProfiles, setCommentSenderProfiles] = useState<Record<string, { name: string; avatarUrl?: string }>>({})
+  const [commentSenderProfiles, setCommentSenderProfiles] = useState<Record<string, { name: string; avatarUrl?: string; resolved?: boolean }>>({})
 
   // Fetch page 0 of activity. Skips when already seeded from the shared cache
   // unless `force` (post-collect refresh) — which bypasses the cache to pull
@@ -220,6 +226,17 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
     void fetchComments(true)
   }, [refreshNonce, fetchComments])
 
+  // One-shot per-sender retry ledger for the effect below. An unresolved cold
+  // answer often becomes resolvable seconds later — the profiles route now
+  // resolves cold ENS misses inline-with-budget and warms the overflow in the
+  // background (lib/ensCache) — but profileCache pins the shortAddress
+  // fallback for 30s, so a plain refetch would be served the pin.
+  // invalidateUnresolvedProfiles drops exactly those pins, and this ref caps
+  // the extra traffic at ONE retry per sender per mount. Senders are claimed
+  // when a retry actually FIRES (not when scheduled), so a timer cancelled by
+  // an unmount/append leaves them eligible for the next run.
+  const retriedSendersRef = useRef<Set<string>>(new Set())
+
   // Batch-resolve activity-row sender profiles (name + avatar) via the shared
   // cache + a single /api/profiles request, rather than one /api/profile call
   // per sender. In-process comments carry only the bare sender address, so
@@ -231,12 +248,31 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
   useEffect(() => {
     if (comments.length === 0) return
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     const senders = Array.from(new Set(comments.map((c) => c.sender.toLowerCase())))
     fetchCreatorProfilesBatch(senders).then((profiles) => {
       if (cancelled) return
       setCommentSenderProfiles((prev) => ({ ...prev, ...profiles }))
+      const unresolved = senders.filter(
+        (s) => !profiles[s]?.resolved && !retriedSendersRef.current.has(s),
+      )
+      if (unresolved.length === 0) return
+      retryTimer = setTimeout(() => {
+        if (cancelled) return
+        const retryNow = unresolved.filter((s) => !retriedSendersRef.current.has(s))
+        if (retryNow.length === 0) return
+        for (const s of retryNow) retriedSendersRef.current.add(s)
+        invalidateUnresolvedProfiles(retryNow)
+        fetchCreatorProfilesBatch(retryNow).then((late) => {
+          if (cancelled) return
+          setCommentSenderProfiles((prev) => ({ ...prev, ...late }))
+        })
+      }, PROFILE_RETRY_DELAY_MS)
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
   }, [comments])
 
   if (commentsLoading || comments.length === 0) return null
@@ -247,7 +283,14 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
       <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
         {comments.map((c) => {
           const profile = commentSenderProfiles[c.sender.toLowerCase()]
-          const displayName = profile?.name ?? shortAddress(c.sender)
+          // Identity precedence: resolved Kismet/FC/ENS identity → In
+          // Process's own username on the row (sanitized in
+          // normalizeMomentComments; stripped for admin-hidden identities by
+          // the comments route) → truncated address (an unresolved
+          // profile.name already IS the shortAddress fallback).
+          const displayName = profile?.resolved
+            ? profile.name
+            : c.username ?? profile?.name ?? shortAddress(c.sender)
           // Airdrop rows are gifts the recipient didn't buy. The
           // comments route already stamped the right label into
           // `comment` per collection — "invited to kismet" for the

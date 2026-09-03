@@ -4,6 +4,7 @@ import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAG
 import { getAirdropsByMoment } from '@/lib/airdrops'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { getHiddenIdentityClosure } from '@/lib/addressUnion'
 import { errorResponse } from '@/lib/apiResponse'
 
 // Only `sender` matters for the hidden-users filter; other fields
@@ -58,15 +59,24 @@ export async function GET(req: NextRequest) {
   // degrades to the route's 502 shape instead of an unhandled rejection.
   let res: Response
   let hiddenUsers: Set<string>
+  let hiddenIdentities: Set<string>
   let airdrops: Awaited<ReturnType<typeof getAirdropsByMoment>>
   try {
-    ;[res, hiddenUsers, airdrops] = await Promise.all([
+    ;[res, hiddenUsers, hiddenIdentities, airdrops] = await Promise.all([
       fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 30 },
         signal: AbortSignal.timeout(8_000),
       }),
       getHiddenUsersSet(),
+      // Admin-hidden PROFILES (identity moderation, distinct from the
+      // hidden-users content filter above): rows from these senders still
+      // show, but their upstream `username` must be stripped below — the
+      // batch profile resolver deliberately returns the empty identity for
+      // them so rows render address-only, and the upstream field would leak
+      // a display name around that gate. Fail-open to the empty set so a
+      // Redis blip can't 502 a public comments read.
+      getHiddenIdentityClosure().catch(() => new Set<string>()),
       // getAirdropsByMoment swallows its own errors (returns []), so this
       // can't reject the Promise.all and mask a real upstream failure.
       isFirstPage ? getAirdropsByMoment(collectionAddress, tokenId) : Promise.resolve([]),
@@ -107,7 +117,17 @@ export async function GET(req: NextRequest) {
     if (Array.isArray(rows)) {
       upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
       const normalized = normalizeMomentComments(rows)
-      obj.comments = normalized
+      // Sibling-aware username strip for admin-hidden identities (see the
+      // hiddenIdentities fetch above). The rows themselves stay — hiding the
+      // PROFILE doesn't hide the on-chain activity — they just render
+      // address-only, exactly like the batch resolver answers for them.
+      obj.comments = hiddenIdentities.size > 0
+        ? normalized.map((c) =>
+            c.username !== undefined && hiddenIdentities.has(c.sender.toLowerCase())
+              ? { ...c, username: undefined }
+              : c,
+          )
+        : normalized
       const dropped = rows.length - normalized.length
       if (dropped > 0) {
         console.warn('[comments] dropped unrenderable upstream rows', {

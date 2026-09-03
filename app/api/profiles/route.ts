@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getHiddenIdentityClosure, resolveCanonicalProfile } from '@/lib/addressUnion'
-import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
+import { getCachedEns, resolveEnsAndCache, resolveEnsWithBudget } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -11,6 +11,22 @@ import { errorResponse } from '@/lib/apiResponse'
 // that one /api/profile call at a time was the N+1. Same name/avatar precedence
 // as /api/profile/[address], minus the earnings/full-profile bundle rows never read.
 const MAX_ADDRESSES = 50 // bound the fan-out; the client chunks larger sets
+
+// Cold-ENS budgets. A sender with no Kismet username, no FC identity, and no
+// cached ENS answer would render as a bare address, so those misses are worth
+// resolving INLINE — bounded, so a cold page pays one shared sub-second wait
+// instead of the old guarantee that a first view could never show a name.
+// The two caps also bound the mainnet burst one request can fire (each
+// resolution is 2 eth_calls; before them, one cold 50-sender page kicked up
+// to 100 concurrent calls at the RPC — the exact burst that got the public
+// default endpoint rate-limited and the failures cached as "no ENS"):
+// at most ENS_INLINE_MAX misses resolve inline (same-tick, so viem's batch
+// transport collapses them), at most ENS_WARM_MAX more warm in the
+// background, and the rest stay cold for a later request or the client's
+// one-shot retry (components/MomentActivity) to pick up.
+const ENS_INLINE_MAX = 8
+const ENS_INLINE_BUDGET_MS = 500
+const ENS_WARM_MAX = 8
 
 export async function GET(req: NextRequest) {
   const raw = new URL(req.url).searchParams.get('addresses')
@@ -29,11 +45,19 @@ export async function GET(req: NextRequest) {
   // wallet of a hidden identity resolves empty, not just the listed one.
   const hiddenProfiles = await getHiddenIdentityClosure()
 
+  // Inline/warm slot counters, shared across the map below. Check-and-decrement
+  // happens synchronously (no await between), so the caps hold even though the
+  // per-address callbacks interleave; WHICH addresses win slots follows
+  // resolution-completion order, which is fine — any subset of the cold set is
+  // an improvement, and the rest heal on later requests.
+  let inlineSlots = ENS_INLINE_MAX
+  let warmSlots = ENS_WARM_MAX
+
   const profiles: Record<string, { name: string; avatarUrl?: string }> = Object.fromEntries(
     await Promise.all(
       addresses.map(async (addr): Promise<[string, { name: string; avatarUrl?: string }]> => {
         try {
-          const [{ profile, farcaster, canonicalAddress }, ens] = await Promise.all([
+          const [{ profile, farcaster, canonicalAddress }, cachedEns] = await Promise.all([
             resolveCanonicalProfile(addr),
             getCachedEns(addr),
           ])
@@ -43,9 +67,29 @@ export async function GET(req: NextRequest) {
           if (hiddenProfiles.has(addr) || hiddenProfiles.has(canonicalAddress.toLowerCase())) {
             return [addr, { name: '', avatarUrl: undefined }]
           }
-          // Warm ENS in the background on a miss, like the single route, so the
-          // next view resolves the .eth name from cache.
-          if (!profile.username && ens === undefined) after(() => resolveEnsAndCache(addr))
+          let ens = cachedEns
+          if (ens === undefined && !profile.username) {
+            if (!farcaster?.username && inlineSlots > 0) {
+              // No identity at all without ENS → this row renders as a bare
+              // address unless we resolve NOW. Bounded; on budget overrun the
+              // resolution keeps running past the response (after() keeps the
+              // request context alive for the cache write) and the next view
+              // reads warm.
+              inlineSlots--
+              const r = await resolveEnsWithBudget(addr, ENS_INLINE_BUDGET_MS)
+              ens = r.ens
+              if (r.pending) {
+                const pending = r.pending
+                after(() => pending)
+              }
+            } else if (warmSlots > 0) {
+              // FC-named senders display fine without ENS (pickProfileIdentity
+              // prefers the FC username), and inline-capped misses still
+              // deserve a warm — background only, bounded by ENS_WARM_MAX.
+              warmSlots--
+              after(() => resolveEnsAndCache(addr))
+            }
+          }
           return [addr, pickProfileIdentity(profile, farcaster, ens)]
         } catch {
           // Isolate per-address failures (e.g. a transient Redis/FC blip) so one

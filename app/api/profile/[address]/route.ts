@@ -5,7 +5,7 @@ import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonc
 import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid, getVerifiedTwitterByFid } from '@/lib/farcasterProfile'
-import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
+import { getCachedEns, resolveEnsAndCache, resolveEnsWithBudget } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
@@ -105,8 +105,29 @@ export async function GET(
   }))
     ? await getArtistEarnings(canonicalAddress)
     : null
+  // Cold ENS cache. A profile with no Kismet username and no FC identity
+  // renders its header as the bare address unless the .eth name is in hand,
+  // so resolve INLINE within a bounded budget — the old background-only warm
+  // guaranteed every first view (and every first view after a TTL expiry)
+  // showed the truncated address, and only a revisit showed the name. On
+  // budget overrun the resolution keeps running past the response (after()
+  // keeps the request context alive for the cache write) and the next view
+  // reads warm — the pre-change behavior, now the fallback instead of the
+  // rule. FC-named profiles skip the wait (pickProfileIdentity prefers the
+  // FC username) and keep the background warm.
+  const ENS_INLINE_BUDGET_MS = 800
+  let ens = cachedEns
   if (!profile.username && cachedEns === undefined) {
-    after(() => resolveEnsAndCache(address))
+    if (!farcaster?.username) {
+      const r = await resolveEnsWithBudget(address, ENS_INLINE_BUDGET_MS)
+      ens = r.ens
+      if (r.pending) {
+        const pending = r.pending
+        after(() => pending)
+      }
+    } else {
+      after(() => resolveEnsAndCache(address))
+    }
   }
   // Server-side enrichment so existing components auto-propagate FC
   // identity without per-component changes:
@@ -119,11 +140,11 @@ export async function GET(
   //     address is a sibling that inherited from another verification,
   //     or (b) the FidProfile.currentAddress doesn't match. Clients
   //     can use it to canonicalize their URL.
-  const ensName = cachedEns || undefined
+  const ensName = ens || undefined
   // Shared projection (same one /api/profiles uses) so the single + batch
   // routes can't diverge on identity resolution. displayName keeps its
   // nullable contract: '' (nothing resolved) collapses to null as before.
-  const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, cachedEns)
+  const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, ens)
   const displayName = name || null
   // Proof-of-ownership socials inherited from Farcaster. Only X is verifiable
   // on FC today; when present it outranks any manually-claimed `x` and the
