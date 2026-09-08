@@ -1,11 +1,41 @@
-import { createPublicClient, http } from 'viem'
+import { ccipRequest, createPublicClient, http } from 'viem'
 import { mainnet } from 'viem/chains'
 import { normalize } from 'viem/ens'
 import { redis } from '@/lib/redis'
+import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 
 // Shared ENS reverse-resolution cache, used by both /api/profile/[address]
 // (single) and /api/profiles (batch) so the two never diverge on how a
 // raw address resolves to a verified .eth name.
+
+/**
+ * CCIP-Read (EIP-3668) gateway allowlist. viem enables offchain lookups by
+ * default: when a resolver reverts with OffchainLookup, the client fetches
+ * whatever gateway URLs the CONTRACT names. Any wallet owner can point their
+ * own reverse node at a resolver they wrote, so unguarded this let a public
+ * /api/profiles request make this server fetch an attacker-chosen URL — the
+ * SSRF class lib/safeUrl already closes for avatar and share-card fetches.
+ * Offchain names keep working (their gateways are public https); everything
+ * else is refused, and a lookup with no acceptable gateway fails like any
+ * other RPC error (cached transient, no fetch ever made).
+ */
+export function selectSafeCcipGateways(urls: readonly string[]): string[] {
+  return urls.filter((url) => {
+    if (!isSafePublicHttpsUrl(url)) return false
+    // The host is checked on the TEMPLATE, but viem fetches the substituted
+    // URL — a {sender}/{data} placeholder in the host would let the
+    // substitution pick the authority. Real gateways template the path.
+    return !/[{}]/.test(new URL(url).hostname)
+  })
+}
+
+function requestSafeCcipGateways(
+  parameters: Parameters<typeof ccipRequest>[0],
+): ReturnType<typeof ccipRequest> {
+  const urls = selectSafeCcipGateways(parameters.urls)
+  if (urls.length === 0) throw new Error('ENS CCIP-Read refused: no public https gateway offered')
+  return ccipRequest({ ...parameters, urls })
+}
 
 // Prefer a configured RPC URL (Alchemy / Infura) to avoid rate limits on
 // the public default. MAINNET_RPC_URL is the server-only override; falls
@@ -21,6 +51,7 @@ import { redis } from '@/lib/redis'
 // /api/profiles already bound the burst batching would have collapsed.
 const mainnetClient = createPublicClient({
   chain: mainnet,
+  ccipRead: { request: requestSafeCcipGateways },
   transport: http(process.env.MAINNET_RPC_URL ?? process.env.NEXT_PUBLIC_MAINNET_RPC_URL, {
     timeout: 5_000,
   }),

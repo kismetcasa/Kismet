@@ -540,7 +540,9 @@ owner-only content theming via sharp palette extraction.
 **Risks.** Hard dependency on `api.farcaster.xyz`; ENS correctness depends on a
 configured mainnet RPC — cold misses resolve inline within a bounded budget
 (500ms batch / 800ms single) before falling back to a background warm, so a
-slow or rate-limited endpoint costs first-view names, never correctness
+slow or rate-limited endpoint costs first-view names, never correctness, and
+CCIP-Read gateways named by a resolver are allowlisted through `lib/safeUrl`
+so a public lookup can't make the server fetch a private URL
 (`lib/ensCache`, pinned by `verify:profile-identity` + `scripts/e2e/profile-identity.mjs`);
 case-normalization is load-bearing (everything lowercased before keying).
 

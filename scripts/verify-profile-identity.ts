@@ -26,6 +26,9 @@
 //       DEFINITIVE none, never as the transient sentinel
 //   E5  the transport sends plain JSON-RPC objects, never batch arrays — a
 //       lone request wrapped in an array breaks on some public endpoints
+//   E6  CCIP-Read gateways are allowlisted: a resolver naming only private,
+//       plaintext or IP-literal gateways gets NO fetch at all, while a public
+//       https gateway is still consulted, so offchain names keep working
 //   P1  profileCache: unresolved entries pin for 30s, and
 //       invalidateUnresolvedProfiles is the ONLY way past the pin — and it
 //       never touches resolved entries
@@ -38,7 +41,8 @@
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-profile-identity.ts
 
 import { createServer } from 'node:http'
-import { encodeAbiParameters, encodeFunctionResult, parseAbi, type Hex } from 'viem'
+import { encodeAbiParameters, encodeErrorResult, encodeFunctionResult, offchainLookupAbiItem, parseAbi, type Hex } from 'viem'
+import { mainnet } from 'viem/chains'
 
 // ── mock Upstash (strings only — the ENS cache is a plain string key) ───────
 const strings = new Map<string, string>()
@@ -116,8 +120,19 @@ const rpc = {
   names: new Map<string, string>(),
   // forward answer for every resolve call; null = resolve to FILLER (unverified).
   forwardTo: null as string | null,
+  // addresses whose reverse resolver answers with an EIP-3668 OffchainLookup
+  // revert naming these gateway URLs (the CCIP-Read path).
+  offchain: new Map<string, readonly string[]>(),
   ethCalls: 0,
   arrayBodies: 0,
+}
+const UNIVERSAL_RESOLVER = mainnet.contracts.ensUniversalResolver.address
+
+function offchainUrlsFor(data: Hex): readonly string[] | undefined {
+  const d = data.toLowerCase()
+  if (!d.startsWith(REVERSE_SELECTOR)) return undefined
+  for (const [addr, urls] of rpc.offchain) if (d.includes(addr.slice(2).toLowerCase())) return urls
+  return undefined
 }
 
 function answerEthCall(data: Hex): Hex {
@@ -151,7 +166,20 @@ const rpcServer = createServer((req, res) => {
         const parsed = JSON.parse(body) as { id: number; method: string; params: [{ data: Hex }, string] } | Array<{ id: number; method: string; params: [{ data: Hex }, string] }>
         const one = (r: { id: number; method: string; params: [{ data: Hex }, string] }) => {
           if (r.method !== 'eth_call') throw new Error(`unhandled rpc method ${r.method}`)
-          return { jsonrpc: '2.0', id: r.id, result: answerEthCall(r.params[0].data) }
+          const data = r.params[0].data
+          const offchainUrls = offchainUrlsFor(data)
+          if (offchainUrls) {
+            // The sender must equal the called contract or viem rejects the
+            // lookup before consulting any gateway.
+            rpc.ethCalls++
+            const revert = encodeErrorResult({
+              abi: [offchainLookupAbiItem],
+              errorName: 'OffchainLookup',
+              args: [UNIVERSAL_RESOLVER, offchainUrls, '0x', '0x00000000', '0x'],
+            })
+            return { jsonrpc: '2.0', id: r.id, error: { code: 3, message: 'execution reverted', data: revert } }
+          }
+          return { jsonrpc: '2.0', id: r.id, result: answerEthCall(data) }
         }
         // A batch array (viem's batch-transport shape) is answered so a future
         // transport change fails the E5 pin below, not the whole run.
@@ -183,6 +211,9 @@ process.env.MAINNET_RPC_URL = `http://127.0.0.1:${rpcPort}`
 // server's answer between calls.
 const realFetch = globalThis.fetch
 const profilesApi = { name: '', requests: 0 }
+// Every off-box host the app tried to reach, by hostname — E6 asserts which
+// CCIP gateways were and were not fetched.
+const offBoxHits = new Map<string, number>()
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (url.startsWith('http://127.0.0.1:')) return realFetch(input, init)
@@ -192,6 +223,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const profiles = Object.fromEntries(addrs.map((a) => [a, { name: profilesApi.name, avatarUrl: undefined }]))
     return new Response(JSON.stringify({ profiles }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
+  const host = (() => { try { return new URL(url).hostname } catch { return url } })()
+  offBoxHits.set(host, (offBoxHits.get(host) ?? 0) + 1)
   return new Response('blocked', { status: 503 })
 }) as typeof fetch
 
@@ -295,6 +328,44 @@ console.log('\nE5  the transport stays plain JSON-RPC — no batch arrays — so
   // come back without this check being consciously changed.
   check('every request body was a single JSON-RPC object, never a batch array', rpc.arrayBodies === 0,
     `saw ${rpc.arrayBodies} array bodies`)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\nE6  CCIP-Read gateways are allowlisted — no fetch to private, plaintext or IP-literal targets')
+{
+  const keep = 'https://gateway.example/{sender}/{data}.json'
+  const picked = ensCache.selectSafeCcipGateways([
+    'http://gateway.example/{sender}/{data}.json',     // plaintext
+    'https://169.254.169.254/latest/meta-data/{data}', // cloud metadata
+    'https://127.0.0.1:8080/{data}',                   // loopback
+    'https://localhost/{data}',
+    'https://[::1]/{data}',
+    'https://{sender}.evil.example/{data}',            // template in the host
+    keep,
+  ])
+  check('only the public https gateway survives the allowlist', picked.length === 1 && picked[0] === keep, JSON.stringify(picked))
+
+  // A wallet whose reverse resolver names only unsafe gateways — the exact
+  // SSRF shape: any address owner can point their reverse node at a resolver
+  // they wrote, and /api/profiles is public. The lookup must fail WITHOUT
+  // this process ever fetching those hosts.
+  const H1 = '0x9191919191919191919191919191919191919191'
+  rpc.mode = 'ok'
+  rpc.offchain.set(H1, ['http://10.0.0.5/{sender}/{data}', 'https://169.254.169.254/latest/{data}'])
+  const r1 = await ensCache.resolveEnsAndCache(H1)
+  check('resolution with only unsafe gateways yields null', r1 === null)
+  check('…cached as transient (retried later, never a name)', strings.get(key(H1))?.includes('!transient') === true,
+    `stored ${JSON.stringify(strings.get(key(H1)))}`)
+  check('…with ZERO requests to the attacker-named hosts',
+    !offBoxHits.has('10.0.0.5') && !offBoxHits.has('169.254.169.254'), JSON.stringify([...offBoxHits]))
+
+  // A legitimate offchain name (public https gateway) is still consulted, so
+  // the guard cannot silently break cb.id / L2-style names.
+  const H2 = '0x9292929292929292929292929292929292929292'
+  rpc.offchain.set(H2, [keep])
+  await ensCache.resolveEnsAndCache(H2)
+  check('a public https gateway IS fetched (offchain names keep working)', (offBoxHits.get('gateway.example') ?? 0) >= 1,
+    JSON.stringify([...offBoxHits]))
 }
 
 // ════════════════════════════════════════════════════════════════════════════
