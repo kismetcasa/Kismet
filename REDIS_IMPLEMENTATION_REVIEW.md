@@ -216,7 +216,7 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 6); ZREM; DEL ×4 erase incl. view mode (`showcase.ts`) | 3× ZRANGE per pins fetch | ≤6/cat | O |
 | `kismetart:profile-public-view:{addr}` | string `'full'`\|`'curated'` | ▶ SET owner choice; SET-once materialization of the derived verdict (read path when derived-curated; pin-write prelude — `showcase.ts`); DEL erase | GET per pins fetch (batched with the 3 ZRANGEs); absent → derived: pins→curated (grandfather), none→full | none | O; unknowns fail private to curated |
 | `kismetart:creator-lists` | hash | 🔧 HSET/HDEL (`creatorLists.ts:142,149`) | HGETALL homepage (`:72`); HGET one (`:119`) | none | O |
-| `kismetart:ens:{addr}` | string | SET EX 1h/1h-''/5m-fail (`ensCache.ts:38-48`) | GET per cold profile resolve (`:25`) | 1h / 5m; forward-verified | O |
+| `kismetart:ens:{addr}` | string | SET EX 24h-name/1h-''/30s-`!transient`-fail (`ensCache.ts`) | GET per cold profile resolve; misses resolve inline-with-budget or via after() warm | 24h / 1h / 30s; forward-verified | O |
 | `kismetart:fc:profile:{fid}` | string JSON/'' | SET EX 1h/5m/**30s transient** (`farcasterProfile.ts:146`) | 🔥 GET per identity resolve (`:72`) | 1h/5m/30s | O |
 | `kismetart:fc:verifications:{fid}` | string JSON/''/'!transient' | SET EX 1h/5m/30s (`:281`); side-effect back-populates reverse index | 🔥 GET per sibling expansion (`:72`) | 1h/5m/30s | O; identity-writes treat null as C |
 | `kismetart:fc:fid-by-addr:{addr}` | string | SET EX 30d per verified addr on any verifications fetch (`:300`) | 🔥 GET `getFidByAddress` — first hop of EVERY identity resolve (`:359`) | 30d refresh | O |

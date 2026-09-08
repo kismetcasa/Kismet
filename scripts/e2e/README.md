@@ -103,3 +103,45 @@ is trivially true when `x` is absent.
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
   `modelMomentFields` builder — each of which this file or `verify:model-media`
   covers; the wiring itself is unverified in a browser.
+
+# HTTP end-to-end check — profile identity (ENS)
+
+`profile-identity.mjs` drives the REAL built app under `next start` against
+a stateful mock Upstash and a mock Ethereum-mainnet JSON-RPC it boots itself,
+and probes `/api/profiles` and `/api/profile/[address]` over HTTP. No browser.
+
+## Why this is separate from `verify:profile-identity`
+
+That suite pins the `lib/ensCache` state machine and the client cache
+contract on the real modules, but — by the verify suite's own rule — never
+loads a route handler. The bug it guards against lived in the route wiring:
+cold cache misses only ever warmed AFTER the response, so no first view could
+show a `.eth` name. This file proves the wiring under the production runtime:
+bounded inline resolution, the `after()` continuation on budget overrun and on
+a transient RPC failure, and the per-request burst caps.
+
+## Running it
+
+```sh
+npm run build
+node scripts/e2e/profile-identity.mjs
+```
+
+Self-contained: it spawns `next start` on `E2E_PORT` (default 3108) and its
+mocks on `E2E_REDIS_PORT` / `E2E_RPC_PORT` (6398 / 8598), and tears all three
+down on exit. Exit code is non-zero on any failed check.
+
+## What it asserts (20)
+
+- **P1 cold batch** — the FIRST `/api/profiles` request for a never-seen
+  ENS-only address returns the name; it is cached at 24h; a warm re-read
+  costs zero RPC calls.
+- **P2 cold single** — the FIRST `/api/profile/[address]` view returns
+  `displayName`/`ensName`.
+- **P3 transient failure** — a 429 degrades the request to no name; the
+  after() continuation stores the 30s `!transient` sentinel; requests inside
+  the window spend no RPC; after it the same address resolves and displays.
+- **P4 budget overrun** — a slow RPC degrades the request; the continuation
+  still caches the name; the next request is warm.
+- **P5 burst caps** — 20 cold senders resolve at most 8 inline + 8 in the
+  background (16 RPC calls), the rest stay cold for a later request.
