@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeMomentComments, normalizeTimestampMs, type MomentComment } from '@/lib/inprocess'
+import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeMomentComments, normalizeTimestampMs, redactHiddenIdentityUsernames, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
@@ -118,16 +118,8 @@ export async function GET(req: NextRequest) {
       upstreamHasMore = rows.length >= INPROCESS_COMMENTS_PAGE_SIZE
       const normalized = normalizeMomentComments(rows)
       // Sibling-aware username strip for admin-hidden identities (see the
-      // hiddenIdentities fetch above). The rows themselves stay — hiding the
-      // PROFILE doesn't hide the on-chain activity — they just render
-      // address-only, exactly like the batch resolver answers for them.
-      obj.comments = hiddenIdentities.size > 0
-        ? normalized.map((c) =>
-            c.username !== undefined && hiddenIdentities.has(c.sender.toLowerCase())
-              ? { ...c, username: undefined }
-              : c,
-          )
-        : normalized
+      // hiddenIdentities fetch above).
+      obj.comments = redactHiddenIdentityUsernames(normalized, hiddenIdentities)
       const dropped = rows.length - normalized.length
       if (dropped > 0) {
         console.warn('[comments] dropped unrenderable upstream rows', {

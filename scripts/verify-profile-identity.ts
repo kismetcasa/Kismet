@@ -21,14 +21,18 @@
 //       the background, the next read is warm
 //   E3  transient RPC failure — distinct short-TTL sentinel: displays
 //       nothing, throttles retries, and CANNOT impersonate "no ENS"
-//   E4  confirmed no-ENS / failed forward-verification — still cached ('')
-//       at 1h, still displays nothing (non-regression + ENS-spec safety)
-//   E5  same-tick misses share one batched RPC request
+//   E4  confirmed no-ENS, failed forward-verification, and a reverse record
+//       that fails ENSIP-15 normalization — all cached ('') at 1h as a
+//       DEFINITIVE none, never as the transient sentinel
+//   E5  the transport sends plain JSON-RPC objects, never batch arrays — a
+//       lone request wrapped in an array breaks on some public endpoints
 //   P1  profileCache: unresolved entries pin for 30s, and
 //       invalidateUnresolvedProfiles is the ONLY way past the pin — and it
 //       never touches resolved entries
 //   U1  normalizeMomentComments: upstream `username` is kept only when it is
 //       a short, non-address-shaped string (display fallback hygiene)
+//   U2  redactHiddenIdentityUsernames: admin-hidden senders lose the upstream
+//       username; nothing else about the rows changes
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-profile-identity.ts
@@ -113,8 +117,7 @@ const rpc = {
   // forward answer for every resolve call; null = resolve to FILLER (unverified).
   forwardTo: null as string | null,
   ethCalls: 0,
-  httpRequests: 0,
-  batchedRequests: 0,
+  arrayBodies: 0,
 }
 
 function answerEthCall(data: Hex): Hex {
@@ -146,13 +149,14 @@ const rpcServer = createServer((req, res) => {
           return
         }
         const parsed = JSON.parse(body) as { id: number; method: string; params: [{ data: Hex }, string] } | Array<{ id: number; method: string; params: [{ data: Hex }, string] }>
-        rpc.httpRequests++
         const one = (r: { id: number; method: string; params: [{ data: Hex }, string] }) => {
           if (r.method !== 'eth_call') throw new Error(`unhandled rpc method ${r.method}`)
           return { jsonrpc: '2.0', id: r.id, result: answerEthCall(r.params[0].data) }
         }
-        // viem's batch transport sends a JSON array for same-tick calls.
-        const out = Array.isArray(parsed) ? (rpc.batchedRequests += parsed.length > 1 ? 1 : 0, parsed.map(one)) : one(parsed)
+        // A batch array (viem's batch-transport shape) is answered so a future
+        // transport change fails the E5 pin below, not the whole run.
+        if (Array.isArray(parsed)) rpc.arrayBodies++
+        const out = Array.isArray(parsed) ? parsed.map(one) : one(parsed)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify(out))
       } catch (e) {
@@ -264,19 +268,33 @@ console.log('\nE4  confirmed no-ENS and failed forward-verification still cache 
   const r2 = await ensCache.resolveEnsAndCache(E)
   check('unverified reverse record → null (ENS-spec forward check)', r2 === null)
   check('unverified cached as none for 1h', ttls.get(key(E)) === 60 * 60)
+  // reverse record that fails ENSIP-15 normalization (a space inside a label)
+  const G = '0x8888888888888888888888888888888888888888'
+  rpc.names.set(G, 'a b.eth')
+  const callsBefore = rpc.ethCalls
+  const r3 = await ensCache.resolveEnsAndCache(G)
+  check('unnormalizable reverse record → null', r3 === null)
+  check('…cached as a DEFINITIVE none for 1h, not the 30s transient sentinel',
+    ttls.get(key(G)) === 60 * 60 && strings.get(key(G))?.includes('!transient') !== true,
+    `ttl ${ttls.get(key(G))} stored ${JSON.stringify(strings.get(key(G)))}`)
+  check('…and no forward-verification call was wasted on it', rpc.ethCalls === callsBefore + 1)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\nE5  same-tick misses share one batched RPC request')
+console.log('\nE5  the transport stays plain JSON-RPC — no batch arrays — so any endpoint works')
 {
   const F1 = '0x5555555555555555555555555555555555555555'
   const F2 = '0x6666666666666666666666666666666666666666'
   rpc.names.set(F1, ''); rpc.names.set(F2, '')
-  rpc.httpRequests = 0; rpc.ethCalls = 0; rpc.batchedRequests = 0
+  rpc.ethCalls = 0; rpc.arrayBodies = 0
   await Promise.all([ensCache.resolveEnsAndCache(F1), ensCache.resolveEnsAndCache(F2)])
-  check('two concurrent resolutions made 2 eth_calls', rpc.ethCalls === 2, `saw ${rpc.ethCalls}`)
-  check('…carried in at least one JSON-RPC batch', rpc.batchedRequests >= 1,
-    `http=${rpc.httpRequests} batched=${rpc.batchedRequests}`)
+  check('two concurrent no-record resolutions = 2 eth_calls', rpc.ethCalls === 2, `saw ${rpc.ethCalls}`)
+  // viem's batch transport wraps EVERY call in a JSON array, lone ones
+  // included, and some public endpoints reject arrays outright — which would
+  // turn every resolution into the transient sentinel. Pinned so it can't
+  // come back without this check being consciously changed.
+  check('every request body was a single JSON-RPC object, never a batch array', rpc.arrayBodies === 0,
+    `saw ${rpc.arrayBodies} array bodies`)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -318,6 +336,24 @@ console.log('\nU1  upstream username hygiene in normalizeMomentComments')
   // Non-regression: the repairs/drops this normalizer already guaranteed.
   check('missing comment still repairs to empty string', norm({ sender: A, timestamp: 1 }).comment === '')
   check('a timestampless row is still dropped', inprocess.normalizeMomentComments([{ sender: A, comment: 'x' }]).length === 0)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\nU2  admin-hidden identities lose the upstream username; nothing else changes')
+{
+  const HIDDEN = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+  const rows = inprocess.normalizeMomentComments([
+    // Mixed-case sender: the closure is lowercased, the strip must match anyway.
+    { sender: '0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD', comment: '', timestamp: 1, username: 'hiddenperson' },
+    { sender: A, comment: '', timestamp: 2, username: 'yonfrula' },
+    { sender: HIDDEN, comment: '', timestamp: 3 },
+  ])
+  const out = inprocess.redactHiddenIdentityUsernames(rows, new Set([HIDDEN]))
+  check('a hidden sender loses its username (case-insensitively)', out[0].username === undefined)
+  check('every other sender keeps theirs', out[1].username === 'yonfrula')
+  check('rows are never dropped', out.length === 3)
+  check('unaffected rows are the same objects (no needless copies)', out[1] === rows[1] && out[2] === rows[2])
+  check('an empty hidden set is a pass-through', inprocess.redactHiddenIdentityUsernames(rows, new Set()) === rows)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

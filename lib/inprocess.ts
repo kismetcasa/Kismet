@@ -313,6 +313,26 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
   return out
 }
 
+/**
+ * Drop the upstream `username` from rows whose sender is an admin-hidden
+ * identity (lib/addressUnion's sibling-aware closure, lowercased). The batch
+ * profile resolver deliberately answers the empty identity for those senders
+ * so rows render address-only; the upstream field would leak a display name
+ * around that gate. Rows themselves stay — hiding the PROFILE doesn't hide
+ * the on-chain activity. Applied by /api/moment/comments before the fold.
+ */
+export function redactHiddenIdentityUsernames(
+  rows: MomentComment[],
+  hiddenIdentities: Set<string>,
+): MomentComment[] {
+  if (hiddenIdentities.size === 0) return rows
+  return rows.map((c) =>
+    c.username !== undefined && hiddenIdentities.has(c.sender.toLowerCase())
+      ? { ...c, username: undefined }
+      : c,
+  )
+}
+
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */
 export function resolveUri(uri: string): string {
   if (!uri) return ''

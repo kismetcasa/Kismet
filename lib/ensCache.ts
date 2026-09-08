@@ -12,15 +12,16 @@ import { redis } from '@/lib/redis'
 // back to NEXT_PUBLIC_MAINNET_RPC_URL (shared with the client-side ENS
 // lookup in lib/wagmi.ts) when unset, then to viem's public default.
 //
-// batch: a cold activity page resolves many senders at once (the /api/profiles
-// inline slots below fire in the same tick), so same-tick eth_calls collapse
-// into one JSON-RPC batch request instead of one HTTP round trip each.
 // timeout: viem's default is 10s; a wedged public endpoint must not pin a
 // bounded inline resolve's background continuation (or a warm) that long.
+// Deliberately NOT batched: viem's batch transport sends every call as a
+// JSON-RPC array — a lone request included — and not every public endpoint
+// accepts arrays. On one that doesn't, every resolution would fail into the
+// transient sentinel and no name would ever resolve. The per-request caps in
+// /api/profiles already bound the burst batching would have collapsed.
 const mainnetClient = createPublicClient({
   chain: mainnet,
   transport: http(process.env.MAINNET_RPC_URL ?? process.env.NEXT_PUBLIC_MAINNET_RPC_URL, {
-    batch: true,
     timeout: 5_000,
   }),
 })
@@ -62,6 +63,14 @@ export async function getCachedEns(address: string): Promise<string | null | und
   }
 }
 
+function normalizeOrNull(name: string): string | null {
+  try {
+    return normalize(name)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Resolve reverse + forward-verify, cache the outcome, and RETURN the
  * verified name (null when there is none, verification fails, or the lookup
@@ -76,11 +85,17 @@ export async function resolveEnsAndCache(address: string): Promise<string | null
   const key = ensKey(address)
   try {
     const name = await mainnetClient.getEnsName({ address: address as `0x${string}` })
-    if (!name) {
+    // No reverse record, or one that fails ENSIP-15 normalization: both are
+    // properties of the RECORD, not the network, so they cache as a
+    // definitive none. A malformed record must not land in the transient
+    // sentinel and re-fire the lookup every ENS_FAIL_TTL for as long as it
+    // stays malformed.
+    const normalized = name ? normalizeOrNull(name) : null
+    if (!name || normalized === null) {
       await redis.set(key, '', { ex: ENS_NONE_TTL }).catch(() => {})
       return null
     }
-    const forward = await mainnetClient.getEnsAddress({ name: normalize(name) })
+    const forward = await mainnetClient.getEnsAddress({ name: normalized })
     const verified = forward?.toLowerCase() === address.toLowerCase()
     await redis
       .set(key, verified ? name : '', { ex: verified ? ENS_NAME_TTL : ENS_NONE_TTL })

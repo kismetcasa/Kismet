@@ -13,6 +13,11 @@ import { normalizeSocials, type ProfileSocials } from '@/lib/socials'
 import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
 
+// Cold-ENS inline budget (see GET). Generous relative to the batch route's
+// 500ms: one address, and the wait overlaps the earnings and verification
+// reads rather than adding to them.
+const ENS_INLINE_BUDGET_MS = 800
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ address: string }> }
@@ -59,6 +64,18 @@ export async function GET(
       })
     }
   }
+  // Cold ENS cache, no username, no FC identity: the header would render as
+  // the bare address, so resolve INLINE within a bounded budget — started
+  // here so it overlaps the earnings/verification reads below rather than
+  // adding to them. The old background-only warm guaranteed every first view
+  // (and every first view after a TTL expiry) showed the truncated address;
+  // that path is now the fallback for budget overrun: the resolution keeps
+  // running past the response (after() keeps the request context alive for
+  // the cache write) and the next view reads warm. FC-named profiles skip the
+  // wait (pickProfileIdentity prefers the FC username) and keep the warm.
+  const ensMiss = !profile.username && cachedEns === undefined
+  const ensInline =
+    ensMiss && !farcaster?.username ? resolveEnsWithBudget(address, ENS_INLINE_BUDGET_MS) : null
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned
@@ -105,29 +122,16 @@ export async function GET(
   }))
     ? await getArtistEarnings(canonicalAddress)
     : null
-  // Cold ENS cache. A profile with no Kismet username and no FC identity
-  // renders its header as the bare address unless the .eth name is in hand,
-  // so resolve INLINE within a bounded budget — the old background-only warm
-  // guaranteed every first view (and every first view after a TTL expiry)
-  // showed the truncated address, and only a revisit showed the name. On
-  // budget overrun the resolution keeps running past the response (after()
-  // keeps the request context alive for the cache write) and the next view
-  // reads warm — the pre-change behavior, now the fallback instead of the
-  // rule. FC-named profiles skip the wait (pickProfileIdentity prefers the
-  // FC username) and keep the background warm.
-  const ENS_INLINE_BUDGET_MS = 800
   let ens = cachedEns
-  if (!profile.username && cachedEns === undefined) {
-    if (!farcaster?.username) {
-      const r = await resolveEnsWithBudget(address, ENS_INLINE_BUDGET_MS)
-      ens = r.ens
-      if (r.pending) {
-        const pending = r.pending
-        after(() => pending)
-      }
-    } else {
-      after(() => resolveEnsAndCache(address))
+  if (ensInline) {
+    const r = await ensInline
+    ens = r.ens
+    if (r.pending) {
+      const pending = r.pending
+      after(() => pending)
     }
+  } else if (ensMiss) {
+    after(() => resolveEnsAndCache(address))
   }
   // Server-side enrichment so existing components auto-propagate FC
   // identity without per-component changes:

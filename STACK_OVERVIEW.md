@@ -538,8 +538,11 @@ reverse records that don't forward-resolve back); canonical-URL 307 redirect;
 owner-only content theming via sharp palette extraction.
 
 **Risks.** Hard dependency on `api.farcaster.xyz`; ENS correctness depends on a
-configured mainnet RPC; case-normalization is load-bearing (everything lowercased
-before keying).
+configured mainnet RPC — cold misses resolve inline within a bounded budget
+(500ms batch / 800ms single) before falling back to a background warm, so a
+slow or rate-limited endpoint costs first-view names, never correctness
+(`lib/ensCache`, pinned by `verify:profile-identity` + `scripts/e2e/profile-identity.mjs`);
+case-normalization is load-bearing (everything lowercased before keying).
 
 ### Layer F — Data & platform infra
 

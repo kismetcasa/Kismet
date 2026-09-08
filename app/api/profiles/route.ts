@@ -20,10 +20,10 @@ const MAX_ADDRESSES = 50 // bound the fan-out; the client chunks larger sets
 // resolution is 2 eth_calls; before them, one cold 50-sender page kicked up
 // to 100 concurrent calls at the RPC — the exact burst that got the public
 // default endpoint rate-limited and the failures cached as "no ENS"):
-// at most ENS_INLINE_MAX misses resolve inline (same-tick, so viem's batch
-// transport collapses them), at most ENS_WARM_MAX more warm in the
-// background, and the rest stay cold for a later request or the client's
-// one-shot retry (components/MomentActivity) to pick up.
+// at most ENS_INLINE_MAX misses resolve inline (in parallel), at most
+// ENS_WARM_MAX more warm in the background, and the rest stay cold for a
+// later request or the client's one-shot retry (components/MomentActivity)
+// to pick up.
 const ENS_INLINE_MAX = 8
 const ENS_INLINE_BUDGET_MS = 500
 const ENS_WARM_MAX = 8
