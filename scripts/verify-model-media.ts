@@ -35,6 +35,7 @@ import {
   MODEL_MAX_BYTES,
   asGlbFile,
   inspectGlbFile,
+  MODEL_ENVIRONMENT,
   MODEL_SHADOW_INTENSITY,
   modelPosterBg,
   modelViewerBg,
@@ -192,6 +193,12 @@ check('backdrop: ids are unique (they are persisted in metadata)',
 // model read as a flat silhouette. Pin that we override it.
 check('backdrop: a grounding shadow is enabled (model-viewer defaults to none)',
   Number(MODEL_SHADOW_INTENSITY) > 0, MODEL_SHADOW_INTENSITY)
+// model-viewer's default environment ('neutral') is designed to flatten the
+// shading across a model's sides — the artist's "surfaces are hard to see".
+// Pin that we ask for a built-in studio (no fetch, no capture race) and not
+// the default. A URL here would be a different decision; see modelMedia.ts.
+check('lighting: the viewer asks for the keyed built-in studio, not the flat default',
+  MODEL_ENVIRONMENT === 'legacy', MODEL_ENVIRONMENT)
 
 // ── 4. Classification + the fail-safe shape ────────────────────────────────
 // The exact metadata MintForm writes for a 3D moment.

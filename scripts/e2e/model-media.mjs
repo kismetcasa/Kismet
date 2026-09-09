@@ -232,6 +232,8 @@ check('the picker offers all three backdrop options',
   String(await page.locator('button[aria-label^="Backdrop:"]').count()))
 check('the mint preview also renders the grounding shadow (it IS the poster source)',
   Number(await page.locator('model-viewer').getAttribute('shadow-intensity')) > 0)
+check('the mint preview lights the model with the keyed studio, not the flat default',
+  (await page.locator('model-viewer').getAttribute('environment-image')) === 'legacy')
 await page.locator('button[aria-label="Backdrop: dark"]').click()
 const darkCorner = await waitCorner(page, isDark)
 check('choosing "dark" actually changes the backdrop', isDark(darkCorner), JSON.stringify(darkCorner))
@@ -333,6 +335,10 @@ check('the live viewer renders on the SAME backdrop as the still, not transparen
 // flat silhouette without this, worst of all on the white default.
 check('a grounding shadow is enabled on the viewer',
   Number(await page.locator('model-viewer').getAttribute('shadow-intensity')) > 0)
+// Same lighting as the preview, or the live model would not match its own
+// poster.
+check('the viewer lights the model with the same studio as the preview',
+  (await page.locator('model-viewer').getAttribute('environment-image')) === 'legacy')
 await page.screenshot({ path: path.join(SHOTS, '05-detail-active.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
 
 // The still must fade out only AFTER the model paints.
