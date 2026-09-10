@@ -608,23 +608,29 @@ is the generated studio model-viewer shipped before 2.0 — a keyed side light
 with the same top-down falloff — and it is, as it happens, the lighting of
 the viewer Zora ran in the era the artist is comparing against.
 
-Other options were rendered and rejected. `exposure` brightens everything
-uniformly and adds no form. Every tone-mapping curve (`aces`, `agx`) trades
-contrast for saturation and none creates directional shading the environment
-does not have. A custom studio HDR gave the strongest modelling (top − bottom
-≈ 50) but is a fetched asset with an authoring decision inside it, and it
-belongs with an artist-facing control rather than a site default (item 3 in
-"Still left to be desired").
+`exposure` and the tone-mapping curves were rendered too and add no
+directional form; a custom HDR does, but fetches an asset and carries an
+authoring decision inside it, so it belongs with an artist-facing control
+rather than a site default.
 
 Shipped as `MODEL_ENVIRONMENT = 'legacy'` in `lib/media/modelMedia.ts`, on
 both the mint preview and the live viewer for the same reason as the shadow:
-the preview is the poster source. Two things make this safe rather than
-merely better: `legacy` is generated in the renderer exactly as `neutral` is
-(no request, no CSP surface), and `updateSource` awaits the environment
-alongside the model before dispatching `load`, so the capture on `load`
-already sees it. Exposure compensation applies to both built-in names, so
-overall brightness is unchanged and textured models render the same
-(checked on a checker-textured set: means within 4 luminance steps).
+the preview is the poster source. Safe rather than merely better: `legacy` is
+generated in the renderer exactly as `neutral` is — same 256 px cube target,
+same blur, both memoized, so no request, no CSP surface and no added cost —
+and `updateSource` awaits the environment before dispatching `load`, so the
+capture already sees it.
+
+**Checked for regression rather than assumed**, all through the real element:
+exposure compensation covers both built-in names, so brightness is unchanged,
+and textured (within 4 luminance steps), metallic (clipping 3.8% → 3.6%) and
+near-white models render the same. One material class shifts: a dark GLOSSY
+model on the dark backdrop sits ~25% dimmer, the light having concentrated
+into a key rather than a wash — its specular highlights read more clearly, and
+it is the accepted cost of fixing the matte case the artist actually raised.
+Moments minted before this keep posters baked under `neutral`, so their still
+and live view shade slightly differently — the same drift the grounding-shadow
+commit already accepted.
 
 Oracle 52 → 53 assertions; browser check 49 → 51.
 
@@ -704,14 +710,10 @@ Known and deliberate, in rough priority order:
    for a badge, and `PatronArtworkShowcase` is contractually "the image
    alone" — both render a model's still correctly and stay unadorned on
    purpose.
-3. **No per-artwork lighting control.** The site default is now the keyed
-   `legacy` studio rather than the flat `neutral` one (finding 23), and a
-   grounding shadow is on; neither is a choice the artist makes. If a model
-   wants its own look — a custom HDR, `exposure`, a softer or absent shadow —
-   the shape is the backdrop picker's: a persisted `kismet_*` id, applied to
-   the preview and the viewer alike so the poster matches. A custom HDR is
-   the one option that fetches an asset and it should stay opt-in for that
-   reason.
+3. **No per-artwork lighting control.** The site default is the keyed
+   `legacy` studio with a grounding shadow (findings 22-23); `environment-image`,
+   `exposure` and `shadow-intensity` are all available per element and none
+   are exposed to the artist.
 4. **The edit flow and the agent API create 3D moments (2026-09-02).** The
    edit flow reuses the mint form's pose-and-capture verbatim (`ModelPreview`
    + the shared `ModelPoseBar`, the identity-tracked pick, the same refusal
