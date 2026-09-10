@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
+import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock, Paperclip } from 'lucide-react'
@@ -42,6 +42,7 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { useMomentEditPermission, useMomentSaleEditPermission } from '@/hooks/useMomentEditPermission'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
+import { useUpdateMomentUri } from '@/hooks/useUpdateMomentUri'
 import type { WindowFieldEdit } from '@/lib/saleEdit'
 import type { OnchainSaleConfig } from '@/lib/saleConfig'
 import { toLocalInput, parseLocalInputSec } from '@/lib/datetimeLocal'
@@ -172,7 +173,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     : undefined
   const ensureConnected = useEnsureConnected()
   const armPendingAction = usePendingAction()
-  const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured, raffleEnabledKeys } = useAdmin()
   const { isInMiniApp } = useFarcaster()
 
@@ -531,22 +531,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  // On-chain edit authorization — the client mirror of update-uri's
-  // `canUpdateUri`. Lets moment co-admins (collection defaultAdmin +
-  // authorized creators, who hold ADMIN/METADATA but aren't the resolved
-  // creator) see the edit affordance, matching what the backend already
-  // authorizes. Skipped for the creator, whose pencil shows regardless.
-  const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
+  // On-chain edit authorization — the SAME rows Zora's updateTokenURI gate
+  // reads (ADMIN|METADATA on the token or collection-wide), because the save
+  // is a direct wallet write (useUpdateMomentUri) whose only backstop is a
+  // gas-estimation revert. No `isCreator` shortcut: a resolved creator without
+  // the bits (a MINTER-only grant in someone else's collection, or an
+  // attribution that outran the chain) must see no pencil rather than a wallet
+  // error. Co-admins who hold the bits (collection defaultAdmin / authorized
+  // creators) see it regardless of attribution.
+  const canEditMeta = useMomentEditPermission(address, tokenId)
   // Sale-window edit authorization — the ADMIN|SALES twin of canEditMeta,
-  // mirroring the exact bits Zora's callSale enforces. Deliberately NO
-  // `skip: isCreator` shortcut (unlike the metadata pencil): update-uri has a
-  // server preflight that turns an unauthorized creator into a clean 403, but
-  // a sale edit is a direct wallet write whose only backstop is a gas-
-  // estimation revert — so the affordance must not outrun the on-chain read.
-  // A resolved creator without the bits (e.g. a MINTER-only grant in someone
-  // else's collection) correctly sees no button instead of a wallet error.
+  // mirroring the exact bits Zora's callSale enforces. Like the metadata
+  // pencil, no `isCreator` shortcut: both are direct wallet writes whose only
+  // backstop is a gas-estimation revert, so neither affordance may outrun its
+  // on-chain read. A resolved creator without the bits (e.g. a MINTER-only
+  // grant in someone else's collection) sees no button instead of a wallet error.
   const canEditSale = useMomentSaleEditPermission(address, tokenId)
   const { updateWindow: updateSaleWindow, endNow: endSaleNow } = useUpdateMomentSale()
+  const { update: updateMomentUri } = useUpdateMomentUri()
   const queryClient = useQueryClient()
 
   // Moment admin per inprocess's momentAdmins (unordered; may include the
@@ -1365,31 +1367,28 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         })
       }
 
-      toast.loading('Sign update in wallet…', { id: 'edit-meta' })
-      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
-      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
-      const message = `Update Kismet metadata\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
-      const signature = await signMessageAsync({ message })
+      // Direct, artist-signed updateTokenURI from the connected wallet — the
+      // same admin-write family as the sale editor / airdrop / collection
+      // metadata. No relay, no platform key, no nonce dance: the wallet
+      // signature IS the authorization, checked by the contract against the
+      // same ADMIN|METADATA rows `canEditMeta` read to show the pencil.
+      toast.loading('Confirm in wallet…', { id: 'edit-meta' })
+      await updateMomentUri({
+        collection: address as `0x${string}`,
+        tokenId: BigInt(tokenId),
+        newUri,
+        onTxSubmitted: () => toast.loading('Updating on-chain…', { id: 'edit-meta' }),
+      })
 
-      toast.loading('Updating on-chain…', { id: 'edit-meta' })
-      const res = await fetch('/api/moment/update-uri', {
+      // Re-sync Kismet's moment-meta KV (the display name notifications + card
+      // overlays read) from CHAIN truth — the metadata twin of sale-refresh.
+      // Fire-and-forget: the optimistic swap below is what the editor sees,
+      // and inprocess's chain indexer converges the feed on its own cron.
+      void fetch('/api/moment/meta-refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          collectionAddress: address,
-          tokenId,
-          newUri,
-          callerAddress: connectedAddress,
-          signature,
-          nonce,
-          chainId: 8453,
-          displayName: editName.trim(),
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? data.detail ?? data.message ?? 'Update failed')
+        body: JSON.stringify({ collectionAddress: address, tokenId }),
+      }).catch(() => {})
 
       // Warm /api/img's edge cache for the new image so MomentImage's
       // proxy fallback hits cached bytes the moment the optimistic state
@@ -1756,15 +1755,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Edit metadata — any address the update-uri backend will
-                    authorize: the resolved creator, plus moment co-admins
-                    (collection defaultAdmin / authorized creators) surfaced
-                    by the on-chain `canEditMeta` read. Pencil expands into a
+                {/* Edit metadata — every address the on-chain updateTokenURI
+                    gate accepts (ADMIN|METADATA on the token or the
+                    collection): the creator when they hold the bits, plus
+                    moment co-admins (collection defaultAdmin / authorized
+                    creators). Gated purely on the `canEditMeta` chain read
+                    because the save is a direct wallet write — the affordance
+                    must never outrun the authorization. Pencil expands into a
                     full inline panel below the title to preserve spatial
-                    locality (you edit what you're looking at). Share +
-                    send moved to a single row beneath the action panel
-                    so secondary actions group together visually. */}
-                {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
+                    locality (you edit what you're looking at). */}
+                {canEditMeta && !editing && !editingSale && !managingFile && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1774,12 +1774,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     edit
                   </button>
                 )}
-                {/* Collector-file manager — same authorization as the
-                    metadata pencil (the server re-checks the on-chain
-                    ADMIN|METADATA bits), but its OWN panel: the metadata
-                    editor's save path drags an Arweave wait + a second
-                    signature + a chain write, none of which a file attach
-                    needs. Mutually exclusive with the sibling panels. */}
+                {/* Collector-file manager — the same on-chain ADMIN|METADATA
+                    bits as the metadata pencil, plus the creator shortcut,
+                    which is safe HERE because its server gate answers a clean
+                    403 (no wallet write to revert). Its OWN panel: the
+                    metadata editor's save path drags an Arweave wait + a
+                    wallet signature + a chain write, none of which a file
+                    attach needs. Mutually exclusive with the sibling panels. */}
                 {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
                   <button
                     onClick={() => setManagingFile(true)}

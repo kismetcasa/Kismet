@@ -57,6 +57,16 @@ function startBootTasks(): void {
     }
   })()
 
+  // Operator-wallet env-mirror invariant (pure env read, no I/O). A drift
+  // between OPERATOR_SMART_WALLET and its NEXT_PUBLIC_ mirror makes every
+  // form deploy grant ADMIN to a wallet inprocess never executes as — the
+  // on-chain checks above can't see it. See assertOperatorMirrorMatches.
+  void import('@/lib/healthcheck')
+    .then((m) => m.assertOperatorMirrorMatches())
+    .catch((err) =>
+      console.error('[instrumentation] operator env-mirror check failed (non-fatal):', err),
+    )
+
   // Warm the L1 caches every read-side route hits so the first request after
   // boot finds them hot. Fire-and-forget + per-getter try/catch so a transient
   // Redis blip at boot never delays serving. (created-mints needs no warmup:

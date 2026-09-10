@@ -192,7 +192,7 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:intent-nonce:{n}` | string '1' | SET NX EX 300 (`intentAuth.ts:40`) | ▶ consumed via DEL after EIP-712 verify (`:101`), per mint/write | 5 min | C |
 | `kismetart:nonce:{addr}` | string | SETEX 300 (`profile.ts:237`) | ▶ **GETDEL** consume (`:248`) — follow, profile PUT, listing cancel | 5 min | C |
 | `kismetart:rl:{route}:{ip\|id}` | string ctr | 🔥 EVAL INCR+EXPIRE — **every request**, ~56 sites/54 routes, all 60s windows, limits 5–120/min (`ratelimit.ts:38`) | (same EVAL) | 60s | **O** |
-| `kismetart:uq:{kind}:{addr}:d/w` | string ctr ×2 | ▶ EVAL two-bucket check+debit per paid action (`userQuota.ts:136`); kinds: mint 50/250, write 50/250, collection 25/100, transcode 30/120, distribute 100/400, sign-calls 200/1000, update-uri 50/200, upload-bytes 500MB/2GB | (inside EVAL) | 25h / 8d | **O**; admin bypass |
+| `kismetart:uq:{kind}:{addr}:d/w` | string ctr ×2 | ▶ EVAL two-bucket check+debit per paid action (`userQuota.ts:136`); kinds: mint 50/250, write 50/250, collection 25/100, transcode 30/120, distribute 100/400, sign-calls 200/1000, upload-bytes 500MB/2GB | (inside EVAL) | 25h / 8d | **O**; admin bypass |
 | `kismetart:lock:{label}` | string token | ⏱ SET NX EX 60 acquire + Lua CAD release (`leaderLock.ts:34,42`), 'sweep-listings' every 5 min | (in Lua) | 60s | acquire throws→skip |
 | `kismetart:fc:primary:{fid}` | string | SET EX 1h hit / 5m miss (`farcasterAuth.ts:69,77`) | 🔥 GET per Mini-App Bearer request fallback (`:54`) | 1h/5m; `''`=negative | O→live fetch |
 | `kismetart:fc:identity:{fid}` | string | SET on identity change; DEL self-clean/erase (`farcasterAuth.ts:157,127,167`) | 🔥 GET per Bearer request w/o FidProfile (`:118`) | **none** (legacy) | O |

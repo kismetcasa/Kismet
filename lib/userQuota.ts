@@ -27,7 +27,6 @@ export type QuotaKind =
   | 'upload-bytes'
   | 'sign-calls'
   | 'collection'
-  | 'update-uri'
   | 'distribute'
   | 'transcode'
   | 'cfile-upload'
@@ -63,9 +62,10 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // Collection registrations. Nobody legit creates 25/day; bounds feed/KV
   // spam. The on-chain deploy is the caller's own gas — this caps our side.
   'collection':   { day: 25,           week: 100            },
-  // Owner-gated inprocess-key actions that submit a sponsored on-chain tx
+  // Owner-gated inprocess-key action that submits a sponsored on-chain tx
   // (gas paid by the platform smart wallet). Above any legitimate cadence.
-  'update-uri':   { day: 50,           week: 200            },
+  // (The former 'update-uri' kind retired 2026-09: artwork metadata edits are
+  // artist-signed from the wallet now — no platform gas to meter.)
   'distribute':   { day: 100,          week: 400            },
   // Server-side GIF→MP4 transcodes. Each pulls up to MAX_GIF_BYTES of media +
   // an ffmpeg encode through the single MAX_CONCURRENT=1 slot, so this bounds

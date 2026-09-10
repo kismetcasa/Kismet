@@ -133,7 +133,7 @@ export type ManageVerdict = 'yes' | 'no' | 'unknown'
 
 /**
  * May `caller` manage this artwork's collector file? The exact on-chain
- * authorization update-uri uses (ADMIN|METADATA at the token, falling back to
+ * authorization the artwork metadata editor uses (ADMIN|METADATA at the token, falling back to
  * collection-wide tokenId 0, via the shared canEditMomentMetadata predicate) —
  * with one deliberate difference: a readPermissions THROW returns 'unknown'
  * so the route answers 503, not the misleading 403 a swallowed RPC outage
