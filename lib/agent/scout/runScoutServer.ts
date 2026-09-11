@@ -15,8 +15,8 @@ import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
 import { writeNotification } from '@/lib/notifications'
-import { planRun, type BudgetUsage } from './engine'
-import { getScout, saveScout } from './store'
+import { planRun, type BudgetUsage, type Decision, type SkipReason } from './engine'
+import { getScout, saveScout, type ScoutLastRun } from './store'
 import { discoverCore } from './discoverCore'
 import { createSpendPermissionExecutor } from './serverExecutor'
 import { drainSupersededPermissions } from './revoke'
@@ -26,6 +26,39 @@ export interface ServerRunSummary {
   collected: number
   skipped: number
   reason?: string
+  /** Per-reason counts of the engine's policy skips, when a plan was made. */
+  skips?: Partial<Record<SkipReason, number>>
+}
+
+function countSkips(decisions: readonly Decision[]): Partial<Record<SkipReason, number>> | undefined {
+  const out: Partial<Record<SkipReason, number>> = {}
+  let any = false
+  for (const d of decisions) {
+    if (d.action !== 'skip') continue
+    out[d.reason] = (out[d.reason] ?? 0) + 1
+    any = true
+  }
+  return any ? out : undefined
+}
+
+/** Persist the outcome for the owner's card. Re-reads first and writes NOTHING
+ *  when the record is gone (never resurrect a deleted agent). Cosmetic: a
+ *  failure here changes nothing about what was spent. */
+async function recordLastRun(owner: string, summary: ServerRunSummary, at: number): Promise<void> {
+  try {
+    const fresh = await getScout(owner)
+    if (!fresh) return
+    const lastRun: ScoutLastRun = {
+      at,
+      collected: summary.collected,
+      skipped: summary.skipped,
+      ...(summary.reason ? { reason: summary.reason } : {}),
+      ...(summary.skips ? { skips: summary.skips } : {}),
+    }
+    await saveScout({ ...fresh, lastRun })
+  } catch {
+    /* cosmetic */
+  }
 }
 
 /** The user's collected set as `collection:tokenId` keys, so a new run only
@@ -86,8 +119,19 @@ export async function runScoutServer(params: {
   spender: ScoutSpender
   now?: number
 }): Promise<ServerRunSummary> {
-  const { owner, baseUrl, spender } = params
   const now = params.now ?? Math.floor(Date.now() / 1000)
+  const summary = await runCore({ ...params, now })
+  // Every outcome the owner can act on is recorded (nothing new, over budget,
+  // a mid-run stop, failures); an entry-level kill switch or a missing agent
+  // touches no record.
+  if (summary.reason !== 'kill switch engaged' && summary.reason !== 'no agent') {
+    await recordLastRun(params.owner, summary, now)
+  }
+  return summary
+}
+
+async function runCore(params: { owner: string; baseUrl: string; spender: ScoutSpender; now: number }): Promise<ServerRunSummary> {
+  const { owner, baseUrl, spender, now } = params
 
   // Emergency stop — fail CLOSED (lib/agent/scout/killSwitch): a Redis blip
   // during an incident must not resume autonomous spending.
@@ -137,8 +181,9 @@ export async function runScoutServer(params: {
   // (resolved above), so the off-chain item counter mirrors the SpendPermissionManager
   // exactly and can't drift by a period under clock skew near a boundary.
   const plan = planRun(scout, candidates, usage, now, planOwned, periodStart)
+  const skips = countSkips(plan.decisions)
   if (plan.toCollect.length === 0) {
-    return { collected: 0, skipped: plan.decisions.length, reason: 'nothing within your budget/policy' }
+    return { collected: 0, skipped: plan.decisions.length, reason: 'nothing within your budget/policy', skips }
   }
 
   // 3. Execute each: spend (bounded) + mint to the user, via the spender. The
@@ -179,6 +224,16 @@ export async function runScoutServer(params: {
       const { txHash, quantity } = await executor.collect(scout, candidate)
       await recordCollect(baseUrl, owner, candidate, txHash, Number(quantity))
       collected += 1
+      // One notice per artwork, carrying the token so the bell links to it.
+      await writeNotification({
+        type: 'agent_collect',
+        recipient: owner,
+        amount: Number(quantity),
+        currency: candidate.currency,
+        tokenAddress: candidate.collection,
+        tokenId: candidate.tokenId,
+        ...(candidate.name ? { tokenName: candidate.name } : {}),
+      }).catch(() => {})
     } catch (err) {
       failed += 1
       // Surface WHY a collect failed. Without this the autonomous path is blind:
@@ -227,14 +282,6 @@ export async function runScoutServer(params: {
   } catch {
     /* the on-chain cap is the real guard; a stale stored count is harmless */
   }
-  if (collected > 0) {
-    await writeNotification({
-      type: 'agent_collect',
-      recipient: owner,
-      amount: collected,
-      currency: scout.budget.currency,
-    })
-  }
 
   // One run-summary line, emitted ONLY when collects actually failed (a healthy or
   // quiet run stays silent — no log noise). `allFailed` flags the emergency: every
@@ -264,5 +311,5 @@ export async function runScoutServer(params: {
         : `${failed} of ${plan.toCollect.length} collect(s) failed: ${firstFailure}`
   }
 
-  return { collected, skipped, reason }
+  return { collected, skipped, reason, skips }
 }

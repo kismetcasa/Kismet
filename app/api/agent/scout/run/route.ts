@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { getSessionAddress } from '@/lib/session'
 import { redis } from '@/lib/redis'
 import { getScoutSpender, type ScoutSpender } from '@/lib/agent/scout/spender'
 import { runScoutServer } from '@/lib/agent/scout/runScoutServer'
+import { drainPendingRevokes } from '@/lib/agent/scout/pendingRevokes'
 import { SITE_URL } from '@/lib/siteUrl'
 
 export const runtime = 'nodejs'
@@ -43,6 +44,10 @@ export async function POST(req: NextRequest) {
     try { await redis.del(lockKey) } catch {}
     return errorResponse(503, e instanceof Error ? e.message : 'Agent spender not configured')
   }
+
+  // With the spender in hand, retry any grant a turn-off could not revoke (see
+  // pendingRevokes) — post-response, so it never delays this user's run.
+  after(() => drainPendingRevokes(spender).catch(() => {}))
 
   try {
     const summary = await runScoutServer({ owner, baseUrl: SITE_URL, spender })

@@ -9,9 +9,17 @@ import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 import { getScoutSpender } from '@/lib/agent/scout/spender'
 import { revokePermissionsAsSpender, permKey } from '@/lib/agent/scout/revoke'
+import { queuePendingRevokes } from '@/lib/agent/scout/pendingRevokes'
 import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
 
 export const runtime = 'nodejs'
+// DELETE waits (bounded) for the spender's on-chain revoke; give it room past the
+// platform default. A Vercel-only hint; a no-op self-hosted.
+export const maxDuration = 60
+// How long DELETE waits for the revoke to land before answering `revoked: false`
+// and letting it finish in the background (a user op on Base usually lands in a
+// few seconds; the spender mutex can add a wait behind a run in flight).
+const REVOKE_BUDGET_MS = 20_000
 
 /**
  * Per-user Scout config (the budgeted, artist-watching Agent Collect engine).
@@ -36,6 +44,7 @@ export async function GET(req: NextRequest) {
     // so the panel can show live status + revoke. `away` = unattended opted in.
     permission: record?.permission ?? null,
     away: record?.away ?? false,
+    lastRun: record?.lastRun ?? null,
   })
 }
 
@@ -44,31 +53,51 @@ export async function DELETE(req: NextRequest) {
   if (!owner) return errorResponse(401, 'Sign in to continue')
   // Capture the grants BEFORE deleting the record so we can retire them. Turning
   // the agent off must revoke EVERY live permission to our spender — the current
-  // one AND any budget-superseded ones still queued — not just the current (which
-  // the client attempts, user-signed and cancellable). Grants are created without
+  // one AND any budget-superseded ones still queued. Grants are created without
   // an `end`, so an un-revoked permission never expires and stays a spendable,
-  // UI-invisible authorization to our spender forever. Revoke server-side via the
-  // spender (revokeAsSpender — no user signature), post-response + best-effort so
-  // the turn-off stays fast and a revoke hiccup can't fail it.
+  // UI-invisible authorization to our spender forever.
+  //
+  // Revoke server-side via the spender (revokeAsSpender — no user signature) and
+  // WAIT for it within a budget, so the client learns whether the grant is dead
+  // (`revoked`) and asks the wallet for a user-signed revoke only when it isn't.
+  // Whatever fails or outlives the budget is queued for retry (the record is gone,
+  // so the per-record superseded queue can't hold it) and keeps running past the
+  // response; a later success is idempotent (an already-revoked grant drops out
+  // of the queue on the next drain). A revoke hiccup never fails the turn-off.
   const record = await getScout(owner)
   await deleteScout(owner)
   const toRevoke = [record?.permission, ...(record?.supersededPermissions ?? [])].filter(
     (p): p is StoredSpendPermission => !!p,
   )
-  if (toRevoke.length > 0) {
-    after(async () => {
-      try {
-        const spender = await getScoutSpender()
-        await revokePermissionsAsSpender(toRevoke, spender)
-      } catch (err) {
-        console.error('[scout] revoke-on-delete failed', {
-          owner,
-          err: err instanceof Error ? err.message : String(err),
-        })
-      }
-    })
+  if (toRevoke.length === 0) return NextResponse.json({ ok: true, revoked: true })
+
+  const revoke = (async (): Promise<boolean> => {
+    try {
+      const spender = await getScoutSpender()
+      const failed = await revokePermissionsAsSpender(toRevoke, spender)
+      if (failed.length > 0) await queuePendingRevokes(owner, failed)
+      return failed.length === 0
+    } catch (err) {
+      console.error('[scout] revoke-on-delete failed', {
+        owner,
+        err: err instanceof Error ? err.message : String(err),
+      })
+      await queuePendingRevokes(owner, toRevoke).catch(() => {})
+      return false
+    }
+  })()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), REVOKE_BUDGET_MS)
+  })
+  const outcome = await Promise.race([revoke, budget]).finally(() => clearTimeout(timer))
+  if (outcome === null) {
+    // Still in flight: queue now (so a process exit can't strand the grant) and
+    // let the submission finish after the response.
+    await queuePendingRevokes(owner, toRevoke).catch(() => {})
+    after(() => revoke)
   }
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, revoked: outcome === true })
 }
 
 export async function PUT(req: NextRequest) {

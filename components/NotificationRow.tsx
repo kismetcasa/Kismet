@@ -26,8 +26,10 @@ function notificationHref(n: Notification): string {
       // Collection-level grant — no specific tokenId.
       return n.tokenAddress ? `/collection/${n.tokenAddress}` : '/'
     case 'agent_collect':
-      // Agent collected into the user's own collection — link to their profile.
-      return `/profile/${n.recipient}`
+      // Agent collected into the user's own collection — the artwork when the
+      // notice names it (every notice does since per-collect notices), else
+      // their profile (older aggregate notices).
+      return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : `/profile/${n.recipient}`
     case 'collect':
     case 'sale':
     case 'mint':
@@ -188,7 +190,12 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
-            your agent collected {n.amount && n.amount > 1 ? `${n.amount} artworks` : 'an artwork'}
+            your agent collected{' '}
+            {n.tokenName
+              ? `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}"${n.tokenName}"`
+              : n.amount && n.amount > 1
+                ? `${n.amount} artworks`
+                : 'an artwork'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} · ` : ''}{time}

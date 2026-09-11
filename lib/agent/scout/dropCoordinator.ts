@@ -21,7 +21,7 @@ import { redis } from '@/lib/redis'
 import { serverBaseClient, sdkRpcOptions } from '@/lib/rpc'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { readMintFeeWithBound } from '@/lib/zoraMint'
-import { writeNotification } from '@/lib/notifications'
+import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
 import { isValidTokenId } from '@/lib/address'
@@ -233,6 +233,8 @@ export async function runDropCoordination(
   let collected = 0
   let recipients = 0
   let failed = 0
+  // Title for the owner's notice (cosmetic; Kismet's own moment metadata).
+  const dropName = (await getMomentMeta(drop.collection, drop.tokenId).catch(() => null))?.name
   for (const a of allocations) {
     // Honor an emergency stop BETWEEN allocations, not just at coordination entry:
     // a large drop fans out to many watchers, and an operator engaging the kill
@@ -259,13 +261,23 @@ export async function runDropCoordination(
     try {
       const { txHash } = await collectViaSpendPermission({ permission: liveRec.permission, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
       await recordCollect(baseUrl, b.owner, drop, currency, a.editions, txHash)
-      // Tell the user their agent collected (mirrors the on-open run's notice).
-      await writeNotification({ type: 'agent_collect', recipient: b.owner, amount: a.editions, currency }).catch(() => {})
+      // Tell the user their agent collected (mirrors the on-open run's notice),
+      // carrying the token so the bell links to the artwork.
+      await writeNotification({
+        type: 'agent_collect',
+        recipient: b.owner,
+        amount: a.editions,
+        currency,
+        tokenAddress: drop.collection,
+        tokenId: drop.tokenId,
+        ...(dropName ? { tokenName: dropName } : {}),
+      }).catch(() => {})
       // Decrement this watcher's per-period DROP budget — one coordinated drop is
       // one item regardless of editions — so maxItemsPerPeriod stays enforced
       // across the coordinator + on-open paths (the on-chain allowance is still the
       // hard dollar cap). Best-effort, anchored to the watcher's on-chain period.
-      await bumpItemUsage(b.record, b.periodStart).catch(() => {})
+      // The same write records the run for the owner's card.
+      await bumpItemUsage(b.record, b.periodStart, a.editions).catch(() => {})
       collected += a.editions
       recipients += 1
     } catch (err) {
@@ -333,7 +345,7 @@ async function readBalances(
  *  the record (to reduce clobbering a concurrent on-open update), rolls to the
  *  on-chain period anchor, then saves. Best-effort; the on-chain Spend Permission
  *  allowance is the authoritative cap regardless of this off-chain counter. */
-async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<void> {
+async function bumpItemUsage(record: ScoutRecord, periodStart: number, editions: number): Promise<void> {
   const fresh = await getScout(record.scout.owner)
   if (!fresh) return // record was deleted mid-coordination (user turned off) — never resurrect it
   const u = fresh.usage
@@ -341,7 +353,8 @@ async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<
     u.periodStart === periodStart
       ? { ...u, itemsThisPeriod: u.itemsThisPeriod + 1 }
       : { periodStart, spentThisPeriod: '0', itemsThisPeriod: 1 }
-  await saveScout({ ...fresh, usage })
+  const lastRun = { at: Math.floor(Date.now() / 1000), collected: editions, skipped: 0, reason: 'collected a new drop the moment it landed' }
+  await saveScout({ ...fresh, usage, lastRun })
 }
 
 /** Record one verified collect on the proof-gated /api/collect (it re-checks the

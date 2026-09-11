@@ -21,6 +21,7 @@ import {
   isPermissionActive,
   freshUsage,
 } from '../lib/agent/scout/engine.ts'
+import { SKIP_REASON_LABEL, describeSkips } from '../lib/agent/scout/skipReasons.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -174,6 +175,15 @@ console.log('\nplanRun — accumulation honors caps across the basket')
   const dup = cand({ tokenId: '7', pricePerToken: '1000000' })
   const plan = planRun(mkScout(), [dup, { ...dup }], usage(), NOW)
   check('dedupe within batch: 2nd identical skips already-collected', plan.toCollect.length === 1 && plan.decisions[1].action === 'skip' && plan.decisions[1].reason === 'already-collected')
+}
+
+// ── Owner-facing skip wording (lib/agent/scout/skipReasons) ──────────────────
+console.log('\nskipReasons — owner-facing run history')
+{
+  check('every engine SkipReason has a label', (['paused', 'permission-inactive', 'currency-mismatch', 'collection-blocked', 'creator-blocked', 'collection-not-allowed', 'creator-not-allowed', 'media-type-not-allowed', 'already-collected', 'over-item-price', 'period-item-limit', 'insufficient-budget'] as const).every((r) => typeof SKIP_REASON_LABEL[r] === 'string' && SKIP_REASON_LABEL[r].length > 0))
+  const described = describeSkips({ 'already-collected': 1, 'over-item-price': 2, 'insufficient-budget': 0 })
+  check('describeSkips: largest first, zero counts dropped', described === '2 over your per-item cap, 1 already collected', described ?? undefined)
+  check('describeSkips: nothing skipped → null', describeSkips({}) === null && describeSkips(undefined) === null && describeSkips(null) === null)
 }
 
 console.log(`\n${failures === 0 ? 'OK — scout engine: all assertions passed' : `FAILED — ${failures} assertion(s)`}`)

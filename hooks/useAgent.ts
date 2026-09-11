@@ -25,6 +25,7 @@ import {
   type ScoutPermission,
 } from '@/lib/agent/scout/grantBudget'
 import type { BudgetUsage, Scout } from '@/lib/agent/scout/engine'
+import type { ScoutLastRun } from '@/lib/agent/scout/store'
 
 export interface WatchedArtist {
   address: string
@@ -46,11 +47,9 @@ export interface AgentConfigInput {
 }
 
 type BudgetStatus = Awaited<ReturnType<typeof scoutBudgetStatus>>
-interface RunResult {
-  collected: number
-  skipped: number
-  reason?: string
-}
+/** The latest run's outcome — persisted server-side (ScoutLastRun) and also
+ *  what a "Run now" just returned. */
+type RunResult = ScoutLastRun
 
 interface AgentState {
   scout: Scout | null
@@ -63,7 +62,7 @@ interface AgentState {
 const EMPTY: AgentState = { scout: null, usage: null, artistLabels: null, permission: null, away: false }
 
 export function useAgent() {
-  const { eligible, loading: eligLoading } = useSmartWalletAgentEligibility()
+  const { eligible, loading: eligLoading, reason: eligibilityReason } = useSmartWalletAgentEligibility()
   const { ensureSession } = useUploadSession()
   const [state, setState] = useState<AgentState>(EMPTY)
   const [status, setStatus] = useState<BudgetStatus | null>(null)
@@ -87,7 +86,7 @@ export function useAgent() {
       try {
         const r = await fetch('/api/agent/scout')
         if (r.ok) {
-          const d = (await r.json()) as AgentState
+          const d = (await r.json()) as AgentState & { lastRun?: RunResult | null }
           if (!cancelled) {
             setState({
               scout: d.scout ?? null,
@@ -96,6 +95,7 @@ export function useAgent() {
               permission: d.permission ?? null,
               away: !!d.away,
             })
+            if (d.lastRun) setLastRun(d.lastRun)
           }
         }
       } catch {
@@ -183,9 +183,10 @@ export function useAgent() {
     setError(null)
     try {
       const r = await fetch('/api/agent/scout/run', { method: 'POST' })
-      const d = (await r.json().catch(() => ({}))) as RunResult & { ran?: boolean; error?: string; reason?: string }
-      if (r.ok && d.ran) setLastRun({ collected: d.collected ?? 0, skipped: d.skipped ?? 0, reason: d.reason })
-      else if (!r.ok) setError(d.error ?? 'Run failed')
+      const d = (await r.json().catch(() => ({}))) as Partial<RunResult> & { ran?: boolean; error?: string }
+      if (r.ok && d.ran) {
+        setLastRun({ at: Math.floor(Date.now() / 1000), collected: d.collected ?? 0, skipped: d.skipped ?? 0, reason: d.reason, skips: d.skips })
+      } else if (!r.ok) setError(d.error ?? 'Run failed')
       if (state.permission) scoutBudgetStatus(state.permission).then(setStatus).catch(() => {})
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Run failed')
@@ -212,21 +213,29 @@ export function useAgent() {
     [state.scout, state.away, state.artistLabels],
   )
 
-  /** Revoke the budget on-chain + delete the Kismet record. */
+  /** Turn off: delete the Kismet record; the server revokes the budget grant
+   *  itself (revokeAsSpender — no wallet prompt) and says whether it landed.
+   *  Only when it could not confirm do we ask the wallet for a user-signed
+   *  revoke; if that is declined, Kismet keeps retrying in the background. */
   const remove = useCallback(async (): Promise<void> => {
     setError(null)
     try {
-      if (state.permission) {
+      const r = await fetch('/api/agent/scout', { method: 'DELETE' })
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; revoked?: boolean; error?: string }
+      if (!r.ok) throw new Error(d.error ?? 'Could not turn off the agent')
+      let note: string | null = null
+      if (d.revoked !== true && state.permission) {
         try {
           await revokeScoutBudget(state.permission)
         } catch {
-          /* user may cancel; still delete the Kismet record */
+          note =
+            'Agent Collect is off. Its budget grant is still being revoked — Kismet keeps retrying, and you can revoke it from your Base Account any time.'
         }
       }
-      await fetch('/api/agent/scout', { method: 'DELETE' })
       setState(EMPTY)
       setStatus(null)
       setLastRun(null)
+      if (note) setError(note)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not turn off the agent')
     }
@@ -243,6 +252,7 @@ export function useAgent() {
 
   return {
     eligible,
+    eligibilityReason,
     configured,
     loading: eligLoading || loading,
     scout: state.scout,

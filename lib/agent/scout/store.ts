@@ -10,8 +10,21 @@
  */
 
 import { redis } from '@/lib/redis'
-import type { BudgetUsage, Scout } from './engine'
+import type { BudgetUsage, Scout, SkipReason } from './engine'
 import type { StoredSpendPermission } from './serverExecutor'
+
+/** Outcome of the latest server run — on-open / "Run now" (runScoutServer) or a
+ *  coordinated drop (dropCoordinator) — for the profile card. Written only by
+ *  those run paths, never by the client. */
+export interface ScoutLastRun {
+  /** Unix seconds. */
+  at: number
+  collected: number
+  skipped: number
+  reason?: string
+  /** Per-reason skip counts from the engine's plan, when one was made. */
+  skips?: Partial<Record<SkipReason, number>>
+}
 
 export interface ScoutRecord {
   scout: Scout
@@ -30,6 +43,8 @@ export interface ScoutRecord {
    *  spender-side revoke (revokeAsSpender, no user signature) on the next run — so
    *  changing the budget doesn't leave an orphaned active grant. */
   supersededPermissions?: StoredSpendPermission[]
+  /** What the agent last did, for the owner's card (see ScoutLastRun). */
+  lastRun?: ScoutLastRun
 }
 
 const key = (owner: string) => `kismetart:scout:${owner.toLowerCase()}`

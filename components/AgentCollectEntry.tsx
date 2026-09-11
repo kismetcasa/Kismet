@@ -18,9 +18,18 @@ import { useState } from 'react'
 import { formatUnits } from 'viem'
 import { ChevronRight } from 'lucide-react'
 import { useAgent } from '@/hooks/useAgent'
+import { formatRelativeTime } from '@/lib/inprocess'
+import type { ScoutLastRun } from '@/lib/agent/scout/store'
 import { AgentCollectPanel } from './AgentCollectPanel'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
+
+/** `Last run 3h ago · collected 1` / `· nothing new from your artists`. */
+function lastRunLine(r: ScoutLastRun): string {
+  const when = formatRelativeTime(r.at)
+  const what = r.collected > 0 ? `collected ${r.collected}` : (r.reason ?? 'nothing to collect')
+  return `Last run ${when === 'just now' ? when : `${when} ago`} · ${what}`
+}
 
 export function AgentCollectEntry() {
   const ag = useAgent()
@@ -28,8 +37,23 @@ export function AgentCollectEntry() {
   useBodyScrollLock(open)
   useEscapeKey(() => setOpen(false), open)
 
-  // Same audience as the old panel — smart-wallet Base Accounts only.
-  if (ag.loading || !ag.eligible) return null
+  if (ag.loading) return null
+  // Smart-wallet Base Accounts only. A plain EOA can't grant the Spend
+  // Permission the agent runs on — say so once instead of hiding the feature.
+  // When no wallet is connected, or the check itself failed (RPC), stay silent:
+  // nothing is claimed either way.
+  if (!ag.eligible) {
+    if (ag.eligibilityReason !== 'eoa') return null
+    return (
+      <div className="border border-line bg-surface/40 px-4 py-3">
+        <p className="text-[10px] font-mono uppercase tracking-wider text-dim mb-1">Agent Collect</p>
+        <p className="text-xs font-mono text-dim leading-relaxed">
+          Needs a Base Account (smart wallet). The wallet you’re signed in with can’t grant the spend permission
+          the agent runs on — sign in with your Base Account to auto-collect new drops from artists you choose.
+        </p>
+      </div>
+    )
+  }
 
   // Spender not wired on this deployment → the feature can't run. Show a subdued,
   // non-interactive note (no dead modal), mirroring the panel's own coming-soon state.
@@ -92,6 +116,9 @@ export function AgentCollectEntry() {
           <span className={`text-xs font-mono leading-relaxed ${summaryClass}`}>{summary}</span>
           <ChevronRight size={14} className="shrink-0 text-muted group-hover:text-dim transition-colors" aria-hidden="true" />
         </div>
+        {scout && ag.lastRun && !ag.running && (
+          <p className="text-[10px] font-mono text-dim mt-1 truncate">{lastRunLine(ag.lastRun)}</p>
+        )}
       </button>
 
       {open && (

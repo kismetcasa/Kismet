@@ -17,6 +17,9 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { formatUnits, isAddress } from 'viem'
 import { useAgent, type AgentConfigInput, type WatchedArtist } from '@/hooks/useAgent'
+import { describeSkips } from '@/lib/agent/scout/skipReasons'
+import { formatRelativeTime } from '@/lib/inprocess'
+import type { ScoutLastRun } from '@/lib/agent/scout/store'
 
 const PERIODS = [
   { label: 'per day', days: 1 },
@@ -26,6 +29,16 @@ const PERIODS = [
 
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 const label = (a: WatchedArtist) => a.username || short(a.address)
+
+/** `Last run 3h ago: collected 1, skipped 2 — 2 over your per-item cap.` */
+function lastRunText(r: ScoutLastRun): string {
+  const when = formatRelativeTime(r.at)
+  const head = `Last run ${when === 'just now' ? when : `${when} ago`}: `
+  const body =
+    r.collected > 0 ? `collected ${r.collected}${r.skipped ? `, skipped ${r.skipped}` : ''}` : (r.reason ?? 'nothing to collect')
+  const skips = describeSkips(r.skips)
+  return `${head}${body}${skips ? ` — ${skips}` : ''}.`
+}
 
 export function AgentCollectPanel({
   ag,
@@ -41,6 +54,11 @@ export function AgentCollectPanel({
 }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Validation messages appear after the first save attempt and track the
+  // inputs live from then on, so a fix clears its own message.
+  const [attempted, setAttempted] = useState(false)
+  // "Turn off" is a two-step: it revokes the budget grant, so confirm first.
+  const [confirmOff, setConfirmOff] = useState(false)
 
   // Setup form state.
   const [artists, setArtists] = useState<WatchedArtist[]>([])
@@ -113,27 +131,43 @@ export function AgentCollectPanel({
     setResults([])
   }
 
-  async function save() {
+  /** The first thing wrong with the form, in the user's words, or null. Mirrors
+   *  what the server (PUT /api/agent/scout) rejects, so nothing is signed for a
+   *  config that would then fail to save. */
+  function validate(): string | null {
+    if (artists.length === 0) return 'Add at least one artist to watch.'
     const v = parseFloat(amount)
+    if (!amount || Number.isNaN(v) || v <= 0) return 'Enter a budget above 0.'
     const mi = parseFloat(maxItem)
+    if (!maxItem || Number.isNaN(mi) || mi <= 0) return 'Enter a max per item above 0.'
+    if (mi > v) return 'Max per item can’t exceed the budget — nothing would ever be collected.'
     const n = parseInt(maxItems, 10)
-    const ed = mode === 'editions' ? parseInt(editions, 10) : 1
-    if (artists.length === 0 || !amount || Number.isNaN(v) || v <= 0) return
-    if (!maxItem || Number.isNaN(mi) || mi <= 0 || !Number.isInteger(n) || n < 1) return
-    if (mode === 'editions' && (!Number.isInteger(ed) || ed < 1 || ed > 10)) return
+    if (!Number.isInteger(n) || n < 1) return 'Items per period must be at least 1.'
+    if (mode === 'editions') {
+      const ed = parseInt(editions, 10)
+      if (!Number.isInteger(ed) || ed < 1 || ed > 10) return 'Editions per drop must be between 1 and 10.'
+    }
+    return null
+  }
+  const problem = attempted ? validate() : null
+
+  async function save() {
+    setAttempted(true)
+    if (validate()) return
     const cfg: AgentConfigInput = {
       artists,
       currency,
       allowance: amount,
       periodInDays: periodDays,
       maxItemPrice: maxItem,
-      maxItemsPerPeriod: n,
-      maxEditionsPerDrop: ed,
+      maxItemsPerPeriod: parseInt(maxItems, 10),
+      maxEditionsPerDrop: mode === 'editions' ? parseInt(editions, 10) : 1,
     }
     setSaving(true)
     try {
       await ag.save(cfg)
       setEditing(false)
+      setAttempted(false)
     } catch {
       // surfaced via ag.error
     } finally {
@@ -204,12 +238,8 @@ export function AgentCollectPanel({
           </p>
 
           {ag.lastRun ? (
-            <p className="text-[10px] font-mono text-subtle leading-relaxed">
-              {ag.running
-                ? 'Checking your artists…'
-                : ag.lastRun.collected > 0
-                  ? `Last run: collected ${ag.lastRun.collected}${ag.lastRun.skipped ? `, skipped ${ag.lastRun.skipped}` : ''}.`
-                  : `Last run: ${ag.lastRun.reason ?? 'nothing to collect'}.`}
+            <p className="text-[10px] font-mono text-dim leading-relaxed">
+              {ag.running ? 'Checking your artists…' : lastRunText(ag.lastRun)}
             </p>
           ) : active ? (
             <p className="text-[10px] font-mono text-subtle leading-relaxed">
@@ -217,29 +247,57 @@ export function AgentCollectPanel({
             </p>
           ) : null}
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => void ag.runNow()}
-              disabled={busy || !active}
-              className="text-xs font-mono uppercase tracking-wider px-3 py-2 btn-accent disabled:opacity-50"
-            >
-              {ag.running ? 'collecting…' : 'Run now'}
-            </button>
-            <button
-              onClick={startEdit}
-              disabled={busy}
-              className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => void ag.remove()}
-              disabled={busy}
-              className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
-            >
-              Turn off
-            </button>
-          </div>
+          {confirmOff ? (
+            <div className="border border-line p-3 space-y-2">
+              <p className="text-xs font-mono text-ink leading-relaxed">Turn off Agent Collect?</p>
+              <p className="text-[10px] font-mono text-dim leading-relaxed">
+                This revokes the agent’s budget grant and stops all collecting. You can set it up again any time.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setConfirmOff(false)
+                    void ag.remove()
+                  }}
+                  disabled={busy}
+                  className="text-xs font-mono uppercase tracking-wider px-3 py-2 btn-accent disabled:opacity-50"
+                >
+                  Turn off
+                </button>
+                <button
+                  onClick={() => setConfirmOff(false)}
+                  disabled={busy}
+                  className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-dim transition-colors disabled:opacity-50"
+                >
+                  Keep
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => void ag.runNow()}
+                disabled={busy || !active}
+                className="text-xs font-mono uppercase tracking-wider px-3 py-2 btn-accent disabled:opacity-50"
+              >
+                {ag.running ? 'collecting…' : 'Run now'}
+              </button>
+              <button
+                onClick={startEdit}
+                disabled={busy}
+                className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+              >
+                Edit
+              </button>
+              <button
+                onClick={() => setConfirmOff(true)}
+                disabled={busy}
+                className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-accent hover:text-accent transition-colors disabled:opacity-50"
+              >
+                Turn off
+              </button>
+            </div>
+          )}
         </>
       )}
 
@@ -446,14 +504,17 @@ export function AgentCollectPanel({
           <div className="flex gap-2">
             <button
               onClick={save}
-              disabled={busy || artists.length === 0 || !amount || !maxItem || (mode === 'editions' && !editions)}
+              disabled={busy}
               className="text-xs font-mono uppercase tracking-wider px-3 py-2 btn-accent disabled:opacity-50"
             >
               {saving ? 'approving…' : ag.scout ? 'Save' : 'Approve & start'}
             </button>
             {ag.scout && (
               <button
-                onClick={() => setEditing(false)}
+                onClick={() => {
+                  setEditing(false)
+                  setAttempted(false)
+                }}
                 disabled={busy}
                 className="text-xs font-mono uppercase tracking-wider px-3 py-2 border border-line text-dim hover:border-dim transition-colors disabled:opacity-50"
               >
@@ -461,6 +522,7 @@ export function AgentCollectPanel({
               </button>
             )}
           </div>
+          {problem && <p className="text-[10px] font-mono text-dim italic">{problem}</p>}
         </div>
       )}
 

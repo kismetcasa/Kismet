@@ -23,6 +23,10 @@ import { base } from 'wagmi/chains'
 interface Eligibility {
   eligible: boolean
   loading: boolean
+  /** Why not eligible: no wallet connected; a plain EOA (both checks answered
+   *  and said no — the one case worth explaining to the user); or the checks
+   *  themselves failed (RPC), so nothing is claimed. */
+  reason?: 'not-connected' | 'eoa' | 'unknown'
 }
 
 type Eip1193 = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> }
@@ -34,7 +38,7 @@ export function useSmartWalletAgentEligibility(): Eligibility {
 
   useEffect(() => {
     if (!isConnected || !address || !publicClient) {
-      setState({ eligible: false, loading: false })
+      setState({ eligible: false, loading: false, reason: 'not-connected' })
       return
     }
 
@@ -43,6 +47,7 @@ export function useSmartWalletAgentEligibility(): Eligibility {
 
     void (async () => {
       let eligible = false
+      let reason: Eligibility['reason'] = 'eoa'
       // 1. EIP-5792 capability check via the connected provider.
       try {
         const provider = (await connector?.getProvider?.()) as Eip1193 | undefined
@@ -68,10 +73,11 @@ export function useSmartWalletAgentEligibility(): Eligibility {
           eligible = !!code && code !== '0x'
         } catch {
           eligible = false
+          reason = 'unknown'
         }
       }
 
-      if (!cancelled) setState({ eligible, loading: false })
+      if (!cancelled) setState(eligible ? { eligible, loading: false } : { eligible, loading: false, reason })
     })()
 
     return () => {

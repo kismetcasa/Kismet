@@ -65,9 +65,16 @@ interface StoredVal {
 }
 const redisStore = new Map<string, StoredVal>()
 let redisFailing = false
+// Sorted-set writes (the notification inbox is a ZADD per notice) — recorded,
+// not modelled, so a test can count what was written.
+const zadds: { key: string; member: string }[] = []
 
 function execRedisCommand(cmd: unknown[]): unknown {
   const op = String(cmd[0]).toUpperCase()
+  if (op === 'ZADD') {
+    zadds.push({ key: String(cmd[1]), member: String(cmd[cmd.length - 1]) })
+    return 1
+  }
   if (op === 'SET') {
     const key = String(cmd[1])
     const val = String(cmd[2])
@@ -649,8 +656,12 @@ async function main() {
   ok(pausedRun.collected === 1 && pausedRun.skipped === 1, `pause after the 1st collect → the 2nd is NOT attempted (collected ${pausedRun.collected}, skipped ${pausedRun.skipped})`)
   ok(/paused or turned off mid-run/.test(pausedRun.reason ?? ''), 'run reports the user stop as its reason')
   ok(collectPosts.length === 1, 'exactly one record posted — nothing spent after the pause')
-  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: { at: number; collected: number; skipped: number; reason?: string } }
   ok(afterPause.scout.status === 'paused' && afterPause.usage.itemsThisPeriod === 1, 'pause persisted; usage merged onto the paused record')
+  ok(
+    !!afterPause.lastRun && afterPause.lastRun.collected === 1 && afterPause.lastRun.skipped === 1 && /paused or turned off mid-run/.test(afterPause.lastRun.reason ?? '') && afterPause.lastRun.at > 0,
+    'run history persisted on the record (collected / skipped / reason / at) for the owner card',
+  )
 
   redisStore.clear()
   redisStore.set(scoutKey, { v: JSON.stringify(record) })
@@ -666,6 +677,7 @@ async function main() {
   // ── 9. End-of-run usage MERGES onto the fresh counter (no lost update) ──
   console.log('\nrunScoutServer — item counter merges onto the fresh record')
   redisStore.clear()
+  zadds.length = 0
   redisStore.set(scoutKey, { v: JSON.stringify(record) })
   collectPosts.length = 0
   let bumped = false
@@ -682,8 +694,14 @@ async function main() {
   })
   const mergedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: bumpSpender })
   ok(mergedRun.collected === 2, `both candidates collected (got ${mergedRun.collected})`)
-  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: { collected: number; skipped: number; reason?: string; skips?: unknown } }
   ok(afterMerge.usage.itemsThisPeriod === 5, `count = 3 (coordinated mid-run) + 2 (this run) = 5, not 2 (got ${afterMerge.usage.itemsThisPeriod})`)
+  ok(afterMerge.lastRun?.collected === 2 && afterMerge.lastRun.skipped === 0 && afterMerge.lastRun.reason === undefined, 'a clean run records collected 2, nothing skipped, no reason')
+  const agentNotices = zadds.filter((z) => z.key.startsWith('kismetart:notif:') && z.member.includes('"agent_collect"'))
+  ok(
+    agentNotices.length === 2 && agentNotices.every((z) => z.member.includes('"tokenId"') && z.member.includes('"tokenAddress"')),
+    `one agent_collect notice per collected artwork, each carrying the token (got ${agentNotices.length})`,
+  )
 
   // ── 10. A malformed stored permission (missing fields) is refused, never spent ──
   console.log('\ncollectViaSpendPermission — missing permission fields fail CLOSED')
