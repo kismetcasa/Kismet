@@ -2,7 +2,7 @@
 
 > Kismet is an onchain art platform and marketplace on Base where artists mint digital artworks as ERC-1155 tokens, create collections, and set their price, and collectors discover, collect, and trade that art directly from a crypto wallet. Artwork media is stored permanently on Arweave; every mint and sale is recorded onchain.
 
-Kismet also runs as a Farcaster Mini App and can be operated from an AI assistant via Base MCP.
+Kismet also runs as a Farcaster Mini App and can be operated from an AI assistant via Base MCP. Kismet is built and operated by [Kismet Casa](https://www.kismetcasa.xyz), a hybrid residency program for artists and developers bridging IRL and onchain.
 
 ## Start here
 

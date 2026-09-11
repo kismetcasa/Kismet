@@ -202,18 +202,38 @@ check('Article graph includes the Organization node + a 3-level breadcrumb',
   article['@graph'].some((n) => n['@type'] === 'BreadcrumbList' &&
     (n.itemListElement as unknown[]).length === 3))
 
-// 5d. Organization sameAs carries the three owner-confirmed profiles — https
-// only, and present at all (an empty sameAs silently weakens entity
-// resolution; a wrong one misattributes the brand, so pin the exact set).
-const org = organizationNode() as { name?: string; alternateName?: string[]; sameAs?: string[] }
+// 5d. Organization sameAs carries the owner-confirmed profiles OF KISMET
+// ITSELF — https only, and present at all (an empty sameAs silently weakens
+// entity resolution; a wrong one misattributes the brand, so pin the exact
+// set). Kismet Casa's site must NOT be in sameAs: sameAs means "same
+// entity", and Kismet Casa is a distinct parent entity — asserting both
+// sameAs and parentOrganization for one URL is the contradiction this
+// check guards against.
+const org = organizationNode() as {
+  name?: string
+  alternateName?: string[]
+  sameAs?: string[]
+  parentOrganization?: { '@type': string; '@id': string; name: string; url: string }
+}
 check(
-  'Organization sameAs = X + Farcaster + Kismet Casa',
+  'Organization sameAs = X + Farcaster only (no Kismet Casa)',
   Array.isArray(org.sameAs) &&
-    org.sameAs.length === 3 &&
+    org.sameAs.length === 2 &&
     org.sameAs.includes('https://x.com/kismetdotart') &&
     org.sameAs.includes('https://farcaster.xyz/kismet') &&
-    org.sameAs.includes('https://www.kismetcasa.xyz') &&
     org.sameAs.every((u) => u.startsWith('https://')),
+)
+// 5e. The cross-site entity join: parentOrganization = Kismet Casa under the
+// exact @id kismetcasa.xyz emits for itself (…/#organization). This pair of
+// values is the contract with that site's JSON-LD (see SEO.md "Cross-site
+// SEO with kismetcasa.xyz") — a drifted @id or url silently unlinks the two
+// entities in the knowledge graph, so pin them verbatim.
+check(
+  'Organization parentOrganization = Kismet Casa with the cross-site @id',
+  org.parentOrganization?.['@type'] === 'Organization' &&
+    org.parentOrganization?.['@id'] === 'https://www.kismetcasa.xyz/#organization' &&
+    org.parentOrganization?.name === 'Kismet Casa' &&
+    org.parentOrganization?.url === 'https://www.kismetcasa.xyz',
 )
 // Primary name "Kismet" + alternateName "Kismet Art" — the pairing that lets
 // the brand read as "Kismet" everywhere while preserving the "kismet art"
