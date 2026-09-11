@@ -5,9 +5,12 @@
  *
  * The Phase 2 surface: the user picks artists to watch + a budget; one approval
  * grants a bounded Spend Permission to KISMET's server spender; thereafter the
- * agent collects their new drops, tap-free, within the on-chain cap. Runs on open
- * + on demand. Gated by useAgent → useSmartWalletAgentEligibility (EOAs see a soft
- * note). Mounted (code-split, ssr:false) in ProfileView's owner section.
+ * agent collects their new drops, tap-free, within the on-chain cap. Runs once
+ * when the owner opens their profile + on demand ("Run now"), and via the drop
+ * coordinator when a watched artist mints through Kismet. Gated by useAgent →
+ * useSmartWalletAgentEligibility: non-eligible wallets (EOAs) see nothing — the
+ * entry card returns null (AgentCollectEntry). Mounted inside that entry's modal
+ * (code-split, ssr:false) in ProfileView's owner section.
  */
 
 import { useEffect, useState } from 'react'
@@ -210,7 +213,7 @@ export function AgentCollectPanel({
             </p>
           ) : active ? (
             <p className="text-[10px] font-mono text-subtle leading-relaxed">
-              {ag.running ? 'Checking your artists…' : 'Runs automatically each time you open Kismet.'}
+              {ag.running ? 'Checking your artists…' : 'Runs when you open your profile, and the moment a watched artist drops on Kismet.'}
             </p>
           ) : null}
 
