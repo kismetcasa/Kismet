@@ -194,8 +194,12 @@ this repo):
 1. **Reciprocal link, site-wide.** A visible footer (or nav) link to
    `https://kismet.art` on every page, with descriptive anchor text — "Kismet
    — onchain art marketplace" or similar, not a bare URL or "here". Leave it
-   dofollow (the default). This is the single highest-value item: kismet.art
-   already links kismetcasa.xyz site-wide, so this completes the exchange.
+   dofollow (the default), skip `rel="noreferrer"` (it hides the referral
+   from kismet.art's analytics; for `target="_blank"`, `noopener` alone is
+   enough), and skip UTM parameters (they mint indexable URL variants — the
+   referrer is the clean attribution signal). This is the single
+   highest-value item: kismet.art already links kismetcasa.xyz site-wide, so
+   this completes the exchange.
 2. **One in-content editorial link.** A sentence in the main home/about copy
    describing Kismet with a contextual link — in-content links carry more
    weight than footer boilerplate.

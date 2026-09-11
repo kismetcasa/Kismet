@@ -34,7 +34,7 @@ const SAME_AS: string[] = [
 // edge pointing at ORG_ID) so both sites' graphs resolve to one pair of
 // linked entities. See SEO.md "Cross-site SEO with kismetcasa.xyz" — change
 // either @id and the join silently breaks.
-export const KISMET_CASA_URL = 'https://www.kismetcasa.xyz'
+const KISMET_CASA_URL = 'https://www.kismetcasa.xyz'
 const KISMET_CASA_ID = `${KISMET_CASA_URL}/#organization`
 
 function kismetCasaNode(): Record<string, unknown> {
