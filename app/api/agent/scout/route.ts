@@ -167,16 +167,21 @@ export async function PUT(req: NextRequest) {
   // run loop (runScoutServer / dropCoordinator, via saveScout) — never by the
   // client, which does not send it. We MUST NOT accept a client `usage`: doing so
   // let an owner reset their own maxItemsPerPeriod counter by submitting a usage
-  // with a different periodStart (the anti-spoof clamp only caught a same-period
-  // decrease), and the run loop then re-anchors to the on-chain period and collects
-  // the full item cap again — defeating the cap (sharpest for free drops, where the
-  // dollar allowance doesn't bind). So here we only PRESERVE existing usage across
-  // config edits (editing policy mid-period must not reset the item count), starting
-  // fresh on first create or once the stored period predates a new budget window.
-  // The on-chain Spend Permission is the authoritative dollar cap regardless.
+  // with a different periodStart, and the run loop then re-anchors to the on-chain
+  // period and collects the full item cap again — defeating the cap (sharpest for
+  // free drops, where the dollar allowance doesn't bind). So here we PRESERVE the
+  // existing usage across every config edit (editing policy or pausing mid-period
+  // must not reset the item count) and start fresh ONLY when the caller stores a
+  // permission that differs from the stored one — i.e. the user signed a NEW Spend
+  // Permission in their wallet, a new on-chain budget window. The reset keys off
+  // that signed artifact, never off the client's `budget.start` snapshot: keyed
+  // on the snapshot, an owner could reset their own counter by resending the
+  // config with a later `start` and no new grant. The on-chain Spend Permission
+  // is the authoritative dollar cap regardless.
   const existing = await getScout(owner)
-  const usage: BudgetUsage =
-    existing && existing.usage.periodStart >= scout.budget.start ? existing.usage : freshUsage(scout.budget, now)
+  const regranted =
+    !!body.permission && (!existing?.permission || permKey(existing.permission) !== permKey(body.permission))
+  const usage: BudgetUsage = existing && !regranted ? existing.usage : freshUsage(scout.budget, now)
 
   // Display-only labels: keep only entries whose key is a watched creator, with
   // a short string value. Falls back to the existing labels on a usage-only PUT.

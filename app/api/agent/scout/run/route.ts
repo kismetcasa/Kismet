@@ -10,11 +10,17 @@ export const runtime = 'nodejs'
 
 /**
  * Trigger an autonomous scout run for the session user. Trigger: the client
- * calls this on app-open + "Run now". A per-owner lock (SET NX, 120s, released
- * in finally) stops concurrent runs (two tabs / repeated opens) from
- * double-collecting — the TTL is just the crash-safety net. Spend stays bounded
- * by the on-chain Spend Permission, so the lock is belt-and-suspenders.
+ * calls this on app-open + "Run now". A per-owner lock (SET NX, released in
+ * finally) stops concurrent runs (two tabs / repeated opens) from overlapping —
+ * the TTL is only the crash-safety net, so it must OUTLIVE the slowest honest
+ * run or an overlapping second run starts while the first is still submitting.
+ * Worst case per collect ≈ 45s spender-mutex wait + 60s user-op wait; at the
+ * default 5 items/period that is ~9 min, so 900s. (Double-collecting a drop is
+ * blocked regardless by the per-(user,drop) lock + on-chain balance dedup, and
+ * spend by the on-chain Spend Permission; this lock keeps the item counter
+ * honest and avoids needless contention.)
  */
+const RUN_LOCK_TTL_S = 900
 export async function POST(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
@@ -22,7 +28,7 @@ export async function POST(req: NextRequest) {
   const lockKey = `kismetart:scout-run:${owner.toLowerCase()}`
   let acquired = true
   try {
-    acquired = (await redis.set(lockKey, '1', { nx: true, ex: 120 })) === 'OK'
+    acquired = (await redis.set(lockKey, '1', { nx: true, ex: RUN_LOCK_TTL_S })) === 'OK'
   } catch {
     /* lock unavailable — proceed; the on-chain cap is the real guard */
   }

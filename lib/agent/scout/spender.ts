@@ -54,6 +54,15 @@ export interface ScoutSpender {
  */
 export function ownKeySpender(privateKey: Hex): ScoutSpender {
   const account = privateKeyToAccount(privateKey)
+  // Same fail-fast the CDP path applies: users grant their Spend Permission to
+  // NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS, so this key MUST be that address or every
+  // spend() targets a permission it can't draw on. Refuse a misconfig loudly.
+  const configured = process.env.NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS
+  if (configured && configured.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error(
+      `SCOUT_SPENDER_PRIVATE_KEY address (${account.address}) does not match NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS (${configured}); they must be the same account.`,
+    )
+  }
   const wallet = createWalletClient({
     account,
     chain: base,

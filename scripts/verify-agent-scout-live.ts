@@ -272,6 +272,8 @@ const PERIOD_START = 1_700_000_000
 const rpcState = {
   failing: false,
   ownedBalance: 0n,
+  /** Protocol mint fee the mock collection reports (readMintFeeWithBound). */
+  mintFee: 0n,
   periodSpend: 0n,
 }
 
@@ -323,7 +325,7 @@ function handleEthCall(to: string, data: Hex): Hex {
     return encodeFunctionResult({ abi: BALANCE_ABI, functionName: 'balanceOf', result: rpcState.ownedBalance })
   } catch {}
   decodeFunctionData({ abi: MINT_FEE_ABI, data }) // throws if unknown → surfaces in the test
-  return encodeFunctionResult({ abi: MINT_FEE_ABI, functionName: 'mintFee', result: 0n })
+  return encodeFunctionResult({ abi: MINT_FEE_ABI, functionName: 'mintFee', result: rpcState.mintFee })
 }
 
 const MOCK_BLOCK = {
@@ -632,6 +634,87 @@ async function main() {
   const halted = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
   ok(halted.reason === 'kill switch engaged' && halted.collected === 0, 'engaged kill switch halts a run at entry')
   redisStore.delete('kismetart:scout-killswitch')
+
+  // ── 8. The USER's own controls halt a run mid-flight (no kill switch involved) ──
+  console.log("\nrunScoutServer — the user's own pause / delete halts a run mid-flight")
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  collectPosts.length = 0
+  const pauseSpender = mockSpender(() => {
+    const cur = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+    cur.scout.status = 'paused'
+    redisStore.set(scoutKey, { v: JSON.stringify(cur) })
+  })
+  const pausedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: pauseSpender })
+  ok(pausedRun.collected === 1 && pausedRun.skipped === 1, `pause after the 1st collect → the 2nd is NOT attempted (collected ${pausedRun.collected}, skipped ${pausedRun.skipped})`)
+  ok(/paused or turned off mid-run/.test(pausedRun.reason ?? ''), 'run reports the user stop as its reason')
+  ok(collectPosts.length === 1, 'exactly one record posted — nothing spent after the pause')
+  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  ok(afterPause.scout.status === 'paused' && afterPause.usage.itemsThisPeriod === 1, 'pause persisted; usage merged onto the paused record')
+
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  collectPosts.length = 0
+  const deleteSpender = mockSpender(() => {
+    redisStore.delete(scoutKey) // the user turns the agent off (DELETE) while the 1st collect is in flight
+  })
+  const deletedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: deleteSpender })
+  ok(deletedRun.collected === 1 && /paused or turned off mid-run/.test(deletedRun.reason ?? ''), 'delete after the 1st collect → remaining collects halted')
+  ok(!redisStore.has(scoutKey), 'a DELETED agent is NEVER resurrected by the end-of-run save (no record written back)')
+  ok([...redisStore.keys()].every((k) => !k.startsWith(`kismetart:scout:${USER.toLowerCase()}`)), 'no scout record re-created under the user')
+
+  // ── 9. End-of-run usage MERGES onto the fresh counter (no lost update) ──
+  console.log('\nrunScoutServer — item counter merges onto the fresh record')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  collectPosts.length = 0
+  let bumped = false
+  const bumpSpender = mockSpender(() => {
+    if (bumped) return
+    bumped = true
+    // A coordinated collect lands while this run is in flight and bumps the
+    // STORED counter (exactly what dropCoordinator.bumpItemUsage does). The run
+    // must add its own count on top of that, not overwrite it with its stale
+    // top-of-run snapshot.
+    const cur = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+    cur.usage = { ...cur.usage, itemsThisPeriod: 3 }
+    redisStore.set(scoutKey, { v: JSON.stringify(cur) })
+  })
+  const mergedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: bumpSpender })
+  ok(mergedRun.collected === 2, `both candidates collected (got ${mergedRun.collected})`)
+  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  ok(afterMerge.usage.itemsThisPeriod === 5, `count = 3 (coordinated mid-run) + 2 (this run) = 5, not 2 (got ${afterMerge.usage.itemsThisPeriod})`)
+
+  // ── 10. A malformed stored permission (missing fields) is refused, never spent ──
+  console.log('\ncollectViaSpendPermission — missing permission fields fail CLOSED')
+  redisStore.clear()
+  await throws(
+    () => collectViaSpendPermission({ permission: perm({ account: undefined as unknown as Address }), spender: mockSpender(), recipient: USER, item: freeItem(9n) }),
+    /does not match the mint recipient/,
+    'missing permission.account → refused (cannot verify ⇒ do not spend)',
+  )
+  await throws(
+    () => collectViaSpendPermission({ permission: perm({ token: undefined as unknown as Address }), spender: mockSpender(), recipient: USER, item: freeItem(9n) }),
+    /does not match the drop currency/,
+    'missing permission.token → refused (cannot verify ⇒ do not spend)',
+  )
+
+  // ── 11. The per-item cap is FEE-INCLUSIVE at the choke-point ──
+  console.log('\nserverExecutor — maxItemPrice bounds price + protocol mint fee')
+  redisStore.clear()
+  const capZero = { ...record, scout: { ...record.scout, policy: { ...record.scout.policy, maxItemPrice: '0' } } }
+  redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
+  rpcState.mintFee = 1n // free drop (price 0) + a 1 wei protocol fee = 1 wei outlay > cap 0
+  const feeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(
+    feeRun.collected === 0 && /exceeds your per-item price cap/.test(feeRun.reason ?? ''),
+    `the fee pushes the outlay past the cap → refused, nothing spent (reason: ${feeRun.reason})`,
+  )
+  rpcState.mintFee = 0n
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
+  const noFeeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(noFeeRun.collected === 2, `same cap with no fee → collects (got ${noFeeRun.collected}): the refusal above was the fee, not the price`)
 
   console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — scout live-behavior: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

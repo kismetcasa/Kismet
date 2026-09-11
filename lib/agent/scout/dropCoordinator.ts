@@ -202,7 +202,11 @@ export async function runDropCoordination(
         } catch {
           return
         }
-        const candidate: Candidate = { collection: drop.collection, tokenId: drop.tokenId, creator: watched, currency, pricePerToken: price.toString() }
+        // Gate on the per-edition OUTLAY (price + protocol mint fee for ETH), not the
+        // bare price: `maxItemPrice` is the most the user will spend on one item, and
+        // the fee is part of that spend. Same fee-inclusive rule the executor
+        // enforces at the choke-point for the on-open path.
+        const candidate: Candidate = { collection: drop.collection, tokenId: drop.tokenId, creator: watched, currency, pricePerToken: perEdition.toString() }
         if (evaluateCandidate(r.scout, candidate, r.usage, now, undefined, periodStart).action !== 'collect') return // policy gate
         const perWallet = maxPerAddress > 0n ? Number(maxPerAddress - balance) : Number.MAX_SAFE_INTEGER
         const affordable = Math.max(0, Math.min(target, Math.floor(budgetEditions), Math.floor(perWallet)))
@@ -236,6 +240,13 @@ export async function runDropCoordination(
     if (await isKillSwitchEngaged()) break
     const b = byOwner.get(a.owner)
     if (!b) continue
+    // Honor the WATCHER's own controls at execution time. The batch read in step 1
+    // is a snapshot; a user who paused / turned off / deleted their agent while this
+    // fan-out ran (sequential submits can span minutes) must not be spent for. Also
+    // spend through the FRESHEST permission — a mid-fan-out re-grant supersedes the
+    // snapshot's (which the next drain revokes).
+    const liveRec = await getScout(b.owner)
+    if (!liveRec?.scout || !liveRec.permission || !liveRec.away || liveRec.scout.status !== 'active' || liveRec.scout.mode !== 'auto') continue
     const item: BatchCollectItem = {
       collection,
       tokenId,
@@ -246,7 +257,7 @@ export async function runDropCoordination(
       comment: '',
     }
     try {
-      const { txHash } = await collectViaSpendPermission({ permission: b.record.permission!, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
+      const { txHash } = await collectViaSpendPermission({ permission: liveRec.permission, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
       await recordCollect(baseUrl, b.owner, drop, currency, a.editions, txHash)
       // Tell the user their agent collected (mirrors the on-open run's notice).
       await writeNotification({ type: 'agent_collect', recipient: b.owner, amount: a.editions, currency }).catch(() => {})

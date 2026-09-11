@@ -10,7 +10,7 @@
  * @base-org/account/spend-permission's node build) + the shared collectBatch
  * builders. No browser provider, no headless wallet SDK.
  *
- * SDK API: calls use the installed @base-org/account@2.5.7 POSITIONAL form —
+ * SDK API: calls use the installed @base-org/account@2.5.10 POSITIONAL form —
  * `getPermissionStatus(permission)`, `prepareSpendCallData(permission, amount)`
  * (verified against the installed d.ts signature
  * `(permission, amount, recipient?, options?)`). Some Base docs show an object
@@ -100,13 +100,15 @@ export async function collectViaSpendPermission(params: {
   // refactor must never (a) pull from a permission whose granting account isn't the
   // mint recipient (would move a DIFFERENT user's funds) or (b) pull in a token that
   // doesn't match what the mint consumes (would pull the wrong asset — and on the
-  // non-atomic EOA path strand it after a mint revert). Assert both, fail-closed.
+  // non-atomic EOA path strand it after a mint revert). Assert both, fail-closed —
+  // including on a MISSING field: the SDK type requires both, so absence means a
+  // malformed stored record, and "can't verify" must mean "don't spend".
   const grant = permission.permission
-  if (grant.account && grant.account.toLowerCase() !== recipient.toLowerCase()) {
+  if (!grant.account || grant.account.toLowerCase() !== recipient.toLowerCase()) {
     throw new Error('Spend permission account does not match the mint recipient — refusing to spend')
   }
   const expectedToken = item.currency === 'eth' ? NATIVE_ETH_SENTINEL : USDC_BASE
-  if (grant.token && grant.token.toLowerCase() !== expectedToken.toLowerCase()) {
+  if (!grant.token || grant.token.toLowerCase() !== expectedToken.toLowerCase()) {
     throw new Error(
       `Spend permission token (${grant.token}) does not match the drop currency (${item.currency}) — refusing to spend`,
     )
@@ -202,13 +204,24 @@ export function createSpendPermissionExecutor(cfg: {
       const [token] = await fetchEligibleTokens(client, collection, [tokenId], candidate.currency, cfg.recipient, editions)
       if (!token) throw new Error('Sold out, not mintable, or already at your edition cap')
 
+      // Same viem PublicClient variance cast the prepare-collect-batch route uses.
+      const mintFee =
+        candidate.currency === 'eth'
+          ? await readMintFeeWithBound(client as Parameters<typeof readMintFeeWithBound>[0], collection)
+          : 0n
+
       // Re-enforce the user's per-item price cap against the ON-CHAIN price. The
       // engine's earlier gate (evaluateCandidate) ran against the cached
       // discovery price, which a watched artist can raise AFTER it's indexed;
       // this executor then spends the freshly-resolved on-chain price, so the
-      // cap must be re-checked here or it's bypassable on the on-open run path
-      // (the drop-coordinator path already gates on the on-chain price). Mirrors
-      // engine.ts evaluateCandidate: compare pricePerToken (excl. mint fee).
+      // cap must be re-checked here or it's bypassable on the on-open run path.
+      // The cap bounds the per-edition OUTLAY — price PLUS the protocol mint fee
+      // for ETH — because that is what actually leaves the user's account per
+      // item; a bare-price check would let the fee push spend past the cap the
+      // user set. (The engine's discovery-time gate compares price alone: the fee
+      // is a per-collection on-chain read discovery doesn't make; this is the
+      // authoritative check, and the drop coordinator applies the same
+      // fee-inclusive rule.)
       let maxItemPrice: bigint
       try {
         maxItemPrice = BigInt(scout.policy.maxItemPrice)
@@ -218,15 +231,9 @@ export function createSpendPermissionExecutor(cfg: {
         // is a defense-in-depth backstop that should never fire in practice.
         throw new Error('Invalid per-item price cap')
       }
-      if (token.pricePerToken > maxItemPrice) {
+      if (token.pricePerToken + mintFee > maxItemPrice) {
         throw new Error('Drop price exceeds your per-item price cap')
       }
-
-      // Same viem PublicClient variance cast the prepare-collect-batch route uses.
-      const mintFee =
-        candidate.currency === 'eth'
-          ? await readMintFeeWithBound(client as Parameters<typeof readMintFeeWithBound>[0], collection)
-          : 0n
 
       // How many editions to mint THIS run. Top up toward the target, bounded by
       // the drop's per-wallet cap. An ATOMIC spender (CDP smart account) fills it

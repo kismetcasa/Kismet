@@ -152,6 +152,8 @@ export async function runScoutServer(params: {
   // Set when an operator engages the kill switch mid-run — remaining candidates
   // are left un-attempted (not policy-skipped, not failed).
   let stoppedByKillSwitch = false
+  // Set when the USER pauses / turns off / deletes the agent mid-run.
+  let stoppedByUser = false
   // We track `failed` SEPARATELY so the logs below can distinguish a quiet run
   // (all policy-skipped — normal) from a broken one (collects throwing — paymaster
   // dead / RPC down / contract changed).
@@ -161,6 +163,16 @@ export async function runScoutServer(params: {
     // incident — compromised spender, discovered exploit — needs a live brake).
     if (await isKillSwitchEngaged()) {
       stoppedByKillSwitch = true
+      break
+    }
+    // Honor the USER's own controls between collects too. The top-of-run `record`
+    // is a snapshot: a pause, a "turn off" (away=false), or a delete made while a
+    // multi-collect run is in flight must stop the REMAINING spends now, not just
+    // the next run. The kill switch above is the platform's brake; this is the
+    // user's. One Redis GET per collect, beside the kill-switch GET.
+    const live = await getScout(owner)
+    if (!live?.scout || !live.permission || !live.away || live.scout.status !== 'active' || live.scout.mode !== 'auto') {
+      stoppedByUser = true
       break
     }
     try {
@@ -191,19 +203,27 @@ export async function runScoutServer(params: {
   // 4. Persist usage from on-chain truth; notify the user.
   try {
     const end = await getPermissionStatus(permission, sdkRpcOptions())
-    const endUsage: BudgetUsage = {
-      periodStart,
-      spentThisPeriod: end.currentPeriod.spend.toString(),
-      itemsThisPeriod: items + collected,
-    }
     // Re-read before persisting so a control change made WHILE this run was in
-    // flight — the user pausing, turning the agent off, coming back (away=false),
-    // or re-granting budget — survives. The top-of-run `record` snapshot is stale
-    // by now; blindly saving it would silently RESUME an agent the user just
-    // stopped mid-run. Persist only the authoritative usage onto the freshest
-    // record (fall back to the snapshot if the re-read fails).
-    const fresh = (await getScout(owner)) ?? record
-    await saveScout({ ...fresh, usage: endUsage })
+    // flight — pausing, turning the agent off, coming back (away=false), or
+    // re-granting budget — survives; the top-of-run `record` is stale by now.
+    // If the record is GONE (the user deleted the agent mid-run) write NOTHING:
+    // saving the stale snapshot would silently RESURRECT an agent — permission,
+    // away, active — the user just turned off, and re-index it as a watcher
+    // (the coordinator's bumpItemUsage makes the same never-resurrect choice).
+    // Merge this run's count onto the FRESH counter, never onto the top-of-run
+    // `items`: a coordinated collect that landed meanwhile bumped the stored
+    // counter, and overwriting it would under-count by one and let one extra
+    // item through the period cap.
+    const fresh = await getScout(owner)
+    if (fresh) {
+      const base = fresh.usage.periodStart === periodStart ? fresh.usage.itemsThisPeriod : 0
+      const endUsage: BudgetUsage = {
+        periodStart,
+        spentThisPeriod: end.currentPeriod.spend.toString(),
+        itemsThisPeriod: base + collected,
+      }
+      await saveScout({ ...fresh, usage: endUsage })
+    }
   } catch {
     /* the on-chain cap is the real guard; a stale stored count is harmless */
   }
@@ -235,6 +255,8 @@ export async function runScoutServer(params: {
   let reason: string | undefined
   if (stoppedByKillSwitch) {
     reason = 'kill switch engaged mid-run — remaining collects halted'
+  } else if (stoppedByUser) {
+    reason = 'agent paused or turned off mid-run — remaining collects halted'
   } else if (failed > 0) {
     reason =
       collected === 0

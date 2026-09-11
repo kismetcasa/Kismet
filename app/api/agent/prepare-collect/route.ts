@@ -6,7 +6,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
-import { formatPrice } from '@/lib/inprocess'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildCollectPlan } from '@/lib/agent/collect'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
@@ -150,7 +150,10 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
   const approvalNote = plan.approvalIncluded
     ? ' Includes a one-time USDC approval, batched into the same approval.'
     : ''
-  const summary = `Collect ${qtyLabel}token #${tokenId.toString()} for ${priceLabel} each${feeNote}.${approvalNote}`
+  // Name the recipient in the one line the user reads: `account` is caller-
+  // supplied and becomes mintTo while the approving wallet pays, so a wrong or
+  // malicious address must be visible before approval, not buried in calldata.
+  const summary = `Collect ${qtyLabel}token #${tokenId.toString()} for ${priceLabel} each${feeNote} → to ${shortAddress(account)}.${approvalNote}`
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',
