@@ -1243,8 +1243,27 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
       {/* Profile header — `relative isolate` so the themed backdrop band can
           sit behind the header (-z) yet paint above main's opaque bg. It's a
-          modal-free region, so isolating it can't trap ProfileView's overlays. */}
-      <div ref={headerRef} className="relative isolate flex flex-col gap-4">
+          modal-free region, so isolating it can't trap ProfileView's overlays.
+
+          Band inset (normalized 2026-09, from artist feedback that the themed
+          header needed "a small padding"): this wrapper's box IS the band — the
+          backdrop paints inset-0 of it — so the inset is owned here, in one
+          place. Each negative margin is paired with the same padding, which
+          grows the box outward while leaving the content column exactly where
+          an unthemed profile puts it: toggling a theme never shifts the header,
+          and an unthemed page renders pixel-identical (nothing paints the box).
+            sides  — to the container's outer edge (16px = px-4; any wider
+                     would overflow narrow viewports where the container is
+                     already flush).
+            top    — 20px on desktop; mobile keeps the band's own bleed up under
+                     the nav (ProfileThemeBackdrop's -top-12), which already
+                     gives the avatar headroom there.
+            bottom — 16px mobile / 20px desktop, so the public-view / customize
+                     row no longer sits on the band's bottom edge. */}
+      <div
+        ref={headerRef}
+        className="relative isolate flex flex-col gap-4 -mx-4 px-4 sm:-mt-5 sm:pt-5 -mb-4 pb-4 sm:-mb-5 sm:pb-5"
+      >
         {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
         <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
           <div className="relative">
