@@ -1,5 +1,5 @@
-import { createPublicClient, http } from 'viem'
-import { mainnet } from 'viem/chains'
+import { createPublicClient, http, toCoinType } from 'viem'
+import { base, mainnet } from 'viem/chains'
 import { normalize } from 'viem/ens'
 import { redis } from '@/lib/redis'
 
@@ -47,4 +47,64 @@ export async function resolveEnsAndCache(address: string): Promise<void> {
   } catch {
     await redis.set(key, '', { ex: ENS_FAIL_TTL }).catch(() => {})
   }
+}
+
+// ── Display name for the agent summaries: Basename first, then ENS ──────────
+//
+// A Basename (alice.base.eth) is the user's Base-native identity, so the one
+// line the user reads before approving names counterparties by it when it
+// exists. Resolution is ENSIP-19 (L2 primary names): the mainnet Universal
+// Resolver's `reverse(address, coinType)` with Base's coinType — viem's
+// documented `getEnsName({ coinType: toCoinType(base.id) })` — which resolves
+// the name set on Base's reverse registrar and checks it forward-resolves
+// back. Falls back to the verified mainnet ENS name above.
+//
+// Cosmetic, so strictly bounded: cached per address (1h; 5min for a miss or
+// failure), and a lookup that hasn't answered within NAME_BUDGET_MS returns
+// null NOW (the lookup keeps running and fills the cache for next time). The
+// summary always prints the short address beside the name, so a missing name
+// costs nothing and a name can never replace the address.
+
+const NAME_TTL = 3600
+const NAME_FAIL_TTL = 300
+const NAME_BUDGET_MS = 1500
+const BASE_COIN_TYPE = toCoinType(base.id)
+
+export async function getDisplayName(address: string): Promise<string | null> {
+  const key = `kismetart:name:${address.toLowerCase()}`
+  try {
+    const cached = await redis.get<string>(key)
+    if (cached !== null) return cached === '' ? null : cached
+  } catch {
+    // Cache unreadable — resolve anyway (bounded below).
+  }
+  const lookup = resolveDisplayName(address).then(async (name) => {
+    await redis.set(key, name ?? '', { ex: name ? NAME_TTL : NAME_FAIL_TTL }).catch(() => {})
+    return name
+  })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), NAME_BUDGET_MS)
+  })
+  try {
+    return await Promise.race([lookup, budget])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function resolveDisplayName(address: string): Promise<string | null> {
+  const addr = address as `0x${string}`
+  try {
+    const basename = await mainnetClient.getEnsName({ address: addr, coinType: BASE_COIN_TYPE })
+    if (basename) return basename
+  } catch {
+    // No Basename (or the gateway failed) — try ENS.
+  }
+  let ens = await getCachedEns(address)
+  if (ens === undefined) {
+    await resolveEnsAndCache(address)
+    ens = await getCachedEns(address)
+  }
+  return ens ?? null
 }

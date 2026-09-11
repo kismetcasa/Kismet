@@ -10,6 +10,7 @@ import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFo
 import { consumeUserQuota } from '@/lib/userQuota'
 import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 import { issueIntentNonce } from '@/lib/intentAuth'
+import { getDisplayName } from '@/lib/ensCache'
 import { ingestMintMedia, type MediaKind } from '@/lib/agent/mintMedia'
 import { isModelBackgroundId } from '@/lib/media/modelMedia'
 import { uploadBytesToArweave, uploadJsonToArweave } from '@/lib/arweave/uploadServer'
@@ -364,8 +365,11 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
 
   let envelope: AgentActionEnvelope
   try {
-    const { nonce, expiresAt } = await issueIntentNonce()
-    envelope = buildMintEnvelope(params, nonce, expiresAt)
+    const [{ nonce, expiresAt }, payoutName] = await Promise.all([
+      issueIntentNonce(),
+      payoutRecipient ? getDisplayName(payoutRecipient) : Promise.resolve(null),
+    ])
+    envelope = buildMintEnvelope(params, nonce, expiresAt, { payoutName })
   } catch (err) {
     return upstreamError(502, 'Could not finalize the mint intent — try again', err, 'agent-prepare-mint')
   }

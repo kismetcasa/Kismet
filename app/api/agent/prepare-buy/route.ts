@@ -8,8 +8,9 @@ import { getListing } from '@/lib/listings'
 import { getListingVisibility } from '@/lib/hiddenListings'
 import { SEAPORT_ADDRESS } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
-import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { getDisplayName } from '@/lib/ensCache'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buySummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
@@ -97,14 +98,19 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
     return errorResponse(409, err instanceof Error ? err.message : 'Listing order is inconsistent')
   }
 
-  const priceLabel = formatPrice(listing.price, currency)
-  const itemLabel = listing.name ? `“${listing.name}”` : `token #${listing.tokenId}`
-  const approvalNote = plan.approvalIncluded
-    ? ' Includes a one-time USDC approval, batched into the same approval.'
-    : ''
-  const summary = `Buy ${itemLabel} from ${shortAddress(listing.seller)} for ${priceLabel}.${approvalNote}`
+  // `listing.name` is seller-set text; safeTitle strips control / invisible
+  // characters and caps it so the line stays one readable line.
+  const [sellerName, link] = await Promise.all([getDisplayName(listing.seller), buildApproveLink(plan.calls, account as Address)])
+  const summary = buySummary({
+    title: safeTitle(listing.name),
+    tokenId: listing.tokenId,
+    seller: listing.seller,
+    sellerName,
+    currency,
+    price: plan.price,
+    approvalIncluded: plan.approvalIncluded,
+  })
 
-  const link = await buildApproveLink(plan.calls, account as Address)
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'buy',

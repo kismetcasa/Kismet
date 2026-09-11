@@ -5,9 +5,10 @@ import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { SEAPORT_ADDRESS, SEAPORT_ABI, ERC1155_ABI, EIP2981_ABI } from '@/lib/seaport'
-import { formatPrice } from '@/lib/inprocess'
+import { getMomentMeta } from '@/lib/notifications'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildListPlan, priceToBaseUnits } from '@/lib/agent/list'
+import { listSummary, safeTitle } from '@/lib/agent/summary'
 import { computePlatformFee, isBelowListingFloor } from '@/lib/platformFee'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
@@ -136,11 +137,22 @@ async function prepareList(req: NextRequest, body: PrepareListParams) {
     image,
   })
 
-  const priceLabel = formatPrice(plan.priceTotal.toString(), currency)
-  const approvalNote = plan.needsApproval
-    ? ' First listing on this collection — run the one-time marketplace approval (send_calls), then sign the order.'
-    : ' Sign the order to list.'
-  const summary = `List token #${ref.tokenId} for ${priceLabel}.${approvalNote}`
+  // Title: the caller's `name` (what the listing will display) else Kismet's
+  // own moment metadata; either way sanitized. The line spells out the money
+  // the seller actually receives after the Kismet fee and the on-chain royalty.
+  const meta = await getMomentMeta(collection, ref.tokenId).catch(() => null)
+  const summary = listSummary({
+    title: safeTitle(name) ?? safeTitle(meta?.name),
+    tokenId: ref.tokenId,
+    currency,
+    priceTotal: plan.priceTotal,
+    platformFee: computePlatformFee(plan.priceTotal),
+    royaltyAmount,
+    sellerProceeds: plan.sellerProceeds,
+    expiresAt: plan.listingPostBody.expiresAt as number,
+    now: Date.now(),
+    needsApproval: plan.needsApproval,
+  })
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',

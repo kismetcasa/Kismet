@@ -20,6 +20,7 @@ import { USDC_BASE, OPEN_EDITION_MINT_SIZE } from '@/lib/zoraMint'
 import { priceToBaseUnits } from './list'
 import { buildMintIntent, KISMET_INTENT_DOMAIN, MINT_INTENT_TYPES, type MintBody } from '@/lib/intent'
 import { modelMomentFields } from '@/lib/media/modelMedia'
+import { mintSummary } from './summary'
 import type { AgentActionEnvelope } from './types'
 
 /** saleEnd sentinel = "never" (max uint64), matching MintForm's OPEN_ENDED_SALE. */
@@ -170,8 +171,15 @@ export function buildMintBody(p: MintParams): MintBody & { name: string } {
  * The full agent envelope: the EIP-712 `MintIntent` to `sign`, plus the record
  * hint the assistant POSTs after signing. Text moments record to `/api/write`
  * (action 'write'); media moments to `/api/mint` (action 'mint').
+ * `display.payoutName` is the resolved Basename / ENS of an explicit
+ * payoutRecipient, for the summary only.
  */
-export function buildMintEnvelope(p: MintParams, nonce: string, expiresAt: number): AgentActionEnvelope {
+export function buildMintEnvelope(
+  p: MintParams,
+  nonce: string,
+  expiresAt: number,
+  display?: { payoutName?: string | null },
+): AgentActionEnvelope {
   const body = buildMintBody(p)
   const action = p.kind === 'text' ? 'write' : 'mint'
   const message = buildMintIntent(body as MintBody, action, nonce, expiresAt)
@@ -184,14 +192,11 @@ export function buildMintEnvelope(p: MintParams, nonce: string, expiresAt: numbe
     message: { ...message, expiresAt: message.expiresAt.toString() },
   }
 
-  const editionsLabel = p.editions && p.editions > 0 ? `${p.editions} edition${p.editions === 1 ? '' : 's'}` : 'open edition'
-  const priceLabel = Number(p.price) > 0 ? `${p.price} ${p.currency.toUpperCase()}` : 'free'
-
   return {
     chain: 'base',
     action: 'mint',
     typedData,
-    summary: `Mint "${p.name}" — ${priceLabel}, ${editionsLabel}${p.collection ? '' : ' (new collection)'}`,
+    summary: mintSummary(p, display?.payoutName),
     record: {
       method: 'POST',
       url: action === 'write' ? '/api/write' : '/api/mint',

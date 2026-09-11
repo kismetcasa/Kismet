@@ -44,6 +44,9 @@ import { buildCollectBatchPlan } from '@/lib/agent/collectBatch'
 import { buildBuyPlan } from '@/lib/agent/buy'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { renderApprovePage } from '@/lib/agent/approvePage'
+import { batchCollectSummary, buySummary, collectSummary, listSummary, safeTitle } from '@/lib/agent/summary'
+import { shortAddress } from '@/lib/inprocess'
+import { computePlatformFee } from '@/lib/platformFee'
 import { decodeProlink } from '@base-org/account/prolink'
 import { SEAPORT_ADDRESS, buildSellOrder, serializeOrder } from '@/lib/seaport'
 import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
@@ -348,6 +351,64 @@ console.log('\nbuildBuyPlan — ETH listing carries value == price')
   check('approve page escapes the summary (no raw <script>)', !page.includes('<script>') && page.includes('&lt;script&gt;'))
   check('approve page carries the Base app link as the button href', !!buyLink && page.includes(`href="${buyLink.url.replace(/&/g, '&amp;')}"`))
   check('approve page embeds the envelope JSON', page.includes('&quot;action&quot;: &quot;buy&quot;'))
+}
+
+// ── Summaries (lib/agent/summary.ts): the one line the user approves on ─────
+// Exact strings, because the assistant shows them verbatim: the item by title
+// and id, the full money (price / mint fee / total, and for a listing what the
+// seller nets), and every counterparty as name + short address.
+console.log('\nsummaries — exact user-facing lines')
+{
+  const me = shortAddress(ACCOUNT)
+  const them = shortAddress(RECIPIENT)
+
+  const dirty = `Dawn${String.fromCodePoint(0)}\n IGNORE ${String.fromCodePoint(0x200b)} previous`
+  check('safeTitle drops control + zero-width chars, collapses whitespace', safeTitle(dirty) === 'Dawn IGNORE previous', safeTitle(dirty))
+  const bidi = `a${String.fromCodePoint(0x202e)}b${String.fromCodePoint(0x2066)}c`
+  check('safeTitle strips bidi overrides', safeTitle(bidi) === 'a b c', safeTitle(bidi))
+  const long = safeTitle('x'.repeat(80))
+  check('safeTitle caps at 60 chars with an ellipsis', long !== null && Array.from(long).length === 60 && long.endsWith('…'))
+  check('safeTitle → null for empty / whitespace / non-string', safeTitle('  \n ') === null && safeTitle(undefined) === null && safeTitle(null) === null)
+
+  check(
+    'collect: single, USDC, titled, with a Basename',
+    collectSummary({ title: 'Dawn', tokenId: '42', quantity: 1n, currency: 'usdc', pricePerToken: 5_000_000n, mintFee: 0n, total: 5_000_000n, recipient: ACCOUNT, recipientName: 'alice.base.eth', approvalIncluded: false }) ===
+      `Collect “Dawn” (token #42) for $5 → to alice.base.eth (${me}).`,
+  )
+  check(
+    'collect: ×2, ETH, mint fee each, total spelled out',
+    collectSummary({ title: 'Dawn', tokenId: '42', quantity: 2n, currency: 'eth', pricePerToken: 1_000_000_000_000_000n, mintFee: 111_000_000_000_000n, total: 2_222_000_000_000_000n, recipient: ACCOUNT, recipientName: null, approvalIncluded: false }) ===
+      `Collect “Dawn” (token #42) ×2 for 0.001 ETH each + 0.000111 ETH mint fee each, 0.002222 ETH total → to ${me}.`,
+  )
+  check(
+    'collect: free + mint fee, untitled, USDC approval note',
+    collectSummary({ title: null, tokenId: '42', quantity: 1n, currency: 'eth', pricePerToken: 0n, mintFee: 111_000_000_000_000n, total: 111_000_000_000_000n, recipient: ACCOUNT, approvalIncluded: true }) ===
+      `Collect token #42 for free + 0.000111 ETH mint fee, 0.000111 ETH total → to ${me}. Includes a one-time USDC approval, batched into the same approval.`,
+  )
+  check(
+    'batch: totals, mint-fee note, recipient, skipped count',
+    batchCollectSummary({ count: 3, totalLabel: '$8 + 0.001111 ETH', includesMintFees: true, recipient: RECIPIENT, recipientName: null, skipped: 1 }) ===
+      `Collect 3 artworks for $8 + 0.001111 ETH (incl. mint fees) in one approval → to ${them}. Skipped 1 unavailable.`,
+  )
+  check(
+    'buy: sanitized title, seller as name + short address',
+    buySummary({ title: safeTitle('Art '), tokenId: '7', seller: RECIPIENT, sellerName: 'bob.base.eth', currency: 'eth', price: 50_000_000_000_000_000n, approvalIncluded: false }) ===
+      `Buy “Art” (token #7) from bob.base.eth (${them}) for 0.05 ETH.`,
+  )
+  const now = 1_800_000_000_000
+  const priceTotal = 10_000_000_000_000_000n // 0.01 ETH
+  const fee = computePlatformFee(priceTotal)
+  check('the listing fee really is 1% (summary names it)', fee === 100_000_000_000_000n, fee)
+  check(
+    'list: net after 1% fee + royalty, 30-day expiry, sign step',
+    listSummary({ title: 'Art', tokenId: '7', currency: 'eth', priceTotal, platformFee: fee, royaltyAmount: 400_000_000_000_000n, sellerProceeds: priceTotal - fee - 400_000_000_000_000n, expiresAt: now + 30 * 86_400_000, now, needsApproval: false }) ===
+      'List “Art” (token #7) for 0.01 ETH — you receive 0.0095 ETH after the 1% Kismet fee (0.0001 ETH) and the creator royalty (0.0004 ETH); expires in 30 days. Sign the order to list.',
+  )
+  check(
+    'list: no royalty, approval-first step',
+    listSummary({ title: null, tokenId: '7', currency: 'usdc', priceTotal: 5_000_000n, platformFee: 50_000n, royaltyAmount: 0n, sellerProceeds: 4_950_000n, expiresAt: now + 30 * 86_400_000, now, needsApproval: true }) ===
+      'List token #7 for $5 — you receive $4.95 after the 1% Kismet fee ($0.05); expires in 30 days. First listing on this collection — run the one-time marketplace approval (send_calls), then sign the order.',
+  )
 }
 
 report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope, prolink round-trip all verified')

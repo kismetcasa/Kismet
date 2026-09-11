@@ -6,9 +6,11 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
-import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { getMomentMeta } from '@/lib/notifications'
+import { getDisplayName } from '@/lib/ensCache'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildCollectPlan } from '@/lib/agent/collect'
+import { collectSummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
@@ -148,18 +150,29 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
     usdcAllowance,
   })
 
-  const priceLabel = formatPrice(pricePerToken.toString(), currency)
-  const qtyLabel = quantity === 1n ? '' : `${quantity}× `
-  const feeNote = currency === 'eth' && mintFee > 0n ? ' (+ protocol mint fee)' : ''
-  const approvalNote = plan.approvalIncluded
-    ? ' Includes a one-time USDC approval, batched into the same approval.'
-    : ''
-  // Name the recipient in the one line the user reads: `account` is caller-
-  // supplied and becomes mintTo while the approving wallet pays, so a wrong or
-  // malicious address must be visible before approval, not buried in calldata.
-  const summary = `Collect ${qtyLabel}token #${tokenId.toString()} for ${priceLabel} each${feeNote} → to ${shortAddress(account)}.${approvalNote}`
+  // The one line the user reads: the artwork by title, the full cost (price,
+  // protocol mint fee, total) and the recipient — `account` is caller-supplied
+  // and becomes mintTo while the approving wallet pays, so a wrong or malicious
+  // address must be visible before approval, not buried in calldata. Both
+  // lookups are cosmetic and fail open.
+  const [meta, accountName, link] = await Promise.all([
+    getMomentMeta(collection, tokenId.toString()).catch(() => null),
+    getDisplayName(account),
+    buildApproveLink(plan.calls, account as Address),
+  ])
+  const summary = collectSummary({
+    title: safeTitle(meta?.name),
+    tokenId: tokenId.toString(),
+    quantity,
+    currency,
+    pricePerToken,
+    mintFee,
+    total: currency === 'eth' ? plan.totalValue : plan.totalCost,
+    recipient: account,
+    recipientName: accountName,
+    approvalIncluded: plan.approvalIncluded,
+  })
 
-  const link = await buildApproveLink(plan.calls, account as Address)
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'collect',

@@ -31,7 +31,8 @@ means you're the seller.
 
 ## 2. Execute
 
-Show `summary` (e.g. *"Buy “Title” from 0x71Dc…7244 for 0.01 ETH"*). Then:
+Show `summary` (e.g. *"Buy “Title” (token #7) from alice.base.eth
+(0x71Dc…7244) for 0.01 ETH."*). Then:
 
 ```
 send_calls({ chain: "base", calls })

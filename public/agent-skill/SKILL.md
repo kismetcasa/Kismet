@@ -64,7 +64,7 @@ Every verb follows the same five steps:
      "action": "collect",
      "calls": [ { "to": "0x…", "data": "0x…", "value": "0x0" } ], // for send_calls (value is hex wei)
      "typedData": { /* EIP-712 */ },  // for sign (list)
-     "summary": "Collect 1× token #42 for $5.00 …",
+     "summary": "Collect “Dawn” (token #42) for $5 → to alice.base.eth (0x71Dc…7244).",
      "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { … } },
      "caps": { "maxValueUsdc": "5000000" },  // per-currency ceiling(s); maxValueEth in wei, maxValueUsdc in 6dp
      "link": { "url": "https://base.app/base-pay?p=…", "note": "…" }  // optional: approve in the Base app instead

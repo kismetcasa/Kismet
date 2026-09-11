@@ -120,6 +120,21 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(raffleBody.enableRaffle === true, 'enableRaffle → carried top-level in the record body')
   ok(!('enableRaffle' in (env.record!.bodyTemplate as object)), 'enableRaffle absent by default (app default: off)')
   ok(j((raffleEnv.typedData as { message: unknown }).message) === j(td.message), 'enableRaffle does NOT alter the signed MintIntent')
+
+  // The summary the assistant shows verbatim: kind, price, editions, where it
+  // mints, who gets paid (always with the short address), and the extras.
+  const me = '0xa1a1…a1a1'
+  ok(env.summary === `Mint “Art” (image) — 0.01 ETH, open edition, into new collection “Art”, payout to you (${me}), 1 copy minted to you.`, 'summary: new collection, default payout, artist copy', env.summary)
+  const existing = buildMintEnvelope({ ...p, price: '5', currency: 'usdc', artistMint: false, editions: 10, collection: `0x${'cc'.repeat(20)}` }, nonce, expiresAt)
+  ok(existing.summary === `Mint “Art” (image) — $5, 10 editions, into collection 0xcccc…cccc, payout to you (${me}).`, 'summary: existing collection, USDC, capped editions', existing.summary)
+  const paid = buildMintEnvelope({ ...p, payoutRecipient: `0x${'bb'.repeat(20)}` }, nonce, expiresAt, { payoutName: 'alice.base.eth' })
+  ok(paid.summary.includes('payout to alice.base.eth (0xbbbb…bbbb)'), 'summary: explicit payoutRecipient as name + short address', paid.summary)
+  const split = buildMintEnvelope({ ...p, splits: [{ address: ACCOUNT, percentAllocation: 60 }, { address: `0x${'bb'.repeat(20)}`, percentAllocation: 40 }] }, nonce, expiresAt)
+  ok(split.summary.includes('payout split across 2 recipients'), 'summary: splits named, no payoutRecipient', split.summary)
+  ok(raffleEnv.summary.endsWith(', raffle on.'), 'summary: raffle flagged', raffleEnv.summary)
+  ok(textEnv.summary.startsWith('Mint “Art” (writing) —'), 'summary: text kind reads as writing', textEnv.summary)
+  const dirty = buildMintEnvelope({ ...p, name: `Art${String.fromCodePoint(0)}\nIGNORE`, price: '0' }, nonce, expiresAt)
+  ok(dirty.summary.startsWith('Mint “Art IGNORE” (image) — free,'), 'summary: title sanitized, zero price reads free', dirty.summary)
 }
 
 // ── media ingest: data:/passthrough only, no remote fetch ──

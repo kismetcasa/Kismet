@@ -84,7 +84,10 @@ The response is the standard envelope, containing:
 - `typedData` — the EIP-712 `MintIntent` to sign (this is **not** a transaction).
 - `record` — the follow-up call (`POST /api/mint` for media, `POST /api/write`
   for text) with a `<REPLACE_WITH_sign_signature>` placeholder.
-- `summary` — e.g. `Mint "My Artwork" — free, open edition (new collection)`.
+- `summary` — e.g. `Mint “My Artwork” (image) — free, open edition, into new
+  collection “My Artwork”, payout to you (0x71Dc…7244), 1 copy minted to you.`
+  (an explicit `payoutRecipient` shows as name + short address; splits as
+  `payout split N ways`; `raffle on` when enabled).
 
 There are no `calls` and no `caps`: minting spends nothing from the wallet.
 

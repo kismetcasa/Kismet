@@ -34,7 +34,10 @@ The response `calls` is:
 
 ## 2. Execute
 
-Show `summary` (e.g. *"Collect 1× token #42 for $5.00 …"*). Then:
+Show `summary` (e.g. *"Collect “Dawn” (token #42) ×2 for 0.001 ETH each +
+0.000111 ETH mint fee each, 0.002222 ETH total → to alice.base.eth
+(0x71Dc…7244)."* — the recipient is always shown as name + short address).
+Then:
 
 ```
 send_calls({ chain: "base", calls })

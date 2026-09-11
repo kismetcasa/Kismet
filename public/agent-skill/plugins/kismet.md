@@ -65,7 +65,7 @@ Every prepare returns an envelope:
   "action": "collect",
   "calls": [ { "to": "0x…", "data": "0x…", "value": "0x0" } ],
   "typedData": { },
-  "summary": "Collect 1× token #42 for $5.00 …",
+  "summary": "Collect “Dawn” (token #42) for $5 → to alice.base.eth (0x71Dc…7244).",
   "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { } },
   "caps": { "maxValueUsdc": "5000000" },
   "link": { "url": "https://base.app/base-pay?p=…", "note": "…" }
