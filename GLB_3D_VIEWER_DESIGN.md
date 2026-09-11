@@ -578,6 +578,62 @@ IS the poster source and the thumbnail would otherwise differ from what the
 artist posed. It lands in the capture for free: the shadow is part of the
 rendered scene, not a DOM layer.
 
+### Finding 23 — the artist's third round
+
+"The 3D upload was fine, still shadows on the model (not on the floor) to
+improve but it's good — it's like the old days of Zora."
+
+**23. The shadows asked for in round two were the ones ON the model.** Round
+two read "shadows, because on some models without textures the surfaces are
+hard to see" as a request for a grounding shadow and shipped one (finding 22).
+The artist's follow-up is a correction: the floor is fine; it is the shading
+across the model's own surfaces that is still missing. Both were right — the
+grounding shadow was a real gap — but they are different mechanisms, and the
+second one was never touched.
+
+Root cause, verified in the installed package (4.3.1): model-viewer's default
+environment, `neutral`, is documented in its own source as designed to be
+"neutral and color-preserving" and to show "less contrast around the
+different sides of the object". That is the complaint verbatim. Measured on
+a matte grey sphere rendered through the real element in headless Chromium:
+
+| Environment | top − bottom | left − right |
+|---|---|---|
+| `neutral` (default) | 31 | **1** |
+| `legacy` | 30 | **50** |
+
+Under `neutral` a sphere has no side-to-side shading at all — it reads as a
+flat disc with a slightly darker rim, exactly "surfaces hard to see". `legacy`
+is the generated studio model-viewer shipped before 2.0 — a keyed side light
+with the same top-down falloff — and it is, as it happens, the lighting of
+the viewer Zora ran in the era the artist is comparing against.
+
+`exposure` and the tone-mapping curves were rendered too and add no
+directional form; a custom HDR does, but fetches an asset and carries an
+authoring decision inside it, so it belongs with an artist-facing control
+rather than a site default.
+
+Shipped as `MODEL_ENVIRONMENT = 'legacy'` in `lib/media/modelMedia.ts`, on
+both the mint preview and the live viewer for the same reason as the shadow:
+the preview is the poster source. Safe rather than merely better: `legacy` is
+generated in the renderer exactly as `neutral` is — same 256 px cube target,
+same blur, both memoized, so no request, no CSP surface and no added cost —
+and `updateSource` awaits the environment before dispatching `load`, so the
+capture already sees it.
+
+**Checked for regression rather than assumed**, all through the real element:
+exposure compensation covers both built-in names, so brightness is unchanged,
+and textured (within 4 luminance steps), metallic (clipping 3.8% → 3.6%) and
+near-white models render the same. One material class shifts: a dark GLOSSY
+model on the dark backdrop sits ~25% dimmer, the light having concentrated
+into a key rather than a wash — its specular highlights read more clearly, and
+it is the accepted cost of fixing the matte case the artist actually raised.
+Moments minted before this keep posters baked under `neutral`, so their still
+and live view shade slightly differently — the same drift the grounding-shadow
+commit already accepted.
+
+Oracle 52 → 53 assertions; browser check 49 → 51.
+
 ### Post-merge verification
 
 Verified against the merged `main` (PR #680), not the branch: the merged tree
@@ -654,9 +710,10 @@ Known and deliberate, in rough priority order:
    for a badge, and `PatronArtworkShowcase` is contractually "the image
    alone" — both render a model's still correctly and stay unadorned on
    purpose.
-3. **No lighting or environment control.** model-viewer's neutral default may
-   not match an artist's intent; `environment-image`, `exposure` and
-   `shadow-intensity` are all available and none are exposed.
+3. **No per-artwork lighting control.** The site default is the keyed
+   `legacy` studio with a grounding shadow (findings 22-23); `environment-image`,
+   `exposure` and `shadow-intensity` are all available per element and none
+   are exposed to the artist.
 4. **The edit flow and the agent API create 3D moments (2026-09-02).** The
    edit flow reuses the mint form's pose-and-capture verbatim (`ModelPreview`
    + the shared `ModelPoseBar`, the identity-tracked pick, the same refusal
