@@ -76,15 +76,21 @@ const BATCH_MAX = 50
 // unique sender in a moment's activity thread) in one /api/profiles call
 // instead of one /api/profile per address. Shares the same LRU + TTL — cached
 // addresses return with no network hit; only misses are fetched.
+//
+// `resolved` tells the caller whether the name is a real identity or the
+// shortAddress fallback — the activity panel keys its one-shot retry (and its
+// upstream-username fallback) off it, since an unresolved cold answer often
+// becomes resolvable seconds later once the server's bounded/background ENS
+// resolution lands in Redis.
 export async function fetchCreatorProfilesBatch(
   addresses: string[],
-): Promise<Record<string, { name: string; avatarUrl: string | undefined }>> {
-  const out: Record<string, { name: string; avatarUrl: string | undefined }> = {}
+): Promise<Record<string, { name: string; avatarUrl: string | undefined; resolved: boolean }>> {
+  const out: Record<string, { name: string; avatarUrl: string | undefined; resolved: boolean }> = {}
   const misses: string[] = []
   for (const key of new Set(addresses.map((a) => a.toLowerCase()))) {
     const cached = cache.get(key)
     if (cached && Date.now() - cached.ts < (cached.resolved ? TTL_RESOLVED : TTL_FALLBACK)) {
-      out[key] = { name: cached.name, avatarUrl: cached.avatarUrl }
+      out[key] = { name: cached.name, avatarUrl: cached.avatarUrl, resolved: cached.resolved }
     } else {
       misses.push(key)
     }
@@ -110,13 +116,31 @@ export async function fetchCreatorProfilesBatch(
         // block (see ProfileEntry note).
         const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, fcUsername: null, ts: Date.now(), resolved: !!name }
         cache.set(key, entry)
-        out[key] = { name: entry.name, avatarUrl: entry.avatarUrl }
+        out[key] = { name: entry.name, avatarUrl: entry.avatarUrl, resolved: entry.resolved }
       }
     } catch {
       // Non-critical: fall back to shortAddress and don't cache, so a later
       // call retries. Matches fetchCreatorProfile's catch.
-      for (const key of chunk) out[key] ??= { name: shortAddress(key), avatarUrl: undefined }
+      for (const key of chunk) out[key] ??= { name: shortAddress(key), avatarUrl: undefined, resolved: false }
     }
   }
   return out
+}
+
+/**
+ * Drop cached UNRESOLVED entries (the shortAddress fallbacks) for these
+ * addresses so the next batch call refetches them instead of serving the
+ * 30s pin. The pin exists to throttle repeat lookups of genuinely
+ * identity-less wallets; a caller with reason to expect a late-arriving
+ * identity — the server resolves cold ENS misses inline-with-budget and in
+ * the background (lib/ensCache), so a name often lands in Redis seconds
+ * after an unresolved answer — uses this for its ONE-SHOT retry. Resolved
+ * entries are left untouched, so a retry can never downgrade a good name.
+ */
+export function invalidateUnresolvedProfiles(addresses: string[]): void {
+  for (const a of addresses) {
+    const key = a.toLowerCase()
+    const cached = cache.get(key)
+    if (cached && !cached.resolved) cache.delete(key)
+  }
 }

@@ -313,3 +313,41 @@ one demand-driven cost axis and it has **no alerting** — watch the Upstash
 usage graph after any artwork with a large file gets attention. Per-identity
 quotas (`cfile-download` 100/day, `cfile-view` 400/day) and the per-IP rate
 limits are the only automatic brakes.
+
+## 6. Artwork metadata edits — "No authorized smart wallet found for collection …"
+
+**What it was.** Until 2026-09 the artwork editor (title / description / media) relayed
+its new token URI through inprocess's `PATCH /moment` under the platform `INPROCESS_API_KEY`.
+Since inprocess's 2026-05-29 change that endpoint executes as one of the smart wallets
+linked to the account that OWNS the key, and throws this message unless that wallet holds
+ADMIN at token 0 on the collection. Only collections deployed by Kismet's Create form (which
+bakes the operator grant into `setupActions`) and the platform collection ever granted it;
+a first-mint collection inprocess deploys grants ADMIN to the artist's EOA and the artist's
+own smart wallet, never the operator. Kismet's pencil and server preflight checked the
+ARTIST's wallet, so the affordance passed and the relay rejected. Between 2026-05-29 and
+2026-07-22 the same failure surfaced as a bare "upstream error" (inprocess didn't await the
+handler); after that as this exact string. No Kismet-side grant surface could fix it: the
+authorize banner, permissions dashboard and Authorize-creators panel all grant the artist's
+mint wallet, and only a collection admin can call `addPermission` (so neither Kismet's admin
+wallet nor the platform key can grant it on an artist's collection).
+
+**What changed.** The edit is a direct, artist-signed `updateTokenURI` from the connected
+wallet (`hooks/useUpdateMomentUri`; pure core + incident record in `lib/momentUriEdit.ts`).
+The contract's gate — ADMIN or METADATA on the token or collection-wide — is exactly what
+the pencil reads (`useMomentEditPermission`, no creator shortcut any more), so the
+affordance and the write cannot disagree. The relay route is a 410 tombstone for stale
+bundles, the `update-uri` gas quota is gone, and `/api/moment/meta-refresh` re-syncs the
+moment-meta display name from chain after the receipt. Inprocess needs no call: the write
+emits the ERC-1155 `URI` event its chain indexer re-ingests (metadata JSON refetched) within
+its cron cycle, the same convergence path sale edits rely on.
+
+**Guards.** `npm run verify:metadata-edit` (in `npm run check`) pins the calldata against the
+contract signature, the URI allowlist, the ADMIN|METADATA mask, and an allowlist of the only
+files that may send `x-api-key` upstream (mint-proxy, distribute) — a re-added relayed admin
+write fails CI with the incident record. Boot logs `[healthcheck] operator wallet env mirror`
+so a drift between `OPERATOR_SMART_WALLET` and its `NEXT_PUBLIC_` mirror is loud.
+
+**If an artist still sees it.** They are on a stale bundle: reload. The tombstone's 410 says
+so. If the wallet prompt reverts instead, the connected wallet genuinely lacks ADMIN|METADATA
+on that token — read `permissions(<tokenId>, <wallet>)` and `permissions(0, <wallet>)` on
+BaseScan (`node scripts/check-collection-perms.mjs <collection> <wallet>` reads row 0).
