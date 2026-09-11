@@ -98,10 +98,23 @@ export function ownKeySpender(privateKey: Hex): ScoutSpender {
  * CDP_SCOUT_OWNER_NAME / CDP_SCOUT_ACCOUNT_NAME name the deterministic owner +
  * smart account (stable address across restarts).
  *
- * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of the
- * bundle graph until a CDP spender is actually resolved (mirrors grantBudget's
- * lazy @base-org import). Typechecked against the installed SDK (^1.51.0); a live
+ * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of THIS
+ * route's bundle until a CDP spender is actually resolved (mirrors grantBudget's
+ * lazy @base-org import). Typechecked against the installed SDK (1.51.2); a live
  * Base-mainnet smoke (real creds + one sponsored op) is the remaining gate.
+ *
+ * PIN NOTE — @coinbase/cdp-sdk is pinned EXACT at 1.51.2, and 1.52.0 is the
+ * ceiling. From 1.53.0 the SDK's toEvmSmartAccount (our getOrCreateSmartAccount
+ * path) statically imports its x402 signer, which needs eight @x402/* peer
+ * packages the SDK does not install. Not merely a missing-peer nuisance: the
+ * SDK also reaches the APP bundle graph via wagmi → @base-org/account (nested
+ * copy) → payment/charge.js, so on 1.53.0+ `next build` fails ("Can't resolve
+ * '@x402/evm/…'") and the only cure is shipping @x402/* into client chunks for
+ * a feature Kismet never calls. Every function this file uses (getOrCreate
+ * Account / getOrCreateSmartAccount / sendUserOperation / waitForUserOperation,
+ * paymasterUrl) is byte-identical from 1.51.2 through 1.55.0 — verified by
+ * diffing the published tarballs (2026-09) — so newer versions add nothing
+ * here. Bump only when the SDK makes x402 lazy or Kismet deliberately adopts it.
  */
 export async function cdpSpender(): Promise<ScoutSpender> {
   const apiKeyId = process.env.CDP_API_KEY_ID
