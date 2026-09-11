@@ -154,6 +154,4 @@ export interface Machine {
    *  answer, so the set is part of the machine rather than a transient argument. */
   splitRecipients: string[]
   createdAt: number
-  /** Content hash bound at curator approval; a material edit returns to review. */
-  approvedHash?: string
 }

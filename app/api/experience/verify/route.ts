@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { epochFor, verifyDraw } from '@/lib/experience/fairness'
-import { selectByHash } from '@/lib/experience/draw'
+import { MAX_UNITS_PER_CAPSULE, selectByHash } from '@/lib/experience/draw'
 import { commitmentForEpoch, getClaim, revealSeed } from '@/lib/experience/store'
 
 /**
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
 
   if (!/^[a-z0-9-]{3,64}$/.test(machineId)) return errorResponse(400, 'Invalid machineId')
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return errorResponse(400, 'Invalid txHash')
-  if (!Number.isInteger(unitIndex) || unitIndex < 0 || unitIndex > 999) {
+  if (!Number.isInteger(unitIndex) || unitIndex < 0 || unitIndex >= MAX_UNITS_PER_CAPSULE) {
     return errorResponse(400, 'Invalid unitIndex')
   }
 

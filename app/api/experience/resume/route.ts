@@ -8,6 +8,7 @@ import { bestEffort } from '@/lib/bestEffort'
 import { isMomentHidden } from '@/lib/hiddenMoments'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { runDraw } from '@/lib/experience/runDraw'
+import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, reconcileDelivered } from '@/lib/experience/delivery'
 import {
@@ -19,6 +20,7 @@ import {
   getPool,
   getRemaining,
   openEpochSeeds,
+  publicClaim,
   releaseOne,
   seedForEpoch,
 } from '@/lib/experience/store'
@@ -76,7 +78,7 @@ export async function POST(req: NextRequest) {
 
   if (!machineId || !/^[a-z0-9-]{3,64}$/.test(machineId)) return errorResponse(400, 'Invalid machineId')
   if (!txHash || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return errorResponse(400, 'Invalid txHash')
-  if (unitIndex < 0 || unitIndex > 999) return errorResponse(400, 'Invalid unitIndex')
+  if (unitIndex < 0 || unitIndex >= MAX_UNITS_PER_CAPSULE) return errorResponse(400, 'Invalid unitIndex')
 
   // ── Single-flight per claim, and this is load-bearing ──
   //
@@ -326,18 +328,4 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
       amount: 1,
     }).catch(bestEffort('xp.resumeNotify', { machineId, txHash: tx }))
   })
-}
-
-function publicClaim(c: ClaimRecord) {
-  return {
-    state: c.state,
-    prize: c.prize ?? null,
-    attempt: c.attempt ?? 0,
-    epoch: c.epoch ?? null,
-    commitment: c.commitment ?? null,
-    snapshotHash: c.snapshotHash ?? null,
-    unitIndex: c.unitIndex,
-    pendingReason: c.pendingReason ?? null,
-    txDelivered: c.txDelivered ?? null,
-  }
 }

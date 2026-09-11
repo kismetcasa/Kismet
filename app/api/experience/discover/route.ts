@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { discoverCapsuleMints } from '@/lib/experience/discovery'
 import { getClaim, getMachine } from '@/lib/experience/store'
 
@@ -22,10 +23,6 @@ import { getClaim, getMachine } from '@/lib/experience/store'
  * claim states, and nothing here can move an artwork anywhere but to the
  * capsule's own recorded owner.
  */
-
-/** Per-tx unit probe ceiling, matching the claims route: units are written
- *  from 0 upward, so the first gap ends the probe. */
-const MAX_UNITS_PROBED = 20
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
@@ -61,7 +58,7 @@ export async function GET(req: NextRequest) {
   const capsules = await Promise.all(
     mints.map(async (m) => {
       const owedUnits: number[] = []
-      const probe = Math.min(m.units, MAX_UNITS_PROBED)
+      const probe = Math.min(m.units, MAX_UNITS_PER_CAPSULE)
       for (let unit = 0; unit < probe; unit++) {
         const claim = await getClaim(machineId, m.txHash, unit).catch(() => null)
         if (!claim || claim.state !== 'delivered') owedUnits.push(unit)

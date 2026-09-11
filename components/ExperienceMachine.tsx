@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useAccount } from 'wagmi'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { shortAddress } from '@/lib/inprocess'
+import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import {
   artworkTitle,
@@ -111,6 +113,12 @@ const PULL_SIZES = [1, 5, 10] as const
 export function ExperienceMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()
   const { collect } = useDirectCollect()
+  // Two reads of the wallet, for two jobs. `useAccount` is the render-scoped
+  // value: right for lighting up the passive surfaces (owed capsules, spark) on
+  // mount for a returning player. `ensureConnected` is the authoritative read
+  // at the moment of a tap, which can connect a wallet mid-gesture that
+  // useAccount would not reflect until the next render.
+  const { address: connectedAddress } = useAccount()
 
   const [data, setData] = useState<MachinePayload | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -167,6 +175,9 @@ export function ExperienceMachine({ id }: { id: string }) {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setLocal(listPendingCapsules(id)) }, [id])
+  useEffect(() => {
+    if (connectedAddress) setAccount(connectedAddress.toLowerCase())
+  }, [connectedAddress])
   useEffect(() => {
     if (!account) return
     loadClaims(account)
@@ -296,22 +307,27 @@ export function ExperienceMachine({ id }: { id: string }) {
         // the transaction covers, so open unit 0 first and let the server's
         // on-chain proof report the total, then open the rest.
         let units: number[]
+        let probed: { prize: Prize | null; units: number | null } | null = null
         if (unitList === 'probe') {
-          const first = await openUnit(txHash, 0, addr).catch(() => null)
-          if (!first) {
+          probed = await openUnit(txHash, 0, addr).catch(() => null)
+          if (!probed) {
             setPhase('pending')
             setPendingReason('That transaction could not be verified as a capsule for this machine.')
             return
           }
-          if (first.prize) recovered.push(first.prize)
-          const total = Math.min(first.units ?? 1, 20)
-          units = Array.from({ length: Math.max(0, total - 1) }, (_, i) => i + 1)
+          const total = Math.min(probed.units ?? 1, MAX_UNITS_PER_CAPSULE)
+          units = Array.from({ length: Math.max(1, total) }, (_, i) => i)
         } else {
           units = unitList
         }
 
         for (const unit of units) {
-          const opened = await openUnit(txHash, unit, addr).catch(() => null)
+          // Unit 0 of a probe was already opened above to learn the count; every
+          // unit — that one included — still falls through to the resume route
+          // if it did not deliver. Skipping it was the bug that made "try again"
+          // on the pending face a silent replay.
+          const opened =
+            unit === 0 && probed ? probed : await openUnit(txHash, unit, addr).catch(() => null)
           if (opened?.prize) { recovered.push(opened.prize); continue }
           const r = await fetch('/api/experience/resume', {
             method: 'POST',
@@ -332,10 +348,6 @@ export function ExperienceMachine({ id }: { id: string }) {
           setPhase('won')
           setPendingReason(reason)
           if (!reason) clearPendingCapsule(id, txHash)
-        } else if (unitList === 'probe' && units.length === 0 && recovered.length === 0) {
-          // A single-unit pasted hash whose play pended: the reason is already
-          // set by openUnit; keep the pending face.
-          setPhase('pending')
         } else {
           setPhase('pending')
           setPendingReason(reason ?? 'Still working on it — try again shortly.')

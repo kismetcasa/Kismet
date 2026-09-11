@@ -27,6 +27,14 @@ export const MAX_WEIGHT = 1_000_000
 export const MAX_POOL_ARTISTS = 50
 export const MAX_POOL_ENTRIES = 200
 
+/** Upper bound on plays one capsule transaction can carry. A Zora mint's
+ *  quantity is unbounded on-chain, so this is OUR ceiling, and it must be the
+ *  same number everywhere a unit index is validated or probed — the play route,
+ *  the resume and verify routes, the claims and discovery probes, and the
+ *  client's open loop. Three different ceilings (999 / 20 / 20) once let a
+ *  50-unit capsule be playable by API but only 20-recoverable by UI. */
+export const MAX_UNITS_PER_CAPSULE = 100
+
 /** Is this entry structurally drawable? Weight must be a positive integer
  *  within bounds, and remaining must not be exhausted. `remaining: null` means
  *  unlimited supply (an open edition), which is always drawable.
@@ -120,21 +128,6 @@ export function selectByHash(
   // last entry rather than null keeps a float/precision surprise from turning a
   // paid play into a pool failure.
   return pool[pool.length - 1]
-}
-
-/** Apply a successful draw to a snapshot: decrement the drawn entry's remaining
- *  count. Pure — the caller performs the authoritative atomic decrement in Redis
- *  (HINCRBY) and uses this only to keep an in-memory snapshot consistent for a
- *  redraw attempt. */
-export function withDecrement(
-  snapshot: SnapshotEntry[],
-  drawn: { collection: string; tokenId: string },
-): SnapshotEntry[] {
-  return snapshot.map((e) =>
-    e.collection === drawn.collection && e.tokenId === drawn.tokenId && e.remaining !== null
-      ? { ...e, remaining: Math.max(0, e.remaining - 1) }
-      : e,
-  )
 }
 
 /** Remove an entry from a snapshot entirely — used when a live authority

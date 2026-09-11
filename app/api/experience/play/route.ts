@@ -8,6 +8,7 @@ import { getGateConfig, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
+import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { runDraw } from '@/lib/experience/runDraw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, reconcileDelivered } from '@/lib/experience/delivery'
@@ -22,6 +23,7 @@ import {
   getPool,
   getRemaining,
   openEpochSeeds,
+  publicClaim,
   recordPlay,
   releaseOne,
   seedForEpoch,
@@ -77,7 +79,7 @@ export async function POST(req: NextRequest) {
   if (!machineId || !/^[a-z0-9-]{3,64}$/.test(machineId)) return errorResponse(400, 'Invalid machineId')
   if (!txHash || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return errorResponse(400, 'Invalid txHash')
   if (!account || !isAddress(account)) return errorResponse(400, 'Invalid account')
-  if (unitIndex < 0 || unitIndex > 999) return errorResponse(400, 'Invalid unitIndex')
+  if (unitIndex < 0 || unitIndex >= MAX_UNITS_PER_CAPSULE) return errorResponse(400, 'Invalid unitIndex')
 
   // 1. Platform pause. Delivery is a gas-sponsored platform write, so it belongs
   //    behind the same kill switch as mint and distribute. Checked FIRST so a
@@ -136,6 +138,13 @@ export async function POST(req: NextRequest) {
   }
 
   let claim = fresh
+
+  // Index the play NOW, not after delivery. The play feed is what the claims
+  // route reads to find a player's owed capsules, and the claims most in need
+  // of finding are the ones that never reach delivery — a pool failure returns
+  // early below and would otherwise skip the deferred bookkeeping entirely.
+  // Best-effort and idempotent (ZADD on the same member only re-scores).
+  void recordPlay(machineId, account, claim.txHash).catch(() => {})
 
   // 4. Freeze. Everything from here is a pure function of this snapshot and the
   //    epoch seed — no later pool edit, revocation, or moderation action can
@@ -268,7 +277,6 @@ export async function POST(req: NextRequest) {
   const prize = chosen
   after(async () => {
     await Promise.all([
-      recordPlay(machineId, account, claim.txHash).catch(() => {}),
       addSpark(machineId, account, 1).catch(() => {}),
       claim.state === 'delivered'
         ? recordCollected(account, prize.collection, prize.tokenId).catch(() => {})
@@ -298,20 +306,4 @@ export async function POST(req: NextRequest) {
   // client uses it to open the remaining units of a capsule it did not mint
   // itself (a pasted or discovered hash arrives with no local unit count).
   return NextResponse.json({ ok: true, units: proof.units, claim: publicClaim(claim) })
-}
-
-/** The claim as a player may see it. The snapshot and its hash are public — they
- *  are the receipt — but nothing here exposes the epoch seed, which stays secret
- *  until its epoch closes. */
-function publicClaim(c: ClaimRecord) {
-  return {
-    state: c.state,
-    prize: c.prize ?? null,
-    attempt: c.attempt ?? 0,
-    epoch: c.epoch ?? null,
-    snapshotHash: c.snapshotHash ?? null,
-    unitIndex: c.unitIndex,
-    pendingReason: c.pendingReason ?? null,
-    txDelivered: c.txDelivered ?? null,
-  }
 }

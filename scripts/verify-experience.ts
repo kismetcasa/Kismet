@@ -20,7 +20,6 @@ import {
   poolArtists,
   selectByHash,
   totalWeight,
-  withDecrement,
   withExcluded,
 } from '../lib/experience/draw.ts'
 import { checkSolvency, coverage, findFloorPiece, pledgedSupply } from '../lib/experience/solvency.ts'
@@ -159,10 +158,6 @@ console.log('\n3. selection')
 console.log('\n4. snapshot helpers')
 {
   const pool = [snap({ tokenId: '1', remaining: 2 }), snap({ tokenId: '2', remaining: null })]
-  const dec = withDecrement(pool, { collection: pool[0].collection, tokenId: '1' })
-  check('decrement reduces the target', dec[0].remaining === 1)
-  check('decrement never goes negative', withDecrement(withDecrement(dec, { collection: pool[0].collection, tokenId: '1' }), { collection: pool[0].collection, tokenId: '1' })[0].remaining === 0)
-  check('unlimited entry is untouched by decrement', dec[1].remaining === null)
   const exc = withExcluded(pool, { collection: pool[0].collection, tokenId: '1' })
   check('exclusion removes exactly one entry', exc.length === 1 && exc[0].tokenId === '2')
   check('entryKey is lowercased and canonical', entryKey({ collection: '0xAABB', tokenId: '7' }) === '0xaabb:7')

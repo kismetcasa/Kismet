@@ -220,6 +220,25 @@ export async function getClaim(
   return typeof raw === 'string' ? (JSON.parse(raw) as ClaimRecord) : raw
 }
 
+/** The claim as a player may see it — the ONE projection both the play and the
+ *  resume routes return, so the two cannot drift (they had: one carried the
+ *  commitment, the other did not). The snapshot and its hash are public — they
+ *  are the receipt — but nothing here exposes the epoch seed, which stays secret
+ *  until its epoch closes. */
+export function publicClaim(c: ClaimRecord) {
+  return {
+    state: c.state,
+    prize: c.prize ?? null,
+    attempt: c.attempt ?? 0,
+    epoch: c.epoch ?? null,
+    commitment: c.commitment ?? null,
+    snapshotHash: c.snapshotHash ?? null,
+    unitIndex: c.unitIndex,
+    pendingReason: c.pendingReason ?? null,
+    txDelivered: c.txDelivered ?? null,
+  }
+}
+
 /** Advance the state machine. The caller holds the claim, so this is a plain
  *  overwrite rather than a CAS — contention is already excluded by createClaim. */
 export async function advanceClaim(

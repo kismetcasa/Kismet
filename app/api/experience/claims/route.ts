@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { getClaim, getSpark, playedTxHashes } from '@/lib/experience/store'
 import type { ClaimRecord } from '@/lib/experience/types'
 
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
   const claims: ClaimRecord[] = []
   await Promise.all(
     recent.map(async (tx) => {
-      for (let unit = 0; unit < 20; unit++) {
+      for (let unit = 0; unit < MAX_UNITS_PER_CAPSULE; unit++) {
         const c = await getClaim(machineId, tx, unit).catch(() => null)
         if (!c) break
         claims.push(c)
