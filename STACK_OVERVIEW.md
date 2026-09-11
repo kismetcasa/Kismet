@@ -375,9 +375,16 @@ both Kismet routes call the new form.
 at `https://api.inprocess.world/api`. **Reads** (`/timeline`, `/moment`,
 `/collection(s)`, `/comments`, `/payments`, `/transfers`, `/smartwallet`) are
 keyless with 8 s timeouts (10 s for `/smartwallet`); **writes** (`/moment/create[/writing]`,
-`GET /splits` (distribute — a GET that fires a sponsored userOp; replaced `POST /distribute` 2026-08-18),
-`PATCH /moment`) carry `x-api-key: INPROCESS_API_KEY` and execute a gas-sponsored
-userOp as the caller's per-creator smart wallet (45–60 s timeouts).
+`GET /splits` (distribute — a GET that fires a sponsored userOp; replaced `POST /distribute` 2026-08-18))
+carry `x-api-key: INPROCESS_API_KEY`; `/moment/create` executes a gas-sponsored userOp as
+the creator's per-creator smart wallet (45–60 s timeouts). `PATCH /moment` (artwork
+metadata edit) was **retired 2026-09**: under a platform key inprocess executes it as the
+KEY OWNER's smart wallet and rejects every collection that never granted that wallet ADMIN
+(all first-mint collections) with "No authorized smart wallet found", while Kismet's pencil
+and preflight had authorized the artist's own wallet. The artist's wallet is what the
+contract authorizes, so the edit is now a direct `updateTokenURI` from the connected wallet
+(`hooks/useUpdateMomentUri`; incident record in `lib/momentUriEdit.ts`; CI guard
+`scripts/verify-metadata-edit.ts` fails any new platform-key relay outside mint/distribute).
 
 **Why.** Kismet has no content store — it stitches inprocess data with its own Redis
 KV. The relay lets creators mint without paying gas (platform pays via the operator

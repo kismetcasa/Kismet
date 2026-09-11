@@ -26,11 +26,12 @@ export const PERMISSION_BIT_MINTER = 4n
 export const PERMISSION_BIT_SALES = 8n
 export const PERMISSION_BIT_METADATA = 16n
 
-// The two bits Zora's 1155 honors for `updateTokenURI`. Shared by the
-// update-uri server preflight (`canUpdateUri`) and the client edit-affordance
-// gate (useMomentEditPermission) so the two can't drift out of agreement —
-// a mismatch would surface as a pencil that 403s, or a missing pencil for an
-// authorized editor.
+// The two bits Zora's 1155 honors for `updateTokenURI`. Shared by the client
+// edit-affordance gate (useMomentEditPermission — the artwork editor is a
+// direct wallet write, so this read IS the preflight) and the collector-file
+// server gate (lib/collectorFileGate) so the surfaces can't drift out of
+// agreement — a mismatch would surface as a pencil whose save reverts, or a
+// missing pencil for an authorized editor.
 export const METADATA_EDIT_MASK = PERMISSION_BIT_ADMIN | PERMISSION_BIT_METADATA
 
 /** True when `perms` grants moment-metadata edit rights (ADMIN or METADATA). */
