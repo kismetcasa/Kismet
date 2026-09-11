@@ -145,3 +145,39 @@ down on exit. Exit code is non-zero on any failed check.
   still caches the name; the next request is warm.
 - **P5 burst caps** — 20 cold senders resolve at most 8 inline + 8 in the
   background (16 RPC calls), the rest stay cold for a later request.
+
+# Browser end-to-end check — activity panel identity
+
+`activity-identity.mjs` drives a real Chromium against the real built app and
+asserts the two client behaviors of `components/MomentActivity` that no other
+suite can execute: the one-shot in-view retry that re-resolves senders whose
+identity came back unresolved, and the In Process username fallback.
+`verify:profile-identity` pins the cache primitive they use
+(`invalidateUnresolvedProfiles`), but the wiring lives in a React effect and a
+render expression — it needs a browser. `/api/moment`, `/api/moment/comments`
+and `/api/profiles` are intercepted in the browser, so every assertion is
+about the component, not the upstreams.
+
+## Running it
+
+```sh
+npm run build
+npm i --no-save playwright@1.56   # not a repo dependency — see above
+node scripts/e2e/activity-identity.mjs
+```
+
+Self-contained: spawns `scripts/e2e/redis-stub.mjs` and `next start` on
+`E2E_PORT` (default 3109), tears both down on exit. `E2E_CHROMIUM` overrides
+the browser path. Exit code is non-zero on any failed check.
+
+## What it asserts (10)
+
+- **Cold batch** — one `/api/profiles` request covers every sender; a sender
+  with no identity renders the truncated address; senders with an upstream
+  username render it instead of the address.
+- **One-shot retry** — ~2.5s later, without a reload, the sender whose name
+  landed server-side upgrades in-view; a sender that resolved AND had an
+  upstream username shows the resolved identity (precedence); a sender still
+  unresolved keeps its upstream username; the retry asked exactly for the
+  unresolved senders.
+- **Exactly once** — no further `/api/profiles` requests after the retry.
