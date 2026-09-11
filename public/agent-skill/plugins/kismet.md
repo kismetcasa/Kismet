@@ -1,6 +1,6 @@
 ---
 title: "Kismet Plugin"
-description: "Collect (mint), buy, and list artworks on the Kismet marketplace via its prepare API → send_calls / sign on Base."
+description: "Collect, buy, list, and mint (create) artworks on the Kismet marketplace via its prepare API → send_calls / sign on Base."
 tags: [nft, marketplace, drops, art]
 name: kismet
 version: 0.1.0
@@ -38,10 +38,11 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
-| Discover / manifest | Direct GET | `web_request` if allowlisted, else user-pasted GET |
-| Collect / buy (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| Discover / manifest | Direct GET | `web_request` if allowlisted, else GET via a user-pasted URL |
+| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string, show it, ask the user to paste it back, then fetch it |
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
+| Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
 | Record settlement (collect / buy) | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
 
 ## Endpoints
@@ -138,6 +139,14 @@ List my artwork #7 for 0.01 ETH
 1. `get_wallets`. 2. `GET /api/agent/prepare-list?...&price=0.01&currency=eth`.
 3. `send_calls` the one-time approval if present → `sign` the typed data →
 POST the record body.
+
+```text
+Mint this image on Kismet as "Dawn" — free, open edition
+```
+1. `get_wallets`. 2. Read the image with your own tools → `data:` URI →
+`POST /api/agent/prepare-mint` (shell harness only; `403` without a Kismet
+Pass). 3. Show summary → `sign` the typed data → POST the record body to
+`/api/mint`.
 
 ## Risks & Warnings
 
