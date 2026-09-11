@@ -80,7 +80,7 @@ export function getAgentManifest(origin: string): AgentManifest {
       },
       errors: {
         '400': 'invalid input; the message says what',
-        '403': 'account not eligible: does not hold the token (list), or is blocked or holds no Kismet Pass (mint)',
+        '403': 'account not eligible: does not hold the token (list), or is blocked or holds no Kismet Pass (mint). A mint into an EXISTING collection may instead return a 403 carrying code NO_ACCOUNT (no creator account yet — mint once without a collection first) or AUTHORIZE_REQUIRED (the collection has not granted Kismet minter access) — relay the message, do not retry',
         '404': 'listing not found (buy)',
         '409': 'not currently possible: no active sale, sold out or per-wallet limit hit (collect); listing inactive (buy); fees exceed the price (list)',
         '429': 'rate limited or daily capacity reached — wait before retrying',
@@ -186,6 +186,7 @@ export function getAgentManifest(origin: string): AgentManifest {
           editions: 'positive integer (optional; omit for an open edition)',
           collection: 'existing collection address (optional; omit to auto-create)',
           artistMint: 'boolean (optional, default true — keep a copy for the artist)',
+          enableRaffle: 'boolean (optional, default false — opt the artwork into a Kismet raffle; the creator can toggle it later)',
           splits: 'optional payout splits array',
         },
       },

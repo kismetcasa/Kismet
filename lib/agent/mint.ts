@@ -115,6 +115,11 @@ export interface MintParams {
   collectionUri?: string
   payoutRecipient?: `0x${string}`
   splits?: unknown
+  /** Opt the artwork into a Kismet raffle at mint (MintForm's "Enable raffle"
+   *  toggle). Rides the record body top-level, NOT the signed intent — see
+   *  lib/intent MintBody.enableRaffle: the creator is independently authorized
+   *  to toggle it any time, and mint-proxy consumes it post-mint. */
+  enableRaffle?: boolean
 }
 
 /**
@@ -155,6 +160,8 @@ export function buildMintBody(p: MintParams): MintBody & { name: string } {
     account: p.account,
     name: p.name,
     ...(p.splits ? { splits: p.splits } : {}),
+    // Top-level, exactly where MintForm puts it ({ ...payload, intent, enableRaffle }).
+    ...(p.enableRaffle ? { enableRaffle: true } : {}),
   }
 }
 

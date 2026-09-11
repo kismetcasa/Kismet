@@ -31,7 +31,8 @@ POST BASE/api/agent/prepare-mint
   "currency": "eth",                // "eth" | "usdc" (default eth)
   "editions": 100,                  // optional; omit for an open edition
   "collection": "0x…",              // optional; omit to auto-create a new collection
-  "artistMint": true                // optional; keep a copy for the artist (default true)
+  "artistMint": true,               // optional; keep a copy for the artist (default true)
+  "enableRaffle": false             // optional; opt the artwork into a Kismet raffle (default false)
 }
 ```
 

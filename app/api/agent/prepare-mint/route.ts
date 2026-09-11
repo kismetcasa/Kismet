@@ -139,6 +139,8 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   // Artist keeps a copy by default (app default: mintToCreatorCount 1). Only an
   // explicit false / "false" / "0" disables it.
   const artistMint = !(body.artistMint === false || body.artistMint === 'false' || body.artistMint === '0')
+  // Raffle opt-in (app default: off). Unsigned — mint-proxy enables it post-mint.
+  const enableRaffle = body.enableRaffle === true || body.enableRaffle === 'true'
 
   // Existing collection (address) vs auto-deploy (no collection → we create one
   // named after the moment, exactly like the app's default mint).
@@ -348,6 +350,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     currency,
     editions,
     artistMint,
+    ...(enableRaffle ? { enableRaffle: true } : {}),
     ...(collection ? { collection } : { collectionName, collectionUri }),
     ...(payoutRecipient ? { payoutRecipient } : {}),
     ...(splits ? { splits } : {}),

@@ -110,6 +110,16 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(textEnv.record!.url === '/api/write', 'text moment records to /api/write')
   const imgEnv = buildMintEnvelope(p, nonce, expiresAt)
   ok(imgEnv.record!.url === '/api/mint', 'media moment records to /api/mint')
+
+  // Raffle opt-in: rides the record body top-level (where mint-proxy reads
+  // `body.enableRaffle === true`) but is NOT a signed slot — the typed message
+  // must be identical with and without it, or the flag would change what the
+  // artist signs for an action they're independently authorized to toggle.
+  const raffleEnv = buildMintEnvelope({ ...p, enableRaffle: true }, nonce, expiresAt)
+  const raffleBody = raffleEnv.record!.bodyTemplate as Record<string, unknown>
+  ok(raffleBody.enableRaffle === true, 'enableRaffle → carried top-level in the record body')
+  ok(!('enableRaffle' in (env.record!.bodyTemplate as object)), 'enableRaffle absent by default (app default: off)')
+  ok(j((raffleEnv.typedData as { message: unknown }).message) === j(td.message), 'enableRaffle does NOT alter the signed MintIntent')
 }
 
 // ── media ingest: data:/passthrough only, no remote fetch ──
