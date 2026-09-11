@@ -10,6 +10,8 @@ import { SEAPORT_ADDRESS } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buildApproveLink } from '@/lib/agent/prolink'
+import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -35,14 +37,17 @@ export async function POST(req: NextRequest) {
 /**
  * GET variant — same parameters in the query string, same envelope back. For
  * chat-only surfaces where POST to a non-allowlisted host is unreachable (the
- * Base MCP custom-plugin fallback ladder is GET-only there). A pure read:
- * chain reads + calldata assembly, no state mutation.
+ * Base MCP custom-plugin fallback ladder is GET-only there: the user pastes
+ * the URL back and the assistant fetches it). A pure read: chain reads +
+ * calldata assembly, no state mutation. A browser navigation to the same URL
+ * (the user tapped it) gets a human page with the summary and the Base app
+ * approve link instead of raw JSON.
  */
 export async function GET(req: NextRequest) {
-  return prepareBuy(req, Object.fromEntries(req.nextUrl.searchParams))
+  return prepareBuy(req, Object.fromEntries(req.nextUrl.searchParams), isDocumentNavigation(req))
 }
 
-async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account?: unknown }) {
+async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account?: unknown }, asPage = false) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
@@ -99,11 +104,13 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
     : ''
   const summary = `Buy ${itemLabel} from ${shortAddress(listing.seller)} for ${priceLabel}.${approvalNote}`
 
+  const link = await buildApproveLink(plan.calls, account as Address)
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'buy',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     // Single-tap buy: marking the order-book listing filled needs no buyer
     // signature — the PATCH route verifies the Seaport OrderFulfilled event from
     // this txHash (matched to the listing's orderHash) and derives the buyer from
@@ -119,5 +126,6 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
     caps: currency === 'eth' ? { maxValueEth: plan.price.toString() } : { maxValueUsdc: plan.price.toString() },
   }
 
+  if (asPage) return approvePageResponse(envelope, `/artwork/${listing.collectionAddress}/${listing.tokenId}`)
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }

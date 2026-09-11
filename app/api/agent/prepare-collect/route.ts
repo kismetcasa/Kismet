@@ -9,6 +9,8 @@ import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildCollectPlan } from '@/lib/agent/collect'
+import { buildApproveLink } from '@/lib/agent/prolink'
+import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -40,12 +42,14 @@ export async function POST(req: NextRequest) {
  * Exists for chat-only surfaces (Claude.ai / ChatGPT consumer apps): Base
  * MCP's web_request reaches only allowlisted hosts there, and the documented
  * fallback ladder's consumer-surface rung is GET-only (the user pastes the
- * URL/response into chat — see Base's custom-plugins reference). Semantically
- * this IS a read: on-chain reads + calldata assembly, no state mutation; the
- * response stays `private, no-store`.
+ * URL back into chat and the assistant fetches it — see Base's custom-plugins
+ * reference). Semantically this IS a read: on-chain reads + calldata assembly,
+ * no state mutation; the response stays `private, no-store`. A browser
+ * navigation to the same URL (the user tapped it) gets a human page with the
+ * summary and the Base app approve link instead of raw JSON.
  */
 export async function GET(req: NextRequest) {
-  return prepareCollect(req, Object.fromEntries(req.nextUrl.searchParams))
+  return prepareCollect(req, Object.fromEntries(req.nextUrl.searchParams), isDocumentNavigation(req))
 }
 
 interface PrepareCollectParams {
@@ -57,7 +61,7 @@ interface PrepareCollectParams {
   comment?: unknown
 }
 
-async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
+async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPage = false) {
   if (!(await checkRateLimit(`agent-prepare-collect:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
@@ -155,11 +159,13 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
   // malicious address must be visible before approval, not buried in calldata.
   const summary = `Collect ${qtyLabel}token #${tokenId.toString()} for ${priceLabel} each${feeNote} → to ${shortAddress(account)}.${approvalNote}`
 
+  const link = await buildApproveLink(plan.calls, account as Address)
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'collect',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     record: {
       method: 'POST',
       url: '/api/collect',
@@ -179,5 +185,6 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
         : { maxValueUsdc: plan.totalCost.toString() },
   }
 
+  if (asPage) return approvePageResponse(envelope, `/artwork/${collection}/${tokenId.toString()}`)
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }

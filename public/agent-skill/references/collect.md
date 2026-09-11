@@ -43,6 +43,11 @@ send_calls({ chain: "base", calls })
 One approval in Base Account (the `approve` + `mint` are batched). Wait for the
 confirmed **txHash**.
 
+If the envelope carries `link`, you may instead hand the user `link.url` to
+approve the same calls in the Base app. Nothing returns to you that way — ask
+the user for the txHash before recording. (`link` is absent when the batch
+prepends a USDC approve.)
+
 ## 3. Record
 
 Take `record.bodyTemplate`, replace `txHash`'s placeholder with the confirmed

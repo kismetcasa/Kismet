@@ -76,6 +76,8 @@ export function getAgentManifest(origin: string): AgentManifest {
           '{ method, url, bodyTemplate } to send after the wallet step; fill every <…> placeholder from the executed result (txHash from send_calls, signature from sign). Collect and buy records are checked against the on-chain receipt, so they are safe to lag: a repeated collect record answers 200 (idempotent) and a repeated buy record answers 409 (already filled) — treat both as success. List and mint records are the action itself: the signed Seaport order exists only once POSTed, and /api/mint submits the sponsored mint — nothing is live until they succeed.',
         records: 'batch collect only: one record call per item, all against the shared txHash',
         skipped: 'batch collect only: items left out of the batch, each with a reason (no active sale / sold out / per-wallet limit)',
+        link:
+          'optional, collect / batch collect / buy: { url, note } — a Base app deep link (prolink, https://base.app/base-pay?p=…) carrying the same calls, pinned to the paying account, for the user to approve in the Base app instead of send_calls. One-way: no txHash comes back — get it from the user before recording. Withheld when a faithful Base app decode of these calls cannot be guaranteed (today: batches that prepend a USDC approve) and always for list and mint.',
         caps: 'spend ceilings to honor and surface to the user; present for collect, buy and batch collect, per currency actually spent: maxValueEth (wei) and maxValueUsdc (6-decimal base units), both decimal strings. Absent for list and mint.',
       },
       errors: {

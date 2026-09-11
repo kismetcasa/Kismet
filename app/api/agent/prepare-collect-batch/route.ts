@@ -10,6 +10,7 @@ import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { dedupeMomentRefs } from '@/lib/agent/dedupeRefs'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
+import { buildApproveLink } from '@/lib/agent/prolink'
 import type { AgentActionEnvelope, AgentRecordHint } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -161,11 +162,14 @@ export async function POST(req: NextRequest) {
   // malicious address must be visible before approval, not buried in calldata.
   const summary = `Collect ${items.length} artwork${items.length === 1 ? '' : 's'} for ${totalLabel || 'free'} in one approval → to ${shortAddress(recipient)}.${skipNote}`
 
+  // The paying account signs, so the link is pinned to `account`, not `recipient`.
+  const link = await buildApproveLink(plan.calls, account as Address)
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'collect',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     records,
     // A basket can mix ETH and USDC items, so surface BOTH ceilings — collapsing
     // to one currency would silently drop the other's spend cap.

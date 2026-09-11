@@ -39,7 +39,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
 | Discover / manifest | Direct GET | `web_request` if allowlisted, else GET via a user-pasted URL |
-| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string, show it, ask the user to paste it back, then fetch it |
+| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string, show it, ask the user to paste it back, then fetch it. Then `send_calls`, or hand the user the envelope's `link.url` to approve in the Base app |
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
@@ -67,14 +67,18 @@ Every prepare returns an envelope:
   "typedData": { },
   "summary": "Collect 1× token #42 for $5.00 …",
   "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { } },
-  "caps": { "maxValueUsdc": "5000000" }
+  "caps": { "maxValueUsdc": "5000000" },
+  "link": { "url": "https://base.app/base-pay?p=…", "note": "…" }
 }
 ```
 
 `calls[].value` is already **hex wei** — no conversion needed. The server
 reads price, currency, and eligibility on-chain; never pass or trust a price
 from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
-`maxValueUsdc` in 6-decimal base units) — never exceed it.
+`maxValueUsdc` in 6-decimal base units) — never exceed it. `link` (collect,
+batch, buy; optional) is a Base app deep link carrying the same calls: an
+alternative to `send_calls` that returns nothing to you, so get the txHash from
+the user before recording. It is absent when the batch prepends a USDC approve.
 
 ## Orchestration
 
@@ -82,7 +86,8 @@ from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
 1. `get_wallets` → the Base Account address.
 2. Optional: `GET /api/agent/discover` to pick a listing or artwork.
 3. Fetch the prepare endpoint (GET on chat-only surfaces).
-4. Show `summary` and the price; then `send_calls({ chain: "base", calls })`.
+4. Show `summary` and the price; then `send_calls({ chain: "base", calls })`
+   (or hand the user `link.url` when present, to approve in the Base app).
 5. User approves in Base Account → poll `get_request_status(requestId)` until
    confirmed; capture the txHash.
 6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`).

@@ -42,6 +42,9 @@ import {
 import { buildCollectPlan } from '@/lib/agent/collect'
 import { buildCollectBatchPlan } from '@/lib/agent/collectBatch'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buildApproveLink } from '@/lib/agent/prolink'
+import { renderApprovePage } from '@/lib/agent/approvePage'
+import { decodeProlink } from '@base-org/account/prolink'
 import { SEAPORT_ADDRESS, buildSellOrder, serializeOrder } from '@/lib/seaport'
 import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import type { Listing } from '@/lib/listings'
@@ -270,6 +273,81 @@ console.log('\nbuildBuyPlan — ETH listing carries value == price')
   check('single fulfill call, no approve', plan.calls.length === 1 && plan.approvalIncluded === false)
   check('ETH fulfill value == price', hexToBigInt(plan.calls[0].value as Hex) === price)
   check('totalValue == price', plan.totalValue === price)
+
+  // ── Prolink approve link (lib/agent/prolink.ts) ────────────────────────────
+  // The link is issued only when the SDK's own decoder reproduces the calls
+  // byte-for-byte; that decoder drops leading zero nibbles from calldata, so a
+  // batch carrying the ERC-20 approve selector (0x095ea7b3) must be withheld
+  // while mint / fulfillOrder batches round-trip and get a link.
+  console.log('\nbuildApproveLink — Base app prolink')
+  type Decoded = { version: string; chainId: string; from?: string; calls: { to: string; data: string; value: string }[] }
+  const roundTrip = async (calls: { to: string; data: string; value: string }[], url: string) => {
+    const decoded = await decodeProlink(new URL(url).searchParams.get('p') ?? '')
+    const p = (decoded.params as Decoded[])[0]
+    return {
+      method: decoded.method,
+      p,
+      same:
+        p.calls.length === calls.length &&
+        p.calls.every(
+          (d, i) =>
+            eq(d.to, calls[i].to) && d.data === calls[i].data.toLowerCase() && hexToBigInt(d.value as Hex) === hexToBigInt(calls[i].value as Hex),
+        ),
+    }
+  }
+
+  const buyLink = await buildApproveLink(plan.calls, ACCOUNT)
+  check('ETH buy (fulfillOrder) gets a link', buyLink !== null)
+  check('link is base.app/base-pay?p=…', buyLink?.url.startsWith('https://base.app/base-pay?p=') === true, buyLink?.url.slice(0, 40))
+  if (buyLink) {
+    const rt = await roundTrip(plan.calls, buyLink.url)
+    check('decodes as wallet_sendCalls on Base (0x2105)', rt.method === 'wallet_sendCalls' && rt.p.chainId === '0x2105', rt.p.chainId)
+    check('from is pinned to the paying account', !!rt.p.from && eq(rt.p.from, ACCOUNT), rt.p.from)
+    check('fulfillOrder call round-trips byte-for-byte (to, data, value)', rt.same)
+  }
+
+  const ethCollect = buildCollectPlan({
+    collection: COLLECTION, tokenId: 42n, account: ACCOUNT, quantity: 2n,
+    currency: 'eth', pricePerToken: 1_000_000_000_000_000n, comment: 'gm', mintFee: 111_000_000_000_000n, usdcAllowance: 0n,
+  })
+  const ethLink = await buildApproveLink(ethCollect.calls, ACCOUNT)
+  check('ETH collect (1155 mint) gets a link', ethLink !== null)
+  if (ethLink) check('1155 mint call round-trips byte-for-byte', (await roundTrip(ethCollect.calls, ethLink.url)).same)
+
+  const usdcCovered = buildCollectPlan({
+    collection: COLLECTION, tokenId: 7n, account: ACCOUNT, quantity: 1n,
+    currency: 'usdc', pricePerToken: 5_000_000n, comment: '', mintFee: 0n, usdcAllowance: 5_000_000n,
+  })
+  const usdcLink = await buildApproveLink(usdcCovered.calls, ACCOUNT)
+  check('USDC collect with allowance covered (ERC20Minter mint only) gets a link', usdcLink !== null)
+  if (usdcLink) check('ERC20Minter mint call round-trips byte-for-byte', (await roundTrip(usdcCovered.calls, usdcLink.url)).same)
+
+  const usdcShort = buildCollectPlan({
+    collection: COLLECTION, tokenId: 7n, account: ACCOUNT, quantity: 1n,
+    currency: 'usdc', pricePerToken: 5_000_000n, comment: '', mintFee: 0n, usdcAllowance: 0n,
+  })
+  check('the withheld case really is the approve selector', selector(usdcShort.calls[0].data) === '0x095ea7b3')
+  check('USDC collect with a prepended approve is WITHHELD (decoder would mangle 0x095ea7b3)', (await buildApproveLink(usdcShort.calls, ACCOUNT)) === null)
+  const usdcBuy = buildBuyPlan({
+    listing: { ...listing, currency: 'usdc', price: '5000000', orderComponents: serializeOrder(buildSellOrder({
+      offerer: ACCOUNT, collectionAddress: COLLECTION, tokenId: '7', sellerProceeds: 4_750_000n, royaltyReceiver: RECIPIENT,
+      royaltyAmount: 200_000n, platformFee: 50_000n, platformFeeRecipient: PLATFORM_FEE_RECIPIENT, counter: 0n, currency: 'usdc',
+    })) } as Listing,
+    seaportUsdcAllowance: 0n,
+  })
+  check('USDC buy with a prepended approve is WITHHELD too', (await buildApproveLink(usdcBuy.calls, ACCOUNT)) === null)
+  check('a call whose data starts with a zero byte is WITHHELD', (await buildApproveLink([{ to: COLLECTION, data: '0x00112233', value: '0x0' }], ACCOUNT)) === null)
+  check('an empty batch gets no link', (await buildApproveLink([], ACCOUNT)) === null)
+
+  // The browser-navigation page embeds the summary (which carries the
+  // seller-controlled listing name) and the envelope JSON — both must be escaped.
+  const page = renderApprovePage(
+    { chain: 'base', action: 'buy', calls: plan.calls, summary: 'Buy “<script>alert(1)</script>” for 0.05 ETH', ...(buyLink ? { link: buyLink } : {}) },
+    '/artwork/0xabc/7',
+  )
+  check('approve page escapes the summary (no raw <script>)', !page.includes('<script>') && page.includes('&lt;script&gt;'))
+  check('approve page carries the Base app link as the button href', !!buyLink && page.includes(`href="${buyLink.url.replace(/&/g, '&amp;')}"`))
+  check('approve page embeds the envelope JSON', page.includes('&quot;action&quot;: &quot;buy&quot;'))
 }
 
-report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope all verified')
+report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope, prolink round-trip all verified')

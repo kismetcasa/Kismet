@@ -50,6 +50,11 @@ export interface AgentActionEnvelope {
   records?: AgentRecordHint[]
   /** Batch collect only: items that could not be collected, with the reason. */
   skipped?: Array<{ collection: string; tokenId: string; reason: string }>
+  /** Collect / batch collect / buy: a Base app deep link (prolink) carrying the
+   *  same `calls`, for the user to approve in the Base app instead of
+   *  `send_calls`. One-way — no txHash returns; see lib/agent/prolink.ts for
+   *  when it is withheld. */
+  link?: { url: string; note: string }
   /** Spend ceilings the agent should honor (and surface to the user), per
    *  currency. A single batch can spend in both (e.g. a mixed collect basket),
    *  so each is independent and present only when that currency is actually
