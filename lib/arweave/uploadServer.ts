@@ -11,8 +11,9 @@ import { describeUploadError, isNonRetryableUploadStatus, uploadErrorStatus } fr
  * assistant minting via MCP, where the server ingests the media and metadata
  * itself. Mirrors the retry/short-circuit logic in app/api/upload's JSON path.
  *
- * Callers MUST bound abuse before calling (Pass gate + upload-bytes quota),
- * exactly like app/api/upload does — this helper only moves bytes.
+ * Callers MUST bound abuse before calling — an identity check (app/api/upload
+ * requires a session; prepare-mint requires the Pass gate) plus the upload-bytes
+ * quota — this helper only moves bytes.
  */
 
 function getTurbo() {

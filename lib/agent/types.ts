@@ -4,8 +4,10 @@
  * These endpoints return *inert* artifacts — unsigned EIP-5792 call batches
  * and/or EIP-712 typed data — that an AI assistant hands to Base MCP
  * (`send_calls` / `sign`) for the user to approve in their Base Account. The
- * artifacts move no funds until the user signs them, so the prepare endpoints
- * are safe to expose without auth.
+ * artifacts move no funds until the user signs them, so the collect / buy /
+ * list prepares are safe to expose without auth. The one exception is
+ * prepare-mint: it hosts media on Arweave BEFORE any signature (a platform
+ * spend), so it is gated (Pass + quotas + a platform daily cap) rather than open.
  */
 
 export type AgentChain = 'base'
@@ -37,7 +39,7 @@ export interface AgentActionEnvelope {
   action: AgentVerb
   /** EIP-5792 batch for `send_calls` (collect, buy, list-approval). */
   calls?: AgentCall[]
-  /** EIP-712 typed data for `sign` (the Seaport list order). */
+  /** EIP-712 typed data for `sign` (the Seaport order for list, the MintIntent for mint). */
   typedData?: unknown
   /** Human-readable one-liner to show the user before requesting approval. */
   summary: string
@@ -46,6 +48,8 @@ export interface AgentActionEnvelope {
   /** Batch variant: one record call per item, all against the same txHash
    *  (each /api/collect verifies its own token against the shared receipt). */
   records?: AgentRecordHint[]
+  /** Batch collect only: items that could not be collected, with the reason. */
+  skipped?: Array<{ collection: string; tokenId: string; reason: string }>
   /** Spend ceilings the agent should honor (and surface to the user), per
    *  currency. A single batch can spend in both (e.g. a mixed collect basket),
    *  so each is independent and present only when that currency is actually

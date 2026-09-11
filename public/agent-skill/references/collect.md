@@ -1,7 +1,7 @@
 # Collect (primary mint)
 
 Mint a copy of an artwork to the user's Base Account. Pays the sale price (ETH or
-USDC) plus a small Zora protocol mint fee.
+USDC) plus, for ETH sales, the Zora protocol mint fee (USDC sales carry no fee).
 
 ## 1. Prepare
 
@@ -12,7 +12,7 @@ POST BASE/api/agent/prepare-collect
   "tokenId": "42",            // or omit and pass "url"
   "url": "BASE/artwork/0x…/42", // alternative to collection+tokenId
   "account": "0xYourBaseAccount",
-  "amount": 1,                 // optional, default 1
+  "amount": 1,                 // optional, default 1, max 50 (larger is clamped)
   "comment": "great piece"    // optional mint comment
 }
 ```

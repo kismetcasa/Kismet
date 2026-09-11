@@ -48,8 +48,7 @@ export function getAgentManifest(origin: string): AgentManifest {
     name: 'Kismet Agent Actions',
     description:
       'Prepare unsigned Base transactions and EIP-712 typed data so an AI agent can collect, buy, list, and mint artworks on Kismet through Base MCP. Settlement is recorded on Kismet’s existing on-chain-verified routes.',
-    // Public agent docs = the skill itself. The internal AGENT_*.md design notes
-    // are intentionally NOT served.
+    // Public agent docs = the skill itself.
     docs: `${origin}/agent-skill/SKILL.md`,
     skill: `${origin}/agent-skill/SKILL.md`,
     chain: { name: 'base', chainId: 8453 },
@@ -74,8 +73,9 @@ export function getAgentManifest(origin: string): AgentManifest {
         typedData: 'EIP-712 payload for sign: the Seaport order (list) or the MintIntent (mint). Absent for collect and buy.',
         summary: 'human-readable one-liner to show the user before requesting approval',
         record:
-          '{ method, url, bodyTemplate } to send after the wallet step; fill every <…> placeholder from the executed result (txHash from send_calls, signature from sign). Collect and buy records are checked against the on-chain receipt, so they are safe to lag and harmless to repeat. List and mint records are the action itself: the signed Seaport order exists only once POSTed, and /api/mint submits the sponsored mint — nothing is live until they succeed.',
+          '{ method, url, bodyTemplate } to send after the wallet step; fill every <…> placeholder from the executed result (txHash from send_calls, signature from sign). Collect and buy records are checked against the on-chain receipt, so they are safe to lag: a repeated collect record answers 200 (idempotent) and a repeated buy record answers 409 (already filled) — treat both as success. List and mint records are the action itself: the signed Seaport order exists only once POSTed, and /api/mint submits the sponsored mint — nothing is live until they succeed.',
         records: 'batch collect only: one record call per item, all against the shared txHash',
+        skipped: 'batch collect only: items left out of the batch, each with a reason (no active sale / sold out / per-wallet limit)',
         caps: 'spend ceilings to honor and surface to the user; present for collect, buy and batch collect, per currency actually spent: maxValueEth (wei) and maxValueUsdc (6-decimal base units), both decimal strings. Absent for list and mint.',
       },
       errors: {
@@ -84,7 +84,8 @@ export function getAgentManifest(origin: string): AgentManifest {
         '404': 'listing not found (buy)',
         '409': 'not currently possible: no active sale, sold out or per-wallet limit hit (collect); listing inactive (buy); fees exceed the price (list)',
         '429': 'rate limited or daily capacity reached — wait before retrying',
-        '5xx': 'transient chain or upstream read failure; collect, buy and list prepares are pure reads and may be retried',
+        '503': 'platform paused (mint) or recording temporarily unavailable — do not retry until it clears',
+        '5xx': 'other 5xx: transient chain or upstream read failure; collect, buy and list prepares are pure reads and may be retried',
       },
     },
     verbs: [
@@ -118,7 +119,7 @@ export function getAgentManifest(origin: string): AgentManifest {
           tokenId: 'string (or pass url)',
           url: 'artwork URL, alternative to collection+tokenId',
           account: 'Base Account address (recipient + payer)',
-          amount: 'integer (optional, default 1)',
+          amount: 'integer 1–50 (optional, default 1; larger values are clamped to 50)',
           comment: 'optional mint comment',
         },
       },
@@ -162,6 +163,8 @@ export function getAgentManifest(origin: string): AgentManifest {
           account: 'Base Account address (seller)',
           price: 'human decimal string, e.g. "0.01"',
           currency: '"eth" | "usdc"',
+          name: 'optional display name copied onto the listing record',
+          image: 'optional image URL copied onto the listing record',
         },
       },
       {
@@ -173,10 +176,10 @@ export function getAgentManifest(origin: string): AgentManifest {
         executes: 'sign',
         record: 'POST /api/mint (media) or /api/write (text)',
         input: {
-          account: 'Base Account address (the artist; must hold a Pass)',
-          name: 'artwork title',
-          description: 'optional',
-          media: 'image, video or 3D model (.glb) as a data: URI (the bytes) or an ar://|ipfs:// URI — no remote URL fetch',
+          account: 'Base Account address (the artist; must hold a Pass while the Pass gate is enabled — it is in production)',
+          name: 'artwork title (≤200 chars)',
+          description: 'optional (≤5000 chars)',
+          media: 'image (png, jpeg, gif, webp, avif), video (mp4, webm, quicktime) or 3D model (.glb) as a data: URI (the bytes, ≤25 MB) or an ar://|ipfs:// URI — no remote URL fetch',
           text: 'writing artwork body — pass instead of media for a text artwork',
           mediaType: '"image" | "video" | "model" | "text" (optional for a data: URI — inferred from the bytes; pass it for an ar://|ipfs:// URI, which carries no type)',
           poster: 'still image as a data: URI or ar://|ipfs:// URI. Optional for video; required for a 3D model — it is what every feed, share card and embed shows',
@@ -185,6 +188,8 @@ export function getAgentManifest(origin: string): AgentManifest {
           currency: '"eth" | "usdc" (optional, default eth)',
           editions: 'positive integer (optional; omit for an open edition)',
           collection: 'existing collection address (optional; omit to auto-create)',
+          collectionName: 'optional name for the auto-created collection (default: the artwork title). Part of the signed intent.',
+          payoutRecipient: 'optional address that receives sale proceeds (default: account; ignored when splits are given). Part of the signed intent.',
           artistMint: 'boolean (optional, default true — keep a copy for the artist)',
           enableRaffle: 'boolean (optional, default false — opt the artwork into a Kismet raffle; the creator can toggle it later)',
           splits: 'optional payout splits array',

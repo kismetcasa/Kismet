@@ -74,7 +74,11 @@ export function ingestMintMedia(
       kind = 'model'
       mime = GLB_MIME
     }
-    if (!kind) return { error: `Unsupported media type "${mime}" — image/*, video/* or model/gltf-binary (.glb) only` }
+    if (!kind) {
+      return {
+        error: `Unsupported media type "${mime}" — accepted: image/png, image/jpeg, image/gif, image/webp, image/avif, video/mp4, video/webm, video/quicktime, model/gltf-binary (.glb)`,
+      }
+    }
     if (bytes.length > MAX_MEDIA_BYTES) {
       return { error: `Media too large (${(bytes.length / 1048576).toFixed(1)} MB); MCP mint caps at 25 MB — use the Kismet app for larger files` }
     }

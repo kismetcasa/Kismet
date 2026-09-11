@@ -54,7 +54,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held artwork. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?`, `enableRaffle?` |
+| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `mediaType?` (required for a non-image `ar://`/`ipfs://` URI), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?`, `enableRaffle?` |
 
 Every prepare returns an envelope:
 
@@ -86,7 +86,8 @@ from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
    confirmed; capture the txHash.
 6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`).
    Kismet independently re-verifies the mint/fulfillment on-chain, so
-   recording is idempotent and safe to lag.
+   recording is safe to lag (a repeated collect record is idempotent; a repeated
+   buy record answers 409 already-filled — treat both as success).
 
 **List** — same shape, but the envelope may include a one-time
 `setApprovalForAll` in `calls` (execute via `send_calls` first) and always

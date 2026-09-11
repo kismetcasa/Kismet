@@ -82,7 +82,7 @@ export async function scoutBudgetStatus(permission: ScoutPermission) {
 }
 
 /** Revoke the budget on-chain (user-approved). The installed @base-org/account
- *  2.5.7 requestRevoke takes the object form `{ provider, permission }`. */
+ *  2.5.10 requestRevoke takes the object form `{ provider, permission }`. */
 export async function revokeScoutBudget(permission: ScoutPermission): Promise<void> {
   const { requestRevoke } = await spendPerm()
   const { provider } = await connected()

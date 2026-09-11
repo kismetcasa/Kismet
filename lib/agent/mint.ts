@@ -8,7 +8,8 @@
  * "mint from your AI assistant", and the MCP path inherits every gate/quota/
  * sponsorship control the app mint already enforces. The ONLY thing that differs
  * (and only because a server can't stream to Turbo like a browser can) is media
- * ingestion, which lives in the route + lib/arweave/uploadMedia, not here.
+ * ingestion (lib/agent/mintMedia) and upload (lib/arweave/uploadServer), driven
+ * by the route — not here.
  *
  * Everything in this file is a pure function of its inputs (chain-free,
  * network-free) so it's exhaustively unit-testable — see the agent verify suite.
@@ -38,8 +39,8 @@ export interface MomentMetadata {
 }
 
 /**
- * Token metadata JSON (Zora/OpenSea convention), byte-for-byte the shape
- * MintForm uploads:
+ * Token metadata JSON (Zora/OpenSea convention), the same field shape MintForm
+ * uploads (minus its browser-only kismet_thumbhash / transcode enrichments):
  *  - image  → { image }
  *  - video  → { image?(poster), animation_url, content:{uri,mime} }
  *  - model  → { image(poster), animation_url(GLB), content:{uri,model/gltf-binary},

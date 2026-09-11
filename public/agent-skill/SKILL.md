@@ -105,7 +105,8 @@ mint because it spends (a GET that spends is passively triggerable cross-site),
 batch because it takes array input.
 
 > **Mint/create** (making a new artwork) is covered — see `references/mint.md`. It
-> is the only verb that requires a **Kismet Pass** and signs an EIP-712 intent
+> is the only verb that requires a **Kismet Pass** (while the Pass gate is
+> enabled — it is in production) and signs an EIP-712 intent
 > (`sign`, no `send_calls`) rather than paying from the wallet; you pass the media
 > to the prepare call, which hosts it before returning the intent to sign.
 
@@ -123,7 +124,7 @@ Follow Base MCP's documented fallback ladder, in order:
    fetch URLs the user pastes, GET only. Construct the prepare URL with all
    parameters in the query string, show it to the user, and ask them to paste
    the JSON response back — then continue with `send_calls` as normal.
-   Recording (step 5) is POST-only and unreachable here. For collect and buy,
+   Recording (step 5) is POST/PATCH-only (never GET) and unreachable here. For collect and buy,
    skip it and say recording will lag; the on-chain result stands (the record
    routes verify the receipt when they eventually run, so nothing is lost).
    For list, the record call is what publishes the listing — the signed order

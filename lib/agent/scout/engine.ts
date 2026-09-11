@@ -14,8 +14,8 @@
  *
  * Zero imports on purpose: no network, no viem, no secrets. It's a pure
  * function of (scout, candidates, usage, now) so it can be exhaustively tested
- * (see scripts/verify-agent-scout.ts) and reused identically by the Propose UI
- * and the Auto executor. The on-chain spend + mint is a separate, injected
+ * (see scripts/verify-agent-scout.ts) and reused by the Auto executor (and any
+ * future Propose surface). The on-chain spend + mint is a separate, injected
  * concern (see ./scout/executor.ts), keeping this layer custody-agnostic.
  */
 
