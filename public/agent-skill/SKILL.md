@@ -77,16 +77,16 @@ Every verb follows the same five steps:
      (`"0x0"` when none), `chain` is the top-level param, and the `approve` + action
      are batched into one approval.
    - `typedData` present → `sign(typedData)`.
+   The wallet tools return `{ approvalUrl, requestId }`. Present the **"Approve
+   Transaction"** link (the user approves in their **Base Account**), wait for
+   them, then poll `get_request_status(requestId)` until it reports
+   **confirmed** (or failed) — not just once; a first read can be `pending`.
+   Report success **only after** it confirms — never claim success before.
+   Capture the resulting **txHash** (and/or **signature**).
    - `link` present (collect, batch, buy) → you may instead show `link.url`: the
      user opens it and approves the same calls in the Base app. Nothing comes
      back to you — ask the user for the txHash before step 5. It is withheld on
      batches that prepend a USDC approve; use `send_calls` then.
-   These return `{ approvalUrl, requestId }`. Present the **"Approve Transaction"**
-   link (the user approves in their **Base Account**), wait for them, then poll
-   `get_request_status(requestId)` until it reports **confirmed** (or failed) — not
-   just once; a first read can be `pending`. Report success **only after** it
-   confirms — never claim success before. Capture the resulting **txHash** (and/or
-   **signature**).
 5. **Record.** Follow `record`: fill the placeholders in `bodyTemplate`
    (`<REPLACE_WITH_send_calls_txHash>`, `<signature>` for List, and
    `intent.signature` = `<REPLACE_WITH_sign_signature>` for Mint) and send the
