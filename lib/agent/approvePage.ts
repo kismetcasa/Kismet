@@ -33,6 +33,11 @@ export function renderApprovePage(envelope: AgentActionEnvelope, backUrl: string
 export function approvePageResponse(envelope: AgentActionEnvelope, backUrl: string): Response {
   return new Response(renderApprovePage(envelope, backUrl), {
     status: 200,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex' },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'private, no-store',
+      Vary: 'Sec-Fetch-Dest',
+      'X-Robots-Tag': 'noindex',
+    },
   })
 }

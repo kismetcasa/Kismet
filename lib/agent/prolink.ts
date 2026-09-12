@@ -22,8 +22,9 @@ import type { AgentCall } from './types'
  * them cannot be verified from here. So a link is issued only when the
  * reference decoder gives back every call byte-for-byte; otherwise `null` and
  * the assistant stays on `send_calls`. Today that withholds exactly the
- * batches that prepend a USDC `approve` (every other selector we emit —
- * 0x359f1302 / 0xf54f216a mint, 0xf7aee3ab fulfillOrder — round-trips).
+ * batches that prepend a USDC `approve` — i.e. every FIRST USDC collect or
+ * buy (allowance short) — while every other selector we emit (0x359f1302 and
+ * 0xf54f216a mint, 0xb3a34c4c fulfillOrder) round-trips and gets a link.
  */
 export interface AgentApproveLink {
   url: string
@@ -36,8 +37,11 @@ const BASE_CHAIN_ID_HEX = '0x2105' // 8453
 export const APPROVE_LINK_NOTE =
   'Alternative to send_calls: the user opens this in the Base app and approves the same calls there. Nothing comes back to you — ask the user for the transaction hash from the Base app before recording.'
 
-/** `from` pins the sending account so the link is only approvable by the
- *  account the calls were built for (mintTo / the USDC payer). */
+/** `from` carries the paying account the calls were built for (the mintTo of
+ *  a single collect, the payer of a batch, the buyer of a buy). The format
+ *  stores it; whether the Base app refuses a different connected account is
+ *  the app's call, so it is a hint, not an enforced guarantee — the summary
+ *  the assistant shows is what names the recipient. */
 export async function buildApproveLink(calls: AgentCall[], from: Address): Promise<AgentApproveLink | null> {
   if (calls.length === 0) return null
   try {

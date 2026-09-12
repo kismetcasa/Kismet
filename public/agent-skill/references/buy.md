@@ -18,7 +18,7 @@ Or as a GET (for surfaces where POST can't reach Kismet — SKILL.md
 "Reaching the endpoints"):
 
 ```
-GET BASE/api/agent/prepare-buy?listingId=the-id-from-discover&account=0x…
+GET BASE/api/agent/prepare-buy?listingId=the-id-from-discover&account=0x…&format=json
 ```
 
 `calls` is:

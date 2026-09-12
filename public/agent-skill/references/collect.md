@@ -21,7 +21,7 @@ Also available as a GET with the same parameters in the query string — for
 surfaces where POST can't reach Kismet (see SKILL.md "Reaching the endpoints"):
 
 ```
-GET BASE/api/agent/prepare-collect?collection=0x…&tokenId=42&account=0x…&amount=1
+GET BASE/api/agent/prepare-collect?collection=0x…&tokenId=42&account=0x…&amount=1&format=json
 ```
 
 The server reads the live sale on-chain and decides ETH vs USDC and the price —

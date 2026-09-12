@@ -39,7 +39,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
 | Discover / manifest | Direct GET | `web_request` if allowlisted, else GET via a user-pasted URL |
-| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string, show it, ask the user to paste it back, then fetch it. Then `send_calls`, or hand the user the envelope's `link.url` to approve in the Base app |
+| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string plus `format=json`, show it, ask the user to paste it back, then fetch it. Then `send_calls`, or hand the user the envelope's `link.url` to approve in the Base app |
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
@@ -128,7 +128,7 @@ The batched `approve` + action execute atomically in one user approval.
 ```text
 Collect this artwork: https://kismet.art/artwork/0xabc…/42
 ```
-1. `get_wallets` → address. 2. `GET /api/agent/prepare-collect?url=…&account=…`.
+1. `get_wallets` → address. 2. `GET /api/agent/prepare-collect?url=…&account=…&format=json`.
 3. Show summary/price → `send_calls`. 4. Approval → `get_request_status` →
 record.
 

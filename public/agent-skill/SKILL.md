@@ -127,10 +127,12 @@ Follow Base MCP's documented fallback ladder, in order:
    ladder.
 3. **GET via a user-pasted URL (Claude.ai / ChatGPT consumer apps)**: these
    surfaces fetch only URLs the **user has pasted into the chat**, and only by
-   GET. Build the prepare URL with every parameter in the query string, show it
-   to the user, and ask them to paste it back into the chat — once pasted you
-   may fetch it yourself (that is the security model these surfaces enforce).
-   Parse the envelope and continue with `send_calls` as normal.
+   GET. Build the prepare URL with every parameter in the query string **plus
+   `format=json`** (without it, a browser opening the URL gets a human approve
+   page instead of the JSON), show it to the user, and ask them to paste it
+   back into the chat — once pasted you may fetch it yourself (that is the
+   security model these surfaces enforce). Parse the envelope and continue
+   with `send_calls` as normal.
    Recording (step 5) is POST/PATCH-only (never GET) and unreachable here. For collect and buy,
    skip it and say recording will lag; the on-chain result stands (the record
    routes verify the receipt when they eventually run, so nothing is lost).

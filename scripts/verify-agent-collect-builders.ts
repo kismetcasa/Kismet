@@ -42,8 +42,8 @@ import {
 import { buildCollectPlan } from '@/lib/agent/collect'
 import { buildCollectBatchPlan } from '@/lib/agent/collectBatch'
 import { buildBuyPlan } from '@/lib/agent/buy'
-import { buildApproveLink } from '@/lib/agent/prolink'
-import { renderApprovePage } from '@/lib/agent/approvePage'
+import { buildApproveLink, APPROVE_LINK_NOTE } from '@/lib/agent/prolink'
+import { isDocumentNavigation, renderApprovePage } from '@/lib/agent/approvePage'
 import { batchCollectSummary, buySummary, collectSummary, listSummary, safeTitle } from '@/lib/agent/summary'
 import { shortAddress } from '@/lib/inprocess'
 import { computePlatformFee } from '@/lib/platformFee'
@@ -341,16 +341,62 @@ console.log('\nbuildBuyPlan — ETH listing carries value == price')
   check('USDC buy with a prepended approve is WITHHELD too', (await buildApproveLink(usdcBuy.calls, ACCOUNT)) === null)
   check('a call whose data starts with a zero byte is WITHHELD', (await buildApproveLink([{ to: COLLECTION, data: '0x00112233', value: '0x0' }], ACCOUNT)) === null)
   check('an empty batch gets no link', (await buildApproveLink([], ACCOUNT)) === null)
+  check('the link carries the one-way note', buyLink?.note === APPROVE_LINK_NOTE && /transaction hash/.test(APPROVE_LINK_NOTE))
+
+  // The comparator lowercases `to`/`data` and BigInt-compares `value`: checksummed
+  // addresses, upper-case hex data and a zero-padded value must still round-trip.
+  const mixed = await buildApproveLink(
+    [{ to: getAddress(COLLECTION), data: `0x${ethCollect.calls[0].data.slice(2).toUpperCase()}` as Hex, value: '0x00f4240' }],
+    ACCOUNT,
+  )
+  check('mixed-case input (checksummed to, upper-case data, padded value) still round-trips', mixed !== null)
+
+  // Batch with recipient ≠ account (the Scout shape): the payer signs, so the
+  // decoded `from` must be the paying account, never the recipient.
+  const scoutBatch = buildCollectBatchPlan({
+    account: ACCOUNT, recipient: RECIPIENT, usdcAllowance: 0n,
+    items: [{ collection: COLLECTION, tokenId: 30n, quantity: 1n, currency: 'eth', pricePerToken: 1_000_000_000_000_000n, mintFee: 0n, comment: '' }],
+  })
+  const batchLink = await buildApproveLink(scoutBatch.calls, ACCOUNT)
+  check('batch plan (ETH only) gets a link', batchLink !== null)
+  if (batchLink) {
+    const rt = await roundTrip(scoutBatch.calls, batchLink.url)
+    check('batch link: from == the paying account, not the recipient', !!rt.p.from && eq(rt.p.from, ACCOUNT) && !eq(rt.p.from, RECIPIENT))
+    check('batch link: calls round-trip', rt.same)
+  }
+
+  // Navigation gating: only a document navigation gets the page, and format=json
+  // always forces JSON.
+  const nav = (dest: string | null, query = '') => ({
+    headers: new Headers(dest ? { 'sec-fetch-dest': dest } : {}),
+    nextUrl: { searchParams: new URLSearchParams(query) },
+  })
+  check('document navigation → page', isDocumentNavigation(nav('document')) === true)
+  check('no Sec-Fetch-Dest (server-side fetcher) → JSON', isDocumentNavigation(nav(null)) === false)
+  check('iframe / empty dest → JSON', isDocumentNavigation(nav('iframe')) === false && isDocumentNavigation(nav('empty')) === false)
+  check('format=json overrides a navigation', isDocumentNavigation(nav('document', 'format=json')) === false)
+  check('format=JSON (wrong case) does not override', isDocumentNavigation(nav('document', 'format=JSON')) === true)
 
   // The browser-navigation page embeds the summary (which carries the
-  // seller-controlled listing name) and the envelope JSON — both must be escaped.
+  // seller-controlled listing name) and the envelope JSON — both must be escaped,
+  // and so must every attribute (href) it interpolates.
   const page = renderApprovePage(
-    { chain: 'base', action: 'buy', calls: plan.calls, summary: 'Buy “<script>alert(1)</script>” for 0.05 ETH', ...(buyLink ? { link: buyLink } : {}) },
+    { chain: 'base', action: 'buy', calls: plan.calls, summary: 'Buy “<script>alert(1)</script>” & "co" for 0.05 ETH', ...(buyLink ? { link: buyLink } : {}) },
     '/artwork/0xabc/7',
   )
-  check('approve page escapes the summary (no raw <script>)', !page.includes('<script>') && page.includes('&lt;script&gt;'))
-  check('approve page carries the Base app link as the button href', !!buyLink && page.includes(`href="${buyLink.url.replace(/&/g, '&amp;')}"`))
+  check('approve page escapes the summary (no raw <script>, & and " escaped)', !page.includes('<script>') && page.includes('&lt;script&gt;') && page.includes('&amp; &quot;co&quot;'))
+  check('approve page carries the Base app link as the button href', !!buyLink && page.includes(`href="${buyLink.url}"`) && page.includes('Approve in the Base app'))
   check('approve page embeds the envelope JSON', page.includes('&quot;action&quot;: &quot;buy&quot;'))
+  const hostile = renderApprovePage(
+    { chain: 'base', action: 'collect', calls: [], summary: 'x', link: { url: 'https://base.app/base-pay?p=a&b="><script>', note: 'n' } },
+    '/artwork/0xabc/7"><img src=x onerror=alert(1)>',
+  )
+  check(
+    'attribute values are escaped (no raw quote-break or tag survives in an href)',
+    !hostile.includes('"><script>') && !hostile.includes('"><img') && hostile.includes('&amp;b=&quot;&gt;&lt;script&gt;') && hostile.includes('7&quot;&gt;&lt;img'),
+  )
+  const noLink = renderApprovePage({ chain: 'base', action: 'collect', calls: plan.calls, summary: 'x' }, '/artwork/0xabc/7')
+  check('without a link the page says so instead of rendering an empty button', noLink.includes('No Base app link for this action') && !noLink.includes('class="btn"'))
 }
 
 // ── Summaries (lib/agent/summary.ts): the one line the user approves on ─────
