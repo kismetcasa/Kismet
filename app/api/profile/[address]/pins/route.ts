@@ -12,6 +12,10 @@ import {
   isPinCategory,
 } from '@/lib/showcase'
 
+// The pins-unknown payload, shared by every degraded path below so they can't
+// drift: no pins, and the fail-private curated view.
+const EMPTY_PINS = { mints: [], collected: [], listings: [] } as const
+
 // GET /api/profile/[address]/pins — public. Returns the owner's pinned
 // showcase refs per category, newest-pinned first, plus the RESOLVED
 // public-view mode ('full' profile with pins first vs 'curated' showcase;
@@ -35,15 +39,26 @@ export async function GET(
   // is, so this is one dependent lookup; mode resolution then shares the pins
   // read (checked, so a failed read fails private instead of deriving 'full'
   // off missing data) and both issue same-tick, keeping the rest one round trip.
-  const scopes = await resolveShowcaseScopes(address)
+  const scopes = await resolveShowcaseScopes(address).catch(() => null)
+  if (!scopes) {
+    // Identity unknown right now. Serve the SAME fail-private degradation this
+    // route already produces when the pin reads themselves fail — no pins, the
+    // curated view — rather than a 500. The client's catch falls back to exactly
+    // this payload anyway, so the 500 would only add noise on a public path.
+    return NextResponse.json({ pins: EMPTY_PINS, publicView: 'curated' })
+  }
   const pinsRead = getAllPinsChecked(address, scopes)
   const publicView = await resolvePublicViewMode(address, pinsRead, scopes)
   const pins = await pinsRead
-  return NextResponse.json({
-    pins: pins ?? { mints: [], collected: [], listings: [] },
-    publicView,
-  })
+  return NextResponse.json({ pins: pins ?? EMPTY_PINS, publicView })
 }
+
+// Writes FAIL CLOSED when the identity can't be resolved: lib/showcase keys pin
+// sets by identity, so a write that guessed the address form could land under a
+// keying the read never looks at — the silent no-op this feature was fixed for.
+// 503 (not 500) so the client reverts its optimistic state and the user retries,
+// matching the earnings-visibility toggle's contract.
+const IDENTITY_UNAVAILABLE = 'Identity lookup unavailable — try again shortly'
 
 interface PinBody {
   category?: unknown
@@ -78,10 +93,12 @@ export async function POST(
   const parsed = parsePinBody(await req.json().catch(() => null))
   if ('error' in parsed) return errorResponse(400, parsed.error)
 
+  const scopes = await resolveShowcaseScopes(auth.canonical).catch(() => null)
+  if (!scopes) return errorResponse(503, IDENTITY_UNAVAILABLE)
+
   // Lock the unset profile's mode to what its pins derive to BEFORE this pin
   // changes that basis — a first-ever pin under the 'full' default must mean
   // "float this first", never "flip me to showcase-only". See lib/showcase.
-  const scopes = await resolveShowcaseScopes(auth.canonical)
   await ensureViewModeForPinChange(auth.canonical, scopes)
   const ok = await addPin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId, scopes)
   if (!ok) return errorResponse(409, 'Pin limit reached — unpin one first')
@@ -108,9 +125,11 @@ export async function DELETE(
   const parsed = parsePinBody(await req.json().catch(() => null))
   if ('error' in parsed) return errorResponse(400, parsed.error)
 
+  const scopes = await resolveShowcaseScopes(auth.canonical).catch(() => null)
+  if (!scopes) return errorResponse(503, IDENTITY_UNAVAILABLE)
+
   // Same prelude as POST: a legacy profile unpinning its last pin stays
   // 'curated' (grandfathered) rather than silently resolving to 'full'.
-  const scopes = await resolveShowcaseScopes(auth.canonical)
   await ensureViewModeForPinChange(auth.canonical, scopes)
   const removed = await removePin(
     parsed.category,

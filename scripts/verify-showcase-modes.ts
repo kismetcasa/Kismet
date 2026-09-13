@@ -8,8 +8,9 @@
 // ordering, admin erase, and — since the identity-keying fix — the FC cases
 // that address keying got wrong: pins surviving a canonical-address change,
 // an unpin sweeping every key form, a legacy address-form set still readable
-// and removable, and the cap counted on the merged set. Hermetic — no live
-// Redis, no env needed.
+// and removable, the cap counted on the merged set, and the fail-PRIVATE
+// guarantee under an unresolvable identity. Hermetic — no live Redis, no env
+// needed.
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-showcase-modes.ts
@@ -19,12 +20,16 @@ import { createServer } from 'node:http'
 // ── mock Upstash ────────────────────────────────────────────────────────────
 const strings = new Map<string, string>()
 const zsets = new Map<string, Map<string, number>>()
-const fail = { all: false, cmds: new Set<string>() }
+// `keys` fails only the commands touching one key, with everything else healthy
+// — the shape of the fail-private hole identity keying opened (S22): a single
+// blip on the FC reverse index, not a general outage.
+const fail = { all: false, cmds: new Set<string>(), keys: new Set<string>() }
 
 function exec(cmd: unknown[]): unknown {
   const name = String(cmd[0]).toLowerCase()
   if (fail.all || fail.cmds.has(name)) throw new Error('injected failure')
   const args = cmd.slice(1).map(String)
+  if (fail.keys.has(args[0])) throw new Error('injected failure')
   switch (name) {
     case 'get': return strings.get(args[0]) ?? null
     case 'set': { strings.set(args[0], args[1]); return 'OK' }
@@ -388,6 +393,40 @@ console.log('S21 admin erase clears both key forms')
   check('address-form pins gone', (zsets.get(pinKey('collected', wallet))?.size ?? 0) === 0)
   check('mode gone', rawMode('fid:9200') === null && rawMode(wallet) === null)
   check('resolves fresh', (await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet))) === 'full')
+}
+
+console.log('S22 an unresolvable identity fails PRIVATE, never open')
+{
+  // The hazard identity keying introduced: pins and the mode key are chosen from
+  // the FC reverse index, so a lookup that reports "couldn't find out" as "not an
+  // FC user" reads the ADDRESS form — which for an FC user holds nothing — finds
+  // no stored mode, derives from pins that also read as nothing, and resolves a
+  // deliberately CURATED profile to 'full', publishing work the owner left out.
+  // Measured before the fix: 'full'. resolveShowcaseScopes now throws on the
+  // unknown, so both reads degrade the way the module's failure policy promises.
+  const wallet = '0xfc00000000000000000000000000000000000011'
+  seedFid(wallet, 9300)
+  await sc.setPublicViewMode(wallet, 'curated')
+  await sc.addPin('mints', wallet, '0xC0FFEE', '1')
+  check('healthy: the owner-chosen mode is served', await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+
+  fail.keys.add(`kismetart:fc:fid-by-addr:${wallet}`)
+  check('identity unknown -> pins read as UNKNOWN, not as empty',
+    (await sc.getAllPinsChecked(wallet)) === null)
+  check('identity unknown -> mode fails private (curated), not open (full)',
+    await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+  // Writes fail CLOSED rather than landing on the wrong keying — which is what a
+  // Redis failure already did before identity keying, when addPin's ZCARD threw.
+  check('a pin write fails closed',
+    await sc.addPin('mints', wallet, '0xC0FFEE', '2').then(() => false, () => true))
+  check('an unpin write fails closed',
+    await sc.removePin('mints', wallet, '0xC0FFEE', '1').then(() => false, () => true))
+  check('the prelude stays best-effort (never throws at the route)',
+    await sc.ensureViewModeForPinChange(wallet).then(() => true, () => false))
+  fail.keys.clear()
+  check('recovered: the owner-chosen mode is served again',
+    await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+  check('recovered: the pin is intact', (await refsOf(wallet, 'mints'))?.[0] === '0xc0ffee:1')
 }
 
 server.close()

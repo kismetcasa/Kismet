@@ -1,9 +1,11 @@
 import { redis, zpairsToMap } from './redis'
 import { bestEffort } from './bestEffort'
-import { getFidByAddress } from './farcasterProfile'
+import { getFidByAddressChecked } from './farcasterProfile'
 import {
   derivePublicViewMode,
   MAX_PINS_PER_CATEGORY,
+  PIN_CATEGORIES,
+  type PinCategory,
   type PublicViewMode,
 } from './showcaseOrder'
 
@@ -12,17 +14,10 @@ import {
 // tuples, score is pin time so reads come back newest-pinned first. Kept
 // as three category-scoped keys (rather than one tagged set) so each maps
 // 1:1 to the section it renders and the per-category cap is a plain read.
-export type PinCategory = 'mints' | 'collected' | 'listings'
-
-const CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
-
-// Per-category cap — defined in lib/showcaseOrder (client-safe home, with
-// the sizing rationale); re-exported here so server callers keep one import.
-export { MAX_PINS_PER_CATEGORY } from './showcaseOrder'
-
-export function isPinCategory(value: unknown): value is PinCategory {
-  return typeof value === 'string' && (CATEGORIES as readonly string[]).includes(value)
-}
+// The category vocabulary and the per-category cap are defined in
+// lib/showcaseOrder (the client-safe home, alongside the ordering rules and the
+// sizing rationale) and re-exported here so server callers keep one import.
+export { MAX_PINS_PER_CATEGORY, isPinCategory, type PinCategory } from './showcaseOrder'
 
 // ── identity scope ───────────────────────────────────────────────────────────
 // KEYED BY IDENTITY, NOT BY TODAY'S ADDRESS. A pin set used to be keyed by the
@@ -47,13 +42,21 @@ export function isPinCategory(value: unknown): value is PinCategory {
 // A ZSET can be merged member-by-member on score, which a SET cannot, so this
 // needs none of earningsVisibility's lazy-migration bookkeeping: the UNION of
 // both forms is the answer, writes home to the identity form, and an unpin
-// sweeps both. That makes the result independent of which form wrote a pin and
-// of what order things happened in — including the one hazard left in the
-// identity lookup, where a Redis blip makes getFidByAddress read `{ fid: null }`
-// (it is index-only and two-way — see its note) and a write lands on the
-// address form. Under a union read plus a sweeping unpin that costs nothing:
-// neither form can shadow the other, and no pin becomes unreachable. There is
-// therefore no fail-closed throw here and no migration to run.
+// sweeps both. That makes PINS independent of which form wrote them and of what
+// order things happened in — neither form can shadow the other, and no pin
+// becomes unreachable, so there is no migration to run.
+//
+// The MODE is not like that. It is a single scalar with a DERIVED fallback, so
+// reading the wrong scope doesn't merge to the same answer — it finds nothing,
+// derives from pins that also read as nothing, and resolves an explicitly
+// curated profile back to 'full', publishing work the owner chose to leave out.
+// A lookup that can't tell us the identity must therefore NOT fall back to the
+// address form: resolveShowcaseScopes throws, reads fail private ('curated' plus
+// pins-unknown) and writes fail closed — which is what a Redis failure already
+// did before identity keying, when every key was address-derived. That is why
+// this uses getFidByAddressChecked and not the lenient getFidByAddress: the
+// lenient one reports "couldn't find out" as "not an FC user", which is exactly
+// the wrong guess to make when the answer picks a storage key.
 //
 // The union DELIBERATELY stops at the queried address and does not expand to
 // the FID's other verified wallets. A set written under a canonical that has
@@ -78,8 +81,12 @@ const fidScope = (fid: number) => `fid:${fid}`
  */
 export async function resolveShowcaseScopes(address: string): Promise<string[]> {
   const lower = address.toLowerCase()
-  const fid = (await getFidByAddress(lower))?.fid ?? null
-  return fid == null ? [lower] : [fidScope(fid), lower]
+  const lookup = await getFidByAddressChecked(lower)
+  // Throws rather than guessing the address form — see the note above. Every
+  // caller already handles it: the two reads catch and fail private, and the
+  // write routes surface a 500 the client reverts, as a Redis failure always did.
+  if (lookup === null) throw new Error('showcase: identity lookup unavailable, retry')
+  return lookup.fid == null ? [lower] : [fidScope(lookup.fid), lower]
 }
 
 /**
@@ -139,7 +146,7 @@ async function readCategory(category: PinCategory, scopes: string[]): Promise<st
 export async function clearAllPins(address: string, scopes?: string[]): Promise<void> {
   const resolved = await scopesFor(address, scopes)
   await Promise.all(
-    resolved.flatMap((s) => [...CATEGORIES.map((c) => redis.del(key(c, s))), redis.del(viewKey(s))]),
+    resolved.flatMap((s) => [...PIN_CATEGORIES.map((c) => redis.del(key(c, s))), redis.del(viewKey(s))]),
   )
 }
 
@@ -289,12 +296,15 @@ export async function ensureViewModeForPinChange(address: string, scopes?: strin
     const resolved = await scopesFor(address, scopes)
     // Nested Promise.all keeps the tuple types exact; every command still
     // issues in the same tick, so auto-pipelining folds them into one trip.
+    // ZCARD, not the merged read: the question is only "are there ANY pins",
+    // and a ref counted under both key forms cannot change that answer — so
+    // there is no reason to pull every member and score across to derive a bool.
     const [stored, counts] = await Promise.all([
       readViewMode(resolved),
-      Promise.all(CATEGORIES.map((c) => readCategory(c, resolved))),
+      Promise.all(resolved.flatMap((sc) => PIN_CATEGORIES.map((c) => redis.zcard(key(c, sc))))),
     ])
     if (stored) return
-    await redis.set(viewKey(resolved[0]), derivePublicViewMode(counts.some((refs) => refs.length > 0)))
+    await redis.set(viewKey(resolved[0]), derivePublicViewMode(counts.some((n) => Number(n) > 0)))
   } catch (err) {
     bestEffort('showcase.ensureViewMode')(err)
   }
@@ -326,7 +336,7 @@ export async function getAllPinsChecked(
   try {
     const resolved = await scopesFor(address, scopes)
     const [mints, collected, listings] = await Promise.all(
-      CATEGORIES.map((c) => readCategory(c, resolved)),
+      PIN_CATEGORIES.map((c) => readCategory(c, resolved)),
     )
     return { mints, collected, listings }
   } catch {

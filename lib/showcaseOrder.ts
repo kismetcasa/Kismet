@@ -17,6 +17,22 @@
 export type PublicViewMode = 'curated' | 'full'
 
 /**
+ * The profile sections an owner can curate. Defined HERE, with the cap below and
+ * the ordering rules, so the client component, the storage module and CI share
+ * one definition of the vocabulary instead of three copies of the same literal;
+ * lib/showcase re-exports both for server callers.
+ */
+export type PinCategory = 'mints' | 'collected' | 'listings'
+
+export const PIN_CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
+
+/** Narrow an untrusted value (a request body's `category`, a rendered section
+ *  id) to a pin category. */
+export function isPinCategory(value: unknown): value is PinCategory {
+  return typeof value === 'string' && (PIN_CATEGORIES as readonly string[]).includes(value)
+}
+
+/**
  * Per-category pin cap. A showcase is a tight highlight reel, not a second
  * feed — small by design (GitHub pins 6 repos; IG 3 posts) and the cap also
  * bounds every pins read. 6 fills the curated showcase's lg+ three-column

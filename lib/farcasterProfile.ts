@@ -338,10 +338,12 @@ export async function getVerifiedAddressesByFid(
  * on Kismet" — the common case — with a cold-start gap for accounts we've never
  * resolved a FID for (they read as { fid: null } until first seeded).
  *
- * Because a miss can no longer be a transient network failure, this never
- * returns the old bare-`null` "unknown" state — the reverse index read is a
- * cheap local Redis lookup. Identity-sensitive writes (earnings) that treated
- * `null` as fail-closed simply never hit that branch here now; a genuinely
+ * A miss is no longer a transient NETWORK failure — the reverse index read is a
+ * cheap local Redis lookup — but the lookup itself can still fail, so "unknown"
+ * has not gone away: it is just rarer. This lenient form reports it as
+ * { fid: null } (right for display paths, and what earnings' fail-closed branch
+ * effectively stopped seeing); getFidByAddressChecked below keeps the honest
+ * three-way answer for callers that pick a STORAGE KEY off it. A genuinely
  * non-FC wallet resolves to { fid: null } and pins address-keyed as before. The
  * long FID_INDEX_TTL (refreshed on every verifications fetch) keeps an active
  * FC user's mapping stable so pin/unpin can't straddle two keyings.
@@ -355,13 +357,38 @@ export async function getFidByAddress(
   address: string,
   _opts: { skipCache?: boolean } = {},
 ): Promise<FidLookup> {
-  const lower = address.toLowerCase()
-  const cached = await readCached<string>(fidByAddressKey(lower))
-  if (cached !== undefined && cached !== NO_FID_SENTINEL && cached !== TRANSIENT_SENTINEL) {
-    const parsed = Number(cached)
-    if (Number.isFinite(parsed) && parsed > 0) return { fid: parsed }
+  return (await getFidByAddressChecked(address)) ?? { fid: null }
+}
+
+/**
+ * The reverse-index read with an HONEST three-way answer, the getFidByAddress
+ * counterpart of getVerifiedAddressesByFidChecked above:
+ *
+ *   { fid: n }    — this address is verified to that FID
+ *   { fid: null } — DEFINITIVELY not an FC address (no index entry, or the
+ *                   no-FID sentinel)
+ *   null          — UNKNOWN right now: the Redis read threw, or the index holds
+ *                   the transient sentinel
+ *
+ * The lenient getFidByAddress above collapses `null` into `{ fid: null }`, which
+ * is right for display paths but NOT for anything that picks a storage key off
+ * the answer. lib/showcase keys pin sets and the public-view mode by identity,
+ * so "couldn't find out" resolving to "not an FC user" sent it to the address
+ * key form — which for an FC user holds nothing — and a deliberately-curated
+ * profile derived back to 'full' on a single blip, exposing work the owner had
+ * chosen not to publish. Callers that select a key MUST branch on the null.
+ */
+export async function getFidByAddressChecked(address: string): Promise<FidLookup> {
+  let raw: string | null | undefined
+  try {
+    raw = await redis.get<string>(fidByAddressKey(address.toLowerCase()))
+  } catch {
+    return null
   }
-  return { fid: null }
+  if (raw === TRANSIENT_SENTINEL) return null
+  if (raw === null || raw === undefined || raw === NO_FID_SENTINEL) return { fid: null }
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? { fid: parsed } : { fid: null }
 }
 
 /**
