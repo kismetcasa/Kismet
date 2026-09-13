@@ -15,7 +15,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import { foldSearch } from '@/lib/searchText'
-import { orderByPins, pinsFirst, visibleToPublic, unreachablePins, parsePinRef, MAX_PINS_PER_CATEGORY, type PublicViewMode } from '@/lib/showcaseOrder'
+import { orderByPins, pinsFirst, visibleToPublic, unreachablePins, parsePinRef, isPinCategory, MAX_PINS_PER_CATEGORY, type PinCategory, type PublicViewMode } from '@/lib/showcaseOrder'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -151,19 +151,14 @@ function loadSectionsConfig(): SectionsConfig {
 
 // ─── pinned showcase ─────────────────────────────────────────────────────────
 
-type PinCategory = 'mints' | 'collected' | 'listings'
 type PinSets = Record<PinCategory, string[]>
 const EMPTY_PINS: PinSets = { mints: [], collected: [], listings: [] }
-const PIN_CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
 
 // How deep each artwork section reads. These sections don't paginate, so this
 // is also the horizon past which a pinned artwork stops being renderable — and
 // therefore stops having an unpin control on its card. renderUnreachablePins
 // quotes this number, so it must not drift from the fetches below.
 const SECTION_FETCH_LIMIT = 50
-const isPinSection = (s: SectionId): s is PinCategory =>
-  (PIN_CATEGORIES as readonly string[]).includes(s)
-
 
 // Ordering (orderByPins for the curated showcase, pinsFirst for the full
 // profile) lives in lib/showcaseOrder — pure, Redis-free, and CI-verified by
@@ -1878,7 +1873,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               {!isCollapsed && (
                 <div className="pb-8">
                   {sectionContent[section]}
-                  {isPinSection(section) && renderUnreachablePins(section)}
+                  {isPinCategory(section) && renderUnreachablePins(section)}
                 </div>
               )}
             </div>
