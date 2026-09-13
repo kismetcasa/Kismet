@@ -36,6 +36,15 @@ const kSpark = (id: string, addr: string) => `${P}:${id}:spark:${addr.toLowerCas
  *  promise the same last copy of one edition and only one can be honoured. */
 const kCommit = (collection: string, tokenId: string) =>
   `${P}:commit:${collection.toLowerCase()}:${tokenId}`
+/** One capsule token, one machine — as a KEYED RESERVATION rather than a scan.
+ *  The create route used to look for a conflict by walking the machine index,
+ *  which is write-trimmed to MAX_MACHINES: past that, an older machine is
+ *  invisible to the scan while remaining perfectly playable (the play route
+ *  resolves it by id), so a new machine could take its capsule and one paid
+ *  mint would draw from two pools. A reservation cannot age out of view. */
+const kCapsule = (collection: string, tokenId: string) =>
+  `${P}:capsule:${collection.toLowerCase()}:${tokenId}`
+
 /** Directory of machines, score = createdAt. Write-trimmed like every other
  *  index in the codebase (cf. MAX_FEATURED, RAFFLE_ENABLED_KEY). */
 const K_INDEX = `${P}:index`
@@ -73,6 +82,29 @@ export async function createMachine(m: Machine): Promise<boolean> {
     .zremrangebyrank(K_INDEX, 0, -(MAX_MACHINES + 1))
     .exec()
   return true
+}
+
+/** Claim a capsule token for a machine. False when another machine holds it. */
+export async function reserveCapsule(
+  collection: string,
+  tokenId: string,
+  machineId: string,
+): Promise<boolean> {
+  const won = await redis.set(kCapsule(collection, tokenId), machineId, { nx: true })
+  return won === 'OK'
+}
+
+/** Hand a capsule token back — on a failed publish, and when a machine is
+ *  delisted (which already releases its supply pledges, and no longer honours
+ *  plays, so the token is genuinely free again). Guarded by machineId so a
+ *  compensating release can never free a reservation someone else won. */
+export async function releaseCapsule(
+  collection: string,
+  tokenId: string,
+  machineId: string,
+): Promise<void> {
+  const holder = await redis.get<string>(kCapsule(collection, tokenId)).catch(() => null)
+  if (holder === machineId) await redis.del(kCapsule(collection, tokenId)).catch(() => {})
 }
 
 export async function saveMachine(m: Machine): Promise<void> {

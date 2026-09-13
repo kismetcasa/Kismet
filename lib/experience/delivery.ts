@@ -67,6 +67,28 @@ export type DeliveryOutcome =
   /** Could not even start (misconfiguration). */
   | { kind: 'unavailable'; error: string }
 
+/** The player's current balance of an edition, for the delivery floor above.
+ *  null when the chain cannot answer — callers must then refuse to deliver
+ *  rather than assume zero, since assuming zero is what turns a stalled
+ *  delivery into a second mint. */
+export async function readPrizeBalance(params: {
+  collection: string
+  tokenId: string
+  player: string
+}): Promise<number | null> {
+  try {
+    const bal = (await serverBaseClient().readContract({
+      address: params.collection as Address,
+      abi: BALANCE_OF_ABI,
+      functionName: 'balanceOf',
+      args: [params.player as Address, BigInt(params.tokenId)],
+    })) as bigint
+    return Number(bal)
+  } catch {
+    return null
+  }
+}
+
 /** Encoded `adminMint(to, tokenId, 1, 0x)` with the ERC-8021 builder suffix
  *  appended, so a prize carries the same on-chain attribution every other
  *  Kismet write does. Exported for the oracle to assert the suffix survives. */
@@ -79,12 +101,27 @@ export function buildAdminMintCall(to: string, tokenId: string): { data: Hex } {
   return { data: BUILDER_DATA_SUFFIX ? (concat([data, BUILDER_DATA_SUFFIX]) as Hex) : data }
 }
 
-/** Has this player already got the prize? The only safe question to ask after
- *  an indeterminate send. */
+/**
+ * Did OUR delivery land? The only safe question to ask after an indeterminate
+ * send — and it must be asked as a DELTA, not as a balance.
+ *
+ * `balanceOf(player, id) > 0` answers "does this wallet hold this edition",
+ * which is a different question and wrong in both directions. Prizes are
+ * ordinary public editions: a player may already hold one from a normal
+ * collect, an airdrop, or an earlier win — and solvency effectively requires
+ * every machine to carry an unlimited creator floor piece, which repeat players
+ * draw over and over. Against a bare `> 0` test, such a claim is written
+ * `delivered` having minted nothing, after `consumeOne` already spent the
+ * artist's copy: the player paid, the artist lost a copy, and no artwork moved.
+ *
+ * `minBalance` is the balance read before the first delivery attempt (stored on
+ * the claim), so only a genuine increase counts as our mint.
+ */
 export async function reconcileDelivered(params: {
   collection: string
   tokenId: string
   player: string
+  minBalance: number
 }): Promise<boolean | null> {
   try {
     const bal = (await serverBaseClient().readContract({
@@ -93,7 +130,7 @@ export async function reconcileDelivered(params: {
       functionName: 'balanceOf',
       args: [params.player as Address, BigInt(params.tokenId)],
     })) as bigint
-    return bal > 0n
+    return bal > BigInt(Math.max(0, params.minBalance))
   } catch {
     // Unknown — the caller must keep the claim pending rather than assume
     // either direction.

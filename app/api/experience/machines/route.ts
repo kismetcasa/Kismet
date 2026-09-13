@@ -3,12 +3,13 @@ import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { getSessionAddress } from '@/lib/session'
-import { getGateConfig, hasGateAccess, isPlatformPausedFor } from '@/lib/gate'
+import { getGateConfig, holdsValidPass, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { ADMIN_ADDRESS } from '@/lib/config'
 import { MAX_POOL_ENTRIES, entryKey } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
-import { readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
+import { resolveCapsulePayees } from '@/lib/experience/payees'
+import { checkCapsuleControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
 import {
   createMachine,
   getMachine,
@@ -16,6 +17,8 @@ import {
   openEpochSeeds,
   otherPledges,
   pledgeSupply,
+  releaseCapsule,
+  reserveCapsule,
   putPoolEntry,
   setMachineState,
 } from '@/lib/experience/store'
@@ -73,7 +76,11 @@ export async function POST(req: NextRequest) {
   const gate = await getGateConfig()
   const isAdmin = creator === ADMIN_ADDRESS
   if (!isAdmin && gate.enabled) {
-    const ok = await hasGateAccess(gate.passCollection ?? '', creator).catch(() => false)
+    // holdsValidPass, not hasGateAccess. The latter answers "may this wallet mint
+    // into THAT collection" and returns true unconditionally when the target IS
+    // the Pass collection — so passing the Pass collection to it, as this did,
+    // made the credential check a no-op that never rejected anyone.
+    const ok = await holdsValidPass(creator).catch(() => false)
     if (!ok) return errorResponse(403, 'A Kismet Pass is required to create a machine')
   }
 
@@ -82,7 +89,6 @@ export async function POST(req: NextRequest) {
     name?: string
     capsule?: { collection?: string; tokenId?: string }
     entries?: PoolEntry[]
-    splitRecipients?: string[]
     /** Validate everything and write nothing. The Capsule Studio calls this on
      *  every edit so a creator sees the REAL verdict — live on-chain headroom
      *  and rival machines' pledges included — before committing. Re-using the
@@ -154,9 +160,54 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  const splitRecipients = (Array.isArray(body.splitRecipients) ? body.splitRecipients : [])
-    .filter((a): a is string => typeof a === 'string' && isAddress(a))
-    .map((a) => a.toLowerCase())
+  // WHO THE CAPSULE ACTUALLY PAYS — resolved from what Kismet recorded when the
+  // capsule was minted, never from this request. Taking it from the body made
+  // the 'artist-not-in-split' check below circular (the creator supplied both
+  // the pool and the list it was checked against), so a machine could promise
+  // artists a share of revenue that went entirely elsewhere.
+  // The capsule must be one this creator actually controls, and it must charge
+  // for a play. Both are preconditions for the payee resolution below meaning
+  // anything: an uncontrolled capsule resolves to a fabricated "creator keeps
+  // 100%", and an unpriced one pays nobody whatever the split says.
+  // The prize side is defended against Pass laundering; the COIN-SLOT side was
+  // not, and it is the side the player mints with their own wallet. A capsule in
+  // the Pass collection turns "pay to play" into "buy a Kismet Pass" —
+  // lib/pass-validity credits validity on any mint — which is the one credential
+  // the gate exists to make unpurchasable.
+  if (gate.passCollection && capsuleCollection.toLowerCase() === gate.passCollection) {
+    return NextResponse.json(
+      {
+        ok: false,
+        problems: [{ code: 'capsule-is-pass', detail: 'the capsule cannot be a Pass artwork — playing would mint the credential itself' }],
+      },
+      { status: 400 },
+    )
+  }
+
+  const control = await checkCapsuleControl({
+    collection: capsuleCollection.toLowerCase(),
+    tokenId: capsuleTokenId,
+    creator,
+  })
+  if (!control.ok) {
+    return NextResponse.json(
+      { ok: false, problems: [{ code: `capsule-${control.code}`, detail: control.detail }] },
+      { status: 400 },
+    )
+  }
+
+  const payees = await resolveCapsulePayees({
+    collection: capsuleCollection.toLowerCase(),
+    tokenId: capsuleTokenId,
+    creator,
+  })
+  if (!payees.ok) {
+    return NextResponse.json(
+      { ok: false, problems: [{ code: 'capsule-split-unverifiable', detail: payees.reason }] },
+      { status: 400 },
+    )
+  }
+  const splitRecipients = payees.recipients
 
   // The capsule's on-chain maxSupply IS the liability ceiling — immutable, and
   // therefore a real bound rather than a promise. The block number is recorded
@@ -168,6 +219,12 @@ export async function POST(req: NextRequest) {
     serverBaseClient().getBlockNumber().then(Number).catch(() => undefined),
   ])
   if (!capsuleSupply) return errorResponse(400, 'Could not read the capsule token on-chain')
+  // REQUIRED, not best-effort. `createdBlock` is the bound the play route uses to
+  // refuse capsules minted before the machine opened; a machine published
+  // without it has no bound at all, permanently, and nothing backfills it.
+  // Publishing is a deliberate, retryable act — fail it rather than ship a
+  // machine every historical holder of the capsule token can play.
+  if (!createdBlock) return errorResponse(503, 'Could not read the chain head — try publishing again')
 
   // Live headroom per entry, plus what OTHER machines have already pledged
   // against the same edition. Without the second half, two machines can each
@@ -207,7 +264,15 @@ export async function POST(req: NextRequest) {
       ok: true,
       dryRun: true,
       problems: [],
-      capsule: { maxSupply: capsuleSupply.maxSupply, minted: capsuleSupply.minted },
+      capsule: {
+        maxSupply: capsuleSupply.maxSupply,
+        minted: capsuleSupply.minted,
+        pricePerToken: control.pricePerToken.toString(),
+        currency: control.currency,
+      },
+      // So a creator sees who their capsule really pays before publishing,
+      // rather than the list they think they are declaring.
+      payees: { recipients: splitRecipients, source: payees.source },
     })
   }
 
@@ -221,9 +286,22 @@ export async function POST(req: NextRequest) {
     state: finalState,
     capsule: { collection: capsuleCollection.toLowerCase(), tokenId: capsuleTokenId },
     capsuleMaxSupply: capsuleSupply.maxSupply,
-    ...(createdBlock ? { createdBlock } : {}),
+    createdBlock,
     splitRecipients,
     createdAt: Date.now(),
+  }
+
+  // The capsule reservation is the AUTHORITATIVE one-machine-per-capsule guard;
+  // the index scan above is a cheap early answer that a dry run can rely on but
+  // that cannot see machines trimmed out of the index window.
+  if (!(await reserveCapsule(capsuleCollection.toLowerCase(), capsuleTokenId, id))) {
+    return NextResponse.json(
+      {
+        ok: false,
+        problems: [{ code: 'capsule-in-use', detail: 'another machine already uses this capsule token — mint a fresh capsule for this one' }],
+      },
+      { status: 400 },
+    )
   }
 
   // PUBLISH LAST. The machine is reserved as a `draft` first, its pool is
@@ -238,6 +316,10 @@ export async function POST(req: NextRequest) {
   // createMachine); `getMachine` above only turns the common case into a clean
   // 409 rather than a race.
   if (!(await createMachine({ ...machine, state: 'draft' }))) {
+    // Compensate: this publish took the capsule reservation a moment ago and is
+    // now abandoning it, so hand it straight back rather than stranding the
+    // token behind a machine that does not exist.
+    await releaseCapsule(capsuleCollection.toLowerCase(), capsuleTokenId, id)
     return errorResponse(409, 'That machine id is taken')
   }
 

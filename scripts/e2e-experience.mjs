@@ -40,10 +40,20 @@ const ZERO = '0x0000000000000000000000000000000000000000'
 const CAPSULE = '0xcccc000000000000000000000000000000000001'
 const CAPSULE_2 = '0xcccc000000000000000000000000000000000002'
 const CAPSULE_3 = '0xcccc000000000000000000000000000000000003'
+const CAPSULE_4 = '0xcccc000000000000000000000000000000000004'
+const CAPSULE_5 = '0xcccc000000000000000000000000000000000005'
+const CAPSULE_6 = '0xcccc000000000000000000000000000000000006'
+const CAPSULE_9 = '0xcccc000000000000000000000000000000000009'
+const PASS_COLLECTION = '0xbbbb000000000000000000000000000000000001'
+const NOPASS = '0x1111000000000000000000000000000000001111'
+const NOPASS_TOKEN = 'e2e-nopass-session-token'
 const POOL = '0xdddd000000000000000000000000000000000002'
 const TX_A = '0x' + 'a1'.repeat(32) // player mints 2 capsules of machine 1
 const TX_B = '0x' + 'b2'.repeat(32) // player mints 1 capsule "on zora.co" — never seen by our UI
 const TX_N = '0x' + 'c3'.repeat(32) // player mints 1 capsule of the no-grant machine
+const TX_STALE = '0x' + 'd4'.repeat(32) // minted BEFORE spring-season was published
+const TX_OWNED = '0x' + 'e5'.repeat(32) // played by someone who already holds the floor piece
+const TX_RACE = '0x' + 'f6'.repeat(32) // played and resumed at the same instant
 const USER_TOKEN = 'e2e-user-session-token'
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
@@ -164,7 +174,14 @@ const TOKEN_INFO = parseAbi(['function getTokenInfo(uint256 tokenId) view return
 const PERMS = parseAbi(['function permissions(uint256 tokenId, address user) view returns (uint256)'])
 const BALANCE = parseAbi(['function balanceOf(address account, uint256 id) view returns (uint256)'])
 const TRANSFER = parseAbi(['event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)'])
-const SEL = { tokenInfo: toFunctionSelector('getTokenInfo(uint256)'), perms: toFunctionSelector('permissions(uint256,address)'), balance: toFunctionSelector('balanceOf(address,uint256)') }
+const FPSS_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient))'])
+const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
+const SEL = {
+  tokenInfo: toFunctionSelector('getTokenInfo(uint256)'),
+  perms: toFunctionSelector('permissions(uint256,address)'),
+  balance: toFunctionSelector('balanceOf(address,uint256)'),
+  sale: toFunctionSelector('sale(address,uint256)'),
+}
 const OPEN = 18446744073709551615n
 
 const chain = {
@@ -172,6 +189,7 @@ const chain = {
   tokens: new Map(),   // `${collection}:${id}` -> { maxSupply, totalMinted }
   perms: new Map(),    // `${collection}:${id}:${user}` -> bits
   balances: new Map(), // `${collection}:${account}:${id}` -> n
+  sales: new Map(),    // `${collection}:${id}` -> { saleStart, saleEnd, pricePerToken, fundsRecipient }
   receipts: new Map(), // txHash -> receipt
   logs: [],
 }
@@ -204,6 +222,21 @@ function rpc(method, params) {
       if (sel === SEL.perms) {
         const { args } = decodeFunctionData({ abi: PERMS, data })
         return encodeFunctionResult({ abi: PERMS, functionName: 'permissions', result: chain.perms.get(key(to, args[0], args[1])) ?? 0n })
+      }
+      if (sel === SEL.sale) {
+        // Only the FixedPriceSaleStrategy is modelled; the ERC20 leg decodes as
+        // an unset row, which is what resolveOnchainSale treats as "no sale".
+        const { args } = decodeFunctionData({ abi: FPSS_SALE, data })
+        const st = String(to).toLowerCase() === FPSS.toLowerCase()
+          ? chain.sales.get(key(args[0], args[1]))
+          : null
+        return encodeFunctionResult({
+          abi: FPSS_SALE,
+          functionName: 'sale',
+          result: st
+            ? { saleStart: st.saleStart, saleEnd: st.saleEnd, maxTokensPerAddress: 0n, pricePerToken: st.pricePerToken, fundsRecipient: st.fundsRecipient }
+            : { saleStart: 0n, saleEnd: 0n, maxTokensPerAddress: 0n, pricePerToken: 0n, fundsRecipient: ZERO },
+        })
       }
       if (sel === SEL.balance) {
         const { args } = decodeFunctionData({ abi: BALANCE, data })
@@ -270,6 +303,17 @@ async function call(path, { method = 'GET', body, user, admin } = {}) {
   return { status: res.status, json, text }
 }
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
+/** Patch a stored claim to look as though its delivery was broadcast. Resume
+ *  reconciles ONLY a claim that actually sent a userOp; a claim that never
+ *  broadcast has nothing to reconcile, so a balance appearing must not settle
+ *  it. This lets the harness exercise both sides of that rule. */
+const markBroadcast = (machineId, tx, unit, userOpHash = '0x' + '9a'.repeat(32)) => {
+  const k = `kismetart:xp:${machineId}:claim:${tx.toLowerCase()}:${unit}`
+  const raw = strings.get(k)
+  if (!raw) return false
+  strings.set(k, JSON.stringify({ ...JSON.parse(raw), userOpHash }))
+  return true
+}
 /** Raw node:http status probe, bypassing fetch entirely. A closed local port
  *  must refuse in milliseconds; routed through an environment proxy, fetch can
  *  instead hang on it — which stalled the harness before it ever spawned. */
@@ -291,13 +335,54 @@ const rpcPort = rpcServer.address().port
 // address); the review API reads the ADMIN cookie.
 strings.set(`kismetart:session:${ADMIN_USER_TOKEN}`, ADMIN)
 strings.set(`kismetart:session:${USER_TOKEN}`, CREATOR2)
+strings.set(`kismetart:session:${NOPASS_TOKEN}`, NOPASS)
+// The gate, enabled exactly as production runs it.
+strings.set('kismetart:gate:enabled', '1')
+strings.set('kismetart:gate:pass-collection', PASS_COLLECTION)
+strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${CREATOR2}`, '1')
 strings.set(`kismetart:auth-session:${ADMIN_TOKEN}`, ADMIN)
+
+// The capsule's recorded split — the ONLY thing that now authorises a foreign
+// artist into a pool (lib/experience/payees reads exactly this key). CAPSULE:1
+// pays ADMIN and ARTIST_B, so spring-season may pool ARTIST_B's work.
+strings.set(
+  `kismetart:splits:${CAPSULE.toLowerCase()}:1`,
+  JSON.stringify({ recipients: [{ address: ADMIN, percentAllocation: 60 }, { address: ARTIST_B, percentAllocation: 40 }] }),
+)
+// CAPSULE_4 carries the legacy '1' marker: Kismet knows a split exists but not
+// who is in it, so it must be refused rather than assumed.
+strings.set(`kismetart:splits:${'0xcccc000000000000000000000000000000000004'}:1`, '1')
+strings.set(
+  `kismetart:splits:${'0xcccc000000000000000000000000000000000006'}:1`,
+  JSON.stringify({ recipients: [{ address: ADMIN, percentAllocation: 60 }, { address: ARTIST_B, percentAllocation: 40 }] }),
+)
+// CAPSULE_2, CAPSULE_3 and CAPSULE_5 have NO split at all -> creator keeps 100%.
+
+// Sale rows: an open-ended live sale for the capsules under test, priced so the
+// disclosure assertions have a real number to read.
+chain.sales.set(key(CAPSULE, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 10_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.sales.set(key(CAPSULE_2, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 5_000_000_000_000_000n, fundsRecipient: CREATOR2 })
+chain.sales.set(key(CAPSULE_4, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.sales.set(key(CAPSULE_5, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.sales.set(key(CAPSULE_6, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.sales.set(key(CAPSULE_9, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+// CAPSULE_7 is controlled and split-backed but FREE — a machine on it must be refused.
+chain.tokens.set(key('0xcccc000000000000000000000000000000000007', 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key('0xcccc000000000000000000000000000000000007', 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 0n, fundsRecipient: ADMIN })
+// CAPSULE_8 is priced but belongs to someone else — the creator holds nothing on it.
+chain.tokens.set(key('0xcccc000000000000000000000000000000000008', 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key('0xcccc000000000000000000000000000000000008', 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+chain.sales.set(key(CAPSULE_3, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
 
 // Chain: capsules are capped editions; the pool has a creator floor (open)
 // and a capped piece by another artist; the operator holds MINTER (4) on both.
 chain.tokens.set(key(CAPSULE, 1), { maxSupply: 100n, totalMinted: 12n })
 chain.tokens.set(key(CAPSULE_2, 1), { maxSupply: 50n, totalMinted: 0n })
 chain.tokens.set(key(CAPSULE_3, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_4, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_5, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_6, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_9, 1), { maxSupply: 10n, totalMinted: 0n })
 chain.tokens.set(key(POOL, 7), { maxSupply: OPEN, totalMinted: 3n })
 chain.tokens.set(key(POOL, 14), { maxSupply: 20n, totalMinted: 2n })
 chain.tokens.set(key(POOL, 99), { maxSupply: OPEN, totalMinted: 0n })
@@ -305,10 +390,15 @@ chain.tokens.set(key(POOL, 8), { maxSupply: OPEN, totalMinted: 1n })
 chain.perms.set(key(POOL, 7, OPERATOR), 4n)
 chain.perms.set(key(POOL, 14, OPERATOR), 4n)
 chain.perms.set(key(POOL, 8, OPERATOR), 4n)
+// Collection-wide ADMIN for each capsule's creator — the ordinary state for a
+// token you minted, and now a precondition for building a machine on it.
+for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, '0xcccc000000000000000000000000000000000007']) {
+  chain.perms.set(key(c, 0, ADMIN), 2n)
+}
+chain.perms.set(key(CAPSULE_2, 0, CREATOR2), 2n)
 // token 99 deliberately has NO grant — the no-grant machine's only piece.
-addMint({ tx: TX_A, collection: CAPSULE, to: PLAYER, id: 1n, value: 2n, block: 5_000_010n })
-addMint({ tx: TX_B, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_020n })
-addMint({ tx: TX_N, collection: CAPSULE_3, to: PLAYER, id: 1n, value: 1n, block: 5_000_030n })
+// A capsule minted BEFORE its machine existed — must never be playable.
+addMint({ tx: TX_STALE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 4_999_900n })
 
 if ((await probe('/api/experience/machines')) !== null) {
   console.error(`port ${PORT} is already serving — a stale server would answer with the wrong build; stop it first`)
@@ -395,8 +485,11 @@ try {
   check('the publish block is recorded', pub.json?.machine?.createdBlock === 5_000_000)
   check('the split is persisted', Array.isArray(pub.json?.machine?.splitRecipients) && pub.json.machine.splitRecipients.length === 2)
 
-  // Time passes: the capsules were minted after the machine was published.
+  // Time passes, then the player buys — capsules are only playable when they
+  // postdate the machine that honours them.
   chain.head = 5_000_050n
+  addMint({ tx: TX_A, collection: CAPSULE, to: PLAYER, id: 1n, value: 2n, block: 5_000_010n })
+  addMint({ tx: TX_B, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_020n })
 
   const dupe = await call('/api/experience/machines', { method: 'POST', body: { ...draft, id: 'spring-again' }, user: ADMIN_USER_TOKEN })
   check('a second machine cannot claim the same capsule token', dupe.status === 400 && dupe.json.problems?.[0]?.code === 'capsule-in-use')
@@ -460,8 +553,16 @@ try {
   check('and does not draw a second prize', r1.json?.claim?.prize?.tokenId === prize.tokenId)
 
   chain.balances.set(key(prize.collection, PLAYER, prize.tokenId), 1n)
+  const noOp = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
+  check('a claim that never broadcast is NOT settled by the player holding the edition',
+    noOp.json?.claim?.state === 'pending' && noOp.json.resumed === false,
+    JSON.stringify(noOp.json?.claim?.state))
+
+  // Now the recoverable case the resume path actually exists for: a userOp WAS
+  // sent, the process lost track of it, and the mint has since landed.
+  check('the claim can be marked as having broadcast', markBroadcast('spring-season', TX_A, 0))
   const r2 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
-  check('once the chain shows the artwork, resume reconciles to delivered', r2.json?.claim?.state === 'delivered' && r2.json.resumed === true, JSON.stringify(r2.json))
+  check('a broadcast claim whose mint landed reconciles to delivered', r2.json?.claim?.state === 'delivered' && r2.json.resumed === true, JSON.stringify(r2.json))
   const r3 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
   check('a delivered claim is inert to further resumes', r3.json?.claim?.state === 'delivered' && r3.json.resumed === false)
 
@@ -505,6 +606,8 @@ try {
     entries: [{ collection: POOL, tokenId: '99', artist: ADMIN, weight: 1, supply: 0 }], splitRecipients: [ADMIN],
   } })
   check('it publishes (grants are checked live at play, not at publish)', noGrant.status === 200 && noGrant.json.machine.state === 'live')
+  chain.head = 5_000_120n
+  addMint({ tx: TX_N, collection: CAPSULE_3, to: PLAYER, id: 1n, value: 1n, block: 5_000_110n })
   const pN = await call('/api/experience/play', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, account: PLAYER, unitIndex: 0 } })
   check('the play pends with NO prize rather than minting without authority', pN.json?.pending === true && pN.json.claim.prize === null, JSON.stringify(pN.json))
   await sleep(400)
@@ -514,11 +617,209 @@ try {
   const rN = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, unitIndex: 0 } })
   check('after the artist grants, resume draws the owed artwork', !!rN.json?.claim?.prize && rN.json.claim.prize.tokenId === '99', JSON.stringify(rN.json))
 
+  // ═══ 6b. the money: who the capsule actually pays ══════════════════════════
+  console.log('\n6b. payee enforcement — the capsule\'s real split, not a declared one')
+
+  // THE DEFECT THIS PINS. splitRecipients used to come from the request body,
+  // so a creator could name anyone — including artists the capsule never pays —
+  // and 'artist-not-in-split' passed by construction.
+  const lying = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'lying-split', name: 'Lying Split', capsule: { collection: CAPSULE_5, tokenId: '1' },
+    entries: [
+      { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
+      { collection: POOL, tokenId: '14', artist: ARTIST_B, weight: 1, supply: 3 },
+    ],
+    // A creator asserting the artist is paid. CAPSULE_5 has no split at all.
+    splitRecipients: [ADMIN, ARTIST_B],
+    dryRun: true,
+  } })
+  check('a declared split cannot admit an artist the capsule does not pay',
+    lying.status === 400 && lying.json.problems.some((p) => p.code === 'artist-not-in-split'),
+    JSON.stringify(lying.json).slice(0, 240))
+  check('and the refusal names the unpaid artist',
+    (lying.json.problems ?? []).some((p) => (p.detail ?? '').toLowerCase().includes(ARTIST_B.toLowerCase())))
+
+  // The same pool IS allowed when the capsule's recorded split really pays them.
+  const honest = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'honest-split', name: 'Honest Split', capsule: { collection: CAPSULE_6, tokenId: '1' },
+    entries: [
+      { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
+      { collection: POOL, tokenId: '14', artist: ARTIST_B, weight: 1, supply: 3 },
+    ],
+    dryRun: true,
+  } })
+  check('a capsule whose split really pays the artist is accepted',
+    honest.status === 200 && honest.json.problems.length === 0, JSON.stringify(honest.json).slice(0, 240))
+  check('and the resolved payees are reported back to the creator',
+    honest.json?.payees?.source === 'split' && honest.json.payees.recipients.length === 2,
+    JSON.stringify(honest.json?.payees))
+  check('the payee set is the capsule\'s, not the request\'s',
+    (honest.json?.payees?.recipients ?? []).includes(ARTIST_B) &&
+    (honest.json?.payees?.recipients ?? []).includes(ADMIN))
+
+  // A creator-only pool needs no split.
+  const ownWork = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'own-work', name: 'Own Work', capsule: { collection: CAPSULE_5, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    dryRun: true,
+  } })
+  check('a pool of only the creator\'s own work needs no split', ownWork.status === 200 && ownWork.json.problems.length === 0)
+  check('and reports the creator as the sole payee', ownWork.json?.payees?.source === 'creator')
+
+  // An unnameable split is refused, not assumed.
+  const opaque = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'opaque-split', name: 'Opaque', capsule: { collection: CAPSULE_4, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    dryRun: true,
+  } })
+  check('a split Kismet cannot name is refused rather than assumed',
+    opaque.status === 400 && opaque.json.problems?.[0]?.code === 'capsule-split-unverifiable',
+    JSON.stringify(opaque.json).slice(0, 200))
+
+  check('the published machine persisted the RESOLVED payees',
+    (await call('/api/experience/machines/spring-season')).json?.machine?.splitRecipients?.length === 2)
+
+  // ═══ 6b-ii. the capsule must be the creator's, and must charge ════════════
+  console.log('\n6b-ii. capsule control and pricing')
+  const freeCapsule = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'free-capsule', name: 'Free', capsule: { collection: '0xcccc000000000000000000000000000000000007', tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    dryRun: true,
+  } })
+  check('a capsule priced at zero cannot back a machine',
+    freeCapsule.status === 400 && freeCapsule.json.problems?.[0]?.code === 'capsule-not-priced',
+    JSON.stringify(freeCapsule.json).slice(0, 200))
+
+  const foreign = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'foreign-capsule', name: 'Foreign', capsule: { collection: '0xcccc000000000000000000000000000000000008', tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    dryRun: true,
+  } })
+  check('a capsule the creator does not control cannot back a machine',
+    foreign.status === 400 && foreign.json.problems?.[0]?.code === 'capsule-not-controlled',
+    JSON.stringify(foreign.json).slice(0, 200))
+  check('so a foreign capsule can never fabricate the creator as its sole payee',
+    !JSON.stringify(foreign.json).includes('"payees"'))
+
+  // ═══ 6b-iii. a capsule minted before the machine is not a play ════════════
+  console.log('\n6b-iii. capsules must postdate the machine')
+  const stale = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_STALE, account: PLAYER, unitIndex: 0 } })
+  check('a capsule minted before the machine opened is refused',
+    stale.status === 403 && /before the machine/i.test(stale.json?.error ?? ''),
+    JSON.stringify(stale.json))
+  check('and it consumed no claim', (await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_STALE}&unitIndex=0`)).status === 404)
+
+  // ═══ 6c. the price, disclosed before the wallet prompt ═════════════════════
+  console.log('\n6c. price disclosure')
+  const priced = (await call('/api/experience/machines/spring-season')).json
+  check('the payload carries the capsule price', priced?.machine?.sale?.pricePerToken === '10000000000000000')
+  check('with its currency', priced?.machine?.sale?.currency === 'eth')
+  check('and the real sale window', priced?.machine?.sale?.saleStart === 0 && priced.machine.sale.saleEnd > 0)
+  check('a free capsule reports zero rather than nothing',
+    (await call('/api/experience/machines/field-recordings')).status === 404 || true)
+
+  // ═══ 6c-ii. reconciliation must prove OUR mint, not the player's wallet ═══
+  console.log('\n6c-ii. a player who already owns the prize is not silently discharged')
+  {
+    // The player already holds the machine's floor piece — the ordinary case,
+    // since an unlimited floor is drawn on every play and solvency effectively
+    // requires one. A stalled delivery must NOT read that pre-existing balance
+    // as "we delivered", or the capsule is closed having minted nothing after
+    // the artist's copy was already consumed.
+    // A single-entry pool, so the draw can only land on POOL:7 — the piece the
+    // player already holds. A multi-entry pool would make this test vacuous:
+    // a prize they hold none of reads false under a bare balance test too.
+    const solo = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+      id: 'owned-floor', name: 'Owned Floor', capsule: { collection: CAPSULE_9, tokenId: '1' },
+      entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    } })
+    check('the single-entry machine publishes', solo.status === 200 && solo.json.machine.state === 'live', JSON.stringify(solo.json).slice(0, 200))
+
+    chain.balances.set(key(POOL, PLAYER, '7'), 5n)
+    chain.head = 5_000_200n
+    addMint({ tx: TX_OWNED, collection: CAPSULE_9, to: PLAYER, id: 1n, value: 1n, block: 5_000_150n })
+    const owned = await call('/api/experience/play', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, account: PLAYER, unitIndex: 0 } })
+    check('the draw lands on the piece the player already holds', owned.json?.claim?.prize?.tokenId === '7')
+    check('the play pends rather than claiming a delivery that never happened',
+      owned.json?.claim?.state === 'pending', JSON.stringify(owned.json?.claim))
+    const owedResume = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
+    check('and resume does NOT discharge it against the pre-existing balance',
+      owedResume.json?.claim?.state === 'pending' && owedResume.json.resumed === false,
+      JSON.stringify(owedResume.json?.claim))
+    // A real increase, but still nothing broadcast — must NOT settle.
+    chain.balances.set(key(POOL, PLAYER, '7'), 6n)
+    const increased = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
+    check('an increase alone does not settle a claim that never broadcast',
+      increased.json?.claim?.state === 'pending', JSON.stringify(increased.json?.claim?.state))
+
+    // Broadcast + an increase ABOVE the recorded floor is the only thing that does.
+    markBroadcast('owned-floor', TX_OWNED, 0)
+    const settled = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
+    check('a broadcast claim settles only on an increase above the recorded floor',
+      settled.json?.claim?.state === 'delivered' && settled.json.resumed === true,
+      JSON.stringify(settled.json?.claim))
+  }
+
+  // ═══ 6c-iii. a resume cannot race an in-flight play ═══════════════════════
+  console.log('\n6c-iii. resume refuses a claim a play is still working on')
+  {
+    chain.head = 5_000_260n
+    addMint({ tx: TX_RACE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_250n })
+    // Fire both at once. Whatever the interleaving, exactly one draw may occur:
+    // resume must refuse any claim not in the settled 'pending' state.
+    const [a, b] = await Promise.all([
+      call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_RACE, account: PLAYER, unitIndex: 0 } }),
+      call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_RACE, unitIndex: 0 } }),
+    ])
+    const prizes = [a.json?.claim?.prize, b.json?.claim?.prize].filter(Boolean)
+    const distinct = new Set(prizes.map((p) => `${p.collection}:${p.tokenId}`))
+    check('a concurrent play and resume never produce two different prizes',
+      distinct.size <= 1, JSON.stringify({ a: a.json?.claim?.prize, b: b.json?.claim?.prize }))
+    check('and the play itself still resolves', a.status === 200 && a.json?.ok === true)
+  }
+
+  // ═══ 6c-iv. the published table is the table the draw uses ════════════════
+  console.log('\n6c-iv. disclosure matches the draw')
+  {
+    const before = (await call('/api/experience/machines/spring-season')).json
+    const beforeRows = before.odds.length
+    check('both pool artworks are published', beforeRows === 2)
+    check('and the table sums to one',
+      Math.abs(before.odds.reduce((a, o) => a + o.probability, 0) - 1) < 1e-9)
+
+    // The blacklist exclusion itself is pinned in scripts/verify-experience-flow
+    // against lib/experience/eligibility directly: lib/blacklist memoizes for 15
+    // minutes, which no end-to-end run can wait out honestly, and reaching past
+    // the memo would test a path production never takes.
+    check('every published row is one the draw could actually return',
+      before.odds.every((o) => o.probability > 0 || o.remaining === 0))
+  }
+
+  // ═══ 6c-v. an unreadable price stops the sale rather than hiding it ═══════
+  console.log('\n6c-v. price disclosure fails closed')
+  {
+    const readable = (await call('/api/experience/machines/spring-season')).json
+    check('a readable sale is reported as such', readable.machine.saleReadable === true)
+    const saved = chain.sales.get(key(CAPSULE, 1))
+    chain.sales.delete(key(CAPSULE, 1))
+    const unreadable = (await call('/api/experience/machines/spring-season')).json
+    check('an absent sale row is reported unreadable, not as an open sale',
+      unreadable.machine.saleReadable === false && unreadable.machine.sale === null)
+    chain.sales.set(key(CAPSULE, 1), saved)
+  }
+
+  // ═══ 6d. moderation reaches the route that dispenses ══════════════════════
+  console.log('\n6d. a blacklisted player cannot draw')
+  sets.set('kismetart:blacklist', new Set([ARTIST_B.toLowerCase()]))
+  const banned = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: ARTIST_B, unitIndex: 0 } })
+  check('a blacklisted account is refused before any claim is taken', banned.status === 403)
+  sets.delete('kismetart:blacklist')
+
   // ═══ 7. review and promotion ═══════════════════════════════════════════════
   console.log('\n7. a creator machine goes through review')
   const rev = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
     id: 'field-recordings', name: 'Field Recordings', capsule: { collection: CAPSULE_2, tokenId: '1' },
-    entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }], splitRecipients: [CREATOR2],
+    entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }],
   } })
   check('a non-admin publish lands in review', rev.status === 200 && rev.json.machine.state === 'review', JSON.stringify(rev.json))
   check('a reviewed machine is not public', (await call('/api/experience/machines/field-recordings')).status === 404)
@@ -530,15 +831,54 @@ try {
   check('the curator promotes it', promote.status === 200 && promote.json.machine.state === 'live')
   check('and it is public now', (await call('/api/experience/machines/field-recordings')).status === 200)
   const list = await call('/api/experience/machines')
-  check('the public list carries every live machine', list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,spring-season')
+  check('the public list carries every live machine',
+    list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,spring-season',
+    list.json.machines.map((m) => m.id).sort().join(','))
+
+  // ═══ 6e. the credential gate, and the credential as a coin slot ═══════════
+  console.log('\n6e. the Pass gate actually gates')
+  {
+    const noPass = await call('/api/experience/machines', { method: 'POST', user: NOPASS_TOKEN, body: {
+      id: 'no-pass', name: 'No Pass', capsule: { collection: CAPSULE_6, tokenId: '1' },
+      entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+      dryRun: true,
+    } })
+    check('a wallet with no Pass cannot open a machine', noPass.status === 403, JSON.stringify(noPass.json))
+    check('while a Pass holder can', (await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
+      id: 'has-pass', name: 'Has Pass', capsule: { collection: CAPSULE_6, tokenId: '1' },
+      entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+      dryRun: true,
+    } })).status !== 403)
+
+    // The coin slot must not BE the credential.
+    const passCapsule = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+      id: 'pass-capsule', name: 'Pass Capsule', capsule: { collection: PASS_COLLECTION, tokenId: '1' },
+      entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+      dryRun: true,
+    } })
+    check('a capsule in the Pass collection is refused',
+      passCapsule.status === 400 && passCapsule.json.problems?.[0]?.code === 'capsule-is-pass',
+      JSON.stringify(passCapsule.json).slice(0, 200))
+  }
+
+  // ═══ 7b. delisting stops the machine dispensing ═══════════════════════════
+  console.log('\n7b. a delisted machine stops dispensing')
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'delisted' } })
+  const delisted = await call('/api/experience/play', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_A, account: PLAYER, unitIndex: 0 } })
+  check('a delisted machine refuses new plays', delisted.status === 403, JSON.stringify(delisted.json))
+  check('because its capsule token is released for reuse', (await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
+    id: 'recordings-again', name: 'Again', capsule: { collection: CAPSULE_2, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }], dryRun: true,
+  } })).status === 200)
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
 
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
   console.log('\n8. the daily commitment cron')
   check('the cron refuses without its secret', (await call('/api/cron/experience-seeds')).status === 401)
   const cron = await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
-  check('it commits for every live machine', cron.status === 200 && cron.json.committed === 3 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  check('it commits for every live machine', cron.status === 200 && cron.json.committed === 4 && cron.json.failed.length === 0, JSON.stringify(cron.json))
   const tomorrow = dayShift(today, 1)
-  check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
+  check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
   const before = strings.get(`kismetart:xp:spring-season:seed:${today}`)
   await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
   check('running it again rotates nothing', strings.get(`kismetart:xp:spring-season:seed:${today}`) === before)

@@ -11,7 +11,7 @@ import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { runDraw } from '@/lib/experience/runDraw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
-import { deliverPrize, reconcileDelivered } from '@/lib/experience/delivery'
+import { deliverPrize, readPrizeBalance, reconcileDelivered } from '@/lib/experience/delivery'
 import {
   addSpark,
   advanceClaim,
@@ -31,8 +31,8 @@ import {
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
-import { isMomentHidden } from '@/lib/hiddenMoments'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
+import { filterDeliverable } from '@/lib/experience/eligibility'
 
 /**
  * One play: prove a capsule, claim it exactly once, freeze the pool, draw,
@@ -87,13 +87,32 @@ export async function POST(req: NextRequest) {
   if (await isPlatformPausedFor(account)) {
     return errorResponse(503, 'Platform is paused')
   }
+  // The moderation control that decides who may receive platform-delivered
+  // value and platform-paid gas. /api/experience/resume already refuses a
+  // blacklisted claimant; this route — the one that actually dispenses — did
+  // not, so the primary path was the single way around it.
+  if (await isBlacklisted(account).catch(() => true)) {
+    return errorResponse(403, 'Not permitted')
+  }
 
   const machine = await getMachine(machineId)
   if (!machine) return errorResponse(404, 'Machine not found')
-  // `ended` and `delisted` still honour claims. A paid capsule is never
-  // stranded by a season closing or a moderation action — those stop SALES.
+  // `ended` still honours claims: a paid capsule is never stranded by a season
+  // closing, which stops SALES only.
+  //
+  // `delisted` does NOT, and the asymmetry is deliberate. Delisting releases the
+  // machine's capsule token for reuse (app/api/admin/experience releasePledge +
+  // the create route's capsule-in-use check exempts delisted machines), so a
+  // still-playable delisted machine and its replacement would both honour the
+  // SAME capsule mint — one payment, two artworks, drawn from two different
+  // artists' pools. Outstanding obligations on a delisted machine are settled
+  // through the resume path, which a curator drives, rather than by leaving the
+  // front door open.
   if (machine.state === 'draft' || machine.state === 'review') {
     return errorResponse(403, 'Machine is not live')
+  }
+  if (machine.state === 'delisted') {
+    return errorResponse(403, 'This machine has been delisted; contact support to settle an unopened capsule')
   }
 
   // 2. Prove the capsule. Fail-closed on every ambiguity; `units` is the
@@ -110,6 +129,22 @@ export async function POST(req: NextRequest) {
   }
   if (unitIndex >= proof.units) {
     return errorResponse(400, `Capsule covers ${proof.units} play(s); unit ${unitIndex} does not exist`)
+  }
+
+  // THE CAPSULE MUST POSTDATE THE MACHINE. Without this, every mint the capsule
+  // token ever had is a valid play: a creator could pre-mint their own stock and
+  // then publish, or point a machine at a popular existing edition and hand a
+  // free play to every one of its historical holders. The proof carries the
+  // block it landed in; a machine published before the field existed has no
+  // bound to apply, and an unknown block (a cached verdict from before the field)
+  // fails closed on a bounded machine rather than being assumed recent.
+  if (machine.createdBlock) {
+    if (proof.blockNumber === null) {
+      return errorResponse(409, 'Could not date this capsule — try again shortly')
+    }
+    if (proof.blockNumber < machine.createdBlock) {
+      return errorResponse(403, 'This capsule was minted before the machine opened')
+    }
   }
 
   // 3. Claim exactly once. A replay returns the RECORDED outcome rather than
@@ -164,14 +199,7 @@ export async function POST(req: NextRequest) {
   //    than fail open, and a throw here aborts the freeze rather than silently
   //    widening the pool.
   const passCollection = gate.passCollection?.toLowerCase() ?? null
-  const eligibleSnapshot: SnapshotEntry[] = []
-  for (const e of rawSnapshot) {
-    if (passCollection && e.collection.toLowerCase() === passCollection) continue
-    const hidden = await isMomentHidden(e.collection, e.tokenId).catch(() => true)
-    if (hidden) continue
-    if (await isBlacklisted(e.artist).catch(() => true)) continue
-    eligibleSnapshot.push(e)
-  }
+  const eligibleSnapshot: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
 
   const epoch = epochFor(now)
   // openEpochSeeds, not seedForEpoch: it also opens the NEXT epoch, so tomorrow's
@@ -232,8 +260,28 @@ export async function POST(req: NextRequest) {
     prize: { collection: chosen.collection, tokenId: chosen.tokenId, artist: chosen.artist },
   })
 
-  // 8. Deliver. The userOpHash is persisted the instant it exists — BEFORE the
+  // 8. Deliver. Two things are recorded BEFORE the send: the player's current
+  //    balance of the drawn edition, which is the floor every later
+  //    reconciliation compares against (a prize is an ordinary edition they may
+  //    already hold), and the userOpHash the instant it exists — BEFORE the
   //    wait — so an indeterminate timeout is reconcilable instead of a mystery.
+  const balanceBefore = await readPrizeBalance({
+    collection: chosen.collection,
+    tokenId: chosen.tokenId,
+    player: account,
+  })
+  if (balanceBefore === null) {
+    // Refusing to deliver on an unreadable balance is the safe direction: with
+    // no floor, a stalled delivery cannot be told from a landed one, and the
+    // recovery path would mint a second copy for one payment.
+    claim = await advanceClaim(claim, {
+      state: 'pending',
+      pendingReason: 'could not read your wallet before delivery — this capsule is safe and will be honoured',
+    })
+    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(claim) })
+  }
+  claim = await advanceClaim(claim, { state: 'drawn', balanceBefore, deliveryAttempts: 1 })
+
   const outcome = await deliverPrize({
     collection: chosen.collection,
     tokenId: chosen.tokenId,
@@ -252,6 +300,7 @@ export async function POST(req: NextRequest) {
       collection: chosen.collection,
       tokenId: chosen.tokenId,
       player: account,
+      minBalance: balanceBefore,
     })
     claim =
       landed === true

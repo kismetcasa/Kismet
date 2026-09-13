@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
-import { shortAddress } from '@/lib/inprocess'
+import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from '@/lib/inprocess'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import {
@@ -71,6 +71,13 @@ interface MachinePayload {
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
     splitRecipients: string[]
+    sale: {
+      pricePerToken: string
+      currency: 'eth' | 'usdc'
+      saleStart: number
+      saleEnd: number
+    } | null
+    saleReadable: boolean
   }
   odds: OddsRow[]
   coverage: { capsulesOutstanding: number | null; prizesRemaining: number | null; covered: boolean }
@@ -381,7 +388,45 @@ export function ExperienceMachine({ id }: { id: string }) {
     )
   }
 
-  const playable = data.machine.state === 'live'
+  // Two independent gates on SELLING a capsule, and they can disagree: the
+  // machine's state is our record, the sale window is the chain's. A machine
+  // left `live` after its capsule sale closed would previously have offered a
+  // play button whose mint reverts.
+  const sale = data.machine.sale
+  const saleWindow = getSaleWindow(
+    sale ? { saleStart: String(sale.saleStart), saleEnd: String(sale.saleEnd) } : null,
+  )
+  const windowOpen = !saleWindow || saleWindow.state === 'live' || saleWindow.state === 'closing'
+  // An unreadable sale is NOT an open one. `!saleWindow` short-circuiting to
+  // "open" meant a single RPC blip left the button live with no price shown —
+  // selling a randomized purchase with the cost undisclosed, which is the exact
+  // thing this surface's odds disclosure exists to prevent.
+  const priced = data.machine.saleReadable && !!sale && BigInt(sale.pricePerToken || '0') > 0n
+  const saleOpen = windowOpen && priced
+  const playable = data.machine.state === 'live' && saleOpen
+  // NEITHER gate touches opening a capsule already paid for: an ended season and
+  // a closed sale both stop sales only, and the recovery panel below stays live.
+  const closedLabel =
+    data.machine.state !== 'live'
+      ? 'season closed'
+      : !data.machine.saleReadable
+        ? 'price unavailable'
+        : !priced
+          ? 'not for sale'
+          : saleWindow?.state === 'scheduled'
+            ? 'not open yet'
+            : 'sale ended'
+  const unitPrice = sale ? formatPrice(sale.pricePerToken, sale.currency) : null
+  const totalPrice =
+    sale && pull > 1
+      ? (() => {
+          try {
+            return formatPrice((BigInt(sale.pricePerToken) * BigInt(pull)).toString(), sale.currency)
+          } catch {
+            return null
+          }
+        })()
+      : null
   const busy = phase === 'paying' || phase === 'opening'
   // Everything still owed, from three records that each cover a hole in the
   // others, deduplicated by transaction:
@@ -465,6 +510,9 @@ export function ExperienceMachine({ id }: { id: string }) {
               setPull={setPull}
               onPlay={play}
               label="play again"
+              unitPrice={unitPrice}
+              totalPrice={totalPrice}
+              note={null}
             />
           </div>
         ) : phase === 'pending' ? (
@@ -520,7 +568,16 @@ export function ExperienceMachine({ id }: { id: string }) {
               pull={pull}
               setPull={setPull}
               onPlay={play}
-              label={playable ? 'play' : 'season closed'}
+              label={playable ? 'play' : closedLabel}
+              unitPrice={unitPrice}
+              totalPrice={totalPrice}
+              note={
+                !playable && data.machine.state === 'live'
+                  ? !data.machine.saleReadable
+                    ? 'We could not read this capsule’s price just now — reload in a moment.'
+                    : (formatSaleWindowLabel(saleWindow) ?? null)
+                  : null
+              }
             />
           </div>
         )}
@@ -736,6 +793,9 @@ function PlayControl({
   setPull,
   onPlay,
   label,
+  unitPrice,
+  totalPrice,
+  note,
 }: {
   playable: boolean
   busy: boolean
@@ -743,6 +803,9 @@ function PlayControl({
   setPull: (n: number) => void
   onPlay: () => void
   label: string
+  unitPrice: string | null
+  totalPrice: string | null
+  note: string | null
 }) {
   return (
     <div className="mt-5">
@@ -769,6 +832,24 @@ function PlayControl({
       >
         {busy ? 'working…' : playable && pull > 1 ? `${label} ×${pull}` : label}
       </button>
+      {/* The cost, before the wallet prompt. Publishing the odds while leaving
+          the price to be discovered in the signing dialog is a disclosure gap on
+          the one surface built around disclosure — and it is worst on a
+          multi-pull, which commits the player to N times a number nobody showed
+          them. */}
+      {unitPrice && (
+        <p className="mt-2.5 text-[11px] font-mono text-muted">
+          {totalPrice ? (
+            <>
+              {totalPrice} for {pull} <span className="text-subtle">· {unitPrice} each</span>
+            </>
+          ) : (
+            <>{unitPrice} per play</>
+          )}
+          <span className="text-subtle"> + network fee</span>
+        </p>
+      )}
+      {note && <p className="mt-1.5 text-[11px] font-mono text-[#ffcf70]">{note}</p>}
     </div>
   )
 }

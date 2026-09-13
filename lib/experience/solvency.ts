@@ -150,6 +150,17 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
     }
 
     const head = input.headroom[key]
+    if (head === undefined) {
+      // An unreadable headroom used to skip this entry's check entirely, which
+      // silently removed the one guard on the artist's consent boundary and on
+      // the cross-machine ledger: a transient RPC error was enough to publish a
+      // machine pledging 1,000 copies of an edition with 5 left. Fail closed —
+      // the creator retries.
+      problems.push({
+        code: 'headroom-unreadable',
+        detail: `${key}: could not read how many copies remain on-chain — try again`,
+      })
+    }
     if (head !== undefined && head !== null) {
       const others = input.otherPledges[key] ?? 0
       const need = e.supply === 0 ? Infinity : e.supply
@@ -182,7 +193,17 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
   const foreignOpen = entries.find(
     (e) => e.supply === 0 && e.artist.toLowerCase() !== creator.toLowerCase(),
   )
-  const outstanding = input.capsuleMaxSupply
+  // Capsules that can still be SOLD — not the edition's whole cap. The two
+  // figures differ by what is already minted, and `coverage()` below has always
+  // subtracted it while this check did not, so the gate and the number shown on
+  // the machine page disagreed about the same machine. Subtracting is also what
+  // makes it CORRECT rather than merely conservative, now that the play route
+  // refuses a capsule minted before the machine opened: those copies can never
+  // be played, so demanding coverage for them would reject solvent machines.
+  const outstanding =
+    input.capsuleMaxSupply === null
+      ? null
+      : Math.max(0, input.capsuleMaxSupply - Math.max(0, input.capsuleMinted))
 
   if (!creatorFloor) {
     // Capped pledges only — a foreign open edition contributes nothing provable.

@@ -1,7 +1,8 @@
 import 'server-only'
 import type { Address } from 'viem'
 import { serverBaseClient } from '../rpc'
-import { hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
+import { PERMISSION_BIT_SALES, hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
+import { resolveOnchainSale } from '../saleConfig'
 import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '../zoraMint'
 
 /**
@@ -112,6 +113,84 @@ export async function checkPrizeAuthority(params: {
     }
   }
   return { ok: false, reason: 'no-grant' }
+}
+
+/**
+ * Is this creator actually in control of the capsule they are building a machine
+ * on, and does that capsule actually charge for a play?
+ *
+ * Two questions, one read pass, because they fail for the same reason: a machine
+ * pointed at a token its creator has no relationship with. Publishing had no
+ * constraint on the capsule beyond it being readable, which let a creator aim a
+ * machine at ANY Zora 1155 on Base. Two things then go wrong at once:
+ *
+ *   - lib/experience/payees resolves that token's payees by asking what Kismet
+ *     recorded at ITS mint. For a foreign token Kismet recorded nothing, so it
+ *     answers "no split, the creator keeps 100%" — naming as sole payee an
+ *     address that in fact receives nothing, since the price goes to the foreign
+ *     token's own fundsRecipient. The machine page then publishes that
+ *     fabrication as "pays 1 recipient".
+ *   - Every historical holder of that token already holds a valid capsule.
+ *
+ * And separately from control: a capsule with no sale row, or one priced at
+ * zero, dispenses other artists' consented editions for nothing. Nothing read
+ * the price at publish at all — `readCapsuleSupply` reads supply only.
+ *
+ * ADMIN (collection-wide at tokenId 0, or on the token) or SALES both count:
+ * SALES is the role that sets the price, ADMIN implies it. Fails CLOSED on an
+ * unreadable RPC — publishing is a deliberate, retryable act, and admitting an
+ * unverified capsule is the failure this exists to prevent.
+ */
+export type CapsuleControl =
+  | { ok: true; pricePerToken: bigint; currency: 'eth' | 'usdc' }
+  | { ok: false; code: 'not-controlled' | 'not-priced'; detail: string }
+
+export async function checkCapsuleControl(params: {
+  collection: string
+  tokenId: string
+  creator: string
+}): Promise<CapsuleControl> {
+  const client = serverBaseClient()
+  const collection = params.collection as Address
+  const tokenId = BigInt(params.tokenId)
+  const creator = params.creator as Address
+
+  let controls = false
+  try {
+    // tokenId 0 is Zora's collection-wide permission row; either grants control.
+    const [onToken, onCollection] = await Promise.all([
+      readPermissions(client, collection, tokenId, creator, { retries: 2 }),
+      readPermissions(client, collection, 0n, creator, { retries: 2 }),
+    ])
+    const holds = (p: bigint) => hasAdminBit(p) || (p & PERMISSION_BIT_SALES) === PERMISSION_BIT_SALES
+    controls = holds(onToken) || holds(onCollection)
+  } catch {
+    return {
+      ok: false,
+      code: 'not-controlled',
+      detail: 'could not read your permissions on this capsule token — try again',
+    }
+  }
+  if (!controls) {
+    return {
+      ok: false,
+      code: 'not-controlled',
+      detail: 'you do not hold admin or sales rights on this capsule token, so you cannot set what a play costs or who it pays',
+    }
+  }
+
+  const sale = await resolveOnchainSale(client, collection, tokenId).catch(() => null)
+  if (!sale) {
+    return { ok: false, code: 'not-priced', detail: 'this capsule has no sale configured, so a play would cost nothing' }
+  }
+  if (sale.pricePerToken <= 0n) {
+    return {
+      ok: false,
+      code: 'not-priced',
+      detail: 'this capsule is priced at zero — every play would dispense an artist’s work for free',
+    }
+  }
+  return { ok: true, pricePerToken: sale.pricePerToken, currency: sale.currency }
 }
 
 /** Capsule supply state, read at publish to fix the machine's liability ceiling

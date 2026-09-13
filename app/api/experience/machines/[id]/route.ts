@@ -7,8 +7,10 @@ import { openEpochSeeds } from '@/lib/experience/store'
 import { epochFor } from '@/lib/experience/fairness'
 import { buildSnapshot, getMachine, getPool, getRemaining, recentPlays } from '@/lib/experience/store'
 import { readCapsuleSupply } from '@/lib/experience/authority'
-import { isMomentHidden } from '@/lib/hiddenMoments'
+import { resolveOnchainSale } from '@/lib/saleConfig'
+import { serverBaseClient } from '@/lib/rpc'
 import { fetchArtworkMeta, hydrateArtworkMeta, type ArtworkMeta } from '@/lib/experience/artwork'
+import { filterDeliverable } from '@/lib/experience/eligibility'
 
 /**
  * Everything a player must see BEFORE they can pay: the lineup, the derived
@@ -38,24 +40,32 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
 
-  const [pool, remaining, supply, plays] = await Promise.all([
+  const [pool, remaining, supply, plays, sale] = await Promise.all([
     getPool(id),
     getRemaining(id),
     readCapsuleSupply(machine.capsule.collection, machine.capsule.tokenId),
     recentPlays(id, 12).catch(() => []),
+    // THE PRICE OF A PLAY. Disclosure before a randomized purchase is this
+    // surface's whole compliance posture (Apple 3.1.1, inherited through 4.7),
+    // and it was publishing the odds while leaving the cost to be discovered in
+    // the wallet prompt — worst on a multi-pull, where the player is committing
+    // to N times a number they were never shown. The window comes with it: a
+    // machine's `live` state is OUR record and says nothing about whether the
+    // capsule's on-chain sale is open, so the two can disagree and the player
+    // would only find out when the mint reverted.
+    resolveOnchainSale(serverBaseClient(), machine.capsule.collection as `0x${string}`, BigInt(machine.capsule.tokenId)).catch(() => null),
   ])
 
   // Apply the SAME freeze-time exclusions the draw applies, so the published
   // table is the table a play will actually draw from. A row shown here that
   // the draw would skip is a false disclosure, which is the specific failure
   // this whole design exists to make impossible.
+  // The SAME filter the draw applies — not a reimplementation of two of its
+  // three tests, which is what this was: it omitted the artist blacklist, so a
+  // blacklisted artist's row stayed in the published table with a probability it
+  // could never win, and inflated the denominator under every other row.
   const snapshot = buildSnapshot(pool, remaining)
-  const visible = []
-  for (const e of snapshot) {
-    if (passCollection && e.collection.toLowerCase() === passCollection) continue
-    if (await isMomentHidden(e.collection, e.tokenId).catch(() => true)) continue
-    visible.push(e)
-  }
+  const visible = await filterDeliverable(snapshot, passCollection)
 
   const odds = deriveOdds(visible)
 
@@ -94,8 +104,27 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       capsule: machine.capsule,
       capsuleArt,
       // Who a play pays. Public because it is the answer to the question a
-      // player should be able to ask of any machine taking their money.
+      // player should be able to ask of any machine taking their money — and
+      // it is now the capsule's real payee set (lib/experience/payees), not a
+      // list the creator declared about themselves.
       splitRecipients: machine.splitRecipients ?? [],
+      // bigints do not survive JSON; the client formats from the base-units
+      // string exactly as every other price surface does (lib/inprocess.formatPrice).
+      // Three states, not two. `resolveOnchainSale` returns null both when there
+      // is genuinely no sale row AND when the reads threw, and the client used
+      // to treat a null as "no window to enforce" — i.e. playable, with no price
+      // shown. Odds disclosure in this same route fails closed; price disclosure
+      // must too, so an unreadable sale is reported as unreadable and the client
+      // refuses to sell rather than selling blind.
+      sale: sale
+        ? {
+            pricePerToken: sale.pricePerToken.toString(),
+            currency: sale.currency,
+            saleStart: Number(sale.saleStart),
+            saleEnd: Number(sale.saleEnd),
+          }
+        : null,
+      saleReadable: sale !== null,
     },
     odds: odds.map((o) => {
       const key = entryKey(o)

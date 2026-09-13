@@ -75,6 +75,11 @@ function clampUnits(value: bigint): number {
 
 export interface MintProofOk {
   ok: true
+  /** Block the mint landed in, or null when a cached verdict predates this
+   *  field. Callers that must know WHEN a mint happened — the Experience, which
+   *  refuses capsules minted before the machine that honours them existed —
+   *  treat null as unknown and fail closed rather than assuming it is recent. */
+  blockNumber: number | null
   /** receipt.from, lowercased. On ERC-4337 this is the BUNDLER, not the payer —
    *  callers must never derive ownership from it. The recipient proved by the
    *  log is the only authority on who received the mint. */
@@ -106,10 +111,16 @@ export async function verifyMintOnChain(
   // Legacy '1' — verified, payer and quantity unknown. Costs an unproven gift
   // claim its attribution, and makes a denial mark the minimum 1 unit, for one
   // TTL window after deploy.
-  if (cachedStr === '1') return { ok: true, from: '', units: 1 }
+  if (cachedStr === '1') return { ok: true, from: '', units: 1, blockNumber: null }
   if (cachedStr?.startsWith('1:')) {
-    const [, payer = '', units = '1'] = cachedStr.split(':')
-    return { ok: true, from: payer, units: Math.max(1, parseInt(units, 10) || 1) }
+    const [, payer = '', units = '1', block = ''] = cachedStr.split(':')
+    const b = parseInt(block, 10)
+    return {
+      ok: true,
+      from: payer,
+      units: Math.max(1, parseInt(units, 10) || 1),
+      blockNumber: Number.isFinite(b) && b > 0 ? b : null,
+    }
   }
 
   try {
@@ -141,10 +152,11 @@ export async function verifyMintOnChain(
     }
 
     if (units > 0) {
+      const blockNumber = Number(receipt.blockNumber)
       await redis
-        .set(cacheKey, `1:${payer}:${units}`, { ex: VERIFY_CACHE_TTL_SECONDS })
+        .set(cacheKey, `1:${payer}:${units}:${blockNumber}`, { ex: VERIFY_CACHE_TTL_SECONDS })
         .catch(() => {})
-      return { ok: true, from: payer, units }
+      return { ok: true, from: payer, units, blockNumber }
     }
 
     await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})

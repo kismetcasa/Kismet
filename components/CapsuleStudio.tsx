@@ -83,6 +83,7 @@ export function CapsuleStudio() {
   const [rows, setRows] = useState<Row[]>([{ ...BLANK }])
   const [problems, setProblems] = useState<Problem[] | null>(null)
   const [capsuleInfo, setCapsuleInfo] = useState<{ maxSupply: number | null; minted: number } | null>(null)
+  const [payees, setPayees] = useState<{ recipients: string[]; source: 'split' | 'creator' } | null>(null)
   const [checking, setChecking] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
@@ -97,6 +98,7 @@ export function CapsuleStudio() {
   )
   const artists = useMemo(() => poolArtists(entries), [entries])
   const creator = address?.toLowerCase() ?? ''
+  const foreignArtists = artists.filter((a) => a !== creator)
   const hasFloor = entries.some((e) => e.supply === 0 && e.artist.toLowerCase() === creator)
 
   const setRow = (i: number, patch: Partial<Row>) =>
@@ -108,14 +110,13 @@ export function CapsuleStudio() {
       name: name.trim(),
       capsule: { collection: capsuleCollection.trim(), tokenId: capsuleTokenId.trim() },
       entries,
-      // Every pool artist must be able to be paid, and the creator takes the
-      // remainder. Derived rather than typed: an artist missing from the split
-      // is a machine giving away their work for free, and that must not be a
-      // thing a creator can do by forgetting a field.
-      splitRecipients: [...new Set([...artists, creator].filter(Boolean))],
+      // No splitRecipients. The server resolves who the capsule actually pays
+      // from the split Kismet recorded at mint time — sending a list from here
+      // is what made the 'artist-not-in-split' check circular, since the same
+      // person supplied both the pool and the list it was checked against.
       dryRun,
     }),
-    [artists, capsuleCollection, capsuleTokenId, creator, entries, id, name],
+    [capsuleCollection, capsuleTokenId, entries, id, name],
   )
 
   const submit = useCallback(
@@ -136,6 +137,7 @@ export function CapsuleStudio() {
         if (Array.isArray(body?.problems)) {
           setProblems(body.problems as Problem[])
           if (body.capsule) setCapsuleInfo(body.capsule)
+          if (body.payees) setPayees(body.payees)
           if (body.problems.length === 0 && dryRun) toast.success('Ready to publish')
           return
         }
@@ -291,9 +293,35 @@ export function CapsuleStudio() {
               )
             })}
           </div>
-          <p className="text-[11px] font-mono text-muted mt-2">
-            splits pay {artists.length} artist{artists.length === 1 ? '' : 's'} plus you, on every play.
-          </p>
+          {/* What the capsule REALLY pays, read back from the server — not a
+              restatement of what this form just declared. */}
+          {payees ? (
+            <p className="text-[11px] font-mono text-muted mt-2">
+              {payees.source === 'creator' ? (
+                <>
+                  This capsule has no split, so every play pays you alone. Only your own artworks can
+                  go in the pool.
+                </>
+              ) : (
+                <>
+                  This capsule pays {payees.recipients.length} recipient
+                  {payees.recipients.length === 1 ? '' : 's'}:{' '}
+                  {payees.recipients.map((a) => shortAddress(a)).join(', ')}. Every pool artist must be
+                  one of them.
+                </>
+              )}
+            </p>
+          ) : (
+            <p className="text-[11px] font-mono text-subtle mt-2">
+              Run <span className="text-dim">check</span> to see who this capsule actually pays.
+            </p>
+          )}
+          {foreignArtists.length > 0 && payees?.source === 'creator' && (
+            <p className="text-[11px] font-mono text-[#ff7c80] mt-1">
+              {foreignArtists.length} artwork{foreignArtists.length === 1 ? '' : 's'} in this pool
+              belong{foreignArtists.length === 1 ? 's' : ''} to someone this capsule does not pay.
+            </p>
+          )}
           {!hasFloor && (
             <p className="text-[11px] font-mono text-[#ffcf70] mt-1">
               No floor piece yet. An unlimited artwork of your own guarantees every capsule can be honoured

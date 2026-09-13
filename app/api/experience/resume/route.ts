@@ -5,12 +5,11 @@ import { acquireLock } from '@/lib/redisLock'
 import { isPlatformPausedFor, getGateConfig } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
-import { isMomentHidden } from '@/lib/hiddenMoments'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { runDraw } from '@/lib/experience/runDraw'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
-import { deliverPrize, reconcileDelivered } from '@/lib/experience/delivery'
+import { deliverPrize, readPrizeBalance, reconcileDelivered } from '@/lib/experience/delivery'
 import {
   advanceClaim,
   buildSnapshot,
@@ -28,6 +27,7 @@ import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
+import { filterDeliverable, isDeliverableEntry } from '@/lib/experience/eligibility'
 
 /**
  * Finish a claim that stalled.
@@ -58,6 +58,14 @@ import { fetchArtworkMeta } from '@/lib/experience/artwork'
  */
 
 const MAX_ATTEMPTS = 6
+/** Sponsored broadcasts one claim may ever make. Low on purpose: past a couple
+ *  of failures the cause is structural (a reverting adminMint, a paymaster that
+ *  will not sponsor this collection) and further retries only spend gas. */
+const MAX_DELIVERY_ATTEMPTS = 3
+/** How long a claim must sit in a mid-flight state before resume will adopt it.
+ *  Comfortably longer than the slowest legitimate play (a 200-entry freeze plus
+ *  a 60s delivery wait) so a live request is never raced. */
+const STALE_CLAIM_MS = 180_000
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -134,11 +142,29 @@ async function handle(
   // ── Case 1: a prize was already drawn. The copy is spent, so deliver THAT
   //    piece or nothing. Re-drawing would consume a second copy for one payment.
   if (claim.prize) {
-    const landed = await reconcileDelivered({
-      collection: claim.prize.collection,
-      tokenId: claim.prize.tokenId,
-      player,
-    })
+    // Bound to a local: `claim` is reassigned by every advanceClaim below, which
+    // widens it back and loses the narrowing this branch established. The prize
+    // itself is fixed for the whole block — it is the copy already spent.
+    const prize = claim.prize
+    // The floor this claim's delivery must beat. Absent only on claims frozen
+    // before the field existed; 0 reproduces the old behaviour, which errs
+    // toward "already delivered" — the safe direction, since the alternative
+    // is minting a second copy for one payment.
+    const minBalance = claim.balanceBefore ?? 0
+    // Only a claim that actually BROADCAST has anything to reconcile. Without
+    // this, a claim whose delivery was refused outright (`unsponsored`, or CDP
+    // unavailable — no userOp, nothing sent) was still measured against the
+    // player's wallet, so any unrelated acquisition of that edition — collecting
+    // it from its own page, an airdrop, a win on another machine — silently
+    // discharged the obligation after the artist's copy had been consumed.
+    const landed = claim.userOpHash
+      ? await reconcileDelivered({
+          collection: prize.collection,
+          tokenId: prize.tokenId,
+          player,
+          minBalance,
+        })
+      : false
     if (landed === true) {
       claim = await advanceClaim(claim, { state: 'delivered' })
       await settle(claim, machineId)
@@ -155,9 +181,27 @@ async function handle(
       })
     }
 
+    // The exclusions the FREEZE applied, re-applied at the moment of delivery.
+    // This is the path that runs latest — hours or days after the draw — so it
+    // is the one most likely to be delivering something that has since been
+    // hidden, blacklisted, or swept into the Pass collection by a gate
+    // rotation. The copy is already spent either way; the choice is only
+    // whether to also mint something the platform has decided must not be
+    // minted.
+    const gateNow = await getGateConfig()
+    const deliverable = await isDeliverableEntry(prize, gateNow.passCollection?.toLowerCase() ?? null)
+    if (!deliverable) {
+      claim = await advanceClaim(claim, {
+        state: 'pending',
+        pendingReason: 'the drawn artwork is no longer eligible to be dispensed — an operator is looking at this capsule',
+      })
+      console.error('[xp] resume blocked by eligibility', { machineId, txHash, unitIndex })
+      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+    }
+
     const auth = await checkPrizeAuthority({
-      collection: claim.prize.collection,
-      tokenId: claim.prize.tokenId,
+      collection: prize.collection,
+      tokenId: prize.tokenId,
     })
     if (!auth.ok) {
       claim = await advanceClaim(claim, {
@@ -167,16 +211,30 @@ async function handle(
       return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
     }
 
+    // Every broadcast is gas the platform pays. A prize whose adminMint reverts
+    // while the authority reads look healthy would otherwise retry on every
+    // resume, forever, at the paymaster's expense.
+    const attempts = claim.deliveryAttempts ?? 0
+    if (attempts >= MAX_DELIVERY_ATTEMPTS) {
+      claim = await advanceClaim(claim, {
+        state: 'pending',
+        pendingReason: 'delivery has failed repeatedly — an operator is looking at this capsule',
+      })
+      console.error('[xp] delivery attempts exhausted', { machineId, txHash, unitIndex })
+      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+    }
+    claim = await advanceClaim(claim, { state: claim.state, deliveryAttempts: attempts + 1 })
+
     const outcome = await deliverPrize({
-      collection: claim.prize.collection,
-      tokenId: claim.prize.tokenId,
+      collection: prize.collection,
+      tokenId: prize.tokenId,
       player,
       operator: auth.operator,
       onBroadcast: async (userOpHash) => {
         claim = await advanceClaim(claim, { state: 'sending', userOpHash })
       },
     })
-    claim = await applyOutcome(claim, outcome, player)
+    claim = await applyOutcome(claim, outcome, player, minBalance)
     if (claim.state === 'delivered') await settle(claim, machineId)
     return NextResponse.json({
       ok: true,
@@ -185,8 +243,39 @@ async function handle(
     })
   }
 
-  // ── Case 2: nothing was ever drawn (the pool had nothing deliverable). The
-  //    player is still owed an artwork, so draw again over the pool AS IT IS NOW.
+  // ── Case 2: nothing was ever drawn (the pool had nothing deliverable).
+  //
+  //    `pending` is the ONLY state that means the draw finished and found
+  //    nothing. `claimed` and `frozen` mean a /api/experience/play request is
+  //    still working — its freeze walks up to MAX_POOL_ENTRIES hidden and
+  //    blacklist checks before it persists a prize, and resuming inside that
+  //    window would run a SECOND draw against the same claim, consume a second
+  //    copy of some artist's edition, and deliver a second artwork for one
+  //    capsule. The per-claim lock above excludes concurrent resumes; it does
+  //    not exclude the play route, which never takes it.
+  //    'claimed' and 'frozen' normally mean a play is mid-flight — but they are
+  //    also where a play that DIED mid-freeze comes to rest, and the claim is
+  //    the obligation. Refusing them outright would make an interrupted play a
+  //    permanent loss of a paid capsule. So they are recoverable, but only once
+  //    they are older than any live request could plausibly be: the freeze walks
+  //    up to MAX_POOL_ENTRIES sequential Redis and RPC round trips, and the
+  //    delivery wait alone is bounded at 60s.
+  if (claim.state !== 'pending') {
+    const age = Date.now() - claim.createdAt
+    const abandoned =
+      (claim.state === 'claimed' || claim.state === 'frozen') && age > STALE_CLAIM_MS
+    if (!abandoned) {
+      return NextResponse.json({
+        ok: true,
+        claim: publicClaim(claim),
+        resumed: false,
+        reason: 'this capsule is still being opened — check back in a moment',
+      })
+    }
+    console.warn('[xp] adopting an abandoned claim', { machineId, txHash, unitIndex, state: claim.state, age })
+  }
+
+  //    The player is still owed an artwork, so draw again over the pool AS IT IS NOW.
   //
   //    This re-freezes against the CURRENT epoch, not the original. That is not
   //    a shortcut: the original epoch may already have closed and had its seed
@@ -194,20 +283,18 @@ async function handle(
   //    predictable by anyone watching. A genuinely new draw gets a genuinely
   //    secret seed, and the claim records the new epoch, snapshot and commitment
   //    so the receipt still verifies end to end.
-  if (machine.state === 'draft' || machine.state === 'review') {
+  // Case 1 above settles a prize already drawn, on any machine state — that copy
+  // is spent and the player is owed it. A NEW draw is different: a delisted
+  // machine has had its supply pledges released, so drawing now could issue a
+  // copy another machine is already counting on.
+  if (machine.state === 'draft' || machine.state === 'review' || machine.state === 'delisted') {
     return errorResponse(403, 'Machine is not live')
   }
 
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
   const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
-  const eligible: SnapshotEntry[] = []
-  for (const e of rawSnapshot) {
-    if (passCollection && e.collection.toLowerCase() === passCollection) continue
-    if (await isMomentHidden(e.collection, e.tokenId).catch(() => true)) continue
-    if (await isBlacklisted(e.artist).catch(() => true)) continue
-    eligible.push(e)
-  }
+  const eligible: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
 
   const epoch = epochFor(Date.now())
   const { seed } = await seedForEpoch(machineId, epoch)
@@ -252,6 +339,24 @@ async function handle(
     prize: { collection: prize.collection, tokenId: prize.tokenId, artist: prize.artist },
   })
 
+  const freshFloor = await readPrizeBalance({
+    collection: prize.collection,
+    tokenId: prize.tokenId,
+    player,
+  })
+  if (freshFloor === null) {
+    claim = await advanceClaim(claim, {
+      state: 'pending',
+      pendingReason: 'could not read your wallet before delivery — this capsule is safe and will be honoured',
+    })
+    return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+  }
+  claim = await advanceClaim(claim, {
+    state: 'drawn',
+    balanceBefore: freshFloor,
+    deliveryAttempts: (claim.deliveryAttempts ?? 0) + 1,
+  })
+
   const outcome = await deliverPrize({
     collection: prize.collection,
     tokenId: prize.tokenId,
@@ -261,7 +366,7 @@ async function handle(
       claim = await advanceClaim(claim, { state: 'sending', userOpHash })
     },
   })
-  claim = await applyOutcome(claim, outcome, player)
+  claim = await applyOutcome(claim, outcome, player, freshFloor)
   if (claim.state === 'delivered') await settle(claim, machineId)
 
   return NextResponse.json({
@@ -278,6 +383,7 @@ async function applyOutcome(
   claim: ClaimRecord,
   outcome: Awaited<ReturnType<typeof deliverPrize>>,
   player: string,
+  minBalance: number,
 ): Promise<ClaimRecord> {
   if (outcome.kind === 'delivered') {
     return advanceClaim(claim, { state: 'delivered', txDelivered: outcome.txHash })
@@ -287,6 +393,7 @@ async function applyOutcome(
       collection: claim.prize.collection,
       tokenId: claim.prize.tokenId,
       player,
+      minBalance,
     })
     return landed === true
       ? advanceClaim(claim, { state: 'delivered' })

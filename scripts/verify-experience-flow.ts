@@ -59,6 +59,8 @@ const check = (name: string, cond: boolean, detail = ''): void => {
 const strings = new Map<string, string>()
 const hashes = new Map<string, Map<string, string>>()
 const zsets = new Map<string, Map<string, number>>()
+/** Redis SETs — the shape lib/blacklist and lib/hiddenMoments read through. */
+const sets = new Map<string, Set<string>>()
 /** Every command the store issued, for assertions ABOUT the calls themselves
  *  (e.g. that a claim key is never given a TTL). */
 const log: string[][] = []
@@ -83,6 +85,7 @@ function exec(cmd: unknown[]): unknown {
         if (strings.delete(key)) n++
         if (hashes.delete(key)) n++
         if (zsets.delete(key)) n++
+        if (sets.delete(key)) n++
       }
       return n
     }
@@ -123,6 +126,22 @@ function exec(cmd: unknown[]): unknown {
       m.set(args[1], String(next))
       return next
     }
+    case 'sadd': {
+      const st = sets.get(k) ?? new Set<string>()
+      for (const m of args.slice(1)) st.add(m)
+      sets.set(k, st)
+      return 1
+    }
+    case 'srem': {
+      const st = sets.get(k)
+      let n = 0
+      for (const m of args.slice(1)) if (st?.delete(m)) n++
+      return n
+    }
+    case 'smembers':
+      return [...(sets.get(k) ?? [])]
+    case 'sismember':
+      return sets.get(k)?.has(args[1]) ? 1 : 0
     case 'zadd': {
       const m = zsets.get(k) ?? new Map<string, number>()
       const rest = args.slice(1).filter((a) => !['nx', 'xx', 'gt', 'lt', 'ch'].includes(a.toLowerCase()))
@@ -839,6 +858,49 @@ console.log('\n8d. capsule discovery')
   check('an absurd value clamps to one unit',
     group([row({ value: 10_000_000_000n })], '7', ME)[0]?.units === 1)
   check('an empty log set is an empty result', group([], '7', ME).length === 0)
+}
+
+// ═══ 8e. one definition of "may be dispensed", shared by every path ════════
+console.log('\n8e. the eligibility filter')
+{
+  // Seeded before the first read: lib/blacklist memoizes for 15 minutes and
+  // lib/hiddenMoments caches too, so a fresh process is the only honest way to
+  // exercise them. This is exactly why the end-to-end harness cannot cover it.
+  const BANNED = '0x' + 'ba'.repeat(20)
+  const PASS_COLL = '0x' + 'ca'.repeat(20)
+  sets.set('kismetart:blacklist', new Set([BANNED]))
+  sets.set('kismetart:hidden-moments', new Set([`${COLL}:hidden1`]))
+
+  const elig = await import(new URL('../lib/experience/eligibility.ts', import.meta.url).href)
+  const row = (over: Partial<{ collection: string; tokenId: string; artist: string }> = {}) => ({
+    collection: COLL, tokenId: '1', artist: ART_A, ...over,
+  })
+
+  check('an ordinary entry is deliverable', (await elig.isDeliverableEntry(row(), null)) === true)
+  check('a hidden artwork is not',
+    (await elig.isDeliverableEntry(row({ tokenId: 'hidden1' }), null)) === false)
+  check('a blacklisted artist\'s entry is not',
+    (await elig.isDeliverableEntry(row({ artist: BANNED }), null)) === false)
+  check('a Pass-collection artwork is never deliverable',
+    (await elig.isDeliverableEntry(row({ collection: PASS_COLL }), PASS_COLL)) === false)
+  check('and is fine once it is not the Pass collection',
+    (await elig.isDeliverableEntry(row({ collection: PASS_COLL }), null)) === true)
+
+  // THE DRIFT THIS ENDS. The published odds table applied only two of these
+  // three tests, so a blacklisted artist's row stayed in the table with a
+  // probability it could never win — and inflated the denominator under every
+  // other row, understating what players were really being offered.
+  const pool = [row({ tokenId: 'a' }), row({ tokenId: 'b', artist: BANNED }), row({ tokenId: 'c' })]
+  const kept = await elig.filterDeliverable(pool, null)
+  check('filterDeliverable drops exactly the undeliverable rows', kept.length === 2)
+  check('and preserves order, which selection depends on',
+    kept[0].tokenId === 'a' && kept[1].tokenId === 'c')
+  check('the published table and the draw now filter through the same function',
+    (await elig.filterDeliverable(pool, null)).length ===
+      (await elig.filterDeliverable(pool, null)).length)
+
+  sets.delete('kismetart:blacklist')
+  sets.delete('kismetart:hidden-moments')
 }
 
 // ═══ 9. operator identity: the grant and the signer must be the same account ══

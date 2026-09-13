@@ -172,6 +172,38 @@ export async function hasGateAccess(
   return hasValidPassForAny(config.passCollection, wallets)
 }
 
+/**
+ * Does this identity actually HOLD a valid Pass?
+ *
+ * Distinct from `hasGateAccess`, and the distinction is load-bearing.
+ * `hasGateAccess(targetCollection, address)` answers "may this wallet mint into
+ * THAT collection", and short-circuits to `true` when the target IS the Pass
+ * collection — correct there, because issuing a Pass is governed by on-chain
+ * ADMIN rather than by holding one. A caller that wants the credential itself
+ * and reaches for `hasGateAccess(passCollection, addr)` therefore gets an
+ * unconditional yes: the Experience's "a Kismet Pass is required to create a
+ * machine" gate was written that way and had never rejected anyone.
+ *
+ * Same identity semantics as the real gate — the FC sibling union, and any
+ * pass-blacklisted wallet in that union denying the whole identity — so the two
+ * cannot drift. Admin bypasses, as everywhere. Returns true when the gate is
+ * disabled or unconfigured, matching hasGateAccess: an unconfigured gate gates
+ * nothing.
+ */
+export async function holdsValidPass(address: string): Promise<boolean> {
+  const addrLower = address.toLowerCase()
+  if (ADMIN_ADDRESS && addrLower === ADMIN_ADDRESS) return true
+
+  const config = await getGateConfig()
+  if (!config.enabled || !config.passCollection) return true
+
+  const wallets = await expandToGateWallets(addrLower)
+  for (const wallet of wallets) {
+    if (await isPassBlacklisted(wallet)) return false
+  }
+  return hasValidPassForAny(config.passCollection, wallets)
+}
+
 /** Returns true if the platform is paused AND the caller is not admin.
  *  Admin always bypasses so they can verify recovery / test the unpause
  *  flow without lifting the pause first. */

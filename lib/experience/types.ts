@@ -89,6 +89,20 @@ export interface ClaimRecord {
   prize?: { collection: string; tokenId: string; artist: string }
   /** CDP userOp hash, written before the await so a timeout is traceable. */
   userOpHash?: string
+  /** The player's balance of the DRAWN edition, read before the first delivery
+   *  was attempted. Reconciliation compares against this, never against zero:
+   *  prizes are ordinary editions a player may already own (and every solvent
+   *  machine carries an unlimited creator floor piece that repeat players win
+   *  again and again), so `balanceOf > 0` answers "do they hold one", not "did
+   *  our mint land". Without the floor, a paid play whose delivery stalled was
+   *  closed as delivered having minted nothing — after the artist's copy had
+   *  already been consumed. */
+  balanceBefore?: number
+  /** How many sponsored userOps this claim has broadcast. Distinct from
+   *  `attempt`, which counts DRAWS. A prize whose adminMint reverts while the
+   *  authority reads look healthy would otherwise retry forever, and every
+   *  retry is gas the platform pays. */
+  deliveryAttempts?: number
   /** Delivery transaction once confirmed. */
   txDelivered?: string
   /** Why a claim is pending — surfaced to the player and to ops. */
@@ -117,6 +131,22 @@ export type SolvencyProblemCode =
    *  machines sharing one capsule would let a single paid mint play on BOTH —
    *  a cross-machine double-spend of the capsule itself. */
   | 'capsule-in-use'
+  /** The capsule has a split whose members Kismet cannot name, so the pool
+   *  cannot be held to it. Refused rather than assumed — see
+   *  lib/experience/payees for why the alternative is a vacuous check. */
+  | 'capsule-split-unverifiable'
+  /** The creator holds neither admin nor sales rights on the capsule token, so
+   *  they control neither what a play costs nor who it pays. */
+  | 'capsule-not-controlled'
+  /** The capsule has no sale row, or is priced at zero — a play would dispense
+   *  another artist's consented edition for nothing. */
+  | 'capsule-not-priced'
+  /** An entry's live on-chain headroom could not be read, so the pledge could
+   *  not be checked against it. Refused rather than skipped. */
+  | 'headroom-unreadable'
+  /** The capsule token is in the Pass collection, so paying to play would mint
+   *  the platform credential itself. */
+  | 'capsule-is-pass'
 
 /** Machine visibility. `draft` is creator-only; `review` is queued for a
  *  curator; `live` is playable; `ended` keeps claims honourable but sells
@@ -144,14 +174,13 @@ export interface Machine {
    *  then falls back to a bounded lookback and the paste-a-hash path covers
    *  anything older. */
   createdBlock?: number
-  /** Lowercased split recipients, as validated at publish.
-   *
-   *  PERSISTED, not just checked. Every pool artist must be in the split —
-   *  an artist who cannot be paid must not be drawable — and that rule was
-   *  previously enforced once at creation and then forgotten, leaving nothing
-   *  able to answer "is this machine still paying the people in it?". A curator
-   *  reviewing a queued machine, and anyone auditing a live one, needs the
-   *  answer, so the set is part of the machine rather than a transient argument. */
+  /** The capsule's ACTUAL payees, resolved server-side at publish from the
+   *  split Kismet recorded when the capsule was minted — never from the publish
+   *  request. Taking it from the request made the 'artist-not-in-split' check
+   *  circular: the creator supplied both the pool and the list it was checked
+   *  against. See lib/experience/payees. Persisted so a curator reviewing a
+   *  queued machine, and anyone auditing a live one, can answer "is this machine
+   *  actually paying the people in it?". */
   splitRecipients: string[]
   createdAt: number
 }

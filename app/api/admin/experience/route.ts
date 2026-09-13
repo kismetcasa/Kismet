@@ -5,7 +5,8 @@ import { verifyAdminSession } from '@/lib/curator'
 import { recordAdminAction } from '@/lib/adminAudit'
 import { deriveOdds, entryKey } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
-import { readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
+import { resolveCapsulePayees } from '@/lib/experience/payees'
+import { checkCapsuleControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
 import { getGateConfig } from '@/lib/gate'
 import {
   buildSnapshot,
@@ -14,6 +15,7 @@ import {
   getRemaining,
   listMachines,
   otherPledges,
+  releaseCapsule,
   releasePledge,
   setMachineState,
 } from '@/lib/experience/store'
@@ -58,10 +60,15 @@ export async function GET(req: NextRequest) {
 
   const detailed = await Promise.all(
     machines.slice(0, 50).map(async (m) => {
-      const [pool, remaining, capsule] = await Promise.all([
+      const [pool, remaining, capsule, payees] = await Promise.all([
         getPool(m.id),
         getRemaining(m.id),
         readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
+        resolveCapsulePayees({
+          collection: m.capsule.collection,
+          tokenId: m.capsule.tokenId,
+          creator: m.creator,
+        }),
       ])
 
       // Live re-check, not the verdict stored at creation: headroom and rival
@@ -81,11 +88,12 @@ export async function GET(req: NextRequest) {
         capsuleMaxSupply: capsule?.maxSupply ?? m.capsuleMaxSupply,
         capsuleMinted: capsule?.minted ?? 0,
         entries: pool,
-        // The split RECORDED at publish, so the reviewer sees whether the
-        // machine actually pays everyone in it. Older machines predate the
-        // field; for those, fall back to the pool's own artists rather than
-        // failing every legacy row on a check it was never storing.
-        splitRecipients: m.splitRecipients ?? pool.map((e) => e.artist.toLowerCase()),
+        // Re-resolved from the capsule, not read back from the machine and not
+        // defaulted to the pool's own artists — either shortcut makes
+        // 'artist-not-in-split' pass by construction, which is the vacuous check
+        // lib/experience/payees exists to end. A capsule whose payees cannot be
+        // named yields an empty set, so every foreign artist is flagged.
+        splitRecipients: payees.ok ? payees.recipients : [],
         creator: m.creator,
         passCollection: gate.passCollection?.toLowerCase() ?? null,
         headroom,
@@ -129,11 +137,33 @@ export async function POST(req: NextRequest) {
   // that cannot honour its own capsules — the one thing the solvency model
   // exists to prevent, and the moment it is easiest to let through.
   if (state === 'live') {
-    const [pool, capsule, gate] = await Promise.all([
+    const [pool, capsule, gate, payees] = await Promise.all([
       getPool(id),
       readCapsuleSupply(machine.capsule.collection, machine.capsule.tokenId),
       getGateConfig(),
+      resolveCapsulePayees({
+        collection: machine.capsule.collection,
+        tokenId: machine.capsule.tokenId,
+        creator: machine.creator,
+      }),
     ])
+    const control = await checkCapsuleControl({
+      collection: machine.capsule.collection,
+      tokenId: machine.capsule.tokenId,
+      creator: machine.creator,
+    })
+    if (!control.ok) {
+      return NextResponse.json(
+        { ok: false, problems: [{ code: `capsule-${control.code}`, detail: control.detail }] },
+        { status: 400 },
+      )
+    }
+    if (!payees.ok) {
+      return NextResponse.json(
+        { ok: false, problems: [{ code: 'capsule-split-unverifiable', detail: payees.reason }] },
+        { status: 400 },
+      )
+    }
     const headroom: Record<string, number | null> = {}
     const pledges: Record<string, number> = {}
     await Promise.all(
@@ -148,7 +178,7 @@ export async function POST(req: NextRequest) {
       capsuleMaxSupply: capsule?.maxSupply ?? machine.capsuleMaxSupply,
       capsuleMinted: capsule?.minted ?? 0,
       entries: pool,
-      splitRecipients: machine.splitRecipients ?? pool.map((e) => e.artist.toLowerCase()),
+      splitRecipients: payees.recipients,
       creator: machine.creator,
       passCollection: gate.passCollection?.toLowerCase() ?? null,
       headroom,
@@ -165,9 +195,14 @@ export async function POST(req: NextRequest) {
   // owes its outstanding capsules.
   if (state === 'delisted') {
     const pool = await getPool(id)
-    await Promise.all(
-      pool.map((e) => releasePledge(e.collection, e.tokenId, id).catch(() => {})),
-    )
+    await Promise.all([
+      ...pool.map((e) => releasePledge(e.collection, e.tokenId, id).catch(() => {})),
+      // The capsule token too: a delisted machine no longer honours plays (the
+      // play route refuses it), so holding its reservation would strand the
+      // token forever. Released together with the pledges so the two halves of
+      // "this machine no longer claims anything" cannot drift apart.
+      releaseCapsule(machine.capsule.collection, machine.capsule.tokenId, id).catch(() => {}),
+    ])
   }
 
   const next = await setMachineState(id, state)

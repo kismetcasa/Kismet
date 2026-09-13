@@ -174,6 +174,18 @@ const entry = (over: Partial<PoolEntry> = {}): PoolEntry => ({
   supply: 5,
   ...over,
 })
+/** Readable headroom for every key a fixture might use, all `null` — i.e. every
+ *  pooled edition is itself an open edition, which is the only shape an
+ *  unlimited (`supply: 0`) pledge is coherent against. An ABSENT key now means
+ *  "the chain could not be read", which fails closed, so a fixture that means
+ *  anything else must say so; the cases that actually exercise the cap override
+ *  with a number. */
+const AMPLE: Record<string, number | null> = Object.fromEntries(
+  ['1', '2', '3', '9', 'f', 'c', 'a', 'b'].map((t) => [
+    `0xaaaa000000000000000000000000000000000001:${t}`,
+    null,
+  ]),
+)
 const baseInput = {
   capsuleMaxSupply: 5,
   capsuleMinted: 0,
@@ -181,12 +193,24 @@ const baseInput = {
   splitRecipients: [CREATOR],
   creator: CREATOR,
   passCollection: null,
-  headroom: {} as Record<string, number | null>,
+  headroom: { ...AMPLE } as Record<string, number | null>,
   otherPledges: {} as Record<string, number>,
 }
 const codes = (p: ReturnType<typeof checkSolvency>) => p.map((x) => x.code)
 
 check('a covered machine passes', checkSolvency(baseInput).length === 0)
+check(
+  'an entry whose on-chain headroom could not be read is REFUSED, not skipped',
+  codes(checkSolvency({ ...baseInput, headroom: {} })).includes('headroom-unreadable'),
+)
+check(
+  'an open edition reads as unlimited headroom, which is readable and fine',
+  checkSolvency({
+    ...baseInput,
+    entries: [entry({ supply: 0, tokenId: 'f' })],
+    capsuleMaxSupply: null,
+  }).length === 0,
+)
 check('empty pool rejected', codes(checkSolvency({ ...baseInput, entries: [] })).includes('empty-pool'))
 check(
   'undercollateralised rejected',
@@ -306,22 +330,22 @@ console.log('\n5c. cross-machine commitment ledger')
   const key = entryKey(entry())
   check(
     'pledging more than on-chain headroom is rejected',
-    codes(checkSolvency({ ...baseInput, headroom: { [key]: 3 } })).includes('over-headroom'),
+    codes(checkSolvency({ ...baseInput, headroom: { ...AMPLE, [key]: 3 } })).includes('over-headroom'),
   )
   check(
     'another machine already pledging the headroom is rejected',
-    codes(checkSolvency({ ...baseInput, headroom: { [key]: 5 }, otherPledges: { [key]: 3 } })).includes(
+    codes(checkSolvency({ ...baseInput, headroom: { ...AMPLE, [key]: 5 }, otherPledges: { [key]: 3 } })).includes(
       'over-headroom',
     ),
   )
   check(
     'within headroom after other pledges passes',
-    checkSolvency({ ...baseInput, headroom: { [key]: 10 }, otherPledges: { [key]: 3 } }).length === 0,
+    checkSolvency({ ...baseInput, headroom: { ...AMPLE, [key]: 10 }, otherPledges: { [key]: 3 } }).length === 0,
   )
   check(
     'an unlimited pledge on a CAPPED edition is rejected',
     codes(
-      checkSolvency({ ...baseInput, capsuleMaxSupply: null, entries: [entry({ supply: 0 })], headroom: { [key]: 5 } }),
+      checkSolvency({ ...baseInput, capsuleMaxSupply: null, entries: [entry({ supply: 0 })], headroom: { ...AMPLE, [key]: 5 } }),
     ).includes('over-headroom'),
   )
 }
@@ -464,6 +488,43 @@ console.log('\n7. end-to-end reproducibility')
   )
   check('a redraw never returns the excluded piece', second?.tokenId !== serverPick!.tokenId)
   check('a redraw still returns something', !!second)
+}
+
+// ─── 7b. Liability is what can still be SOLD ────────────────────────────────
+console.log('\n7b. outstanding nets off already-minted capsules')
+{
+  const floor = entry({ tokenId: 'f', supply: 0, artist: CREATOR })
+  const capped = entry({ tokenId: 'c', supply: 40 })
+  const base = {
+    entries: [capped],
+    splitRecipients: [CREATOR, capped.artist],
+    creator: CREATOR,
+    passCollection: null,
+    headroom: { ...AMPLE },
+    otherPledges: {},
+  }
+  // 100-cap capsule with 70 already minted: only 30 can still be sold, so 40
+  // pledged copies cover it. The gate used to demand coverage for all 100 while
+  // the machine page's own coverage() figure subtracted — the two disagreed.
+  check('a mostly-minted capsule is solvent against what remains',
+    checkSolvency({ ...base, capsuleMaxSupply: 100, capsuleMinted: 70 }).length === 0)
+  check('and the same pool is NOT solvent when nothing has been minted yet',
+    checkSolvency({ ...base, capsuleMaxSupply: 100, capsuleMinted: 0 })
+      .some((p) => p.code === 'undercollateralised'))
+  check('the gate now agrees with the coverage figure players see',
+    coverage({ capsuleMaxSupply: 100, capsuleMinted: 70, remainingPrizes: 40 }).covered ===
+      (checkSolvency({ ...base, capsuleMaxSupply: 100, capsuleMinted: 70 }).length === 0))
+  check('an exhausted capsule owes nothing further',
+    checkSolvency({ ...base, capsuleMaxSupply: 100, capsuleMinted: 100, entries: [entry({ tokenId: 'c', supply: 1 })] })
+      .filter((p) => p.code === 'undercollateralised').length === 0)
+  check('a minted count above the cap cannot invert the bound',
+    checkSolvency({ ...base, capsuleMaxSupply: 10, capsuleMinted: 999 })
+      .filter((p) => p.code === 'undercollateralised').length === 0)
+  check('an open-edition capsule still requires a creator floor',
+    checkSolvency({ ...base, capsuleMaxSupply: null, capsuleMinted: 0 })
+      .some((p) => p.code === 'undercollateralised'))
+  check('which a creator floor satisfies',
+    checkSolvency({ ...base, entries: [capped, floor], capsuleMaxSupply: null, capsuleMinted: 0 }).length === 0)
 }
 
 // ─── 8. Odds formatting: never round a real chance down to nothing ───────────
