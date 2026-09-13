@@ -8,6 +8,7 @@ import {
   ensureViewModeForPinChange,
   getAllPinsChecked,
   resolvePublicViewMode,
+  resolveShowcaseScopes,
   isPinCategory,
 } from '@/lib/showcase'
 
@@ -26,13 +27,17 @@ export async function GET(
   const { address } = await params
   if (!isAddress(address)) return errorResponse(400, 'Invalid address')
 
-  // The profile page redirects to the canonical address, so callers reach
-  // this with the canonical key already — no per-request resolution needed
-  // on the hot read path. Mode resolution shares this pins read (checked, so
-  // a failed read fails private instead of deriving 'full' off missing data);
-  // both issued same-tick, so auto-pipelining keeps it one round trip.
-  const pinsRead = getAllPinsChecked(address)
-  const publicView = await resolvePublicViewMode(address, pinsRead)
+  // Identity scope resolved ONCE and threaded into both calls (lib/showcase):
+  // pins live under `fid:<n>` for an FC user, so this read no longer depends on
+  // the page having redirected to whatever address is canonical today — the old
+  // read-the-path-address / write-the-canonical split is what let an unpin ZREM
+  // a key the read never looked at. The keys can't be known before the identity
+  // is, so this is one dependent lookup; mode resolution then shares the pins
+  // read (checked, so a failed read fails private instead of deriving 'full'
+  // off missing data) and both issue same-tick, keeping the rest one round trip.
+  const scopes = await resolveShowcaseScopes(address)
+  const pinsRead = getAllPinsChecked(address, scopes)
+  const publicView = await resolvePublicViewMode(address, pinsRead, scopes)
   const pins = await pinsRead
   return NextResponse.json({
     pins: pins ?? { mints: [], collected: [], listings: [] },
@@ -76,13 +81,20 @@ export async function POST(
   // Lock the unset profile's mode to what its pins derive to BEFORE this pin
   // changes that basis — a first-ever pin under the 'full' default must mean
   // "float this first", never "flip me to showcase-only". See lib/showcase.
-  await ensureViewModeForPinChange(auth.canonical)
-  const ok = await addPin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId)
+  const scopes = await resolveShowcaseScopes(auth.canonical)
+  await ensureViewModeForPinChange(auth.canonical, scopes)
+  const ok = await addPin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId, scopes)
   if (!ok) return errorResponse(409, 'Pin limit reached — unpin one first')
   return NextResponse.json({ pinned: true })
 }
 
-// DELETE /api/profile/[address]/pins — owner-only. Unpin. Mirrors POST shape.
+// DELETE /api/profile/[address]/pins — owner-only. Unpin. Mirrors POST shape,
+// and answers `removed`: whether a ref was actually taken out of the pin set.
+// removePin sweeps every key form, so false means the ref was pinned under none
+// of them — an idempotent repeat, not an error. It is reported rather than
+// swallowed because answering a silent no-op as a flat success is exactly how
+// the address-keying bug stayed invisible (the client showed the pin gone and
+// the next load brought it back).
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
@@ -98,7 +110,14 @@ export async function DELETE(
 
   // Same prelude as POST: a legacy profile unpinning its last pin stays
   // 'curated' (grandfathered) rather than silently resolving to 'full'.
-  await ensureViewModeForPinChange(auth.canonical)
-  await removePin(parsed.category, auth.canonical, parsed.collectionAddress, parsed.tokenId)
-  return NextResponse.json({ pinned: false })
+  const scopes = await resolveShowcaseScopes(auth.canonical)
+  await ensureViewModeForPinChange(auth.canonical, scopes)
+  const removed = await removePin(
+    parsed.category,
+    auth.canonical,
+    parsed.collectionAddress,
+    parsed.tokenId,
+    scopes,
+  )
+  return NextResponse.json({ pinned: false, removed })
 }

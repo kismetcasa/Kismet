@@ -11,6 +11,10 @@
 //      no pins (or none loaded) returns the array unchanged.
 //   3. isPublicViewMode accepts exactly the two modes the pins payload /
 //      public-view route may carry.
+//   3b. unreachablePins + parsePinRef — the rule behind the owner's
+//      "pinned, but not shown here" strip, which is the ONLY unpin surface for
+//      a ref whose card the section can't render (a sold listing, an artwork
+//      sold on, anything past the un-paginated fetch window).
 //   4. derivePublicViewMode — the never-chose default policy: pins present →
 //      'curated' (grandfathered showcase-era pinners keep their curation),
 //      no pins → 'full' (new profiles are browsable out of the box).
@@ -27,7 +31,7 @@
 //
 // Run: node --experimental-strip-types scripts/verify-showcase-order.ts
 
-import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, normalizeHiddenFlag, orderByPins, pinsFirst, visibleToPublic } from '../lib/showcaseOrder.ts'
+import { derivePublicViewMode, isPublicViewMode, MAX_PINS_PER_CATEGORY, normalizeHiddenFlag, orderByPins, parsePinRef, pinsFirst, unreachablePins, visibleToPublic } from '../lib/showcaseOrder.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -157,6 +161,31 @@ check('orderByPins at cap width', keys(orderByPins(feed, keyOf, sixPins)) === 'j
 const fullSix = pinsFirst(feed, keyOf, sixPins)
 check('pinsFirst at cap width: pins are the first 6, pin order', keys(fullSix.slice(0, 6)) === 'j,e,b,g,a,d')
 check('pinsFirst at cap width: remainder keeps feed order', keys(fullSix.slice(6)) === 'c,f,h,i')
+
+// ── 8. unreachable pins (the owner's only unpin surface for a stale ref) ────
+// The strip must list EXACTLY the refs no card is rendering: miss one and the
+// owner is stuck at the cap with nothing to unpin; include a rendered one and
+// the same artwork offers two competing unpin controls.
+check('unreachable: refs with no rendered card', unreachablePins(['a', 'b', 'c'], ['b']).join(',') === 'a,c')
+check('unreachable: everything rendered -> none', unreachablePins(['a', 'b'], ['a', 'b', 'z']).length === 0)
+check('unreachable: nothing pinned -> none', unreachablePins([], ['a']).length === 0)
+check('unreachable: nothing rendered -> all of them', unreachablePins(['a', 'b'], []).join(',') === 'a,b')
+check('unreachable: pin order is preserved (newest-pinned first)', unreachablePins(['c', 'a', 'b'], []).join(',') === 'c,a,b')
+
+// parsePinRef is the inverse of lib/showcase's member() — the strip turns a
+// stored ref back into the (collection, tokenId) the DELETE body needs, so a
+// wrong split would unpin the wrong artwork or 400.
+const COLL = '0x1234567890abcdef1234567890abcdef12345678'
+const ok = parsePinRef(`${COLL}:7`)
+check('parsePinRef: splits at the first colon', ok?.collection === COLL && ok?.tokenId === '7')
+check('parsePinRef: round-trips lib/showcase member()', `${ok?.collection}:${ok?.tokenId}` === `${COLL}:7`)
+check('parsePinRef: a large uint256 tokenId survives', parsePinRef(`${COLL}:115792089237316195423570985008687907853269984665640564039457584007913129639935`)?.tokenId
+  === '115792089237316195423570985008687907853269984665640564039457584007913129639935')
+check('parsePinRef: rejects a missing tokenId', parsePinRef(`${COLL}:`) === null)
+check('parsePinRef: rejects a missing collection', parsePinRef(':7') === null)
+check('parsePinRef: rejects a non-address collection', parsePinRef('notanaddress:7') === null)
+check('parsePinRef: rejects a non-numeric tokenId', parsePinRef(`${COLL}:abc`) === null)
+check('parsePinRef: rejects a colonless ref', parsePinRef(COLL) === null)
 
 if (failures > 0) {
   console.error(`\nverify-showcase-order: ${failures} check(s) failed`)
