@@ -14,9 +14,9 @@ import { getPermissionStatus } from '@base-org/account/spend-permission'
 import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
-import { writeNotification } from '@/lib/notifications'
+import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { planRun, type BudgetUsage, type Decision, type SkipReason } from './engine'
-import { getScout, saveScout, type ScoutLastRun } from './store'
+import { getScout, saveLastRun, saveScout, type ScoutLastRun } from './store'
 import { discoverCore } from './discoverCore'
 import { createSpendPermissionExecutor } from './serverExecutor'
 import { drainSupersededPermissions } from './revoke'
@@ -41,24 +41,18 @@ function countSkips(decisions: readonly Decision[]): Partial<Record<SkipReason, 
   return any ? out : undefined
 }
 
-/** Persist the outcome for the owner's card. Re-reads first and writes NOTHING
- *  when the record is gone (never resurrect a deleted agent). Cosmetic: a
- *  failure here changes nothing about what was spent. */
+/** Persist the outcome for the owner's card — on its own key (store.ts), so it
+ *  never rewrites the record and can neither resurrect a deleted agent nor
+ *  clobber a concurrent pause or counter update. Cosmetic and best-effort. */
 async function recordLastRun(owner: string, summary: ServerRunSummary, at: number): Promise<void> {
-  try {
-    const fresh = await getScout(owner)
-    if (!fresh) return
-    const lastRun: ScoutLastRun = {
-      at,
-      collected: summary.collected,
-      skipped: summary.skipped,
-      ...(summary.reason ? { reason: summary.reason } : {}),
-      ...(summary.skips ? { skips: summary.skips } : {}),
-    }
-    await saveScout({ ...fresh, lastRun })
-  } catch {
-    /* cosmetic */
+  const lastRun: ScoutLastRun = {
+    at,
+    collected: summary.collected,
+    skipped: summary.skipped,
+    ...(summary.reason ? { reason: summary.reason } : {}),
+    ...(summary.skips ? { skips: summary.skips } : {}),
   }
+  await saveLastRun(owner, lastRun)
 }
 
 /** The user's collected set as `collection:tokenId` keys, so a new run only
@@ -224,7 +218,9 @@ async function runCore(params: { owner: string; baseUrl: string; spender: ScoutS
       const { txHash, quantity } = await executor.collect(scout, candidate)
       await recordCollect(baseUrl, owner, candidate, txHash, Number(quantity))
       collected += 1
-      // One notice per artwork, carrying the token so the bell links to it.
+      // One notice per artwork, carrying the token so the bell links to it and
+      // the title (Kismet's own moment metadata; discovery rows carry none).
+      const name = candidate.name ?? (await getMomentMeta(candidate.collection, candidate.tokenId).catch(() => null))?.name
       await writeNotification({
         type: 'agent_collect',
         recipient: owner,
@@ -232,7 +228,7 @@ async function runCore(params: { owner: string; baseUrl: string; spender: ScoutS
         currency: candidate.currency,
         tokenAddress: candidate.collection,
         tokenId: candidate.tokenId,
-        ...(candidate.name ? { tokenName: candidate.name } : {}),
+        ...(name ? { tokenName: name } : {}),
       }).catch(() => {})
     } catch (err) {
       failed += 1

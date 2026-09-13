@@ -21,7 +21,7 @@ import {
   isPermissionActive,
   freshUsage,
 } from '../lib/agent/scout/engine.ts'
-import { SKIP_REASON_LABEL, describeSkips } from '../lib/agent/scout/skipReasons.ts'
+import { describeRunReason, describeSkips } from '../lib/agent/scout/skipReasons.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -180,7 +180,14 @@ console.log('\nplanRun — accumulation honors caps across the basket')
 // ── Owner-facing skip wording (lib/agent/scout/skipReasons) ──────────────────
 console.log('\nskipReasons — owner-facing run history')
 {
-  check('every engine SkipReason has a label', (['paused', 'permission-inactive', 'currency-mismatch', 'collection-blocked', 'creator-blocked', 'collection-not-allowed', 'creator-not-allowed', 'media-type-not-allowed', 'already-collected', 'over-item-price', 'period-item-limit', 'insufficient-budget'] as const).every((r) => typeof SKIP_REASON_LABEL[r] === 'string' && SKIP_REASON_LABEL[r].length > 0))
+  // Run reasons are operator strings (some carry raw executor errors); the
+  // owner sees a fixed vocabulary, never the raw text.
+  check('run reason: quiet run', describeRunReason('nothing new from your artists') === 'nothing new from your artists')
+  check('run reason: mid-run stop', describeRunReason('agent paused or turned off mid-run — remaining collects halted') === 'stopped mid-run')
+  check('run reason: executor failures never leak the raw error', describeRunReason('all 2 collect(s) failed: CDP user operation 0xabc reverted on-chain (status: failed)') === 'every collect failed — will retry next run')
+  check('run reason: partial failures', describeRunReason('1 of 3 collect(s) failed: paymaster sponsorship denied') === 'some collects failed — will retry next run')
+  check('run reason: unknown text → generic', describeRunReason('something unexpected') === 'run did not complete — will retry next run')
+  check('run reason: none → null', describeRunReason(undefined) === null && describeRunReason('') === null)
   const described = describeSkips({ 'already-collected': 1, 'over-item-price': 2, 'insufficient-budget': 0 })
   check('describeSkips: largest first, zero counts dropped', described === '2 over your per-item cap, 1 already collected', described ?? undefined)
   check('describeSkips: nothing skipped → null', describeSkips({}) === null && describeSkips(undefined) === null && describeSkips(null) === null)

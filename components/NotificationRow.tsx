@@ -191,9 +191,11 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         <>
           <p className="text-xs font-mono text-ink truncate">
             your agent collected{' '}
-            {n.tokenName
-              ? `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}"${n.tokenName}"`
-              : n.amount && n.amount > 1
+            {n.tokenAddress && n.tokenId
+              ? // Per-artwork notice: amount is editions of THIS artwork.
+                `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}${n.tokenName ? `"${n.tokenName}"` : 'an artwork'}`
+              : // Legacy aggregate notice: amount is a count of artworks.
+                n.amount && n.amount > 1
                 ? `${n.amount} artworks`
                 : 'an artwork'}
           </p>

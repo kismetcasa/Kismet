@@ -510,11 +510,14 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // Self-notification: the user's own agent collected on their behalf.
       // Per-collect notices name the artwork and link to it; an older aggregate
       // notice (count only) links to their profile — matches NotificationRow.
-      const subject = tokenName
-        ? `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}"${tokenName}"`
-        : n.amount && n.amount > 1
-          ? `${n.amount} artworks`
-          : 'an artwork'
+      // Per-artwork notice (has the token): amount is editions of that artwork.
+      // Legacy aggregate notice (no token): amount is a count of artworks.
+      const subject =
+        n.tokenAddress && n.tokenId
+          ? `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}${tokenName ? `"${tokenName}"` : 'an artwork'}`
+          : n.amount && n.amount > 1
+            ? `${n.amount} artworks`
+            : 'an artwork'
       const priceLabel = n.price && n.price !== '0' ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
       return {
         title: truncate('Agent collected', TITLE_MAX),

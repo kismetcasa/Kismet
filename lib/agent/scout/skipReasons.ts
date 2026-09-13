@@ -20,6 +20,28 @@ export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   'insufficient-budget': 'not enough budget left',
 }
 
+/** Owner-facing wording for a run's `reason` (runScoutServer / dropCoordinator
+ *  emit operator-facing strings, some carrying raw executor errors); null when
+ *  there is none. Unknown text is never shown verbatim. */
+const RUN_REASONS: Array<[RegExp, string]> = [
+  [/^nothing new from your artists/, 'nothing new from your artists'],
+  [/^nothing within your budget/, 'nothing within your budget or policy'],
+  [/^permission inactive/, 'budget grant inactive — set it up again'],
+  [/^not an active away scout/, 'agent paused'],
+  [/^could not verify your collected set/, 'couldn’t check what you already own — will retry'],
+  [/^kill switch engaged/, 'collecting is paused platform-wide'],
+  [/^agent paused or turned off mid-run/, 'stopped mid-run'],
+  [/^collected a new drop/, 'collected a new drop the moment it landed'],
+  [/^all \d+ collect\(s\) failed/, 'every collect failed — will retry next run'],
+  [/^\d+ of \d+ collect\(s\) failed/, 'some collects failed — will retry next run'],
+]
+
+export function describeRunReason(reason?: string | null): string | null {
+  if (!reason) return null
+  for (const [re, label] of RUN_REASONS) if (re.test(reason)) return label
+  return 'run did not complete — will retry next run'
+}
+
 /** `2 over your per-item cap, 1 already collected` — largest first; null when nothing was skipped. */
 export function describeSkips(skips?: Partial<Record<SkipReason, number>> | null): string | null {
   if (!skips) return null

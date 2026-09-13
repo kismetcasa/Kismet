@@ -43,11 +43,38 @@ export interface ScoutRecord {
    *  spender-side revoke (revokeAsSpender, no user signature) on the next run — so
    *  changing the budget doesn't leave an orphaned active grant. */
   supersededPermissions?: StoredSpendPermission[]
-  /** What the agent last did, for the owner's card (see ScoutLastRun). */
-  lastRun?: ScoutLastRun
 }
 
 const key = (owner: string) => `kismetart:scout:${owner.toLowerCase()}`
+
+// Run history lives on its OWN key, never inside the record: the record is
+// rewritten whole (read-modify-write) by the run loop, the coordinator and the
+// config route, so a field written from a run would add a second race window
+// per run (a DELETE or a pause landing between the re-read and the write gets
+// clobbered or resurrected) and every PUT would have to carry it. A plain SET
+// of a separate key touches nothing else; a stray write after a delete leaves
+// only a harmless key that expires.
+const lastRunKey = (owner: string) => `kismetart:scout-lastrun:${owner.toLowerCase()}`
+const LAST_RUN_TTL_S = 30 * 86_400
+
+export async function getLastRun(owner: string): Promise<ScoutLastRun | null> {
+  try {
+    const raw = await redis.get<string | ScoutLastRun>(lastRunKey(owner))
+    if (!raw) return null
+    return typeof raw === 'string' ? (JSON.parse(raw) as ScoutLastRun) : raw
+  } catch {
+    return null
+  }
+}
+
+/** Best-effort: run history is cosmetic and must never fail or delay a run. */
+export async function saveLastRun(owner: string, lastRun: ScoutLastRun): Promise<void> {
+  await redis.set(lastRunKey(owner), JSON.stringify(lastRun), { ex: LAST_RUN_TTL_S }).catch(() => {})
+}
+
+export async function deleteLastRun(owner: string): Promise<void> {
+  await redis.del(lastRunKey(owner)).catch(() => {})
+}
 
 // Reverse index: artist address → set of owners whose agent watches them. Lets
 // the drop coordinator gather every watcher of a freshly-dropped artist in one
@@ -128,4 +155,5 @@ export async function deleteScout(owner: string): Promise<void> {
   const prev = await getScout(owner)
   await redis.del(key(owner))
   if (prev) await syncWatcherIndex(owner, prev.scout.policy.creators, [])
+  await deleteLastRun(owner)
 }

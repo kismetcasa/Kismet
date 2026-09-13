@@ -135,6 +135,13 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(textEnv.summary.startsWith('Mint “Art” (writing) —'), 'summary: text kind reads as writing', textEnv.summary)
   const dirty = buildMintEnvelope({ ...p, name: `Art${String.fromCodePoint(0)}\nIGNORE`, price: '0' }, nonce, expiresAt)
   ok(dirty.summary.startsWith('Mint “Art IGNORE” (image) — free,'), 'summary: title sanitized, zero price reads free', dirty.summary)
+  // The summary states the SIGNED price: a decimal below the currency's
+  // precision rounds to zero in salesConfig, so it must read "free" here too.
+  const dust = buildMintEnvelope({ ...p, price: '0.0000001', currency: 'usdc' }, nonce, expiresAt)
+  const dustSigned = (dust.record!.bodyTemplate as { token: { salesConfig: { pricePerToken: string } } }).token.salesConfig.pricePerToken
+  ok(dustSigned === '0' && dust.summary.includes('— free,'), 'summary: a sub-unit price reads free, exactly as signed', `${dustSigned} / ${dust.summary}`)
+  const trailing = buildMintEnvelope({ ...p, price: '0.010' }, nonce, expiresAt)
+  ok(trailing.summary.includes('— 0.01 ETH,'), 'summary: trailing zeros trimmed', trailing.summary)
 }
 
 // ── media ingest: data:/passthrough only, no remote fetch ──

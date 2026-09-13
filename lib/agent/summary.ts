@@ -1,5 +1,6 @@
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { PLATFORM_FEE_BPS } from '@/lib/platformFee'
+import { priceToBaseUnits } from './list'
 import type { MintParams } from './mint'
 
 /**
@@ -12,33 +13,49 @@ import type { MintParams } from './mint'
  * the address the calldata actually carries.
  *
  * Titles come from Kismet's own moment metadata or the listing row (which the
- * seller sets), so they pass through `safeTitle`: control, zero-width and
- * bidi characters are dropped, whitespace collapsed, length capped. The
- * assistant treats the summary as data (references/safety.md); this keeps a
- * title from smuggling line breaks or invisible text into that line.
+ * seller sets), so they pass through `safeTitle`: control, format (bidi,
+ * zero-width, tag) and separator characters are dropped, the quote marks and
+ * arrows the line itself uses are neutralized so a title cannot close its own
+ * quotes and forge a second clause, whitespace is collapsed and the length
+ * capped. A title can still say anything in words — it stays visibly inside
+ * its quotes, and the money and recipient the line states come from chain
+ * reads, never from the title.
  */
 
 const TITLE_MAX = 60
 
-function isDropped(cp: number): boolean {
-  return (
-    cp < 0x20 ||
-    (cp >= 0x7f && cp <= 0x9f) ||
-    (cp >= 0x200b && cp <= 0x200f) ||
-    (cp >= 0x2028 && cp <= 0x202e) ||
-    (cp >= 0x2060 && cp <= 0x2064) ||
-    (cp >= 0x2066 && cp <= 0x2069) ||
-    cp === 0xfeff
-  )
+// Control (Cc), format (Cf: bidi controls, zero-width, soft hyphen, the TAG
+// block…) and line/paragraph separators are dropped. ZWJ (U+200D) and VS16
+// (U+FE0F) are format characters emoji sequences are built from, so they stay.
+const DROPPED = /(?![‍️])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+// The summary's own punctuation: a title must not be able to close the quotes
+// around it or draw the "→ to" arrow.
+const NEUTRALIZED: Record<string, string> = {
+  '“': '’',
+  '”': '’',
+  '„': '’',
+  '‟': '’',
+  '"': '’',
+  '→': '-',
+  '⇒': '-',
+  '➔': '-',
+  '➡': '-',
 }
+const NEUTRALIZE_RE = /[“”„‟"→⇒➔➡]/g
+const graphemes: Intl.Segmenter | null =
+  typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
 
-/** Sanitized, length-capped title, or null when nothing readable is left. */
+/** Sanitized, length-capped (by grapheme) title, or null when nothing readable is left. */
 export function safeTitle(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null
-  const chars = Array.from(raw).map((ch) => (isDropped(ch.codePointAt(0) ?? 0) ? ' ' : ch))
-  const cleaned = Array.from(chars.join('').replace(/\s+/g, ' ').trim())
+  const cleaned = raw
+    .replace(DROPPED, ' ')
+    .replace(NEUTRALIZE_RE, (c) => NEUTRALIZED[c])
+    .replace(/\s+/g, ' ')
+    .trim()
   if (cleaned.length === 0) return null
-  return cleaned.length > TITLE_MAX ? `${cleaned.slice(0, TITLE_MAX - 1).join('')}…` : cleaned.join('')
+  const units = graphemes ? Array.from(graphemes.segment(cleaned), (s) => s.segment) : Array.from(cleaned)
+  return units.length > TITLE_MAX ? `${units.slice(0, TITLE_MAX - 1).join('')}…` : cleaned
 }
 
 /** `alice.base.eth (0x71Dc…7244)` when a name resolved, else the short address. */
@@ -67,9 +84,11 @@ export function collectSummary(p: {
   approvalIncluded: boolean
 }): string {
   const many = p.quantity > 1n
-  const each = many ? ' each' : ''
-  const fee = p.currency === 'eth' && p.mintFee > 0n ? ` + ${formatPrice(p.mintFee.toString(), 'eth')} mint fee${each}` : ''
-  const total = many || fee ? `, ${formatPrice(p.total.toString(), p.currency)} total` : ''
+  const priced = p.pricePerToken > 0n
+  const fee = p.currency === 'eth' && p.mintFee > 0n ? ` + ${formatPrice(p.mintFee.toString(), 'eth')} mint fee${many ? ' each' : ''}` : ''
+  // "each" and a total only when there is something to multiply.
+  const each = many && priced ? ' each' : ''
+  const total = fee || (many && priced) ? `, ${formatPrice(p.total.toString(), p.currency)} total` : ''
   const qty = many ? ` ×${p.quantity.toString()}` : ''
   return `Collect ${itemLabel(p.title, p.tokenId)}${qty} for ${formatPrice(p.pricePerToken.toString(), p.currency)}${each}${fee}${total} → to ${nameLabel(p.recipient, p.recipientName)}.${p.approvalIncluded ? USDC_APPROVAL_NOTE : ''}`
 }
@@ -125,13 +144,6 @@ export function listSummary(p: {
 
 const KIND_LABEL: Record<MintParams['kind'], string> = { image: 'image', video: 'video', model: '3D model', text: 'writing' }
 
-/** Human decimal price as entered ("0.01" ETH, "5" USDC) → `0.01 ETH` / `$5` / `free`. */
-function humanPrice(price: string, currency: 'eth' | 'usdc'): string {
-  if (!(Number(price) > 0)) return 'free'
-  const trimmed = price.includes('.') ? price.replace(/0+$/, '').replace(/\.$/, '') : price
-  return currency === 'usdc' ? `$${trimmed}` : `${trimmed} ETH`
-}
-
 export function mintSummary(
   p: Pick<
     MintParams,
@@ -139,17 +151,23 @@ export function mintSummary(
   >,
   payoutName?: string | null,
 ): string {
+  // State the price that is actually SIGNED (salesConfig.pricePerToken is the
+  // base-unit conversion of the decimal the caller sent), so a sub-unit decimal
+  // that rounds to zero reads "free" here as it will be on chain.
+  const price = formatPrice(priceToBaseUnits(p.price, p.currency).toString(), p.currency)
   const editions = p.editions && p.editions > 0 ? `${p.editions} edition${p.editions === 1 ? '' : 's'}` : 'open edition'
   const into = p.collection
     ? `into collection ${shortAddress(p.collection)}`
     : `into new collection “${safeTitle(p.collectionName ?? p.name) ?? 'untitled'}”`
+  // Mirrors buildMintBody: any `splits` value means the splits own the payout.
   const splitCount = Array.isArray(p.splits) ? p.splits.length : 0
-  const payout =
-    splitCount > 0
+  const payout = p.splits
+    ? splitCount > 0
       ? `payout split across ${splitCount} recipient${splitCount === 1 ? '' : 's'}`
-      : p.payoutRecipient
-        ? `payout to ${nameLabel(p.payoutRecipient, payoutName)}`
-        : `payout to you (${shortAddress(p.account)})`
+      : 'payout via splits'
+    : p.payoutRecipient
+      ? `payout to ${nameLabel(p.payoutRecipient, payoutName)}`
+      : `payout to you (${shortAddress(p.account)})`
   const extras = [p.artistMint ? '1 copy minted to you' : null, p.enableRaffle ? 'raffle on' : null].filter(Boolean)
-  return `Mint “${safeTitle(p.name) ?? 'untitled'}” (${KIND_LABEL[p.kind]}) — ${humanPrice(p.price, p.currency)}, ${editions}, ${into}, ${payout}${extras.length ? `, ${extras.join(', ')}` : ''}.`
+  return `Mint “${safeTitle(p.name) ?? 'untitled'}” (${KIND_LABEL[p.kind]}) — ${price}, ${editions}, ${into}, ${payout}${extras.length ? `, ${extras.join(', ')}` : ''}.`
 }

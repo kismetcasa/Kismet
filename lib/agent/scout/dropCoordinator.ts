@@ -25,7 +25,8 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
 import { isValidTokenId } from '@/lib/address'
-import { getWatchers, getScoutsBatch, getScout, saveScout, type ScoutRecord } from './store'
+import { getWatchers, getScoutsBatch, getScout, saveLastRun, saveScout, type ScoutRecord } from './store'
+import { drainPendingRevokes } from './pendingRevokes'
 import { evaluateCandidate, type Candidate } from './engine'
 import { allocateRoundRobin, fairOrder, OPEN_EDITION_SUPPLY, type DropWatcher } from './allocate'
 import { collectViaSpendPermission } from './serverExecutor'
@@ -276,8 +277,9 @@ export async function runDropCoordination(
       // one item regardless of editions — so maxItemsPerPeriod stays enforced
       // across the coordinator + on-open paths (the on-chain allowance is still the
       // hard dollar cap). Best-effort, anchored to the watcher's on-chain period.
-      // The same write records the run for the owner's card.
-      await bumpItemUsage(b.record, b.periodStart, a.editions).catch(() => {})
+      await bumpItemUsage(b.record, b.periodStart).catch(() => {})
+      // Run history for the owner's card, on its own key (never in the record).
+      await saveLastRun(b.owner, { at: Math.floor(Date.now() / 1000), collected: a.editions, skipped: 0, reason: 'collected a new drop the moment it landed' })
       collected += a.editions
       recipients += 1
     } catch (err) {
@@ -302,6 +304,10 @@ export async function runDropCoordination(
   // never-expiring grant to our spender gets revoked. Best-effort and a no-op when
   // the queue is empty (the common case), so it can't delay or fail a collect.
   await Promise.all(bidders.map((b) => drainSupersededPermissions(b.record, spender).catch(() => {})))
+  // Same reasoning for grants a turn-off could not revoke (pendingRevokes): the
+  // coordinator runs for set-and-forget users too, so retry one owner here.
+  // Bounded and best-effort; this fan-out is already asynchronous to the mint.
+  await drainPendingRevokes(spender, 1).catch(() => {})
 
   // Failure-only summary (mirrors runScoutServer). `allFailed` = every allocated
   // collect threw — the systemic-breakage signal for this drop.
@@ -345,7 +351,7 @@ async function readBalances(
  *  the record (to reduce clobbering a concurrent on-open update), rolls to the
  *  on-chain period anchor, then saves. Best-effort; the on-chain Spend Permission
  *  allowance is the authoritative cap regardless of this off-chain counter. */
-async function bumpItemUsage(record: ScoutRecord, periodStart: number, editions: number): Promise<void> {
+async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<void> {
   const fresh = await getScout(record.scout.owner)
   if (!fresh) return // record was deleted mid-coordination (user turned off) — never resurrect it
   const u = fresh.usage
@@ -353,8 +359,7 @@ async function bumpItemUsage(record: ScoutRecord, periodStart: number, editions:
     u.periodStart === periodStart
       ? { ...u, itemsThisPeriod: u.itemsThisPeriod + 1 }
       : { periodStart, spentThisPeriod: '0', itemsThisPeriod: 1 }
-  const lastRun = { at: Math.floor(Date.now() / 1000), collected: editions, skipped: 0, reason: 'collected a new drop the moment it landed' }
-  await saveScout({ ...fresh, usage, lastRun })
+  await saveScout({ ...fresh, usage })
 }
 
 /** Record one verified collect on the proof-gated /api/collect (it re-checks the

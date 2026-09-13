@@ -15,9 +15,9 @@
 
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import { formatUnits, isAddress } from 'viem'
+import { formatUnits, isAddress, parseUnits } from 'viem'
 import { useAgent, type AgentConfigInput, type WatchedArtist } from '@/hooks/useAgent'
-import { describeSkips } from '@/lib/agent/scout/skipReasons'
+import { describeRunReason, describeSkips } from '@/lib/agent/scout/skipReasons'
 import { formatRelativeTime } from '@/lib/inprocess'
 import type { ScoutLastRun } from '@/lib/agent/scout/store'
 
@@ -30,15 +30,19 @@ const PERIODS = [
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 const label = (a: WatchedArtist) => a.username || short(a.address)
 
-/** `Last run 3h ago: collected 1, skipped 2 — 2 over your per-item cap.` */
+/** `Last run 3h ago: collected 1, skipped 2 — 2 over your per-item cap; stopped mid-run.` */
 function lastRunText(r: ScoutLastRun): string {
   const when = formatRelativeTime(r.at)
   const head = `Last run ${when === 'just now' ? when : `${when} ago`}: `
-  const body =
-    r.collected > 0 ? `collected ${r.collected}${r.skipped ? `, skipped ${r.skipped}` : ''}` : (r.reason ?? 'nothing to collect')
+  const reason = describeRunReason(r.reason)
+  const body = r.collected > 0 ? `collected ${r.collected}${r.skipped ? `, skipped ${r.skipped}` : ''}` : (reason ?? 'nothing to collect')
   const skips = describeSkips(r.skips)
-  return `${head}${body}${skips ? ` — ${skips}` : ''}.`
+  // With collects, the reason (a mid-run stop, failures) still matters — append it.
+  const tail = r.collected > 0 && reason ? `; ${reason}` : ''
+  return `${head}${body}${skips ? ` — ${skips}` : ''}${tail}.`
 }
+
+const MAX_CREATORS = 50
 
 export function AgentCollectPanel({
   ag,
@@ -75,7 +79,7 @@ export function AgentCollectPanel({
   const [mode, setMode] = useState<'patron' | 'editions'>('patron')
   const [editions, setEditions] = useState('3')
 
-  const busy = ag.running || saving
+  const busy = ag.running || ag.removing || saving
   const typedIsAddress = isAddress(artistInput.trim())
   const sym = currency === 'eth' ? 'Ξ' : '$'
   const scoutCur = ag.scout?.budget.currency ?? 'usdc'
@@ -136,10 +140,21 @@ export function AgentCollectPanel({
    *  config that would then fail to save. */
   function validate(): string | null {
     if (artists.length === 0) return 'Add at least one artist to watch.'
-    const v = parseFloat(amount)
-    if (!amount || Number.isNaN(v) || v <= 0) return 'Enter a budget above 0.'
-    const mi = parseFloat(maxItem)
-    if (!maxItem || Number.isNaN(mi) || mi <= 0) return 'Enter a max per item above 0.'
+    if (artists.length > MAX_CREATORS) return `Watch at most ${MAX_CREATORS} artists.`
+    // Amounts are judged in base units, exactly as they will be granted and
+    // stored: a decimal below the currency's precision rounds to zero on chain.
+    const dec = currency === 'eth' ? 18 : 6
+    const units = (s: string): bigint | null => {
+      try {
+        return s ? parseUnits(s, dec) : null
+      } catch {
+        return null
+      }
+    }
+    const v = units(amount)
+    if (v === null || v <= 0n) return `Enter a budget above 0 (up to ${dec} decimals).`
+    const mi = units(maxItem)
+    if (mi === null || mi <= 0n) return `Enter a max per item above 0 (up to ${dec} decimals).`
     if (mi > v) return 'Max per item can’t exceed the budget — nothing would ever be collected.'
     const n = parseInt(maxItems, 10)
     if (!Number.isInteger(n) || n < 1) return 'Items per period must be at least 1.'

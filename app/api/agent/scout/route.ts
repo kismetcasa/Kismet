@@ -5,11 +5,11 @@ import { getSessionAddress } from '@/lib/session'
 import { checkRateLimit } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
-import { deleteScout, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
+import { deleteLastRun, deleteScout, getLastRun, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
 import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 import { getScoutSpender } from '@/lib/agent/scout/spender'
 import { revokePermissionsAsSpender, permKey } from '@/lib/agent/scout/revoke'
-import { queuePendingRevokes } from '@/lib/agent/scout/pendingRevokes'
+import { dequeuePendingRevoke, queuePendingRevokes } from '@/lib/agent/scout/pendingRevokes'
 import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
 
 export const runtime = 'nodejs'
@@ -35,7 +35,7 @@ const MAX_CREATORS = 50
 export async function GET(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
-  const record = await getScout(owner)
+  const [record, lastRun] = await Promise.all([getScout(owner), getLastRun(owner)])
   return NextResponse.json({
     scout: record?.scout ?? null,
     usage: record?.usage ?? null,
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     // so the panel can show live status + revoke. `away` = unattended opted in.
     permission: record?.permission ?? null,
     away: record?.away ?? false,
-    lastRun: record?.lastRun ?? null,
+    lastRun: record ? lastRun : null,
   })
 }
 
@@ -278,6 +278,13 @@ export async function PUT(req: NextRequest) {
     ...(supersededPermissions?.length ? { supersededPermissions } : {}),
   }
   await saveScout(record)
+  // A grant stored here is the user's LIVE budget again. If an earlier turn-off
+  // left this very grant queued for a spender-side revoke (the wallet reused a
+  // still-active permission), forget that entry — a later drain must not kill
+  // the agent the user just set up. Best-effort.
+  if (body.permission) await dequeuePendingRevoke(owner, body.permission).catch(() => {})
+  // A fresh setup starts with no run history from a previous incarnation.
+  if (!existing) await deleteLastRun(owner)
 
   return NextResponse.json({ scout, usage, artistLabels: artistLabels ?? null, permission: permission ?? null, away })
 }

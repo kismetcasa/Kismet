@@ -14,6 +14,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseEther, parseUnits } from 'viem'
+import { getAccount, getPublicClient } from '@wagmi/core'
+import { base } from 'wagmi/chains'
+import { wagmiConfig } from '@/lib/wagmi'
 import { useSmartWalletAgentEligibility } from '@/hooks/useSmartWalletAgentEligibility'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import {
@@ -68,6 +71,7 @@ export function useAgent() {
   const [status, setStatus] = useState<BudgetStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const [lastRun, setLastRun] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const autoRanRef = useRef(false)
@@ -133,6 +137,22 @@ export function useAgent() {
       try {
         // SIWE session FIRST so the config save can't 401 after the on-chain grant.
         await ensureSession()
+        // The server refuses an account with no code (a plain EOA, or a Base
+        // Account that has never transacted and is still counterfactual). Check
+        // BEFORE the wallet signs a Spend Permission that would then never be
+        // stored — and never revoked by Kismet. Fail-open on an RPC error, like
+        // the server does.
+        try {
+          const acct = getAccount(wagmiConfig).address
+          const code = acct ? await getPublicClient(wagmiConfig, { chainId: base.id })?.getCode({ address: acct }) : undefined
+          if (acct && (!code || code === '0x')) {
+            throw new Error(
+              'Your Base Account needs one on-chain transaction before it can grant a spend permission — collect or send something first, then set up Agent Collect.',
+            )
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith('Your Base Account needs')) throw e
+        }
         const allowance =
           cfg.currency === 'eth' ? parseEther(cfg.allowance) : parseUnits(cfg.allowance, 6)
         const permission = await grantScoutBudget({ currency: cfg.currency, allowance, periodInDays: cfg.periodInDays })
@@ -198,16 +218,23 @@ export function useAgent() {
   const setActive = useCallback(
     async (active: boolean): Promise<void> => {
       if (!state.scout) return
-      const next: Scout = { ...state.scout, status: active ? 'active' : 'paused' }
+      const prev = state.scout
+      const next: Scout = { ...prev, status: active ? 'active' : 'paused' }
       setState((s) => ({ ...s, scout: next }))
+      setError(null)
+      // A pause the server did not take is a stop the user believes in while
+      // the agent keeps collecting — so a failure reverts the optimistic state
+      // and says so, rather than waiting for the next load.
       try {
-        await fetch('/api/agent/scout', {
+        const r = await fetch('/api/agent/scout', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ scout: next, away: state.away, artistLabels: state.artistLabels ?? {} }),
         })
-      } catch {
-        /* optimistic; revert on next load if it failed */
+        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error ?? 'save failed')
+      } catch (e) {
+        setState((s) => ({ ...s, scout: prev }))
+        setError(`Could not ${active ? 'resume' : 'pause'} the agent — ${e instanceof Error ? e.message : 'try again'}`)
       }
     },
     [state.scout, state.away, state.artistLabels],
@@ -218,8 +245,13 @@ export function useAgent() {
    *  Only when it could not confirm do we ask the wallet for a user-signed
    *  revoke; if that is declined, Kismet keeps retrying in the background. */
   const remove = useCallback(async (): Promise<void> => {
+    if (removing) return
+    setRemoving(true)
     setError(null)
     try {
+      // Session first (like save): an expired SIWE session must not turn into
+      // a failed turn-off.
+      await ensureSession()
       const r = await fetch('/api/agent/scout', { method: 'DELETE' })
       const d = (await r.json().catch(() => ({}))) as { ok?: boolean; revoked?: boolean; error?: string }
       if (!r.ok) throw new Error(d.error ?? 'Could not turn off the agent')
@@ -238,8 +270,10 @@ export function useAgent() {
       if (note) setError(note)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not turn off the agent')
+    } finally {
+      setRemoving(false)
     }
-  }, [state.permission])
+  }, [removing, ensureSession, state.permission])
 
   // Auto-run once on open for an active, away-enabled agent (de-duped per mount).
   useEffect(() => {
@@ -262,6 +296,7 @@ export function useAgent() {
     away: state.away,
     status,
     running,
+    removing,
     lastRun,
     error,
     save,

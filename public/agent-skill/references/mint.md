@@ -87,7 +87,7 @@ The response is the standard envelope, containing:
 - `summary` — e.g. `Mint “My Artwork” (image) — free, open edition, into new
   collection “My Artwork”, payout to you (0x71Dc…7244), 1 copy minted to you.`
   (an explicit `payoutRecipient` shows as name + short address; splits as
-  `payout split N ways`; `raffle on` when enabled).
+  `payout split across N recipients`; `raffle on` when enabled).
 
 There are no `calls` and no `caps`: minting spends nothing from the wallet.
 

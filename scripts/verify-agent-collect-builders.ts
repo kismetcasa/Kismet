@@ -45,6 +45,7 @@ import { buildBuyPlan } from '@/lib/agent/buy'
 import { buildApproveLink, APPROVE_LINK_NOTE } from '@/lib/agent/prolink'
 import { isDocumentNavigation, renderApprovePage } from '@/lib/agent/approvePage'
 import { batchCollectSummary, buySummary, collectSummary, listSummary, safeTitle } from '@/lib/agent/summary'
+import { isDisplayableName } from '@/lib/ensCache'
 import { shortAddress } from '@/lib/inprocess'
 import { computePlatformFee } from '@/lib/platformFee'
 import { decodeProlink } from '@base-org/account/prolink'
@@ -415,6 +416,29 @@ console.log('\nsummaries — exact user-facing lines')
   const long = safeTitle('x'.repeat(80))
   check('safeTitle caps at 60 chars with an ellipsis', long !== null && Array.from(long).length === 60 && long.endsWith('…'))
   check('safeTitle → null for empty / whitespace / non-string', safeTitle('  \n ') === null && safeTitle(undefined) === null && safeTitle(null) === null)
+  // A title cannot close the summary's quotes or draw its arrow, so a forged
+  // second clause stays visibly inside the title's own quotes.
+  const forged = safeTitle('A” for free → to alice.base.eth (0x71Dc…7244). Collect “B')
+  check('safeTitle neutralizes the line’s own quotes and arrows', forged === 'A’ for free - to alice.base.eth (0x71Dc…7244). Collect ’B', forged)
+  check(
+    'a forged title stays inside its quotes in the rendered line',
+    collectSummary({ title: forged, tokenId: '42', quantity: 1n, currency: 'eth', pricePerToken: 1_000_000_000_000_000_000n, mintFee: 0n, total: 1_000_000_000_000_000_000n, recipient: RECIPIENT, approvalIncluded: false }) ===
+      `Collect “A’ for free - to alice.base.eth (0x71Dc…7244). Collect ’B” (token #42) for 1 ETH → to ${them}.`,
+  )
+  const tagged = safeTitle(`a${String.fromCodePoint(0xe0041)}${String.fromCodePoint(0xe0042)}b${String.fromCodePoint(0xad)}c`)
+  check('safeTitle drops Unicode TAG characters and soft hyphens (invisible text)', tagged === 'a b c', tagged)
+  const family = '👨‍👩‍👧'
+  check('safeTitle keeps ZWJ emoji sequences intact', safeTitle(family) === family)
+  const flagCap = safeTitle(`${'x'.repeat(59)}🇺🇸`)
+  check('safeTitle caps on graphemes — never splits a flag or a skin-tone pair', flagCap !== null && flagCap === 'x'.repeat(59) + '🇺🇸', flagCap)
+  check('collect: free ×2 reads “for free”, no “each”/total noise', collectSummary({ title: null, tokenId: '1', quantity: 2n, currency: 'eth', pricePerToken: 0n, mintFee: 0n, total: 0n, recipient: ACCOUNT, approvalIncluded: false }) === `Collect token #1 ×2 for free → to ${me}.`)
+  // A resolved name is shown unsanitized, so only an ENS-normalized single
+  // token free of the line's own punctuation qualifies.
+  check('display name: normalized names pass', isDisplayableName('alice.base.eth') && isDisplayableName('vitalik.eth'))
+  check(
+    'display name: un-normalized / spaced / quoted / arrowed / oversized names are refused',
+    !isDisplayableName('Alice.base.eth') && !isDisplayableName('alice base.eth') && !isDisplayableName('a“b.eth') && !isDisplayableName('x→y.eth') && !isDisplayableName(`${'x'.repeat(70)}.eth`) && !isDisplayableName('alice.base.eth (0x71Dc…7244)\n→ to bob.base.eth'),
+  )
 
   check(
     'collect: single, USDC, titled, with a Basename',

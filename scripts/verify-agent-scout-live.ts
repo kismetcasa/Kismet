@@ -75,6 +75,43 @@ function execRedisCommand(cmd: unknown[]): unknown {
     zadds.push({ key: String(cmd[1]), member: String(cmd[cmd.length - 1]) })
     return 1
   }
+  // Hashes + sets, modelled only for the pending-revoke queue (its keys), so the
+  // watcher index the record store also SADDs stays inert for the older tests.
+  const key = String(cmd[1] ?? '')
+  const pending = key.startsWith('kismetart:scout-pending-revoke')
+  if (op === 'HSET') {
+    const h = hashes.get(key) ?? new Map<string, string>()
+    for (let i = 2; i + 1 < cmd.length; i += 2) h.set(String(cmd[i]), String(cmd[i + 1]))
+    hashes.set(key, h)
+    return 1
+  }
+  if (op === 'HGETALL') return [...(hashes.get(key)?.entries() ?? [])].flat()
+  if (op === 'HDEL') {
+    const h = hashes.get(key)
+    let n = 0
+    for (let i = 2; i < cmd.length; i++) if (h?.delete(String(cmd[i]))) n++
+    return n
+  }
+  if (op === 'HLEN') return hashes.get(key)?.size ?? 0
+  if (op === 'SADD') {
+    if (!pending) return null
+    const s = sets.get(key) ?? new Set<string>()
+    for (let i = 2; i < cmd.length; i++) s.add(String(cmd[i]))
+    sets.set(key, s)
+    return 1
+  }
+  if (op === 'SREM') {
+    if (!pending) return null
+    let n = 0
+    for (let i = 2; i < cmd.length; i++) if (sets.get(key)?.delete(String(cmd[i]))) n++
+    return n
+  }
+  if (op === 'EVAL') {
+    // The queue's one script: ["EVAL", script, numkeys, hashKey, indexKey, owner]
+    const [hashKey, indexKey, owner] = [String(cmd[3]), String(cmd[4]), String(cmd[5])]
+    if ((hashes.get(hashKey)?.size ?? 0) === 0) return sets.get(indexKey)?.delete(owner) ? 1 : 0
+    return 0
+  }
   if (op === 'SET') {
     const key = String(cmd[1])
     const val = String(cmd[2])
@@ -100,8 +137,26 @@ function execRedisCommand(cmd: unknown[]): unknown {
     for (let i = 1; i < cmd.length; i++) out.push(redisStore.get(String(cmd[i]))?.v ?? null)
     return out
   }
-  if (op === 'SMEMBERS') return []
-  return null // LPUSH/ZADD/EXPIRE/… — accepted, irrelevant to assertions
+  if (op === 'SMEMBERS') return pending ? [...(sets.get(key) ?? [])] : []
+  return null // LPUSH/EXPIRE/… — accepted, irrelevant to assertions
+}
+const hashes = new Map<string, Map<string, string>>()
+const sets = new Map<string, Set<string>>()
+
+// The Upstash client sends `Upstash-Encoding: base64` and base64-DECODES every
+// string it gets back, so the mock must encode them exactly as the real REST API
+// does. Returning raw strings mostly "works" by accident (JSON braces aren't
+// valid base64, so the client's decode throws and falls back to the raw text) —
+// but a value drawn only from the base64 alphabet, i.e. every 0x address, decodes
+// successfully into garbage. Encoding here keeps address-shaped members (the
+// watcher index, the pending-revoke owner index) faithful.
+const b64 = (x: unknown): unknown =>
+  typeof x === 'string' ? Buffer.from(x, 'utf8').toString('base64') : Array.isArray(x) ? x.map(b64) : x
+/** Encode only the `result` payloads, never the pipeline envelope or `error`. */
+const encodeResults = (x: unknown): unknown => {
+  if (Array.isArray(x)) return x.map(encodeResults)
+  if (x && typeof x === 'object' && 'result' in x) return { ...(x as object), result: b64((x as { result: unknown }).result) }
+  return x
 }
 
 function startRedisServer(): Promise<string> {
@@ -110,7 +165,8 @@ function startRedisServer(): Promise<string> {
     req.on('data', (c) => (body += c))
     req.on('end', () => {
       res.setHeader('content-type', 'application/json')
-      const reply = (x: unknown) => res.end(JSON.stringify(x))
+      const encoded = String(req.headers['upstash-encoding'] ?? '').toLowerCase() === 'base64'
+      const reply = (x: unknown) => res.end(JSON.stringify(encoded ? encodeResults(x) : x))
       if (redisFailing) {
         const isPipeline = req.url?.includes('pipeline') || req.url?.includes('multi-exec')
         if (isPipeline) {
@@ -656,12 +712,15 @@ async function main() {
   ok(pausedRun.collected === 1 && pausedRun.skipped === 1, `pause after the 1st collect → the 2nd is NOT attempted (collected ${pausedRun.collected}, skipped ${pausedRun.skipped})`)
   ok(/paused or turned off mid-run/.test(pausedRun.reason ?? ''), 'run reports the user stop as its reason')
   ok(collectPosts.length === 1, 'exactly one record posted — nothing spent after the pause')
-  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: { at: number; collected: number; skipped: number; reason?: string } }
+  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: unknown }
   ok(afterPause.scout.status === 'paused' && afterPause.usage.itemsThisPeriod === 1, 'pause persisted; usage merged onto the paused record')
+  const lastRunKey = `kismetart:scout-lastrun:${USER.toLowerCase()}`
+  const pauseHistory = JSON.parse(redisStore.get(lastRunKey)?.v ?? 'null') as { at: number; collected: number; skipped: number; reason?: string } | null
   ok(
-    !!afterPause.lastRun && afterPause.lastRun.collected === 1 && afterPause.lastRun.skipped === 1 && /paused or turned off mid-run/.test(afterPause.lastRun.reason ?? '') && afterPause.lastRun.at > 0,
-    'run history persisted on the record (collected / skipped / reason / at) for the owner card',
+    !!pauseHistory && pauseHistory.collected === 1 && pauseHistory.skipped === 1 && /paused or turned off mid-run/.test(pauseHistory.reason ?? '') && pauseHistory.at > 0,
+    'run history persisted (collected / skipped / reason / at) for the owner card',
   )
+  ok(!('lastRun' in afterPause) && redisStore.get(lastRunKey)?.ex === 30 * 86_400, 'run history lives on its own expiring key, never inside the record')
 
   redisStore.clear()
   redisStore.set(scoutKey, { v: JSON.stringify(record) })
@@ -679,6 +738,10 @@ async function main() {
   redisStore.clear()
   zadds.length = 0
   redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  // Kismet's own moment metadata for the two drops, so the notices can name them.
+  for (const id of ['1', '2']) {
+    redisStore.set(`kismetart:moment-meta:${COLLECTION.toLowerCase()}:${id}`, { v: JSON.stringify({ creator: ARTIST.toLowerCase(), name: `Dawn ${id}` }) })
+  }
   collectPosts.length = 0
   let bumped = false
   const bumpSpender = mockSpender(() => {
@@ -694,13 +757,18 @@ async function main() {
   })
   const mergedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: bumpSpender })
   ok(mergedRun.collected === 2, `both candidates collected (got ${mergedRun.collected})`)
-  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: { collected: number; skipped: number; reason?: string; skips?: unknown } }
+  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
   ok(afterMerge.usage.itemsThisPeriod === 5, `count = 3 (coordinated mid-run) + 2 (this run) = 5, not 2 (got ${afterMerge.usage.itemsThisPeriod})`)
-  ok(afterMerge.lastRun?.collected === 2 && afterMerge.lastRun.skipped === 0 && afterMerge.lastRun.reason === undefined, 'a clean run records collected 2, nothing skipped, no reason')
-  const agentNotices = zadds.filter((z) => z.key.startsWith('kismetart:notif:') && z.member.includes('"agent_collect"'))
+  const mergeHistory = JSON.parse(redisStore.get(lastRunKey)?.v ?? 'null') as { collected: number; skipped: number; reason?: string } | null
+  ok(mergeHistory?.collected === 2 && mergeHistory.skipped === 0 && mergeHistory.reason === undefined, 'a clean run records collected 2, nothing skipped, no reason')
+  const agentNotices = zadds
+    .filter((z) => z.key === `kismetart:notif:${USER.toLowerCase()}` && z.member.includes('"agent_collect"'))
+    .map((z) => JSON.parse(z.member) as { tokenAddress?: string; tokenId?: string; tokenName?: string; amount?: number })
   ok(
-    agentNotices.length === 2 && agentNotices.every((z) => z.member.includes('"tokenId"') && z.member.includes('"tokenAddress"')),
-    `one agent_collect notice per collected artwork, each carrying the token (got ${agentNotices.length})`,
+    agentNotices.length === 2 &&
+      agentNotices.every((n) => n.tokenAddress?.toLowerCase() === COLLECTION.toLowerCase() && n.amount === 1 && n.tokenName === `Dawn ${n.tokenId}`) &&
+      new Set(agentNotices.map((n) => n.tokenId)).size === 2,
+    `one agent_collect notice per collected artwork in the owner's inbox, each carrying token + title + editions (got ${JSON.stringify(agentNotices)})`,
   )
 
   // ── 10. A malformed stored permission (missing fields) is refused, never spent ──
@@ -733,6 +801,42 @@ async function main() {
   redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
   const noFeeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
   ok(noFeeRun.collected === 2, `same cap with no fee → collects (got ${noFeeRun.collected}): the refusal above was the fee, not the price`)
+
+  // ── 12. Pending-revoke queue: per-owner, retires only what it revoked ──────
+  console.log('\npendingRevokes — per-owner queue (turn-off revoke retries)')
+  const { queuePendingRevokes, dequeuePendingRevoke, drainPendingRevokes } = await import('@/lib/agent/scout/pendingRevokes')
+  const { permKey } = await import('@/lib/agent/scout/revoke')
+  hashes.clear()
+  sets.clear()
+  const OWNER_B = `0x${'bb'.repeat(20)}` as Address
+  const permA = perm()
+  const permA2 = perm({ start: PERIOD_START + 1 })
+  const permB = perm({ account: OWNER_B })
+  const INDEX = 'kismetart:scout-pending-revoke:owners'
+  const hashOf = (o: string) => hashes.get(`kismetart:scout-pending-revoke:${o.toLowerCase()}`)
+  await queuePendingRevokes(USER, [permA, permA2])
+  await queuePendingRevokes(OWNER_B, [permB])
+  await queuePendingRevokes(USER, [permA]) // idempotent re-queue
+  ok(hashOf(USER)?.size === 2 && hashOf(OWNER_B)?.size === 1, 'each owner has their own hash; a re-queue of the same grant does not duplicate it')
+  ok(sets.get(INDEX)?.size === 2, 'both owners indexed')
+  ok([...(hashOf(USER)?.keys() ?? [])].every((k) => k === permKey(permA) || k === permKey(permA2)), 'entries are keyed by the grant identity (permKey)')
+
+  await dequeuePendingRevoke(USER, permA)
+  ok(hashOf(USER)?.size === 1 && hashOf(USER)?.has(permKey(permA2)) === true && sets.get(INDEX)?.has(USER.toLowerCase()) === true, 'dequeue drops exactly that grant and keeps the owner indexed while others remain')
+  await dequeuePendingRevoke(USER, permA2)
+  ok(hashOf(USER)?.size === 0 && sets.get(INDEX)?.has(USER.toLowerCase()) === false && hashOf(OWNER_B)?.size === 1, 'dequeuing the last grant un-indexes that owner only')
+
+  const boom: Spender = { ...mockSpender(), async sendCalls() { throw new Error('boom') } }
+  await drainPendingRevokes(boom, 5)
+  ok(hashOf(OWNER_B)?.size === 1 && sets.get(INDEX)?.has(OWNER_B.toLowerCase()) === true, 'a failed revoke keeps the grant queued and the owner indexed')
+  captured.length = 0
+  await drainPendingRevokes(mockSpender(), 5)
+  ok(
+    captured.length === 1 && hashOf(OWNER_B)?.size === 0 && (sets.get(INDEX)?.size ?? 0) === 0,
+    `a successful drain submits the revoke, retires the entry, and un-indexes the owner (submitted ${captured.length}, queued ${hashOf(OWNER_B)?.size}, indexed ${sets.get(INDEX)?.size ?? 0})`,
+  )
+  await drainPendingRevokes(mockSpender(), 5)
+  ok(captured.length === 1, `an empty queue is a no-op (submitted ${captured.length})`)
 
   console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — scout live-behavior: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)
