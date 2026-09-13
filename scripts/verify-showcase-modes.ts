@@ -8,9 +8,9 @@
 // ordering, admin erase, and — since the identity-keying fix — the FC cases
 // that address keying got wrong: pins surviving a canonical-address change,
 // an unpin sweeping every key form, a legacy address-form set still readable
-// and removable, the cap counted on the merged set, and the fail-PRIVATE
-// guarantee under an unresolvable identity. Hermetic — no live Redis, no env
-// needed.
+// and removable, the cap counted on the merged set, the fail-PRIVATE guarantee
+// under an unresolvable identity, and the opposite polarity an ERASE needs.
+// Hermetic — no live Redis, no env needed.
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-showcase-modes.ts
@@ -427,6 +427,36 @@ console.log('S22 an unresolvable identity fails PRIVATE, never open')
   check('recovered: the owner-chosen mode is served again',
     await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
   check('recovered: the pin is intact', (await refsOf(wallet, 'mints'))?.[0] === '0xc0ffee:1')
+}
+
+console.log('S23 an erase still erases when the identity is unresolvable')
+{
+  // /api/admin/erase-profile calls clearAllPins(addr).catch(() => {}) — every
+  // purge op is best-effort so one subsystem hiccup can't half-erase and 500,
+  // which means anything that THROWS leaves data behind silently. Reads and
+  // writes fail closed on an unresolvable identity (S22); deletion must not,
+  // or a blip on the FC reverse index lets a profile's pins survive their own
+  // erase. Measured before the fix: 4 keys left behind.
+  const wallet = '0xfc00000000000000000000000000000000000012'
+  seedFid(wallet, 9400)
+  await sc.addPin('mints', wallet, '0xC0FFEE', '1')       // identity form
+  seedLegacyPin(wallet, 'collected', '0xbeef:2', 1_700_000_000_000) // address form
+  strings.set(modeKey(wallet), JSON.stringify('curated'))
+
+  fail.keys.add(`kismetart:fc:fid-by-addr:${wallet}`)
+  await sc.clearAllPins(wallet).catch(() => {})
+  check('address-form pins are erased without the lookup',
+    (zsets.get(pinKey('collected', wallet))?.size ?? 0) === 0)
+  check('the address-scoped mode is erased too', rawMode(wallet) === null)
+  fail.keys.clear()
+
+  // The identity form needs the lookup, so it is cleared on the admin's re-run
+  // — which the route is built for. Healthy, one pass clears everything.
+  await sc.clearAllPins(wallet)
+  check('identity-form pins are erased once the lookup recovers',
+    (zsets.get(pinKey('mints', 'fid:9400'))?.size ?? 0) === 0)
+  check('nothing is left under either form',
+    (await sc.getAllPinsChecked(wallet))?.mints.length === 0)
 }
 
 server.close()

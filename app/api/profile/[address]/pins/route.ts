@@ -10,6 +10,7 @@ import {
   resolvePublicViewMode,
   resolveShowcaseScopes,
   isPinCategory,
+  type PinCategory,
 } from '@/lib/showcase'
 
 // The pins-unknown payload, shared by every degraded path below so they can't
@@ -23,7 +24,8 @@ const EMPTY_PINS = { mints: [], collected: [], listings: [] } as const
 // visitor render mode the moment this payload lands, so both travel in the
 // one Tier-1 fetch. Served fresh (uncached, like /api/featured) so a
 // just-pinned moment or a just-flipped mode is visible to other viewers
-// immediately — three small ZRANGEs and a GET.
+// immediately — an index GET, then three small ZRANGEs and a GET per key form
+// (one form for a non-FC profile, two for an FC one).
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ address: string }> },
@@ -68,7 +70,7 @@ interface PinBody {
 
 function parsePinBody(
   body: PinBody | null,
-): { category: 'mints' | 'collected' | 'listings'; collectionAddress: string; tokenId: string } | { error: string } {
+): { category: PinCategory; collectionAddress: string; tokenId: string } | { error: string } {
   if (!body) return { error: 'Invalid body' }
   const { category, collectionAddress, tokenId } = body
   if (!isPinCategory(category)) return { error: 'Invalid category' }
