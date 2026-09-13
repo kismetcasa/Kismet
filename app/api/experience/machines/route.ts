@@ -115,14 +115,18 @@ export async function POST(req: NextRequest) {
   const dryRun = body.dryRun === true
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
-  // One capsule token, one machine. Claims are keyed per (machineId, txHash,
-  // unit), so two machines sharing a capsule would let every capsule buyer draw
-  // from BOTH pools on one payment — a double-spend the per-machine claim key
-  // cannot see. Delisted machines are exempt: their sales are over, and holding
-  // the token hostage to a moderation action would be backwards.
+  // One capsule token, one machine, FOR LIFE — delisted machines included.
+  // Claims are keyed per (machineId, txHash, unit), so two machines sharing a
+  // capsule would let every capsule buyer draw from BOTH pools on one payment,
+  // a double-spend the per-machine claim key cannot see. Exempting delisted
+  // machines looked like courtesy (their listing is over, why hold the token
+  // hostage?) but their SALE is not over — delisting is a Redis state, the Zora
+  // sale stays open — and neither are the capsules already bought. See
+  // store.reserveCapsule, which is the authoritative version of this rule; this
+  // scan exists to give the same answer early, so a dry run cannot tell an
+  // artist a token is free that the reservation is about to refuse.
   const capsuleTaken = (await listMachines()).some(
     (m) =>
-      m.state !== 'delisted' &&
       m.capsule.collection === capsuleCollection.toLowerCase() &&
       m.capsule.tokenId === capsuleTokenId,
   )
@@ -329,8 +333,11 @@ export async function POST(req: NextRequest) {
     // would let a machine go live in the window before its claim on those copies
     // is recorded, and another machine could promise the same last copy in the
     // meantime — the exact over-promise the ledger exists to prevent. The cost
-    // is that an abandoned draft keeps holding headroom, which is recoverable by
-    // deleting the draft; an over-promised edition is not recoverable at all.
+    // is that a publish dying mid-loop leaves a draft holding headroom it will
+    // never use, and nothing reclaims it. That is the accepted side: unused
+    // headroom is a machine that has to pick different pieces, while an
+    // over-promised edition is an artist's supply spent without their consent,
+    // which nothing can undo.
     await pledgeSupply(e.collection, e.tokenId, id, e.supply)
   }
 

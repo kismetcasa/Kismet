@@ -90,6 +90,15 @@ export async function runDraw(
       continue
     }
 
+    // The copy is consumed HERE, and the caller persists it onto the claim on
+    // the next write. A crash in that window leaks one copy: the counter is
+    // decremented and no claim record names the piece, so nothing will ever
+    // deliver or release it. That is deliberate and it is the safe direction —
+    // the leak UNDER-issues, costing this machine one prize slot, where the
+    // only alternative (persist first, consume second) over-issues on the same
+    // crash and hands out a copy the artist never consented to. A slot the
+    // house loses is recoverable by an operator; a copy minted past an artist's
+    // supply is not.
     return { kind: 'drawn', prize: pick, attempt }
   }
 

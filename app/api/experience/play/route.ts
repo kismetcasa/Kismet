@@ -97,22 +97,34 @@ export async function POST(req: NextRequest) {
 
   const machine = await getMachine(machineId)
   if (!machine) return errorResponse(404, 'Machine not found')
-  // `ended` still honours claims: a paid capsule is never stranded by a season
-  // closing, which stops SALES only.
+  // THE STATE GATE DECIDES WHO GETS PAID, SO IT IS ABOUT MONEY, NOT LISTING.
   //
-  // `delisted` does NOT, and the asymmetry is deliberate. Delisting releases the
-  // machine's capsule token for reuse (app/api/admin/experience releasePledge +
-  // the create route's capsule-in-use check exempts delisted machines), so a
-  // still-playable delisted machine and its replacement would both honour the
-  // SAME capsule mint — one payment, two artworks, drawn from two different
-  // artists' pools. Outstanding obligations on a delisted machine are settled
-  // through the resume path, which a curator drives, rather than by leaving the
-  // front door open.
+  // Reaching this line means the capsule has ALREADY been minted and paid for —
+  // the player's transaction is the `txHash` in the body. A refusal here does
+  // not prevent a purchase, it repudiates one. So the only states that may
+  // refuse are the ones where a paid capsule cannot exist.
+  //
+  //   • `live` / `ended` — honoured. Ending a season stops SALES; it has never
+  //     stranded a capsule someone already holds.
+  //   • `delisted` — honoured, and this used to be a 403 that simply kept the
+  //     money. The reason given was that delisting freed the capsule token, so a
+  //     successor machine could honour the same mint and one payment would buy
+  //     two artworks. That was a real hazard, and it is fixed at its source:
+  //     store.reserveCapsule now binds a capsule token to its machine for life,
+  //     so no successor can exist and this machine is the only one that can ever
+  //     honour this mint. Delisting removes the machine from the shelves; the
+  //     capsules already sold are still owed, and the pledged copies backing
+  //     them are still held (see the admin route). A curator who needs a
+  //     particular piece to stop being dispensed hides it or blacklists its
+  //     artist, which empties the eligible set below and parks the claim for an
+  //     operator — a per-artwork control, not a way to keep a stranger's money.
+  //   • `draft` / `review` — refused, and these are the states where a paid
+  //     capsule genuinely cannot exist: no machine has ever been playable in
+  //     them, so no capsule was ever sold against one. A machine a curator pulls
+  //     back to `review` is the one edge, and its route to settling what it owes
+  //     is to move to `delisted`, which honours.
   if (machine.state === 'draft' || machine.state === 'review') {
     return errorResponse(403, 'Machine is not live')
-  }
-  if (machine.state === 'delisted') {
-    return errorResponse(403, 'This machine has been delisted; contact support to settle an unopened capsule')
   }
 
   // 2. Prove the capsule. Fail-closed on every ambiguity; `units` is the

@@ -84,20 +84,82 @@ export async function createMachine(m: Machine): Promise<boolean> {
   return true
 }
 
-/** Claim a capsule token for a machine. False when another machine holds it. */
+/** Atomic compare-and-set, so a stale reservation can be taken over without two
+ *  racing publishes both believing they won. */
+const TAKEOVER_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`
+
+/**
+ * Claim a capsule token for a machine. False when another EXISTING machine holds
+ * it, whatever state that machine is in.
+ *
+ * A bare SET NX would be correct only if every reservation outlived the request
+ * that took it. It does not: the publish path reserves the capsule and then
+ * creates the machine, so a crash between those two writes left the token
+ * reserved by a machine that does not exist — with no machine record, no admin
+ * surface could target it, and that capsule was unusable forever.
+ *
+ * So a reservation is evidence, not proof: it is honoured only while the machine
+ * it names still exists AND still names this capsule. A reservation pointing at
+ * a vanished machine, or at one that has since moved to another capsule, is
+ * stale and may be taken over — atomically, guarded on the exact holder that was
+ * observed, so two publishes racing to adopt the same stale reservation cannot
+ * both succeed. A machine's LIFECYCLE never makes its reservation stale; see the
+ * body for why delisting in particular must not.
+ */
 export async function reserveCapsule(
   collection: string,
   tokenId: string,
   machineId: string,
 ): Promise<boolean> {
-  const won = await redis.set(kCapsule(collection, tokenId), machineId, { nx: true })
-  return won === 'OK'
+  const key = kCapsule(collection, tokenId)
+  if ((await redis.set(key, machineId, { nx: true })) === 'OK') return true
+
+  const holder = await redis.get<string>(key).catch(() => null)
+  if (!holder) {
+    // Vanished between the NX and the read — try once more, cleanly.
+    return (await redis.set(key, machineId, { nx: true })) === 'OK'
+  }
+  if (holder === machineId) return true
+
+  // A reservation is honoured while the machine behind it still EXISTS and
+  // still names this capsule. Nothing else. In particular a `delisted` machine
+  // keeps its token: delisting stops new listings, it does not settle the
+  // capsules people already bought, and those are discharged by plays and
+  // resumes against THAT machine. Handing the token to a successor would make
+  // one capsule mint honourable by two machines — the postdate rule only sets a
+  // lower bound, so any mint landing after the successor opened would satisfy
+  // both — turning one payment into two artworks from two different artists'
+  // pools. Capsule tokens are cheap to mint; a creator whose machine was pulled
+  // opens the next one on a fresh token.
+  //
+  // What DOES get taken over is a true orphan: the publish that wrote this key
+  // and then died before `createMachine` (no record at that id), or a key left
+  // pointing at a machine that has since been rebuilt around a different
+  // capsule. Without that, a crash in a one-write window stranded the token
+  // forever, with no machine record for any admin surface to target.
+  const owner = await getMachine(holder).catch(() => null)
+  const live =
+    owner !== null &&
+    owner.capsule.collection === collection.toLowerCase() &&
+    owner.capsule.tokenId === tokenId
+  if (live) return false
+
+  const taken = await redis.eval(TAKEOVER_LUA, [key], [holder, machineId]).catch(() => 0)
+  return taken === 1
 }
 
-/** Hand a capsule token back — on a failed publish, and when a machine is
- *  delisted (which already releases its supply pledges, and no longer honours
- *  plays, so the token is genuinely free again). Guarded by machineId so a
- *  compensating release can never free a reservation someone else won. */
+/** Hand a capsule token back. ONE caller: the publish that reserved the token a
+ *  moment ago and then failed to create its machine, compensating for a write
+ *  that never landed. There is deliberately no lifecycle release — see
+ *  `reserveCapsule` for why a machine keeps its capsule even once delisted.
+ *  Guarded by machineId so a compensating release can never free a reservation
+ *  someone else won. */
 export async function releaseCapsule(
   collection: string,
   tokenId: string,
@@ -394,9 +456,13 @@ export async function pledgeSupply(
   await redis.hset(kCommit(collection, tokenId), { [machineId]: supply })
 }
 
-export async function releasePledge(collection: string, tokenId: string, machineId: string): Promise<void> {
-  await redis.hdel(kCommit(collection, tokenId), machineId)
-}
+// There is deliberately NO releasePledge. Its only caller was the delist
+// transition, where it was wrong — an off-the-shelf machine still owes every
+// capsule it sold, and calling those copies free let a second machine promise
+// them too. Nothing else in the system has ever needed to un-pledge, so rather
+// than leave an exported mutator whose one safe use does not exist yet, the
+// ledger is append-and-hold. If draft cleanup is ever built it can reintroduce
+// this with the guard that use requires: a machine with no outstanding claims.
 
 /** Supply pledged for an edition by machines OTHER than `exceptMachineId`. */
 export async function otherPledges(

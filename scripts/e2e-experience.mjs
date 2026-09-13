@@ -19,7 +19,7 @@
 import { createServer, request as httpRequest } from 'node:http'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import {
   decodeFunctionData,
   encodeAbiParameters,
@@ -54,6 +54,7 @@ const TX_N = '0x' + 'c3'.repeat(32) // player mints 1 capsule of the no-grant ma
 const TX_STALE = '0x' + 'd4'.repeat(32) // minted BEFORE spring-season was published
 const TX_OWNED = '0x' + 'e5'.repeat(32) // played by someone who already holds the floor piece
 const TX_RACE = '0x' + 'f6'.repeat(32) // played and resumed at the same instant
+const TX_DELIST = '0x' + '17'.repeat(32) // paid for, then the machine was delisted under them
 const USER_TOKEN = 'e2e-user-session-token'
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
@@ -404,6 +405,44 @@ if ((await probe('/api/experience/machines')) !== null) {
   console.error(`port ${PORT} is already serving — a stale server would answer with the wrong build; stop it first`)
   process.exit(1)
 }
+// ── the build under test must BE the build on disk ──
+//
+// `next start` serves .next, not the sources, so an edit made since the last
+// build is invisible here: the suite happily reports green against code that no
+// longer exists. That is worst exactly when it matters most — a mutation test
+// (break a guard, confirm the suite notices) reads as "the guard is untested"
+// when what really happened is that the mutant was never compiled. Cheap to
+// detect, so detect it.
+{
+  const newest = (dir) => {
+    let max = 0
+    let stack = [dir]
+    while (stack.length) {
+      const d = stack.pop()
+      let names = []
+      try { names = readdirSync(d, { withFileTypes: true }) } catch { continue }
+      for (const n of names) {
+        if (n.name === 'node_modules' || n.name.startsWith('.')) continue
+        const full = `${d}/${n.name}`
+        if (n.isDirectory()) { stack.push(full); continue }
+        if (!/\.(ts|tsx|js|jsx|mjs|css)$/.test(n.name)) continue
+        try { max = Math.max(max, statSync(full).mtimeMs) } catch { /* raced */ }
+      }
+    }
+    return max
+  }
+  let builtAt = 0
+  try { builtAt = statSync('.next/BUILD_ID').mtimeMs } catch {
+    console.error('no .next build to serve — run `npm run build` first')
+    process.exit(1)
+  }
+  const srcAt = Math.max(newest('app'), newest('lib'), newest('components'))
+  if (srcAt > builtAt) {
+    console.error(`source is newer than .next (by ${Math.round((srcAt - builtAt) / 1000)}s) — \`next start\` would serve the OLD code and every check below would be meaningless. Run \`npm run build\` first.`)
+    process.exit(1)
+  }
+}
+
 // Next renames its server process ("next-server (v…)") and it outlives a
 // process-group kill, so the child is tagged through its environment and
 // shutdown kills whatever still carries the tag. Linux-only (/proc), like the
@@ -613,6 +652,18 @@ try {
   await sleep(400)
   const claimsN = await call(`/api/experience/claims?machineId=no-grant&account=${PLAYER}`)
   check('the stalled claim is indexed even though delivery never ran', claimsN.json?.claims?.length === 1 && claimsN.json.claims[0].unresolved === true)
+  // The other half of 7b, on the path that actually DRAWS. The claim above has
+  // no prize, so resuming it runs a fresh draw — the branch that used to refuse
+  // a delisted machine outright, stranding exactly the player whose first
+  // attempt already failed. It must reach the draw and report on it (200,
+  // nothing available yet), not repudiate the capsule with a 403.
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'delisted' } })
+  const rDelisted = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, unitIndex: 0 } })
+  check('a fresh draw is still owed on a delisted machine, not refused',
+    rDelisted.status === 200 && rDelisted.json?.claim?.state === 'pending' && !rDelisted.json?.claim?.prize,
+    `${rDelisted.status} ${JSON.stringify(rDelisted.json).slice(0, 200)}`)
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'live' } })
+
   chain.perms.set(key(POOL, 99, OPERATOR), 4n)
   const rN = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, unitIndex: 0 } })
   check('after the artist grants, resume draws the owed artwork', !!rN.json?.claim?.prize && rN.json.claim.prize.tokenId === '99', JSON.stringify(rN.json))
@@ -861,15 +912,59 @@ try {
       JSON.stringify(passCapsule.json).slice(0, 200))
   }
 
-  // ═══ 7b. delisting stops the machine dispensing ═══════════════════════════
-  console.log('\n7b. a delisted machine stops dispensing')
+  // ═══ 7b. delisting takes a machine off the shelves and NOTHING else ═══════
+  //
+  // The money question. Delisting is a curator action taken while capsules are
+  // already out in people's wallets, and the earlier version answered it by
+  // refusing to open them — the platform kept the payment and dispensed nothing,
+  // with no path to recovery. It could not do otherwise, because it also freed
+  // the capsule token, so a successor machine could honour the same mint.
+  //
+  // Both halves are asserted here: the listing really does stop, the capsule
+  // really is still honoured, and the token is held for life so no successor can
+  // ever exist to honour it twice.
+  console.log('\n7b. delisting delists — it does not confiscate')
+  chain.head = 5_000_270n
+  addMint({ tx: TX_DELIST, collection: CAPSULE_2, to: PLAYER, id: 1n, value: 1n, block: 5_000_265n })
   await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'delisted' } })
-  const delisted = await call('/api/experience/play', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_A, account: PLAYER, unitIndex: 0 } })
-  check('a delisted machine refuses new plays', delisted.status === 403, JSON.stringify(delisted.json))
-  check('because its capsule token is released for reuse', (await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
+
+  const shelf = await call('/api/experience/machines')
+  check('a delisted machine leaves the public list', !shelf.json.machines.some((m) => m.id === 'field-recordings'),
+    shelf.json.machines.map((m) => m.id).join(','))
+  check('but its page stays reachable, so a holder can still open what they bought',
+    (await call('/api/experience/machines/field-recordings')).status === 200)
+
+  const stranded = await call('/api/experience/play', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_DELIST, account: PLAYER, unitIndex: 0 } })
+  check('a capsule paid for before the delisting is still honoured — it draws, it is not repudiated',
+    stranded.status === 200 && !!stranded.json.claim?.prize,
+    JSON.stringify(stranded.json ?? {}).slice(0, 300))
+  // (This harness has no CDP credentials, so every delivery ends `pending` and
+  //  is finished through resume. That is the same discharge a paymaster refusal
+  //  takes in production, so driving it here proves the whole path — including
+  //  that resume, too, no longer refuses a delisted machine.)
+  chain.balances.set(key(POOL, PLAYER, '8'), 1n)
+  markBroadcast('field-recordings', TX_DELIST, 0)
+  const strandedResume = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_DELIST, unitIndex: 0 } })
+  check('and resume settles it on a delisted machine rather than stranding the payment',
+    strandedResume.json?.claim?.state === 'delivered' && strandedResume.json.resumed === true,
+    JSON.stringify(strandedResume.json?.claim ?? strandedResume.json).slice(0, 300))
+
+  // Asserted on the reservation KEY, not just on the create route's answer. The
+  // index scan that produces that answer reads machine records, so it would keep
+  // saying "taken" even if the state transition quietly released the key — and
+  // the key is the authoritative guard, the one a machine aged out of the index
+  // window still relies on.
+  check('the reservation key still names the delisted machine',
+    strings.get(`kismetart:xp:capsule:${CAPSULE_2}:1`) === 'field-recordings',
+    String(strings.get(`kismetart:xp:capsule:${CAPSULE_2}:1`)))
+
+  const reuse = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
     id: 'recordings-again', name: 'Again', capsule: { collection: CAPSULE_2, tokenId: '1' },
     entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }], dryRun: true,
-  } })).status === 200)
+  } })
+  check('and its capsule token is NOT freed for a successor to honour the same mint',
+    reuse.status === 400 && reuse.json.problems?.[0]?.code === 'capsule-in-use',
+    JSON.stringify(reuse.json).slice(0, 200))
   await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
 
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════

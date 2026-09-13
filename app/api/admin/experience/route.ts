@@ -15,8 +15,6 @@ import {
   getRemaining,
   listMachines,
   otherPledges,
-  releaseCapsule,
-  releasePledge,
   setMachineState,
 } from '@/lib/experience/store'
 import type { MachineState } from '@/lib/experience/types'
@@ -189,22 +187,25 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Rejecting outright frees the edition headroom this machine was holding, so
-  // a declined submission stops blocking every other machine that wants the
-  // same pieces. `ended` deliberately does NOT release: an ended season still
-  // owes its outstanding capsules.
-  if (state === 'delisted') {
-    const pool = await getPool(id)
-    await Promise.all([
-      ...pool.map((e) => releasePledge(e.collection, e.tokenId, id).catch(() => {})),
-      // The capsule token too: a delisted machine no longer honours plays (the
-      // play route refuses it), so holding its reservation would strand the
-      // token forever. Released together with the pledges so the two halves of
-      // "this machine no longer claims anything" cannot drift apart.
-      releaseCapsule(machine.capsule.collection, machine.capsule.tokenId, id).catch(() => {}),
-    ])
-  }
-
+  // A state transition RELEASES NOTHING, and that is the whole ordering story
+  // here. An earlier version freed the machine's capsule token and its supply
+  // pledges on delist, which made this handler a two-step with an unsafe
+  // window — a crash between them left a machine still `live` whose resources
+  // had already been handed to whoever asked next — and made the release itself
+  // wrong even when it completed:
+  //
+  //   • THE CAPSULE. Delisting does not close the on-chain sale, and it does not
+  //     settle capsules already bought. Freeing the token let a successor
+  //     machine take it, and one capsule mint would then be honourable by both
+  //     (the postdate rule is only a lower bound) — one payment, two artworks,
+  //     from two different artists' pools.
+  //   • THE PLEDGES. This machine's outstanding claims are still discharged
+  //     through play and resume, and those draws consume real copies. Calling
+  //     the copies free while they are still owed lets a second machine promise
+  //     them too, over-issuing past what the artist consented to.
+  //
+  // Holding both over-reserves, which costs a machine headroom rather than an
+  // artist a copy, and leaves this a single idempotent write.
   const next = await setMachineState(id, state)
   await recordAdminAction('experience-state', {
     actor: auth.signer,

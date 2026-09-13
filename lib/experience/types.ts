@@ -126,10 +126,11 @@ export type SolvencyProblemCode =
   | 'undercollateralised'
   | 'floor-not-creator'
   /** Emitted by the create route, not checkSolvency (it needs the machine
-   *  list, which the pure checker must not read): another live machine already
-   *  uses this capsule token. Claims are keyed per (machine, tx, unit), so two
-   *  machines sharing one capsule would let a single paid mint play on BOTH —
-   *  a cross-machine double-spend of the capsule itself. */
+   *  list, which the pure checker must not read): another machine already uses
+   *  this capsule token — in ANY state, including delisted, because a machine
+   *  keeps its capsule for life. Claims are keyed per (machine, tx, unit), so
+   *  two machines sharing one capsule would let a single paid mint play on
+   *  BOTH — a cross-machine double-spend of the capsule itself. */
   | 'capsule-in-use'
   /** The capsule has a split whose members Kismet cannot name, so the pool
    *  cannot be held to it. Refused rather than assumed — see
@@ -148,10 +149,16 @@ export type SolvencyProblemCode =
    *  the platform credential itself. */
   | 'capsule-is-pass'
 
-/** Machine visibility. `draft` is creator-only; `review` is queued for a
- *  curator; `live` is playable; `ended` keeps claims honourable but sells
- *  nothing; `delisted` is a moderation outcome that ALSO keeps claims
- *  honourable — a paid capsule is never stranded by a delisting. */
+/** Machine visibility, and only visibility. `draft` is creator-only; `review` is
+ *  queued for a curator; `live` is on the shelves; `ended` is off them by the
+ *  creator's choice; `delisted` is off them by a curator's.
+ *
+ *  NONE of the last three stops a capsule already paid for from being opened.
+ *  State governs listing, never settlement: a machine keeps its pledged copies
+ *  and its capsule token for life, and honours every capsule it sold. Stopping a
+ *  particular ARTWORK is a separate, per-artwork control (hide it, or blacklist
+ *  its artist), which parks the claim for an operator instead of keeping the
+ *  player's money. */
 export type MachineState = 'draft' | 'review' | 'live' | 'ended' | 'delisted'
 
 export interface Machine {

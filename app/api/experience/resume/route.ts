@@ -96,9 +96,20 @@ export async function POST(req: NextRequest) {
   // prize, each consume a copy, and each deliver — two artworks for one payment,
   // and the two deliveries would not even collide on delivery.ts's own lock
   // because they are different tokens. The lock has to be on the CLAIM.
+  //
+  // The TTL has to outlast the SLOWEST legitimate body, not the typical one.
+  // A lock that expires mid-flight is worse than no lock: it admits a second
+  // resume while the first is still between its consume and its delivery, which
+  // is exactly the double-issue this guard exists to stop. The worst case here
+  // is Case 2 — a freeze over the pool, up to MAX_ATTEMPTS draw attempts each
+  // paying for a checkPrizeAuthority round trip, a balance read, and then a
+  // delivery whose userOp wait alone is bounded at 60s. 180s clears that with
+  // room; the only cost of an over-long TTL is that a crashed resume's claim
+  // waits longer before another can adopt it, and STALE_CLAIM_MS already makes
+  // the player wait that long anyway.
   const gate = await acquireLock(
     `kismetart:xp:resume:${machineId}:${txHash.toLowerCase()}:${unitIndex}`,
-    90,
+    180,
   ).catch(() => ({ acquired: false, release: async () => {} }))
   if (!gate.acquired) {
     return NextResponse.json({
@@ -283,14 +294,29 @@ async function handle(
   //    predictable by anyone watching. A genuinely new draw gets a genuinely
   //    secret seed, and the claim records the new epoch, snapshot and commitment
   //    so the receipt still verifies end to end.
-  // Case 1 above settles a prize already drawn, on any machine state — that copy
-  // is spent and the player is owed it. A NEW draw is different: a delisted
-  // machine has had its supply pledges released, so drawing now could issue a
-  // copy another machine is already counting on.
-  if (machine.state === 'draft' || machine.state === 'review' || machine.state === 'delisted') {
-    return errorResponse(403, 'Machine is not live')
-  }
-
+  //    Deliberately NOT gated on machine.state, and this is the fix for a real
+  //    way a paid capsule could be stranded forever. Delisting used to refuse
+  //    here, so every unopened capsule someone had already paid for on that
+  //    machine became unrecoverable the moment a curator acted — the player's
+  //    money gone with no artwork and no path to one.
+  //
+  //    A claim is an obligation already incurred: /api/experience/play only
+  //    creates one after proving a capsule mint that PAID for it, so by the time
+  //    anything reaches here the money has moved. State is a shelf decision and
+  //    it cannot unwind that. `draft` and `review` never sold a capsule at all
+  //    (play refuses them), so no claim can exist on one; every other state is a
+  //    machine that took someone's money and owes them an artwork.
+  //
+  //    What actually protects the draw is per-artwork and still runs in full:
+  //    filterDeliverable re-applies the hidden / blacklisted-artist / Pass
+  //    exclusions below, checkPrizeAuthority re-checks the grant on chain, and
+  //    delisting deliberately keeps BOTH the machine's supply pledges and its
+  //    capsule token (see the admin route and store.reserveCapsule) precisely so
+  //    these copies stay reserved and no rival machine can promise them or
+  //    honour the same capsule mint. A curator who wants a specific piece to
+  //    stop being dispensed hides it or blacklists its artist; that empties the
+  //    eligible set and the claim pends instead of drawing. Refusing wholesale
+  //    bought nothing those checks do not already cover.
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
   const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))

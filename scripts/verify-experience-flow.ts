@@ -177,6 +177,22 @@ function exec(cmd: unknown[]): unknown {
       for (const [mem] of sorted.slice(a, b + 1)) m.delete(mem)
       return b - a + 1
     }
+    case 'eval': {
+      // Deliberately NOT a Lua interpreter. The store ships exactly one script —
+      // the capsule-reservation compare-and-set — so this models that script and
+      // nothing else, and asserts the text it was handed. Change the script and
+      // this throws rather than quietly approving whatever the new one does.
+      const script = args[0].replace(/\s+/g, ' ').trim()
+      const CAS = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]) return 1 end return 0"
+      if (script !== CAS) throw new Error(`unmodelled EVAL script: ${script}`)
+      const nKeys = Number(args[1])
+      const key = args[2]
+      const expect = args[2 + nKeys]
+      const next = args[3 + nKeys]
+      if ((strings.get(key) ?? null) !== expect) return 0
+      strings.set(key, next)
+      return 1
+    }
     default:
       throw new Error(`unsupported cmd ${name}`)
   }
@@ -699,10 +715,14 @@ console.log('\n8. two machines cannot promise the same copy')
     (await store.otherPledges(COLL, 'x1', 'machine-one')) === 3)
   check('and sees every other machine that pledged',
     (await store.otherPledges(COLL, 'x1', 'machine-two')) === 4)
-  await store.releasePledge(COLL, 'x1', 'machine-two')
-  check('releasing a pledge frees the headroom',
-    (await store.otherPledges(COLL, 'x1', 'machine-one')) === 0)
+  // Re-pledging is how a machine's claim on an edition changes; there is no
+  // un-pledge, because the only caller that ever wanted one (delisting) was
+  // releasing copies it still owed.
+  await store.pledgeSupply(COLL, 'x1', 'machine-two', 1)
+  check('a machine can only revise its own pledge',
+    (await store.otherPledges(COLL, 'x1', 'machine-one')) === 1)
   check('an unpledged edition is clear', (await store.otherPledges(COLL, 'x9', 'machine-one')) === 0)
+  check('the ledger has no un-pledge to call', store.releasePledge === undefined)
 }
 
 // ═══ 8b. seeds committed a day AHEAD, not lazily on first play ══════════════
@@ -966,6 +986,69 @@ console.log('\n9. operator identity')
     decoded.args?.[0] === viem.getAddress(player) &&
     decoded.args?.[1] === 77n &&
     decoded.args?.[2] === 1n)
+}
+
+// ═══ 10. one capsule token, one machine, for life ═══════════════════════════
+//
+// The reservation is what stops two machines honouring the SAME capsule mint —
+// claims are keyed per (machine, tx, unit), so a shared capsule is a
+// double-spend the claim key cannot see. Two failure modes pull in opposite
+// directions and both are asserted here: releasing too eagerly (a successor
+// takes a token whose machine still owes capsules) and never releasing at all
+// (a crash between the reservation and the machine write strands the token
+// forever, with no record for any admin surface to target).
+{
+  console.log('\n10. the capsule reservation')
+  const CAP = '0xcafe000000000000000000000000000000000001'
+  const machine = (id: string, coll = CAP, tokenId = '1') => ({
+    id,
+    creator: CREATOR,
+    name: id,
+    state: 'live' as const,
+    capsule: { collection: coll, tokenId },
+    capsuleMaxSupply: 0,
+    createdBlock: 1,
+    splitRecipients: [CREATOR],
+    createdAt: Date.now(),
+  })
+
+  await store.createMachine(machine('mach-a'))
+  check('the first machine takes the token', await store.reserveCapsule(CAP, '1', 'mach-a'))
+  check('and re-taking it is idempotent, not a conflict',
+    await store.reserveCapsule(CAP, '1', 'mach-a'))
+
+  await store.createMachine(machine('mach-b'))
+  check('a second machine cannot take a token a live machine holds',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+
+  // THE MONEY CASE. Delisting is a shelf decision taken while capsules are
+  // already in wallets; the machine still owes every one of them. Handing its
+  // token to a successor would make one paid mint honourable by both.
+  await store.setMachineState('mach-a', 'delisted')
+  check('nor one a DELISTED machine holds — it still owes the capsules it sold',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+  await store.setMachineState('mach-a', 'live')
+
+  // A reservation whose machine was never written: the publish crash window.
+  const ORPHAN = '0xcafe000000000000000000000000000000000002'
+  check('a reservation naming no machine at all is reserved', await store.reserveCapsule(ORPHAN, '1', 'ghost'))
+  check('and is taken over rather than stranding the token forever',
+    await store.reserveCapsule(ORPHAN, '1', 'mach-b'))
+
+  // A reservation left pointing at a machine that has since moved on.
+  const DRIFT = '0xcafe000000000000000000000000000000000003'
+  await store.createMachine(machine('mach-c', DRIFT))
+  check('a machine holds its own token', await store.reserveCapsule(DRIFT, '1', 'mach-c'))
+  await store.saveMachine(machine('mach-c', '0xcafe000000000000000000000000000000000099'))
+  check('a reservation whose machine now names a different capsule is stale',
+    await store.reserveCapsule(DRIFT, '1', 'mach-b'))
+
+  // The compensating release can only ever free the caller's OWN reservation.
+  await store.releaseCapsule(CAP, '1', 'mach-b')
+  check('releasing under the wrong machine id frees nothing',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+  await store.releaseCapsule(CAP, '1', 'mach-a')
+  check('and under the right one it does', await store.reserveCapsule(CAP, '1', 'mach-b'))
 }
 
 server.close()
