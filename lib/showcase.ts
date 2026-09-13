@@ -14,9 +14,10 @@ import {
 // tuples, score is pin time so reads come back newest-pinned first. Kept
 // as three category-scoped keys (rather than one tagged set) so each maps
 // 1:1 to the section it renders and the per-category cap is a plain read.
-// The category vocabulary and the per-category cap are defined in
-// lib/showcaseOrder (the client-safe home, alongside the ordering rules and the
-// sizing rationale) and re-exported here so server callers keep one import.
+
+// The category vocabulary and the cap are defined in lib/showcaseOrder (the
+// client-safe home, alongside the ordering rules and the sizing rationale) and
+// re-exported here so server callers keep one import.
 export { MAX_PINS_PER_CATEGORY, isPinCategory, type PinCategory } from './showcaseOrder'
 
 // ── identity scope ───────────────────────────────────────────────────────────
@@ -70,21 +71,19 @@ export { MAX_PINS_PER_CATEGORY, isPinCategory, type PinCategory } from './showca
 const fidScope = (fid: number) => `fid:${fid}`
 
 /**
- * The key forms this profile's pins may live under, identity home FIRST:
- * `[fid:<n>, address]` for an FC user, `[address]` for everyone else (their
- * address IS their identity, so their keys are byte-identical to the
- * pre-change ones). The address form doubles as the LEGACY home of every pin
- * written before identity keying shipped.
+ * The key forms above, identity home first. Resolved ONCE per request and
+ * threaded through the calls below, so a route pays one index-only lookup
+ * rather than one per showcase call it makes.
  *
- * Resolved ONCE per request and threaded through, so a route pays one
- * index-only lookup rather than one per showcase call it makes.
+ * THROWS when the identity is unresolvable, rather than guessing the address
+ * form — see the MODE paragraph above for why that guess is unsafe. Every
+ * caller handles it: the reads catch and fail private, the write routes answer
+ * 503 retryable so the client reverts its optimistic state, and clearAllPins
+ * deletes what it can name anyway.
  */
 export async function resolveShowcaseScopes(address: string): Promise<string[]> {
   const lower = address.toLowerCase()
   const lookup = await getFidByAddressChecked(lower)
-  // Throws rather than guessing the address form — see the note above. Every
-  // caller already handles it: the two reads catch and fail private, and the
-  // write routes surface a 500 the client reverts, as a Redis failure always did.
   if (lookup === null) throw new Error('showcase: identity lookup unavailable, retry')
   return lookup.fid == null ? [lower] : [fidScope(lookup.fid), lower]
 }
@@ -141,12 +140,28 @@ async function readCategory(category: PinCategory, scopes: string[]): Promise<st
   )
 }
 
-/** Delete every pinned-showcase key for an identity: the three category ZSETs
- *  and the public-view mode, under every scope. Admin profile-erase only. */
+/**
+ * Delete every pinned-showcase key for an identity: the three category ZSETs
+ * and the public-view mode, under every scope. Admin profile-erase only.
+ *
+ * DELETION DEGRADES THE OPPOSITE WAY to the reads and writes above. They fail
+ * closed because an unresolvable identity means they'd touch the wrong key; an
+ * erase has no wrong key — deleting an already-empty one costs nothing — so it
+ * removes everything it can NAME, and naming the address form needs no lookup
+ * at all. Routed through the throwing resolver instead, one blip on the FC
+ * reverse index let a profile's pins survive their own deletion, silently,
+ * because /api/admin/erase-profile swallows per-op failures by design to stay
+ * re-runnable.
+ */
 export async function clearAllPins(address: string, scopes?: string[]): Promise<void> {
-  const resolved = await scopesFor(address, scopes)
+  const lower = address.toLowerCase()
+  const resolved = scopes ?? (await resolveShowcaseScopes(lower).catch(() => []))
+  const targets = new Set<string>([lower, ...resolved])
   await Promise.all(
-    resolved.flatMap((s) => [...PIN_CATEGORIES.map((c) => redis.del(key(c, s))), redis.del(viewKey(s))]),
+    [...targets].flatMap((s) => [
+      ...PIN_CATEGORIES.map((c) => redis.del(key(c, s))),
+      redis.del(viewKey(s)),
+    ]),
   )
 }
 
