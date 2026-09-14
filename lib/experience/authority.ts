@@ -210,28 +210,35 @@ export async function checkCapsuleControl(params: {
  * ── The evidence, in order of strength ──
  *
  *   1. The collection emitted `Purchased` for this token in this transaction.
- *      Only the 1155's own sale path emits it; `adminMint` never does. Decisive.
+ *      Only the 1155's own sale path emits it; `adminMint` never does. Both
+ *      facts verified against Zora's source (see lib/verifyMint). Decisive.
  *   2. The mint was executed by Zora's ERC20Minter. It takes the ERC20 payment
- *      and then mints via `adminMint` — so it emits no `Purchased`, and it IS a
- *      sale. Its address is the one every USDC collect in this codebase already
- *      sends funds to, so trusting it here adds no new trust.
- *   3. Otherwise: does the executing `operator` hold mint rights on the capsule
- *      right now? A buyer never does. A creator minting to themselves always
- *      does. Read live, on the token row and the collection-wide row.
+ *      and then mints via `adminMint` (verified likewise) — so it emits no
+ *      `Purchased`, and it IS a sale. Its address is the one every USDC collect
+ *      in this codebase already sends funds to, so trusting it adds no trust.
+ *   3. Otherwise: did the executing `operator` hold mint rights on the capsule?
+ *      A buyer never does. A creator minting to themselves always does. Read
+ *      on the token row and the collection-wide row — at the mint block where
+ *      the chain will say, else live (next section).
  *
- * (1) is layered ABOVE (3) so that it can only ever ADD acceptances: if the
- * `Purchased` decode ever disagreed with the deployed ABI, every sale would
- * simply fall through to (3), where an ordinary buyer still passes. A wrong
- * guess about an event cannot refuse a paying player.
+ * (1) is layered ABOVE (3) so that it can only ever ADD acceptances. That was
+ * originally insurance against an unverified event declaration; now that the
+ * declaration is verified it is defence in depth, and it still means a change
+ * to Zora's event could refuse nobody honest — every sale would fall through
+ * to (3), where an ordinary buyer passes.
  *
- * ── What it does not prove ──
+ * ── At the mint block, when the chain will say ──
  *
- * (3) is a live read, not a historical one: a creator who grants MINTER to a
- * fresh wallet, mints, and revokes before playing would pass it. That takes a
- * deliberate three-transaction fraud and leaves two `UpdatedPermissions` events
- * on the capsule collection beside the mint, so it is attributable rather than
- * invisible. Proving it outright needs the permission state AT the mint block,
- * which is an archive read this deployment's RPC is not assumed to serve.
+ * The question is what rights the operator held WHEN IT MINTED, not now. Read
+ * live only, a creator who grants MINTER to a fresh wallet, mints, and revokes
+ * before playing would pass. So (3) is asked first at the block the mint landed
+ * in, which is exactly the state that decided whether `adminMint` succeeded.
+ * A non-archive RPC can answer that only for recent blocks and throws for
+ * older ones; a play normally follows its mint by seconds, so the pinned read
+ * covers the ordinary case on any node, and the live read is the fallback for
+ * an old mint on a node that cannot look back. The fallback is documented
+ * weaker, not silently equal: on it, the three-transaction fraud passes, and
+ * leaves two `UpdatedPermissions` events beside the mint for forensics.
  *
  * Fails closed on an unreadable RPC — the player retries — because the
  * alternative is to admit exactly the mint this exists to refuse.
@@ -245,6 +252,9 @@ export async function checkCapsulePurchase(params: {
   tokenId: string
   purchasedEvent: boolean
   operators: string[]
+  /** Block the mint landed in, from the proof. Absent only for a proof whose
+   *  verdict predates the field; the read is then live. */
+  mintBlock?: number
 }): Promise<CapsulePurchase> {
   if (params.purchasedEvent) return { ok: true }
   const erc20Minter = ZORA_ERC20_MINTER.toLowerCase()
@@ -254,14 +264,21 @@ export async function checkCapsulePurchase(params: {
   const client = serverBaseClient()
   const collection = params.collection as Address
   const tokenId = BigInt(params.tokenId)
+  const pinned = params.mintBlock && params.mintBlock > 0 ? BigInt(params.mintBlock) : undefined
+
+  const readBoth = (op: Address, blockNumber?: bigint) =>
+    Promise.all([
+      readPermissions(client, collection, tokenId, op, { retries: blockNumber ? 1 : 2, blockNumber }),
+      readPermissions(client, collection, 0n, op, { retries: blockNumber ? 1 : 2, blockNumber }),
+    ])
+
   for (const op of suspects) {
     let onToken: bigint
     let onCollection: bigint
     try {
-      ;[onToken, onCollection] = await Promise.all([
-        readPermissions(client, collection, tokenId, op as Address, { retries: 2 }),
-        readPermissions(client, collection, 0n, op as Address, { retries: 2 }),
-      ])
+      ;[onToken, onCollection] = pinned
+        ? await readBoth(op as Address, pinned).catch(() => readBoth(op as Address))
+        : await readBoth(op as Address)
     } catch {
       return { ok: false, reason: 'unreadable' }
     }
@@ -296,11 +313,16 @@ export async function readArtistControl(
 ): Promise<boolean | undefined> {
   const client = serverBaseClient()
   try {
-    const [onToken, onCollection] = await Promise.all([
-      readPermissions(client, collection as Address, BigInt(tokenId), artist as Address, { retries: 2 }),
-      readPermissions(client, collection as Address, 0n, artist as Address, { retries: 2 }),
-    ])
-    return hasAdminBit(onToken) || hasAdminBit(onCollection)
+    // Collection-wide first, on its own: it is where Zora puts the admin of
+    // every token a creator set up, so it answers for almost every entry and the
+    // token row is read only when it does not. Publish reads this for every
+    // entry of a pool alongside its headroom, and the difference between one
+    // read and two is the difference between a burst the RPC absorbs and one it
+    // rate-limits into a spurious 'artist-unreadable' on a legitimate machine.
+    const onCollection = await readPermissions(client, collection as Address, 0n, artist as Address, { retries: 2 })
+    if (hasAdminBit(onCollection)) return true
+    const onToken = await readPermissions(client, collection as Address, BigInt(tokenId), artist as Address, { retries: 2 })
+    return hasAdminBit(onToken)
   } catch {
     return undefined
   }

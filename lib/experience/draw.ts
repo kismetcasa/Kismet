@@ -32,8 +32,15 @@ export const MAX_POOL_ENTRIES = 200
  *  same number everywhere a unit index is validated or probed — the play route,
  *  the resume and verify routes, the claims and discovery probes, and the
  *  client's open loop. Three different ceilings (999 / 20 / 20) once let a
- *  50-unit capsule be playable by API but only 20-recoverable by UI. */
-export const MAX_UNITS_PER_CAPSULE = 100
+ *  50-unit capsule be playable by API but only 20-recoverable by UI.
+ *
+ *  Units past it are PAID FOR AND UNPLAYABLE, so the number is set by what a
+ *  transaction could plausibly carry, not by what the product offers (×10 at
+ *  most): every loop it bounds is already bounded by real claims or real minted
+ *  units, so a large value costs nothing until someone actually buys that many
+ *  in one transaction — and then it costs them a long sequence of reveals,
+ *  which is theirs to have bought. Set to a hundred times the largest pull. */
+export const MAX_UNITS_PER_CAPSULE = 1000
 
 /** Is this entry structurally drawable? Weight must be a positive integer
  *  within bounds, and remaining must not be exhausted. `remaining: null` means

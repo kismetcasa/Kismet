@@ -199,23 +199,29 @@ export function ExperienceMachine({ id }: { id: string }) {
       txHash: string,
       unitIndex: number,
       addr: string,
-    ): Promise<{ prize: Prize | null; units: number | null }> => {
+    ): Promise<{ prize: Prize | null; units: number | null; error: string | null }> => {
       const r = await fetch('/api/experience/play', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ machineId: id, txHash, account: addr, unitIndex }),
       })
       const body = await r.json().catch(() => null)
-      if (!r.ok || !body?.ok) return { prize: null, units: null }
+      // A refusal carries the server's exact reason — minted before the machine
+      // opened, minted for free by its own admin, not a capsule of this machine
+      // at all. Dropping it left every refused capsule reading "try again
+      // shortly", which is a promise about something that will never change.
+      if (!r.ok || !body?.ok) {
+        return { prize: null, units: null, error: typeof body?.error === 'string' ? body.error : null }
+      }
       // `units` is the on-chain quantity the server proved for the WHOLE
       // transaction — the only way to know how many plays a pasted or
       // discovered hash covers.
       const units = Number.isInteger(body.units) ? (body.units as number) : null
       if (body.claim?.state === 'delivered' && body.claim.prize) {
-        return { prize: body.claim.prize as Prize, units }
+        return { prize: body.claim.prize as Prize, units, error: null }
       }
       if (body.claim?.pendingReason) setPendingReason(body.claim.pendingReason)
-      return { prize: null, units }
+      return { prize: null, units, error: null }
     },
     [id],
   )
@@ -314,12 +320,14 @@ export function ExperienceMachine({ id }: { id: string }) {
         // the transaction covers, so open unit 0 first and let the server's
         // on-chain proof report the total, then open the rest.
         let units: number[]
-        let probed: { prize: Prize | null; units: number | null } | null = null
+        let probed: { prize: Prize | null; units: number | null; error: string | null } | null = null
         if (unitList === 'probe') {
           probed = await openUnit(txHash, 0, addr).catch(() => null)
-          if (!probed) {
+          // No unit count means the server did not accept the transaction as a
+          // capsule of this machine; its reason, when it gave one, is the answer.
+          if (!probed || probed.units === null) {
             setPhase('pending')
-            setPendingReason('That transaction could not be verified as a capsule for this machine.')
+            setPendingReason(probed?.error ?? 'That transaction could not be verified as a capsule for this machine.')
             return
           }
           const total = Math.min(probed.units ?? 1, MAX_UNITS_PER_CAPSULE)
@@ -346,7 +354,7 @@ export function ExperienceMachine({ id }: { id: string }) {
             recovered.push(body.claim.prize as Prize)
           } else {
             reason =
-              body?.claim?.pendingReason ?? body?.reason ?? 'Still working on it — try again shortly.'
+              body?.claim?.pendingReason ?? body?.reason ?? body?.error ?? 'Still working on it — try again shortly.'
           }
         }
 

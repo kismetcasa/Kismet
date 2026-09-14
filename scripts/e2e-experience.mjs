@@ -58,6 +58,11 @@ const TX_DELIST = '0x' + '17'.repeat(32) // paid for, then the machine was delis
 const TX_FREE = '0x' + '28'.repeat(32) // adminMinted by the capsule's own admin — never bought
 const TX_FREE_RECEIPTED = '0x' + '39'.repeat(32) // same operator, but the collection emitted Purchased
 const TX_USDC = '0x' + '4a'.repeat(32) // minted by Zora's ERC20Minter, which pays via adminMint
+const TX_REVOKED = '0x' + '5b'.repeat(32) // adminMinted by a wallet whose grant was revoked before it played
+const TX_OLD_NODE = '0x' + '6c'.repeat(32) // an honest buy whose block the node can no longer look back to
+/** A wallet the creator granted MINTER to, minted from, and revoked — the
+ *  three-transaction evasion of a live permission read. */
+const EVADER = '0x5555000000000000000000000000000000000055'
 /** Zora's ERC20Minter on Base — lib/zoraMint.ZORA_ERC20_MINTER. */
 const ERC20_MINTER = '0xe27d9dc88dab82aca3ebc49895c663c6a0cfa014'
 const USER_TOKEN = 'e2e-user-session-token'
@@ -180,11 +185,10 @@ const TOKEN_INFO = parseAbi(['function getTokenInfo(uint256 tokenId) view return
 const PERMS = parseAbi(['function permissions(uint256 tokenId, address user) view returns (uint256)'])
 const BALANCE = parseAbi(['function balanceOf(address account, uint256 id) view returns (uint256)'])
 const TRANSFER = parseAbi(['event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)'])
-// The purchase receipt lib/verifyMint decodes. NOTE what this does and does not
-// prove: the harness encodes with the same declaration the app decodes with, so
-// a pass here shows the two agree with EACH OTHER — not that either matches the
-// deployed Zora ABI. That is why the app layers this signal additively: a wrong
-// declaration falls through to the permission read and refuses nobody honest.
+// The purchase receipt lib/verifyMint decodes — the declaration in Zora's
+// IZoraCreator1155.sol (legacy/1155-contracts), verified verbatim, indexed
+// markers included. The harness encoding with it therefore models what the
+// deployed contract emits, not merely what the app expects.
 const PURCHASED = parseAbi(['event Purchased(address indexed sender, address indexed minter, uint256 indexed tokenId, uint256 quantity, uint256 value)'])
 const FPSS_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient))'])
 const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
@@ -199,7 +203,13 @@ const OPEN = 18446744073709551615n
 const chain = {
   head: 5_000_000n,
   tokens: new Map(),   // `${collection}:${id}` -> { maxSupply, totalMinted }
-  perms: new Map(),    // `${collection}:${id}:${user}` -> bits
+  perms: new Map(),    // `${collection}:${id}:${user}` -> bits, as of the head
+  /** `${collection}:${id}:${user}@${block}` -> bits, for a read pinned to a
+   *  block. Absent means unchanged since, so the head value answers. */
+  permsAt: new Map(),
+  /** When set, a pinned read below this block fails the way a non-archive node
+   *  fails ("missing trie node"), so the app's live-read fallback is exercised. */
+  archiveFrom: null,
   balances: new Map(), // `${collection}:${account}:${id}` -> n
   sales: new Map(),    // `${collection}:${id}` -> { saleStart, saleEnd, pricePerToken, fundsRecipient }
   receipts: new Map(), // txHash -> receipt
@@ -238,6 +248,11 @@ function rpc(method, params) {
     case 'eth_getTransactionReceipt': return chain.receipts.get(String(params[0]).toLowerCase()) ?? null
     case 'eth_call': {
       const { to, data } = params[0]
+      const tag = params[1]
+      const pinned = typeof tag === 'string' && /^0x[0-9a-f]+$/i.test(tag) ? BigInt(tag) : null
+      if (pinned !== null && chain.archiveFrom !== null && pinned < chain.archiveFrom) {
+        throw new Error(`missing trie node for block ${pinned} (state pruned)`)
+      }
       const sel = data.slice(0, 10)
       if (sel === SEL.tokenInfo) {
         const { args } = decodeFunctionData({ abi: TOKEN_INFO, data })
@@ -246,7 +261,9 @@ function rpc(method, params) {
       }
       if (sel === SEL.perms) {
         const { args } = decodeFunctionData({ abi: PERMS, data })
-        return encodeFunctionResult({ abi: PERMS, functionName: 'permissions', result: chain.perms.get(key(to, args[0], args[1])) ?? 0n })
+        const k = key(to, args[0], args[1])
+        const at = pinned !== null ? chain.permsAt.get(`${k}@${pinned}`) : undefined
+        return encodeFunctionResult({ abi: PERMS, functionName: 'permissions', result: at ?? chain.perms.get(k) ?? 0n })
       }
       if (sel === SEL.sale) {
         // Only the FixedPriceSaleStrategy is modelled; the ERC20 leg decodes as
@@ -295,7 +312,16 @@ const rpcServer = createServer((req, res) => {
     try {
       const parsed = JSON.parse(body)
       const one = (r) => {
-        const result = rpc(r.method, r.params ?? [])
+        let result
+        try {
+          result = rpc(r.method, r.params ?? [])
+        } catch (err) {
+          // A per-request JSON-RPC error, the shape a real node answers with
+          // (and code -32000, which viem surfaces without retrying), rather
+          // than failing the whole HTTP exchange.
+          if (DEBUG) console.error(`[rpc] ${r.method} -> error ${err?.message ?? err}`)
+          return { jsonrpc: '2.0', id: r.id, error: { code: -32000, message: String(err?.message ?? err) } }
+        }
         if (DEBUG) console.error(`[rpc] ${r.method} ${JSON.stringify(r.params ?? [], (_, v) => (typeof v === 'bigint' ? v.toString() : v)).slice(0, 220)} -> ${Array.isArray(result) ? `${result.length} logs` : String(result).slice(0, 60)}`)
         return { jsonrpc: '2.0', id: r.id, result }
       }
@@ -841,6 +867,26 @@ try {
     const usdc = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_USDC, account: PLAYER, unitIndex: 0 } })
     check('a capsule minted by the ERC20Minter is a sale and plays',
       usdc.status === 200 && !!usdc.json?.claim?.prize, `${usdc.status} ${JSON.stringify(usdc.json).slice(0, 200)}`)
+
+    // ── rights are read at the MINT block, not now ──
+    // The creator granted EVADER mint rights, EVADER adminMinted, the grant was
+    // revoked. At the head EVADER holds nothing; at the mint block it held
+    // MINTER. A live read would admit this; the pinned read refuses it.
+    chain.permsAt.set(`${key(CAPSULE, 0, EVADER)}@${5_000_291n}`, 4n)
+    addMint({ tx: TX_REVOKED, collection: CAPSULE, to: EVADER, operator: EVADER, id: 1n, value: 1n, block: 5_000_291n })
+    const revoked = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_REVOKED, account: EVADER, unitIndex: 0 } })
+    check('a free mint by a since-revoked minter is refused — rights are read at the mint block',
+      revoked.status === 403 && /mint rights/.test(revoked.json?.error ?? ''), `${revoked.status} ${JSON.stringify(revoked.json)}`)
+
+    // A node that cannot look back to the mint block answers the pinned read
+    // with an error; the live read then decides, so an honest buyer whose mint
+    // is older than the node's window still plays rather than being stranded.
+    chain.archiveFrom = 5_000_295n
+    addMint({ tx: TX_OLD_NODE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_292n })
+    const oldNode = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_OLD_NODE, account: PLAYER, unitIndex: 0 } })
+    check('an honest buy the node cannot look back to falls through to the live read and plays',
+      oldNode.status === 200 && !!oldNode.json?.claim?.prize, `${oldNode.status} ${JSON.stringify(oldNode.json).slice(0, 200)}`)
+    chain.archiveFrom = null
   }
 
   // ═══ 6c. the price, disclosed before the wallet prompt ═════════════════════

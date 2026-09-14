@@ -60,13 +60,18 @@ import { serverBaseClient } from './rpc'
 
 const ERC1155_TRANSFER_ABI = parseAbi([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
-  // Zora 1155's own purchase receipt, emitted by `_executeMint` on every
-  // `mint()` / `mintWithRewards()` and NEVER by `adminMint`. It is the one
+  // Zora 1155's own purchase receipt. Verified against ourzora/zora-protocol
+  // (legacy/1155-contracts): declared in IZoraCreator1155.sol exactly as below,
+  // emitted only from ZoraCreator1155Impl._mintAndHandleRewards — the path
+  // behind mint() and mintWithRewards() — as
+  // `emit Purchased(msg.sender, address(minter), tokenId, quantity, valueSent)`,
+  // and never from adminMint, whose body is a bare `_mint`. It is the one
   // on-chain fact that separates a bought token from one a permissioned party
   // minted for free. Decoded on the SAME log scan as TransferSingle — viem picks
   // the event by topic0, so a log that matches neither is skipped exactly as an
-  // unrelated log always was. Consumers must treat "absent" as a weaker signal
-  // than "present": see MintProofOk.purchasedEvent.
+  // unrelated log always was. Consumers must still treat "absent" as weaker than
+  // "present", because Zora's ERC20Minter mints via adminMint after taking
+  // payment: see MintProofOk.purchasedEvent.
   'event Purchased(address indexed sender, address indexed minter, uint256 indexed tokenId, uint256 quantity, uint256 value)',
 ])
 
@@ -98,13 +103,13 @@ export interface MintProofOk {
   units: number
   /** Did the collection emit `Purchased` for this token in this transaction?
    *
-   *  A PRESENT event is strong: only the 1155's own `_executeMint` emits it, so
-   *  the token was bought through a sale. An ABSENT event is weak, and callers
-   *  must not treat it as proof of a free mint: Zora's ERC20Minter takes payment
-   *  and then mints via `adminMint`, which emits no `Purchased`, and a decode
-   *  that silently disagreed with the deployed ABI would look identical to a
-   *  genuine absence. Pair it with `operators` (see lib/experience/authority's
-   *  checkCapsulePurchase). null when a cached verdict predates the field. */
+   *  A PRESENT event is strong: only the 1155's own sale path emits it, so the
+   *  token was bought. An ABSENT event is weak, and callers must not treat it
+   *  as proof of a free mint: Zora's ERC20Minter takes payment and then mints
+   *  via `adminMint` (verified: `IZora1155(tokenAddress).adminMint(mintTo,
+   *  tokenId, quantity, "")` in its mint()), which emits no `Purchased`. Pair it
+   *  with `operators` (see lib/experience/authority's checkCapsulePurchase).
+   *  null when a cached verdict predates the field. */
   purchasedEvent: boolean | null
   /** Lowercased `operator` of every matching TransferSingle — the address that
    *  executed the mint — deduplicated. For an ordinary sale this is the buyer;

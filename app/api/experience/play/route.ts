@@ -175,6 +175,7 @@ export async function POST(req: NextRequest) {
     tokenId: machine.capsule.tokenId,
     purchasedEvent: proof.purchasedEvent,
     operators: proof.operators,
+    mintBlock: proof.blockNumber ?? undefined,
   })
   if (!purchase.ok) {
     if (purchase.reason === 'unreadable') {
