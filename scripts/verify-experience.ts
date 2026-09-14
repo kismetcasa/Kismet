@@ -186,6 +186,15 @@ const AMPLE: Record<string, number | null> = Object.fromEntries(
     null,
   ]),
 )
+/** Every declared artist holds ADMIN on their piece, for the same keys AMPLE
+ *  covers. Like headroom, an ABSENT key means "the chain could not be read" and
+ *  fails closed, so the cases that exercise the attestation override. */
+const OWNED: Record<string, boolean> = Object.fromEntries(
+  ['1', '2', '3', '9', 'f', 'c', 'a', 'b'].map((t) => [
+    `0xaaaa000000000000000000000000000000000001:${t}`,
+    true,
+  ]),
+)
 const baseInput = {
   capsuleMaxSupply: 5,
   capsuleMinted: 0,
@@ -195,6 +204,7 @@ const baseInput = {
   passCollection: null,
   headroom: { ...AMPLE } as Record<string, number | null>,
   otherPledges: {} as Record<string, number>,
+  artistControl: { ...OWNED } as Record<string, boolean>,
 }
 const codes = (p: ReturnType<typeof checkSolvency>) => p.map((x) => x.code)
 
@@ -292,6 +302,36 @@ check(
       splitRecipients: Array.from({ length: MAX_POOL_ARTISTS + 1 }, (_, i) => `0x${String(i).padStart(40, '0')}`),
     }),
   ).includes('too-many-artists'),
+)
+
+// ── the artist named on an entry must be the token's admin ──────────────────
+// The split check only ever asked "is the NAMED artist paid?"; nothing asked
+// whether the name was true. A creator could pool a piece another artist had
+// granted to the platform, name themselves as its artist, and pass.
+check(
+  'an entry whose declared artist does not hold admin is refused',
+  codes(checkSolvency({ ...baseInput, artistControl: { ...OWNED, [entryKey(entry())]: false } }))
+    .includes('artist-not-admin'),
+)
+check(
+  'and the refusal names the impostor and the piece',
+  checkSolvency({ ...baseInput, artistControl: { ...OWNED, [entryKey(entry())]: false } })
+    .some((p) => p.code === 'artist-not-admin' && p.detail.includes(CREATOR) && p.detail.includes(entryKey(entry()))),
+)
+check(
+  'an artist whose control could not be read is REFUSED, not skipped',
+  codes(checkSolvency({ ...baseInput, artistControl: {} })).includes('artist-unreadable'),
+)
+check(
+  'a false attestation is a separate finding from a missing split entry',
+  (() => {
+    const p = checkSolvency({
+      ...baseInput,
+      entries: [entry({ artist: '0xstranger000000000000000000000000000001' })],
+      artistControl: { ...OWNED, [entryKey(entry())]: false },
+    })
+    return p.some((x) => x.code === 'artist-not-in-split') && p.some((x) => x.code === 'artist-not-admin')
+  })(),
 )
 
 // THE hazard this whole subsystem must never permit. Prize delivery is an
@@ -502,6 +542,7 @@ console.log('\n7b. outstanding nets off already-minted capsules')
     passCollection: null,
     headroom: { ...AMPLE },
     otherPledges: {},
+    artistControl: { ...OWNED },
   }
   // 100-cap capsule with 70 already minted: only 30 can still be sold, so 40
   // pledged copies cover it. The gate used to demand coverage for all 100 while

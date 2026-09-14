@@ -42,6 +42,12 @@ export interface SolvencyInput {
    *  cross-machine commitment ledger — without it two hosts can promise the same
    *  last edition and only one of them can be right. */
   otherPledges: Record<string, number>
+  /** Per entry key: does the DECLARED artist hold ADMIN on that token? Read
+   *  live on-chain (lib/experience/authority.readArtistControl). Absent means
+   *  the chain could not answer, and fails closed like unreadable headroom.
+   *  Without this the artist field was a free-text claim that the split check
+   *  then trusted — see 'artist-not-admin' below. */
+  artistControl: Record<string, boolean>
 }
 
 /** A problem and the sentence a creator reads about it. The code union lives in
@@ -128,6 +134,26 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
       problems.push({
         code: 'artist-not-in-split',
         detail: `${e.artist} contributes ${key} but is not in the split`,
+      })
+    }
+
+    // The split check above is only as honest as the artist it is checking.
+    // `artist` is typed by the creator, and the grant that makes a piece
+    // deliverable is to the platform's operator rather than to any machine — so
+    // a creator could pool someone else's granted piece, name THEMSELVES as its
+    // artist, and pass 'artist-not-in-split' by being in their own split. The
+    // artist must therefore be the token's ADMIN, read on-chain, before the
+    // split is held to them.
+    const control = input.artistControl[key]
+    if (control === undefined) {
+      problems.push({
+        code: 'artist-unreadable',
+        detail: `${key}: could not confirm on-chain that ${e.artist} owns it — try again`,
+      })
+    } else if (!control) {
+      problems.push({
+        code: 'artist-not-admin',
+        detail: `${e.artist} is named as the artist of ${key} but does not hold admin on it`,
       })
     }
 

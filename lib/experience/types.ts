@@ -145,6 +145,14 @@ export type SolvencyProblemCode =
   /** An entry's live on-chain headroom could not be read, so the pledge could
    *  not be checked against it. Refused rather than skipped. */
   | 'headroom-unreadable'
+  /** The declared artist of an entry does not hold ADMIN on that token. The
+   *  split check holds the machine to whoever is NAMED as artist, so a wrong
+   *  name lets a creator dispense someone else's granted piece while paying
+   *  only themselves. */
+  | 'artist-not-admin'
+  /** The artist's on-chain control of an entry could not be read. Refused
+   *  rather than skipped, like headroom. */
+  | 'artist-unreadable'
   /** The capsule token is in the Pass collection, so paying to play would mint
    *  the platform credential itself. */
   | 'capsule-is-pass'
@@ -173,13 +181,14 @@ export interface Machine {
   capsule: { collection: string; tokenId: string }
   /** Capsule maxSupply read at publish — the immutable liability ceiling. */
   capsuleMaxSupply: number | null
-  /** Base block number at publish, recorded best-effort. Bounds the
-   *  capsule-discovery log scan (lib/experience/discovery): capsules can only
-   *  be minted after the machine exists, so `fromBlock = createdBlock` makes
-   *  the scan exact and tight instead of a lookback guess. Absent on machines
-   *  published before the field existed, or when the read failed — discovery
-   *  then falls back to a bounded lookback and the paste-a-hash path covers
-   *  anything older. */
+  /** Base block number at publish. REQUIRED by the publish route — it is the
+   *  bound the play route uses to refuse capsules minted before the machine
+   *  opened, and a machine without it would honour every historical holder of
+   *  its capsule token — so a chain-head read failure fails the publish rather
+   *  than ship an unbounded machine. Also bounds the capsule-discovery log scan
+   *  (lib/experience/discovery). Optional in the type only for machines
+   *  published before the field existed: those have no bound to apply, and
+   *  discovery falls back to a fixed lookback for them. */
   createdBlock?: number
   /** The capsule's ACTUAL payees, resolved server-side at publish from the
    *  split Kismet recorded when the capsule was minted — never from the publish

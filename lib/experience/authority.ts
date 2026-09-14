@@ -3,7 +3,7 @@ import type { Address } from 'viem'
 import { serverBaseClient } from '../rpc'
 import { PERMISSION_BIT_SALES, hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
 import { resolveOnchainSale } from '../saleConfig'
-import { ZORA_1155_TOKEN_INFO_ABI, isOpenEdition } from '../zoraMint'
+import { ZORA_1155_TOKEN_INFO_ABI, ZORA_ERC20_MINTER, isOpenEdition } from '../zoraMint'
 
 /**
  * The live on-chain authority check for a single drawn prize.
@@ -191,6 +191,119 @@ export async function checkCapsuleControl(params: {
     }
   }
   return { ok: true, pricePerToken: sale.pricePerToken, currency: sale.currency }
+}
+
+/**
+ * Was this capsule BOUGHT, or minted for free by someone entitled to?
+ *
+ * ── The hole ──
+ *
+ * A play is authorised by a capsule mint, and every mint of a Zora 1155 emits
+ * the same TransferSingle whether it came through the sale or through
+ * `adminMint`, which any holder of ADMIN or MINTER on the token can call at no
+ * cost. So a machine's creator could mint themselves a stack of free capsules
+ * and play them — consuming OTHER artists' consented copies, whose share of a
+ * price that was never paid is nothing. Bounded by the capsule's maxSupply and
+ * by the postdate rule, but inside those bounds it is a drain on every artist
+ * who trusted the pool.
+ *
+ * ── The evidence, in order of strength ──
+ *
+ *   1. The collection emitted `Purchased` for this token in this transaction.
+ *      Only the 1155's own sale path emits it; `adminMint` never does. Decisive.
+ *   2. The mint was executed by Zora's ERC20Minter. It takes the ERC20 payment
+ *      and then mints via `adminMint` — so it emits no `Purchased`, and it IS a
+ *      sale. Its address is the one every USDC collect in this codebase already
+ *      sends funds to, so trusting it here adds no new trust.
+ *   3. Otherwise: does the executing `operator` hold mint rights on the capsule
+ *      right now? A buyer never does. A creator minting to themselves always
+ *      does. Read live, on the token row and the collection-wide row.
+ *
+ * (1) is layered ABOVE (3) so that it can only ever ADD acceptances: if the
+ * `Purchased` decode ever disagreed with the deployed ABI, every sale would
+ * simply fall through to (3), where an ordinary buyer still passes. A wrong
+ * guess about an event cannot refuse a paying player.
+ *
+ * ── What it does not prove ──
+ *
+ * (3) is a live read, not a historical one: a creator who grants MINTER to a
+ * fresh wallet, mints, and revokes before playing would pass it. That takes a
+ * deliberate three-transaction fraud and leaves two `UpdatedPermissions` events
+ * on the capsule collection beside the mint, so it is attributable rather than
+ * invisible. Proving it outright needs the permission state AT the mint block,
+ * which is an archive read this deployment's RPC is not assumed to serve.
+ *
+ * Fails closed on an unreadable RPC — the player retries — because the
+ * alternative is to admit exactly the mint this exists to refuse.
+ */
+export type CapsulePurchase =
+  | { ok: true }
+  | { ok: false; reason: 'free-mint' | 'unreadable' }
+
+export async function checkCapsulePurchase(params: {
+  collection: string
+  tokenId: string
+  purchasedEvent: boolean
+  operators: string[]
+}): Promise<CapsulePurchase> {
+  if (params.purchasedEvent) return { ok: true }
+  const erc20Minter = ZORA_ERC20_MINTER.toLowerCase()
+  const suspects = params.operators.filter((op) => op !== erc20Minter)
+  if (suspects.length === 0) return { ok: true }
+
+  const client = serverBaseClient()
+  const collection = params.collection as Address
+  const tokenId = BigInt(params.tokenId)
+  for (const op of suspects) {
+    let onToken: bigint
+    let onCollection: bigint
+    try {
+      ;[onToken, onCollection] = await Promise.all([
+        readPermissions(client, collection, tokenId, op as Address, { retries: 2 }),
+        readPermissions(client, collection, 0n, op as Address, { retries: 2 }),
+      ])
+    } catch {
+      return { ok: false, reason: 'unreadable' }
+    }
+    const canMintFree = (p: bigint) => hasAdminBit(p) || hasMinterBit(p)
+    if (canMintFree(onToken) || canMintFree(onCollection)) return { ok: false, reason: 'free-mint' }
+  }
+  return { ok: true }
+}
+
+/**
+ * Does the declared artist actually own the piece?
+ *
+ * A pool entry's `artist` was whatever the creator typed. It is the address the
+ * split check holds the machine to, the address the blacklist is checked
+ * against, and the name a winner is introduced to — and nothing verified it.
+ * The grant that makes a piece deliverable is to the PLATFORM's operator, not
+ * to a machine, so once an artist granted it for one machine, any creator could
+ * pool that piece under their own name, satisfy 'artist-not-in-split' by being
+ * in their own capsule's split, and dispense the artist's work while paying
+ * them nothing.
+ *
+ * The artist is the token's ADMIN — the collection-wide row or the token's own
+ * — which is the definition the rest of the platform already uses for who may
+ * edit, price and grant on a piece, and the same read `checkCapsuleControl`
+ * makes about the capsule. `undefined` when the chain could not answer, which
+ * the solvency gate treats exactly like unreadable headroom: refused, retry.
+ */
+export async function readArtistControl(
+  collection: string,
+  tokenId: string,
+  artist: string,
+): Promise<boolean | undefined> {
+  const client = serverBaseClient()
+  try {
+    const [onToken, onCollection] = await Promise.all([
+      readPermissions(client, collection as Address, BigInt(tokenId), artist as Address, { retries: 2 }),
+      readPermissions(client, collection as Address, 0n, artist as Address, { retries: 2 }),
+    ])
+    return hasAdminBit(onToken) || hasAdminBit(onCollection)
+  } catch {
+    return undefined
+  }
 }
 
 /** Capsule supply state, read at publish to fix the machine's liability ceiling

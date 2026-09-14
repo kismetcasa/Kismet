@@ -55,6 +55,11 @@ const TX_STALE = '0x' + 'd4'.repeat(32) // minted BEFORE spring-season was publi
 const TX_OWNED = '0x' + 'e5'.repeat(32) // played by someone who already holds the floor piece
 const TX_RACE = '0x' + 'f6'.repeat(32) // played and resumed at the same instant
 const TX_DELIST = '0x' + '17'.repeat(32) // paid for, then the machine was delisted under them
+const TX_FREE = '0x' + '28'.repeat(32) // adminMinted by the capsule's own admin — never bought
+const TX_FREE_RECEIPTED = '0x' + '39'.repeat(32) // same operator, but the collection emitted Purchased
+const TX_USDC = '0x' + '4a'.repeat(32) // minted by Zora's ERC20Minter, which pays via adminMint
+/** Zora's ERC20Minter on Base — lib/zoraMint.ZORA_ERC20_MINTER. */
+const ERC20_MINTER = '0xe27d9dc88dab82aca3ebc49895c663c6a0cfa014'
 const USER_TOKEN = 'e2e-user-session-token'
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
@@ -175,6 +180,12 @@ const TOKEN_INFO = parseAbi(['function getTokenInfo(uint256 tokenId) view return
 const PERMS = parseAbi(['function permissions(uint256 tokenId, address user) view returns (uint256)'])
 const BALANCE = parseAbi(['function balanceOf(address account, uint256 id) view returns (uint256)'])
 const TRANSFER = parseAbi(['event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)'])
+// The purchase receipt lib/verifyMint decodes. NOTE what this does and does not
+// prove: the harness encodes with the same declaration the app decodes with, so
+// a pass here shows the two agree with EACH OTHER — not that either matches the
+// deployed Zora ABI. That is why the app layers this signal additively: a wrong
+// declaration falls through to the permission read and refuses nobody honest.
+const PURCHASED = parseAbi(['event Purchased(address indexed sender, address indexed minter, uint256 indexed tokenId, uint256 quantity, uint256 value)'])
 const FPSS_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient))'])
 const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
 const SEL = {
@@ -195,15 +206,28 @@ const chain = {
   logs: [],
 }
 const key = (...p) => p.map((x) => String(x).toLowerCase()).join(':')
-function addMint({ tx, collection, to, id, value, block }) {
-  const topics = encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: to, from: ZERO, to } })
+/** `operator` is the address that executed the mint (the buyer for an ordinary
+ *  sale, the ERC20Minter for a USDC sale, the admin for a free adminMint);
+ *  `purchased` adds the collection's own Purchased receipt to the transaction. */
+function addMint({ tx, collection, to, id, value, block, operator = to, purchased = false }) {
+  const topics = encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator, from: ZERO, to } })
   const data = encodeAbiParameters(parseAbiParameters('uint256, uint256'), [id, value])
-  const log = { address: collection, topics, data, blockNumber: '0x' + block.toString(16), transactionHash: tx, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false }
+  const blockHex = '0x' + block.toString(16)
+  const log = { address: collection, topics, data, blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false }
   chain.logs.push(log)
+  const logs = [log]
+  if (purchased) {
+    logs.push({
+      address: collection,
+      topics: encodeEventTopics({ abi: PURCHASED, eventName: 'Purchased', args: { sender: operator, minter: FPSS, tokenId: id } }),
+      data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [value, 0n]),
+      blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: log.blockHash, logIndex: '0x1', removed: false,
+    })
+  }
   chain.receipts.set(tx.toLowerCase(), {
-    transactionHash: tx, transactionIndex: '0x0', blockHash: log.blockHash, blockNumber: log.blockNumber,
+    transactionHash: tx, transactionIndex: '0x0', blockHash: log.blockHash, blockNumber: blockHex,
     from: to, to: collection, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
-    contractAddress: null, logs: [log], logsBloom: '0x' + '0'.repeat(512), status: '0x1', type: '0x2',
+    contractAddress: null, logs, logsBloom: '0x' + '0'.repeat(512), status: '0x1', type: '0x2',
   })
 }
 
@@ -391,6 +415,17 @@ chain.tokens.set(key(POOL, 8), { maxSupply: OPEN, totalMinted: 1n })
 chain.perms.set(key(POOL, 7, OPERATOR), 4n)
 chain.perms.set(key(POOL, 14, OPERATOR), 4n)
 chain.perms.set(key(POOL, 8, OPERATOR), 4n)
+// Each pool artist is the ADMIN of the piece they are named on — the ordinary
+// state for a token you minted, and now what the publish gate checks the name
+// against. Token 99 gets its admin too; only its OPERATOR grant is withheld.
+chain.perms.set(key(POOL, 7, ADMIN), 2n)
+chain.perms.set(key(POOL, 99, ADMIN), 2n)
+chain.perms.set(key(POOL, 14, ARTIST_B), 2n)
+chain.perms.set(key(POOL, 8, CREATOR2), 2n)
+// Zora's ERC20Minter holds MINTER on any collection it sells for — that is how
+// it mints after taking the USDC. Modelled so the purchase check's allowlist
+// is what admits it, not an absence of rights.
+chain.perms.set(key(CAPSULE, 0, ERC20_MINTER), 4n)
 // Collection-wide ADMIN for each capsule's creator — the ordinary state for a
 // token you minted, and now a precondition for building a machine on it.
 for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, '0xcccc000000000000000000000000000000000007']) {
@@ -690,6 +725,23 @@ try {
   check('and the refusal names the unpaid artist',
     (lying.json.problems ?? []).some((p) => (p.detail ?? '').toLowerCase().includes(ARTIST_B.toLowerCase())))
 
+  // THE NAME ITSELF WAS NEVER CHECKED. Grants are to the platform's operator, so
+  // once ARTIST_B granted token 14 for any machine, a creator could pool it under
+  // their OWN name, be in their own capsule's split, and dispense it unpaid.
+  const impostor = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'impostor', name: 'Impostor', capsule: { collection: CAPSULE_5, tokenId: '1' },
+    entries: [
+      { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
+      { collection: POOL, tokenId: '14', artist: ADMIN, weight: 1, supply: 3 },
+    ],
+    dryRun: true,
+  } })
+  check('a creator cannot name themselves as the artist of a piece they do not own',
+    impostor.status === 400 && impostor.json.problems.some((p) => p.code === 'artist-not-admin'),
+    JSON.stringify(impostor.json).slice(0, 240))
+  check('and the split check no longer passes on the strength of the false name',
+    !(impostor.json.problems ?? []).some((p) => p.code === 'artist-not-in-split'))
+
   // The same pool IS allowed when the capsule's recorded split really pays them.
   const honest = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
     id: 'honest-split', name: 'Honest Split', capsule: { collection: CAPSULE_6, tokenId: '1' },
@@ -759,6 +811,37 @@ try {
     stale.status === 403 && /before the machine/i.test(stale.json?.error ?? ''),
     JSON.stringify(stale.json))
   check('and it consumed no claim', (await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_STALE}&unitIndex=0`)).status === 404)
+
+  // ═══ 6b-iv. a play is a PURCHASE, not merely a mint ═══════════════════════
+  console.log('\n6b-iv. a capsule minted for free is not a play')
+  {
+    chain.head = 5_000_300n
+    // The capsule's own admin mints themselves a capsule at no cost — the same
+    // TransferSingle a sale emits, and until now the same play. Refused: the
+    // operator holds mint rights on the token and nothing receipted a sale.
+    addMint({ tx: TX_FREE, collection: CAPSULE, to: ADMIN, operator: ADMIN, id: 1n, value: 1n, block: 5_000_281n })
+    const free = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_FREE, account: ADMIN, unitIndex: 0 } })
+    check('a capsule adminMinted by an address with mint rights is refused',
+      free.status === 403 && /mint rights/.test(free.json?.error ?? ''), `${free.status} ${JSON.stringify(free.json)}`)
+    check('and no claim was taken for it',
+      (await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_FREE}&unitIndex=0`)).status === 404)
+
+    // Same operator, but the collection emitted its Purchased receipt: a
+    // genuine sale to an address that happens to hold rights. Accepted — the
+    // receipt outranks the permission read. (Self-consistency only: see the
+    // PURCHASED declaration above for what this does not prove.)
+    addMint({ tx: TX_FREE_RECEIPTED, collection: CAPSULE, to: ADMIN, operator: ADMIN, id: 1n, value: 1n, block: 5_000_282n, purchased: true })
+    const receipted = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_FREE_RECEIPTED, account: ADMIN, unitIndex: 0 } })
+    check('the same operator WITH a Purchased receipt is a sale and plays',
+      receipted.status === 200 && !!receipted.json?.claim?.prize, `${receipted.status} ${JSON.stringify(receipted.json).slice(0, 200)}`)
+
+    // A USDC sale: the ERC20Minter takes payment and mints via adminMint, so it
+    // is the operator, holds MINTER, and emits no Purchased — and it is a sale.
+    addMint({ tx: TX_USDC, collection: CAPSULE, to: PLAYER, operator: ERC20_MINTER, id: 1n, value: 1n, block: 5_000_283n })
+    const usdc = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_USDC, account: PLAYER, unitIndex: 0 } })
+    check('a capsule minted by the ERC20Minter is a sale and plays',
+      usdc.status === 200 && !!usdc.json?.claim?.prize, `${usdc.status} ${JSON.stringify(usdc.json).slice(0, 200)}`)
+  }
 
   // ═══ 6c. the price, disclosed before the wallet prompt ═════════════════════
   console.log('\n6c. price disclosure')

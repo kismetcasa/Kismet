@@ -197,8 +197,10 @@ export function ExperienceReviewQueue() {
                     </Link>
                   </div>
                   <p className="text-[10px] font-mono text-subtle mt-2">
-                    Ending a season stops sales and keeps every outstanding capsule honourable. Delisting also
-                    releases this machine&apos;s hold on its editions&apos; supply.
+                    Ending a season and delisting both stop new listings only. Every capsule already sold stays
+                    honourable, and the machine keeps its capsule token and its hold on its editions&apos; supply
+                    for as long as those capsules are owed. To stop a particular piece being dispensed, hide it
+                    or blacklist its artist.
                   </p>
                 </div>
               )}

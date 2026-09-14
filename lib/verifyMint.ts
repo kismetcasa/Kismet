@@ -37,7 +37,9 @@ import { serverBaseClient } from './rpc'
  *  • A reverted receipt caches a NEGATIVE verdict; an RPC failure caches
  *    nothing, because it is transient and caching it would turn a blip into a
  *    five-minute denial.
- *  • The cache value uses the non-numeric `1:<payer>:<units>` form. This is not
+ *  • The cache value uses the non-numeric `1:<payer>:<units>:<block>:<purchased>:<operators>`
+ *    form (fields appended over time; each reader tolerates the shorter legacy
+ *    shapes and reports what it cannot know as null). Non-numeric is not
  *    cosmetic: Upstash stores '1' unchanged but JSON-PARSES it back as the
  *    NUMBER 1 on read, so an earlier `cached === '1'` comparison never matched
  *    and the cache never hit — every verified collect re-fetched its receipt.
@@ -58,6 +60,14 @@ import { serverBaseClient } from './rpc'
 
 const ERC1155_TRANSFER_ABI = parseAbi([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
+  // Zora 1155's own purchase receipt, emitted by `_executeMint` on every
+  // `mint()` / `mintWithRewards()` and NEVER by `adminMint`. It is the one
+  // on-chain fact that separates a bought token from one a permissioned party
+  // minted for free. Decoded on the SAME log scan as TransferSingle — viem picks
+  // the event by topic0, so a log that matches neither is skipped exactly as an
+  // unrelated log always was. Consumers must treat "absent" as a weaker signal
+  // than "present": see MintProofOk.purchasedEvent.
+  'event Purchased(address indexed sender, address indexed minter, uint256 indexed tokenId, uint256 quantity, uint256 value)',
 ])
 
 const ZERO = '0x0000000000000000000000000000000000000000'
@@ -86,6 +96,21 @@ export interface MintProofOk {
   from: string
   /** Summed on-chain units minted to `account` for this (collection, tokenId). */
   units: number
+  /** Did the collection emit `Purchased` for this token in this transaction?
+   *
+   *  A PRESENT event is strong: only the 1155's own `_executeMint` emits it, so
+   *  the token was bought through a sale. An ABSENT event is weak, and callers
+   *  must not treat it as proof of a free mint: Zora's ERC20Minter takes payment
+   *  and then mints via `adminMint`, which emits no `Purchased`, and a decode
+   *  that silently disagreed with the deployed ABI would look identical to a
+   *  genuine absence. Pair it with `operators` (see lib/experience/authority's
+   *  checkCapsulePurchase). null when a cached verdict predates the field. */
+  purchasedEvent: boolean | null
+  /** Lowercased `operator` of every matching TransferSingle — the address that
+   *  executed the mint — deduplicated. For an ordinary sale this is the buyer;
+   *  for an ERC20 sale it is Zora's ERC20Minter; for a free mint it is whoever
+   *  held mint rights. null when a cached verdict predates the field. */
+  operators: string[] | null
 }
 export type MintProof = { ok: false } | MintProofOk
 
@@ -111,15 +136,22 @@ export async function verifyMintOnChain(
   // Legacy '1' — verified, payer and quantity unknown. Costs an unproven gift
   // claim its attribution, and makes a denial mark the minimum 1 unit, for one
   // TTL window after deploy.
-  if (cachedStr === '1') return { ok: true, from: '', units: 1, blockNumber: null }
+  if (cachedStr === '1') {
+    return { ok: true, from: '', units: 1, blockNumber: null, purchasedEvent: null, operators: null }
+  }
   if (cachedStr?.startsWith('1:')) {
-    const [, payer = '', units = '1', block = ''] = cachedStr.split(':')
+    const [, payer = '', units = '1', block = '', purchased, ops] = cachedStr.split(':')
     const b = parseInt(block, 10)
     return {
       ok: true,
       from: payer,
       units: Math.max(1, parseInt(units, 10) || 1),
       blockNumber: Number.isFinite(b) && b > 0 ? b : null,
+      // A verdict written before these fields existed carries neither, and a
+      // caller that needs them fails closed (retry after the TTL) rather than
+      // assuming either answer.
+      purchasedEvent: purchased === undefined ? null : purchased === '1',
+      operators: ops === undefined ? null : ops ? ops.split(',') : [],
     }
   }
 
@@ -133,6 +165,8 @@ export async function verifyMintOnChain(
     const expectedTokenId = BigInt(tokenId)
 
     let units = 0
+    let purchasedEvent = false
+    const operators = new Set<string>()
     for (const log of receipt.logs) {
       if (log.address.toLowerCase() !== collection) continue
       let decoded
@@ -145,18 +179,28 @@ export async function verifyMintOnChain(
       } catch {
         continue
       }
-      const { from, to, id, value } = decoded.args
+      if (decoded.eventName === 'Purchased') {
+        if (decoded.args.tokenId === expectedTokenId) purchasedEvent = true
+        continue
+      }
+      const { operator, from, to, id, value } = decoded.args
       if (from === ZERO && to.toLowerCase() === account && id === expectedTokenId) {
         units += clampUnits(value)
+        operators.add(operator.toLowerCase())
       }
     }
 
     if (units > 0) {
       const blockNumber = Number(receipt.blockNumber)
+      const ops = [...operators]
       await redis
-        .set(cacheKey, `1:${payer}:${units}:${blockNumber}`, { ex: VERIFY_CACHE_TTL_SECONDS })
+        .set(
+          cacheKey,
+          `1:${payer}:${units}:${blockNumber}:${purchasedEvent ? 1 : 0}:${ops.join(',')}`,
+          { ex: VERIFY_CACHE_TTL_SECONDS },
+        )
         .catch(() => {})
-      return { ok: true, from: payer, units, blockNumber }
+      return { ok: true, from: payer, units, blockNumber, purchasedEvent, operators: ops }
     }
 
     await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})

@@ -10,7 +10,7 @@ import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { runDraw } from '@/lib/experience/runDraw'
-import { checkPrizeAuthority } from '@/lib/experience/authority'
+import { checkCapsulePurchase, checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, readPrizeBalance, reconcileDelivered } from '@/lib/experience/delivery'
 import {
   addSpark,
@@ -157,6 +157,31 @@ export async function POST(req: NextRequest) {
     if (proof.blockNumber < machine.createdBlock) {
       return errorResponse(403, 'This capsule was minted before the machine opened')
     }
+  }
+
+  // THE CAPSULE MUST HAVE BEEN BOUGHT. A mint proves possession; a play is paid
+  // for by a PURCHASE, and the difference is the whole revenue model — the
+  // price is what pays every artist in the pool. `adminMint` emits the same
+  // TransferSingle as a sale and costs its holder nothing, so without this a
+  // creator could mint free capsules and drain other artists' consented copies.
+  // The evidence and its limits are documented on checkCapsulePurchase; the
+  // legacy-cache case (fields unknown) fails closed for one TTL, exactly as the
+  // postdate rule above does.
+  if (proof.purchasedEvent === null || proof.operators === null) {
+    return errorResponse(409, 'Could not verify this capsule’s purchase — try again shortly')
+  }
+  const purchase = await checkCapsulePurchase({
+    collection: machine.capsule.collection.toLowerCase(),
+    tokenId: machine.capsule.tokenId,
+    purchasedEvent: proof.purchasedEvent,
+    operators: proof.operators,
+  })
+  if (!purchase.ok) {
+    if (purchase.reason === 'unreadable') {
+      return errorResponse(409, 'Could not verify this capsule’s purchase — try again shortly')
+    }
+    console.warn('[xp] capsule was minted, not bought', { machineId, txHash, account, operators: proof.operators })
+    return errorResponse(403, 'This capsule was minted by an address with mint rights on it, not bought through its sale')
   }
 
   // 3. Claim exactly once. A replay returns the RECORDED outcome rather than

@@ -7,7 +7,7 @@ import { listMachines, openEpochSeeds } from '@/lib/experience/store'
 export const dynamic = 'force-dynamic'
 
 /**
- * Daily seed commitment for every live machine.
+ * Daily seed commitment for every machine that can still draw.
  *
  * ── Why a cron and not only the read path ──
  *
@@ -40,7 +40,12 @@ export async function GET(req: NextRequest) {
   }
 
   const epoch = epochFor(Date.now())
-  const machines = await listMachines(['live'])
+  // Every machine that can still DRAW, not only the ones on sale. An ended or
+  // delisted machine sells nothing, but a stalled claim on it is discharged by
+  // a fresh draw through the resume path, and that draw needs a seed that was
+  // committed before the resume was requested — the same property this cron
+  // exists to give live machines.
+  const machines = await listMachines(['live', 'ended', 'delisted'])
   const results = await Promise.all(
     machines.map((m) =>
       openEpochSeeds(m.id, epoch)

@@ -6,7 +6,7 @@ import { recordAdminAction } from '@/lib/adminAudit'
 import { deriveOdds, entryKey } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
-import { checkCapsuleControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
+import { checkCapsuleControl, readArtistControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
 import { getGateConfig } from '@/lib/gate'
 import {
   buildSnapshot,
@@ -73,11 +73,16 @@ export async function GET(req: NextRequest) {
       // pledges both move, so a machine can go insolvent while it waits.
       const headroom: Record<string, number | null> = {}
       const pledges: Record<string, number> = {}
+      const artistControl: Record<string, boolean> = {}
       await Promise.all(
         pool.map(async (e) => {
           const key = entryKey(e)
-          const h = await readHeadroom(e.collection, e.tokenId)
+          const [h, owns] = await Promise.all([
+            readHeadroom(e.collection, e.tokenId),
+            readArtistControl(e.collection, e.tokenId, e.artist),
+          ])
           if (h !== undefined) headroom[key] = h
+          if (owns !== undefined) artistControl[key] = owns
           pledges[key] = await otherPledges(e.collection, e.tokenId, m.id).catch(() => 0)
         }),
       )
@@ -96,6 +101,7 @@ export async function GET(req: NextRequest) {
         passCollection: gate.passCollection?.toLowerCase() ?? null,
         headroom,
         otherPledges: pledges,
+        artistControl,
       })
 
       return {
@@ -164,11 +170,16 @@ export async function POST(req: NextRequest) {
     }
     const headroom: Record<string, number | null> = {}
     const pledges: Record<string, number> = {}
+    const artistControl: Record<string, boolean> = {}
     await Promise.all(
       pool.map(async (e) => {
         const key = entryKey(e)
-        const h = await readHeadroom(e.collection, e.tokenId)
+        const [h, owns] = await Promise.all([
+          readHeadroom(e.collection, e.tokenId),
+          readArtistControl(e.collection, e.tokenId, e.artist),
+        ])
         if (h !== undefined) headroom[key] = h
+        if (owns !== undefined) artistControl[key] = owns
         pledges[key] = await otherPledges(e.collection, e.tokenId, id).catch(() => 0)
       }),
     )
@@ -181,6 +192,7 @@ export async function POST(req: NextRequest) {
       passCollection: gate.passCollection?.toLowerCase() ?? null,
       headroom,
       otherPledges: pledges,
+      artistControl,
     })
     if (problems.length > 0) {
       return NextResponse.json({ ok: false, problems }, { status: 400 })
