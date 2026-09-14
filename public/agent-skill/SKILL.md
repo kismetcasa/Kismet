@@ -90,7 +90,9 @@ Every verb follows the same five steps:
 5. **Record.** Follow `record`: fill the placeholders in `bodyTemplate`
    (`<REPLACE_WITH_send_calls_txHash>`, `<signature>` for List, and
    `intent.signature` = `<REPLACE_WITH_sign_signature>` for Mint) and send the
-   `record.method` request to `record.url`.
+   `record.method` request to `record.url`. Collect and buy also give
+   `record.getUrl` — the same record as a GET, for surfaces that can only
+   fetch a pasted URL (rung 3 below).
 
 ## Verbs
 
@@ -133,12 +135,15 @@ Follow Base MCP's documented fallback ladder, in order:
    back into the chat — once pasted you may fetch it yourself (that is the
    security model these surfaces enforce). Parse the envelope and continue
    with `send_calls` as normal.
-   Recording (step 5) is POST/PATCH-only (never GET) and unreachable here. For collect and buy,
-   skip it and say recording will lag; the on-chain result stands (the record
-   routes verify the receipt when they eventually run, so nothing is lost).
-   For list, the record call is what publishes the listing — the signed order
-   exists nowhere else — so use rung 4 instead of signing here. Mint is
-   POST-only, so it is rung 4 here as well.
+   Recording (step 5) is POST/PATCH — unreachable here — but collect and buy
+   envelopes also carry `record.getUrl`, the same record as one GET URL: fill
+   its `<REPLACE_WITH_send_calls_txHash>` with the confirmed hash, show it to
+   the user and ask them to paste it back, then fetch it. It records only what
+   the receipt proves (same checks as the POST), so it is safe to send twice.
+   If it can't be sent, the on-chain result still stands; say recording will
+   lag. For list, the record call is what publishes the listing — the signed
+   order exists nowhere else and has no GET form — so use rung 4 instead of
+   signing here. Mint is POST-only, so it is rung 4 here as well.
 4. **UI deep-link, last resort** (batch, list, and mint on a chat-only
    surface): send the user to the artwork page on Kismet
    (`BASE/artwork/<collection>/<tokenId>`) to collect or list in-app, or to

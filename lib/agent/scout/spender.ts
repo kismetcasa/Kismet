@@ -286,9 +286,24 @@ function serialized(spender: ScoutSpender): ScoutSpender {
  *  transient CDP error — or creds added after boot — re-resolves next call. */
 let cachedSpender: Promise<ScoutSpender> | null = null
 
+// The CDP resolution has no timeout of its own (undici's default is minutes).
+// A hung call would otherwise pin EVERY caller behind one cached promise — each
+// run route holding its 900s lock, the coordinator, every turn-off answering
+// "not revoked" — so bound it: a timeout rejects, the cache clears, the next
+// call re-resolves.
+const RESOLVE_TIMEOUT_MS = 20_000
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+}
+
 export function getScoutSpender(): Promise<ScoutSpender> {
   if (!cachedSpender) {
-    cachedSpender = (async () => {
+    cachedSpender = withTimeout((async () => {
       const pk = process.env.SCOUT_SPENDER_PRIVATE_KEY
       // The EOA fallback is NON-ATOMIC: it submits spend()→approve→mint as separate
       // txs, so a mint revert AFTER spend() strands the pulled funds in the EOA (the
@@ -305,7 +320,7 @@ export function getScoutSpender(): Promise<ScoutSpender> {
       }
       const spender = pk ? ownKeySpender(pk as Hex) : await cdpSpender()
       return serialized(spender)
-    })()
+    })(), RESOLVE_TIMEOUT_MS, 'Scout spender did not resolve in time (CDP unreachable?)')
     cachedSpender.catch(() => {
       cachedSpender = null
     })

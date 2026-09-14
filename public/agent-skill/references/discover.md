@@ -25,6 +25,19 @@ GET BASE/api/agent/discover?kind=collect&collection=0x…&excludeCollectedBy=0xY
 ```
 
 - `collection` is **required** for `kind=collect`.
+
+## Artworks by an artist
+
+`discover` has no artist filter, but Kismet's public timeline does — it is what
+Kismet's own Agent Collect engine reads:
+
+```
+GET BASE/api/timeline?creator=0xArtist&limit=20
+```
+
+Rows carry `address` (the collection) and `token_id`; feed each into
+`prepare-collect`, which resolves price and eligibility on-chain. Resolve a
+username to an address with `GET BASE/api/search?q=<name>` (`users[].address`).
 - `excludeCollectedBy` drops tokens that address already collected.
 
 Rows don't carry a price (the live sale is resolved by `prepare-collect`). Follow

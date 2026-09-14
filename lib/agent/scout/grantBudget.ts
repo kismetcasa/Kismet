@@ -27,6 +27,12 @@ export const SCOUT_SPENDER = (process.env.NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS ?? '
 export type BudgetCurrency = 'eth' | 'usdc'
 export type ScoutPermission = StoredSpendPermission
 
+/** New grants carry a finite `end`. The SDK's default is "never", which is why a
+ *  stranded grant has to be chased by the revoke machinery at all; a bounded
+ *  lifetime caps that exposure. The agent's own status reads the expiry, and
+ *  the inactive path already tells the owner to set it up again. */
+export const GRANT_LIFETIME_DAYS = 365
+
 const spendPerm = () => import('@base-org/account/spend-permission')
 
 async function connected(): Promise<{ provider: ProviderInterface; account: `0x${string}` }> {
@@ -71,6 +77,7 @@ export async function grantScoutBudget(p: {
     chainId: BASE_CHAIN_ID,
     allowance: p.allowance,
     periodInDays: p.periodInDays,
+    end: new Date(Date.now() + GRANT_LIFETIME_DAYS * 86_400_000),
     provider,
   })
 }

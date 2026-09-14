@@ -44,6 +44,14 @@ function lastRunText(r: ScoutLastRun): string {
 
 const MAX_CREATORS = 50
 
+/** ` · grant expires 12/3/2027` for a finite grant; older grants have no end
+ *  (the SDK's "never" sentinel is far beyond any real date). */
+function grantExpiry(permission: ReturnType<typeof useAgent>['permission']): string {
+  const end = permission?.permission.end
+  if (typeof end !== 'number' || end > 4_102_444_800) return ''
+  return ` · grant expires ${new Date(end * 1000).toLocaleDateString()}`
+}
+
 export function AgentCollectPanel({
   ag,
   onRequestClose,
@@ -247,7 +255,7 @@ export function AgentCollectPanel({
             {watching || `${ag.scout.policy.creators.length} artists`}
             {ag.status
               ? ag.status.isActive
-                ? ` · ${scoutSym}${formatUnits(ag.status.remainingSpend, scoutDec)} left · resets ${ag.status.nextPeriodStart.toLocaleDateString()}`
+                ? ` · ${scoutSym}${formatUnits(ag.status.remainingSpend, scoutDec)} left · resets ${ag.status.nextPeriodStart.toLocaleDateString()}${grantExpiry(ag.permission)}`
                 : ' · budget inactive — set it again'
               : ''}
           </p>

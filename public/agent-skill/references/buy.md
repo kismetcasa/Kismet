@@ -57,3 +57,11 @@ That's it — no buyer signature. The backend re-decodes the Seaport
 `OrderFulfilled` event from your txHash (matched to this listing's order) and
 derives the buyer from it, so a bogus PATCH can't fake a sale. If the PATCH lags,
 the purchase still happened on-chain; just report that recording lagged.
+
+On a surface that can only fetch a pasted URL (SKILL.md rung 3), use the
+envelope's `record.getUrl` instead: fill the txHash placeholder, show the URL
+to the user, ask them to paste it back, then fetch it — the same record:
+
+```
+GET BASE/api/agent/record?verb=buy&listingId=…&txHash=0x…
+```

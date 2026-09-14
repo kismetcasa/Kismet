@@ -10,6 +10,7 @@ import { getMomentMeta } from '@/lib/notifications'
 import { getDisplayName } from '@/lib/ensCache'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { buildCollectPlan } from '@/lib/agent/collect'
+import { collectRecordUrl } from '@/lib/agent/recordUrl'
 import { collectSummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
@@ -191,6 +192,7 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
         currency,
         txHash: '<REPLACE_WITH_send_calls_txHash>',
       },
+      getUrl: collectRecordUrl({ collection, tokenId: tokenId.toString(), account, amount: Number(quantity), currency, pricePerToken: pricePerToken.toString(), comment }),
     },
     caps:
       currency === 'eth'

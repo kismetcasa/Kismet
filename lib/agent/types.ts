@@ -32,6 +32,10 @@ export interface AgentRecordHint {
   method: 'POST' | 'PATCH'
   url: string
   bodyTemplate: Record<string, unknown>
+  /** Collect and buy only: the same record as one GET URL (relative to the
+   *  Kismet origin) with the txHash placeholder still to fill — for surfaces
+   *  that can only fetch a URL the user pasted (see /api/agent/record). */
+  getUrl?: string
 }
 
 export interface AgentActionEnvelope {

@@ -12,6 +12,7 @@ import { batchCollectSummary } from '@/lib/agent/summary'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { dedupeMomentRefs } from '@/lib/agent/dedupeRefs'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
+import { collectRecordUrl } from '@/lib/agent/recordUrl'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import type { AgentActionEnvelope, AgentRecordHint } from '@/lib/agent/types'
 
@@ -153,6 +154,7 @@ export async function POST(req: NextRequest) {
       currency: it.currency,
       txHash: '<REPLACE_WITH_send_calls_txHash>',
     },
+    getUrl: collectRecordUrl({ collection: it.collection, tokenId: it.tokenId.toString(), account: recipient, amount: Number(it.quantity), currency: it.currency, pricePerToken: it.pricePerToken.toString(), comment }),
   }))
 
   const ethTotalLabel = plan.totalNativeValue > 0n ? formatPrice(plan.totalNativeValue.toString(), 'eth') : ''

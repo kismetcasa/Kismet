@@ -64,6 +64,15 @@ POST BASE/api/collect    (record.bodyTemplate with txHash filled)
 is safe to call and idempotent. If it returns non-2xx the mint still happened —
 just report that recording lagged.
 
+On a surface that can only fetch a pasted URL (SKILL.md rung 3), use the
+envelope's `record.getUrl` instead: replace `<REPLACE_WITH_send_calls_txHash>`
+with the confirmed hash, show the URL to the user, ask them to paste it back,
+then fetch it. It is the same record (same verification, idempotent):
+
+```
+GET BASE/api/agent/record?verb=collect&collection=0x…&tokenId=42&account=0x…&amount=1&currency=eth&pricePerToken=…&txHash=0x…
+```
+
 ## Batch — collect several in one approval
 
 To collect a basket (e.g. the user said "collect these" or you're proposing a

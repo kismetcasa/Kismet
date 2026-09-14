@@ -43,7 +43,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
-| Record settlement (collect / buy) | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
+| Record settlement (collect / buy) | Direct POST/PATCH | **GET** via a user-pasted URL: fill the txHash into the envelope's `record.getUrl`, show it, ask the user to paste it back, then fetch it (idempotent; on-chain-verified) |
 
 ## Endpoints
 
@@ -51,6 +51,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | --- | --- | --- |
 | GET | `/api/agent/manifest` | Self-describing API: chain, contracts, verbs, safety |
 | GET | `/api/agent/discover?kind=listings\|collect&…` | Listings to buy / artworks to collect; rows carry a `nextAction` |
+| GET | `/api/agent/record?verb=collect\|buy&…&txHash=0x…` | The collect / buy record as a GET (the envelope's `record.getUrl`, txHash filled). Delegates to `/api/collect` / `PATCH /api/listings/{id}` — same on-chain verification, idempotent |
 | GET or POST | `/api/agent/prepare-collect` | Mint an edition of an existing artwork. Params: `collection`+`tokenId` (or `url`), `account`, `amount?`, `comment?` |
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
@@ -90,7 +91,8 @@ the user before recording. It is absent when the batch prepends a USDC approve.
    (or hand the user `link.url` when present, to approve in the Base app).
 5. User approves in Base Account → poll `get_request_status(requestId)` until
    confirmed; capture the txHash.
-6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`).
+6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`) —
+   on a chat-only surface, via `record.getUrl` pasted back by the user.
    Kismet independently re-verifies the mint/fulfillment on-chain, so
    recording is safe to lag (a repeated collect record is idempotent; a repeated
    buy record answers 409 already-filled — treat both as success).

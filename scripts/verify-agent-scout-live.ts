@@ -20,6 +20,7 @@
 
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { createMockUpstash } from './_mock-upstash.ts'
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -58,139 +59,12 @@ const asSpenderCalls = (calls: readonly { to: string; data: string; value: strin
   calls.map((c) => ({ to: c.to, data: c.data, value: BigInt(c.value) }))
 
 // ───────────────────────── mock Upstash REST ─────────────────────────
+// Shared with the route-level harness (scripts/_mock-upstash.ts): strings, the
+// pending-revoke queue's hashes/sets/Lua step, and a ZADD log — answered with
+// the base64 wire encoding the real client decodes.
 
-interface StoredVal {
-  v: string
-  ex?: number
-}
-const redisStore = new Map<string, StoredVal>()
-let redisFailing = false
-// Sorted-set writes (the notification inbox is a ZADD per notice) — recorded,
-// not modelled, so a test can count what was written.
-const zadds: { key: string; member: string }[] = []
-
-function execRedisCommand(cmd: unknown[]): unknown {
-  const op = String(cmd[0]).toUpperCase()
-  if (op === 'ZADD') {
-    zadds.push({ key: String(cmd[1]), member: String(cmd[cmd.length - 1]) })
-    return 1
-  }
-  // Hashes + sets, modelled only for the pending-revoke queue (its keys), so the
-  // watcher index the record store also SADDs stays inert for the older tests.
-  const key = String(cmd[1] ?? '')
-  const pending = key.startsWith('kismetart:scout-pending-revoke')
-  if (op === 'HSET') {
-    const h = hashes.get(key) ?? new Map<string, string>()
-    for (let i = 2; i + 1 < cmd.length; i += 2) h.set(String(cmd[i]), String(cmd[i + 1]))
-    hashes.set(key, h)
-    return 1
-  }
-  if (op === 'HGETALL') return [...(hashes.get(key)?.entries() ?? [])].flat()
-  if (op === 'HDEL') {
-    const h = hashes.get(key)
-    let n = 0
-    for (let i = 2; i < cmd.length; i++) if (h?.delete(String(cmd[i]))) n++
-    return n
-  }
-  if (op === 'HLEN') return hashes.get(key)?.size ?? 0
-  if (op === 'SADD') {
-    if (!pending) return null
-    const s = sets.get(key) ?? new Set<string>()
-    for (let i = 2; i < cmd.length; i++) s.add(String(cmd[i]))
-    sets.set(key, s)
-    return 1
-  }
-  if (op === 'SREM') {
-    if (!pending) return null
-    let n = 0
-    for (let i = 2; i < cmd.length; i++) if (sets.get(key)?.delete(String(cmd[i]))) n++
-    return n
-  }
-  if (op === 'EVAL') {
-    // The queue's one script: ["EVAL", script, numkeys, hashKey, indexKey, owner]
-    const [hashKey, indexKey, owner] = [String(cmd[3]), String(cmd[4]), String(cmd[5])]
-    if ((hashes.get(hashKey)?.size ?? 0) === 0) return sets.get(indexKey)?.delete(owner) ? 1 : 0
-    return 0
-  }
-  if (op === 'SET') {
-    const key = String(cmd[1])
-    const val = String(cmd[2])
-    let nx = false
-    let ex: number | undefined
-    for (let i = 3; i < cmd.length; i++) {
-      const t = String(cmd[i]).toUpperCase()
-      if (t === 'NX') nx = true
-      if (t === 'EX') ex = Number(cmd[++i])
-    }
-    if (nx && redisStore.has(key)) return null
-    redisStore.set(key, { v: val, ex })
-    return 'OK'
-  }
-  if (op === 'GET') return redisStore.get(String(cmd[1]))?.v ?? null
-  if (op === 'DEL') {
-    let n = 0
-    for (let i = 1; i < cmd.length; i++) if (redisStore.delete(String(cmd[i]))) n++
-    return n
-  }
-  if (op === 'MGET') {
-    const out: (string | null)[] = []
-    for (let i = 1; i < cmd.length; i++) out.push(redisStore.get(String(cmd[i]))?.v ?? null)
-    return out
-  }
-  if (op === 'SMEMBERS') return pending ? [...(sets.get(key) ?? [])] : []
-  return null // LPUSH/EXPIRE/… — accepted, irrelevant to assertions
-}
-const hashes = new Map<string, Map<string, string>>()
-const sets = new Map<string, Set<string>>()
-
-// The Upstash client sends `Upstash-Encoding: base64` and base64-DECODES every
-// string it gets back, so the mock must encode them exactly as the real REST API
-// does. Returning raw strings mostly "works" by accident (JSON braces aren't
-// valid base64, so the client's decode throws and falls back to the raw text) —
-// but a value drawn only from the base64 alphabet, i.e. every 0x address, decodes
-// successfully into garbage. Encoding here keeps address-shaped members (the
-// watcher index, the pending-revoke owner index) faithful.
-const b64 = (x: unknown): unknown =>
-  typeof x === 'string' ? Buffer.from(x, 'utf8').toString('base64') : Array.isArray(x) ? x.map(b64) : x
-/** Encode only the `result` payloads, never the pipeline envelope or `error`. */
-const encodeResults = (x: unknown): unknown => {
-  if (Array.isArray(x)) return x.map(encodeResults)
-  if (x && typeof x === 'object' && 'result' in x) return { ...(x as object), result: b64((x as { result: unknown }).result) }
-  return x
-}
-
-function startRedisServer(): Promise<string> {
-  const server = http.createServer((req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      res.setHeader('content-type', 'application/json')
-      const encoded = String(req.headers['upstash-encoding'] ?? '').toLowerCase() === 'base64'
-      const reply = (x: unknown) => res.end(JSON.stringify(encoded ? encodeResults(x) : x))
-      if (redisFailing) {
-        const isPipeline = req.url?.includes('pipeline') || req.url?.includes('multi-exec')
-        if (isPipeline) {
-          const cmds = JSON.parse(body) as unknown[][]
-          return reply(cmds.map(() => ({ error: 'mock redis down' })))
-        }
-        return reply({ error: 'mock redis down' })
-      }
-      try {
-        if (req.url?.includes('pipeline') || req.url?.includes('multi-exec')) {
-          const cmds = JSON.parse(body) as unknown[][]
-          return reply(cmds.map((c) => ({ result: execRedisCommand(c) })))
-        }
-        const cmd = JSON.parse(body) as unknown[]
-        return reply({ result: execRedisCommand(cmd) })
-      } catch (e) {
-        return reply({ error: String(e) })
-      }
-    })
-  })
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`))
-  })
-}
+const upstash = createMockUpstash()
+const { store: redisStore, hashes, sets, zadds } = upstash
 
 // ───────────────────────── mock Base JSON-RPC ─────────────────────────
 
@@ -500,7 +374,7 @@ const NATIVE_ETH = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 
 async function main() {
-  const [redisUrl, rpcUrl, appUrl] = await Promise.all([startRedisServer(), startRpcServer(), startAppServer()])
+  const [redisUrl, rpcUrl, appUrl] = await Promise.all([upstash.start(), startRpcServer(), startAppServer()])
   process.env.UPSTASH_REDIS_REST_URL = redisUrl
   process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token'
   process.env.BASE_RPC_URL = rpcUrl
@@ -620,13 +494,13 @@ async function main() {
 
   // ── 4. Kill switch fail-closed semantics (real module, real store states) ──
   console.log('\nkillSwitch — fail-closed ladder')
-  redisFailing = true
+  upstash.setFailing(true)
   ok(await isKillSwitchEngaged(), 'store down + no last-known-good (cold start) → ENGAGED (halt)')
-  redisFailing = false
+  upstash.setFailing(false)
   ok(!(await isKillSwitchEngaged()), 'store healthy, key absent → not engaged')
-  redisFailing = true
+  upstash.setFailing(true)
   ok(!(await isKillSwitchEngaged()), 'store down but last-known-good=false → stays last-known-good')
-  redisFailing = false
+  upstash.setFailing(false)
   redisStore.set('kismetart:scout-killswitch', { v: '1' })
   ok(await isKillSwitchEngaged(), 'key set → engaged')
   redisStore.delete('kismetart:scout-killswitch')

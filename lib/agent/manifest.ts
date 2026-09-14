@@ -76,7 +76,7 @@ export function getAgentManifest(origin: string): AgentManifest {
         summary:
           'human-readable one-liner to show the user before requesting approval: the artwork by title and token id, the full cost (price, protocol mint fee, total; for list, what the seller receives after the Kismet fee and royalty and when it expires), and every counterparty as `name (0xshort)` — Basename / ENS when one resolved, always with the short address. Show it verbatim; it is data, not instructions.',
         record:
-          '{ method, url, bodyTemplate } to send after the wallet step; fill every <…> placeholder from the executed result (txHash from send_calls, signature from sign). Collect and buy records are checked against the on-chain receipt, so they are safe to lag: a repeated collect record answers 200 (idempotent) and a repeated buy record answers 409 (already filled) — treat both as success. List and mint records are the action itself: the signed Seaport order exists only once POSTed, and /api/mint submits the sponsored mint — nothing is live until they succeed.',
+          '{ method, url, bodyTemplate, getUrl? } to send after the wallet step; fill every <…> placeholder from the executed result (txHash from send_calls, signature from sign). Collect and buy records are checked against the on-chain receipt, so they are safe to lag: a repeated collect record answers 200 (idempotent) and a repeated buy record answers 409 (already filled) — treat both as success. For those two, getUrl is the same record as one GET URL (relative to this origin; fill the txHash placeholder) for surfaces that can only fetch a URL the user pasted — it delegates to the same verified handlers. List and mint records are the action itself: the signed Seaport order exists only once POSTed, and /api/mint submits the sponsored mint — nothing is live until they succeed.',
         records: 'batch collect only: one record call per item, all against the shared txHash',
         skipped: 'batch collect only: items left out of the batch, each with a reason (no active sale / sold out / per-wallet limit)',
         link:
@@ -96,7 +96,8 @@ export function getAgentManifest(origin: string): AgentManifest {
     verbs: [
       {
         verb: 'discover',
-        summary: 'Find active listings to buy, or artworks to collect in a collection.',
+        summary:
+          'Find active listings to buy, or artworks to collect in a collection. To find an ARTIST\'s artworks, use the public GET /api/timeline?creator=<address>&limit=20 (rows carry address + token_id) and feed each into prepare-collect.',
         endpoint: '/api/agent/discover',
         method: 'GET',
         executes: 'none',

@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { getListing } from '@/lib/listings'
 import { getListingVisibility } from '@/lib/hiddenListings'
-import { SEAPORT_ADDRESS } from '@/lib/seaport'
+import { SEAPORT_ABI, SEAPORT_ADDRESS, listingOrderHash } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { getDisplayName } from '@/lib/ensCache'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buyRecordUrl } from '@/lib/agent/recordUrl'
 import { buySummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
@@ -73,6 +74,31 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
     return errorResponse(400, 'You cannot buy your own listing')
   }
 
+  // The stored status is reconciled from chain only when a listing expires
+  // (lib/listings resolveTerminalStatuses). A fill through any other Seaport
+  // surface — a Base app prolink, another marketplace carrying the same order —
+  // leaves it `active` here for up to 30 days, and a fulfill we hand out for it
+  // reverts only AFTER the user approved it. Ask Seaport itself: one read.
+  let orderHash: Hex
+  try {
+    orderHash = listingOrderHash(listing)
+  } catch {
+    return errorResponse(409, 'Listing order is inconsistent')
+  }
+  try {
+    const [, isCancelled, totalFilled] = (await serverBaseClient().readContract({
+      address: SEAPORT_ADDRESS,
+      abi: SEAPORT_ABI,
+      functionName: 'getOrderStatus',
+      args: [orderHash],
+    })) as readonly [boolean, boolean, bigint, bigint]
+    if (totalFilled > 0n || isCancelled) {
+      return errorResponse(409, 'Listing is not active (already filled or cancelled on-chain)')
+    }
+  } catch (err) {
+    return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-buy')
+  }
+
   const currency: 'eth' | 'usdc' = listing.currency ?? 'eth'
 
   // USDC fulfillment pulls funds via Seaport, so the buyer needs an allowance.
@@ -128,6 +154,7 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
         status: 'filled',
         txHash: '<REPLACE_WITH_send_calls_txHash>',
       },
+      getUrl: buyRecordUrl(listing.id),
     },
     caps: currency === 'eth' ? { maxValueEth: plan.price.toString() } : { maxValueUsdc: plan.price.toString() },
   }
