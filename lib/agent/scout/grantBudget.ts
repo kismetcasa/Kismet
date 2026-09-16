@@ -32,6 +32,11 @@ export type ScoutPermission = StoredSpendPermission
  *  lifetime caps that exposure. The agent's own status reads the expiry, and
  *  the inactive path already tells the owner to set it up again. */
 export const GRANT_LIFETIME_DAYS = 365
+/** The SDK's "never" end (2^48 − 1) — what grants made before the finite
+ *  lifetime carry. */
+const ETERNITY_END = 281474976710655
+/** A matching grant is reused only with at least this much lifetime left. */
+const REUSE_MIN_REMAINING_S = 30 * 86_400
 
 const spendPerm = () => import('@base-org/account/spend-permission')
 
@@ -58,12 +63,19 @@ export async function grantScoutBudget(p: {
   // Idempotent: reuse an existing ACTIVE permission to this spender matching the
   // token + allowance + period, so a retry after a failed save (or an identical
   // re-save) doesn't mint a duplicate permission or re-prompt the wallet.
+  // Only a grant that still has a comfortable finite lifetime qualifies: an
+  // eternal grant from before GRANT_LIFETIME_DAYS is replaced on the next save
+  // (the config route stashes the old one for a spender-side revoke), and a
+  // grant close to its end is renewed rather than reused, so "set it up again"
+  // near expiry actually renews.
+  const nowSec = Math.floor(Date.now() / 1000)
   try {
     const perms = await fetchPermissions({ account, chainId: BASE_CHAIN_ID, spender: SCOUT_SPENDER, provider })
     for (const perm of perms) {
       const d = perm.permission
       if (d.token.toLowerCase() !== token.toLowerCase()) continue
       if (d.allowance !== p.allowance.toString() || d.period !== periodSeconds) continue
+      if (d.end >= ETERNITY_END || d.end - nowSec < REUSE_MIN_REMAINING_S) continue
       if ((await getPermissionStatus(perm)).isActive) return perm
     }
   } catch {

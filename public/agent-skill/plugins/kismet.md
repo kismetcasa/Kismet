@@ -43,7 +43,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
-| Record settlement (collect / buy) | Direct POST/PATCH | **GET** via a user-pasted URL: fill the txHash into the envelope's `record.getUrl`, show it, ask the user to paste it back, then fetch it (idempotent; on-chain-verified) |
+| Record settlement (collect / buy) | Direct POST/PATCH | **GET** via a user-pasted URL: fill the txHash into the envelope's `record.getUrl`, show it, ask the user to paste it back, then fetch it (on-chain-verified; a repeat answers 200 for collect, 409 already-filled for buy — both mean done) |
 
 ## Endpoints
 
@@ -51,7 +51,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | --- | --- | --- |
 | GET | `/api/agent/manifest` | Self-describing API: chain, contracts, verbs, safety |
 | GET | `/api/agent/discover?kind=listings\|collect&…` | Listings to buy / artworks to collect; rows carry a `nextAction` |
-| GET | `/api/agent/record?verb=collect\|buy&…&txHash=0x…` | The collect / buy record as a GET (the envelope's `record.getUrl`, txHash filled). Delegates to `/api/collect` / `PATCH /api/listings/{id}` — same on-chain verification, idempotent |
+| GET | `/api/agent/record?verb=collect\|buy&…&txHash=0x…` | The collect / buy record as a GET (the envelope's `record.getUrl`, txHash filled). Delegates to `/api/collect` / `PATCH /api/listings/{id}` — same on-chain verification; a repeat is harmless (200 / 409 already-filled) |
 | GET or POST | `/api/agent/prepare-collect` | Mint an edition of an existing artwork. Params: `collection`+`tokenId` (or `url`), `account`, `amount?`, `comment?` |
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |

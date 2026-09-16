@@ -53,9 +53,10 @@ export async function DELETE(req: NextRequest) {
   if (!owner) return errorResponse(401, 'Sign in to continue')
   // Capture the grants BEFORE deleting the record so we can retire them. Turning
   // the agent off must revoke EVERY live permission to our spender — the current
-  // one AND any budget-superseded ones still queued. Grants are created without
-  // an `end`, so an un-revoked permission never expires and stays a spendable,
-  // UI-invisible authorization to our spender forever.
+  // one AND any budget-superseded ones still queued. An un-revoked permission
+  // stays a spendable, UI-invisible authorization to our spender until its
+  // `end` — never for grants made before the finite lifetime, a year for newer
+  // ones (lib/agent/scout/grantBudget GRANT_LIFETIME_DAYS).
   //
   // Revoke server-side via the spender (revokeAsSpender — no user signature) and
   // WAIT for it within a budget, so the client learns whether the grant is dead
@@ -263,8 +264,8 @@ export async function PUT(req: NextRequest) {
     const list = (existing?.supersededPermissions ?? []).filter((x) => permKey(x) !== permKey(permission))
     if (!list.some((x) => permKey(x) === permKey(prevPerm))) list.push(prevPerm)
     // Cap the queue, but keep it generous: an evicted entry is dropped WITHOUT being
-    // revoked (the drain only sees queued entries), leaving a live never-expiring
-    // grant. 20 far exceeds any realistic number of budget changes before a run or
+    // revoked (the drain only sees queued entries), leaving a grant live until its
+    // end. 20 far exceeds any realistic number of budget changes before a run or
     // the coordinator drains it, so eviction can't strand a grant in practice.
     supersededPermissions = list.slice(-20)
   }

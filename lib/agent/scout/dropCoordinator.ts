@@ -300,8 +300,8 @@ export async function runDropCoordination(
   // Opportunistically retire any budget-superseded permissions for the watchers we
   // just processed. The coordinator is the ONLY server-driven spend path, so for a
   // set-and-forget user who never reopens the app (never triggers the on-open run
-  // that normally drains) this is the sole place an old, still-active,
-  // never-expiring grant to our spender gets revoked. Best-effort and a no-op when
+  // that normally drains) this is the sole place an old, still-active grant to
+  // our spender gets revoked before its end. Best-effort and a no-op when
   // the queue is empty (the common case), so it can't delay or fail a collect.
   await Promise.all(bidders.map((b) => drainSupersededPermissions(b.record, spender).catch(() => {})))
   // Same reasoning for grants a turn-off could not revoke (pendingRevokes): the

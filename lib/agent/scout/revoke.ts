@@ -6,11 +6,11 @@
  * submits, so NO user signature is needed and turn-off doesn't depend on the
  * browser wallet prompt completing.
  *
- * Why this matters: grants are created with no `end`, so the SDK defaults `end` to
- * the max timestamp — a permission never expires on its own. If a superseded (or
- * the current) permission is not revoked, it stays a live, spendable authorization
- * to our spender forever, invisible to the UI. So every "the user reduced or
- * removed their exposure" path routes through here.
+ * Why this matters: a grant is a live, spendable authorization to our spender
+ * until its `end` — grants made before GRANT_LIFETIME_DAYS (lib/agent/scout/
+ * grantBudget) carry the SDK's "never" end, newer ones a year — and it is
+ * invisible to the UI once superseded. So every "the user reduced or removed
+ * their exposure" path routes through here rather than waiting for expiry.
  */
 
 import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'

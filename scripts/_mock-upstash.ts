@@ -128,7 +128,8 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
       for (let i = 1; i < cmd.length; i++) out.push(store.get(String(cmd[i]))?.v ?? null)
       return out
     }
-    return null // LPUSH/EXPIRE/ZRANGE/SISMEMBER/… — accepted, irrelevant to assertions
+    if (op === 'ZRANGE' || op === 'ZREVRANGE') return [] // read as empty, so list-shaped callers see a list
+    return null // LPUSH/EXPIRE/SISMEMBER/… — accepted, irrelevant to assertions
   }
 
   const b64 = (x: unknown): unknown =>

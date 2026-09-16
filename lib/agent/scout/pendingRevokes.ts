@@ -8,8 +8,9 @@
  * instead and is retried with the spender in hand (post-response on the run
  * route, and at the end of a drop coordination). A grant the chain reports as
  * revoked/expired drops out on the next drain, so a user-signed revoke that
- * landed meanwhile is harmless. Grants never expire on their own (they are
- * created without an `end`), which is why nothing here is ever silently dropped.
+ * landed meanwhile is harmless. A grant stays spendable until its `end` (older
+ * grants: never; newer ones: a year), which is why nothing here is ever
+ * silently dropped.
  *
  * Layout — one HASH per owner keyed by the grant's identity (permKey), plus a
  * SET of owners as the index — so that no path ever rewrites another owner's

@@ -462,8 +462,22 @@ async function main() {
     ok(!!artistNotice && artistNotice.member.includes(USER.toLowerCase()), "the artist gets the 'collect' notification naming the collector", artistNotice?.member.slice(0, 160))
     const again = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX}`)
     ok(again.status === 200 && again.body?.ok === true, 'recording the same tx again is idempotent (200)', again.text.slice(0, 120))
+    // A case variant of the same hash is the same tx: it must not re-run the
+    // side effects (a second artist notice, another trending bump).
+    const upper = `0x${RECORD_TX.slice(2).toUpperCase()}`
+    const variant = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${upper}`)
+    await new Promise((r) => setTimeout(r, 300))
+    const artistNotices = upstash.zadds.filter((z) => z.key === `kismetart:notif:${ARTIST.toLowerCase()}` && z.member.includes('"collect"'))
+    ok(variant.status === 200 && artistNotices.length === 1, 'an upper-case variant of the same tx is recorded once, not twice (canonical txHash)', { status: variant.status, notices: artistNotices.length })
     const wrongTx = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&txHash=0x${'99'.repeat(32)}`)
-    ok(wrongTx.status >= 400 && wrongTx.status < 500 && wrongTx.status !== 429, 'a tx with no matching receipt is refused by the verified handler', wrongTx.status)
+    ok(wrongTx.status === 403 && /not verified/.test(String(wrongTx.body?.error)), 'a tx with no matching receipt is refused by the verified handler (403)', wrongTx.body)
+    ok(
+      noHash.headers.get('cache-control') === 'private, no-store' && (noHash.headers.get('x-robots-tag') ?? '').includes('noindex'),
+      'validation errors are also no-store + noindex (the non-canonical-host rule in next.config merges its own value in here)',
+      { cc: noHash.headers.get('cache-control'), robots: noHash.headers.get('x-robots-tag') },
+    )
+    const head = await fetch(`${base}/api/agent/record?verb=collect&txHash=${RECORD_TX}`, { method: 'HEAD' })
+    ok(head.status === 405, 'HEAD (link previews) is refused, never runs a record', head.status)
     const buyRec = await json(`/api/agent/record?verb=buy&listingId=nope&txHash=${RECORD_TX}`)
     ok(buyRec.status === 404, 'buy record for an unknown listing → 404 from the listing handler', buyRec.body)
 
