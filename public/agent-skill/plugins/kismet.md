@@ -1,6 +1,6 @@
 ---
 title: "Kismet Plugin"
-description: "Collect (mint), buy, and list artworks on the Kismet marketplace via its prepare API → send_calls / sign on Base."
+description: "Collect, buy, list, and mint (create) artworks on the Kismet marketplace via its prepare API → send_calls / sign on Base."
 tags: [nft, marketplace, drops, art]
 name: kismet
 version: 0.1.0
@@ -38,11 +38,12 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 
 | Capability | Shell harness (Claude Code / Cursor / Codex) | Chat-only (Claude.ai / ChatGPT) |
 | --- | --- | --- |
-| Discover / manifest | Direct GET | `web_request` if allowlisted, else user-pasted GET |
-| Collect / buy (prepare) | Direct GET or POST | User-pasted **GET** (all params in query string) |
+| Discover / manifest | Direct GET | `web_request` if allowlisted, else GET via a user-pasted URL |
+| Collect / buy (prepare) | Direct GET or POST | **GET** via a user-pasted URL: build the URL with every param in the query string plus `format=json`, show it, ask the user to paste it back, then fetch it. Then `send_calls`, or hand the user the envelope's `link.url` to approve in the Base app |
 | List (prepare + record) | Direct GET or POST, then POST | Not reachable — the record POST is what publishes the listing; deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
 | Batch collect (prepare) | Direct POST | Not reachable — deep-link `https://kismet.art/artwork/<collection>/<tokenId>` |
-| Record settlement (collect / buy) | Direct POST/PATCH | Skip; say recording will lag (on-chain result stands) |
+| Mint (prepare + record) | Direct POST, then POST | Not reachable (POST-only) — deep-link `https://kismet.art/mint` |
+| Record settlement (collect / buy) | Direct POST/PATCH | **GET** via a user-pasted URL: fill the txHash into the envelope's `record.getUrl`, show it, ask the user to paste it back, then fetch it (on-chain-verified; a repeat answers 200 for collect, 409 already-filled for buy — both mean done) |
 
 ## Endpoints
 
@@ -50,11 +51,12 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | --- | --- | --- |
 | GET | `/api/agent/manifest` | Self-describing API: chain, contracts, verbs, safety |
 | GET | `/api/agent/discover?kind=listings\|collect&…` | Listings to buy / artworks to collect; rows carry a `nextAction` |
+| GET | `/api/agent/record?verb=collect\|buy&…&txHash=0x…` | The collect / buy record as a GET (the envelope's `record.getUrl`, txHash filled). Delegates to `/api/collect` / `PATCH /api/listings/{id}` — same on-chain verification; a repeat is harmless (200 / 409 already-filled) |
 | GET or POST | `/api/agent/prepare-collect` | Mint an edition of an existing artwork. Params: `collection`+`tokenId` (or `url`), `account`, `amount?`, `comment?` |
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held artwork. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?` |
+| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `mediaType?` (required for a non-image `ar://`/`ipfs://` URI), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?`, `collectionName?`, `payoutRecipient?`, `splits?`, `artistMint?`, `enableRaffle?`, `description?` |
 
 Every prepare returns an envelope:
 
@@ -64,16 +66,20 @@ Every prepare returns an envelope:
   "action": "collect",
   "calls": [ { "to": "0x…", "data": "0x…", "value": "0x0" } ],
   "typedData": { },
-  "summary": "Collect 1× token #42 for $5.00 …",
+  "summary": "Collect “Dawn” (token #42) for $5 → to alice.base.eth (0x71Dc…7244).",
   "record": { "method": "POST", "url": "/api/collect", "bodyTemplate": { } },
-  "caps": { "maxValueUsdc": "5000000" }
+  "caps": { "maxValueUsdc": "5000000" },
+  "link": { "url": "https://base.app/base-pay?p=…", "note": "…" }
 }
 ```
 
 `calls[].value` is already **hex wei** — no conversion needed. The server
 reads price, currency, and eligibility on-chain; never pass or trust a price
 from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
-`maxValueUsdc` in 6-decimal base units) — never exceed it.
+`maxValueUsdc` in 6-decimal base units) — never exceed it. `link` (collect,
+batch, buy; optional) is a Base app deep link carrying the same calls: an
+alternative to `send_calls` that returns nothing to you, so get the txHash from
+the user before recording. It is absent when the batch prepends a USDC approve.
 
 ## Orchestration
 
@@ -81,12 +87,17 @@ from elsewhere. `caps` is a per-action ceiling (`maxValueEth` in wei,
 1. `get_wallets` → the Base Account address.
 2. Optional: `GET /api/agent/discover` to pick a listing or artwork.
 3. Fetch the prepare endpoint (GET on chat-only surfaces).
-4. Show `summary` and the price; then `send_calls({ chain: "base", calls })`.
+4. Show `summary` and the price; then `send_calls({ chain: "base", calls })`
+   (or hand the user `link.url` when present, to approve in the Base app).
 5. User approves in Base Account → poll `get_request_status(requestId)` until
    confirmed; capture the txHash.
-6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`).
-   Kismet independently re-verifies the mint/fulfillment on-chain, so
-   recording is idempotent and safe to lag.
+6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`) —
+   on a chat-only surface, via `record.getUrl` pasted back by the user.
+   Kismet independently re-verifies the mint/fulfillment on-chain, so a
+   repeat is safe (a repeated collect record is idempotent; a repeated buy
+   record answers 409 already-filled — treat both as success). A 403 "not
+   verified on-chain" or a 503 is transient (Kismet's RPC is behind the
+   wallet): retry the record after ~5 s, up to 3 times — never the wallet step.
 
 **List** — same shape, but the envelope may include a one-time
 `setApprovalForAll` in `calls` (execute via `send_calls` first) and always
@@ -105,7 +116,8 @@ filled. Kismet sponsors the on-chain mint. See the skill's `references/mint.md`.
 ## Submission
 
 Target tool: **`send_calls`** (collect, buy, and list's one-time approval),
-plus **`sign`** (list's Seaport order). Map the envelope directly:
+plus **`sign`** (list's Seaport order; mint's `MintIntent`). Map the envelope
+directly:
 
 ```json
 {
@@ -121,7 +133,7 @@ The batched `approve` + action execute atomically in one user approval.
 ```text
 Collect this artwork: https://kismet.art/artwork/0xabc…/42
 ```
-1. `get_wallets` → address. 2. `GET /api/agent/prepare-collect?url=…&account=…`.
+1. `get_wallets` → address. 2. `GET /api/agent/prepare-collect?url=…&account=…&format=json`.
 3. Show summary/price → `send_calls`. 4. Approval → `get_request_status` →
 record.
 
@@ -138,6 +150,14 @@ List my artwork #7 for 0.01 ETH
 3. `send_calls` the one-time approval if present → `sign` the typed data →
 POST the record body.
 
+```text
+Mint this image on Kismet as "Dawn" — free, open edition
+```
+1. `get_wallets`. 2. Read the image with your own tools → `data:` URI →
+`POST /api/agent/prepare-mint` (shell harness only; `403` without a Kismet
+Pass). 3. Show summary → `sign` the typed data → POST the record body to
+`/api/mint`.
+
 ## Risks & Warnings
 
 - Transactions are irreversible — always show the prepare `summary` and price
@@ -150,8 +170,9 @@ POST the record body.
 
 ## Notes
 
-- If a confirmed on-chain action's record call fails, the on-chain result
-  stands — report that recording lagged rather than retrying the transaction.
+- If a confirmed on-chain action's record call answers 403 "not verified
+  on-chain" or 503, retry the record (never the transaction) after ~5 s, up to
+  3 times; the on-chain result stands either way.
 - Popup-less budgeted collecting (a "Kismet collecting account" via Spend
   Permissions) is a separate Kismet-native app feature, not part of this
   plugin.

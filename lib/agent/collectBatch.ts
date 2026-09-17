@@ -11,8 +11,8 @@ import type { AgentCall } from './types'
 
 /**
  * Pure builder for a multi-collect ("collect these N") EIP-5792 batch — one
- * Base MCP `send_calls` approval for a whole basket. This is the execution
- * primitive behind both Co-pilot's batch collect and a Scout's Propose mode.
+ * Base MCP `send_calls` approval for a whole basket — the execution primitive
+ * for prepare-collect-batch and for the Scout server executor's per-drop mint.
  *
  * Correctness that a naive per-item concat gets WRONG, and we get right:
  *   - USDC: ERC20.approve SETS (not increments) the allowance, and each mint

@@ -13,7 +13,9 @@ POST BASE/api/agent/prepare-list
   "tokenId": "42",            // or pass "url"
   "account": "0xYourBaseAccount", // seller; must hold the token
   "price": "0.01",            // human decimal string
-  "currency": "eth"           // "eth" | "usdc"
+  "currency": "eth",          // "eth" | "usdc"
+  "name": "…",                // optional display name copied onto the listing record
+  "image": "…"                // optional image URL copied onto the listing record
 }
 ```
 

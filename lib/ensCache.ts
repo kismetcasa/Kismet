@@ -1,8 +1,10 @@
-import { ccipRequest, createPublicClient, http } from 'viem'
-import { mainnet } from 'viem/chains'
+import { after } from 'next/server'
+import { ccipRequest, createPublicClient, http, toCoinType } from 'viem'
+import { base, mainnet } from 'viem/chains'
 import { normalize } from 'viem/ens'
 import { redis } from '@/lib/redis'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { TIMED_OUT, withinBudget } from '@/lib/withTimeout'
 
 // Shared ENS reverse-resolution cache, used by both /api/profile/[address]
 // (single) and /api/profiles (batch) so the two never diverge on how a
@@ -138,10 +140,6 @@ export async function resolveEnsAndCache(address: string): Promise<string | null
   }
 }
 
-// Unique marker so a race timeout can never be confused with a resolution
-// result (getEnsName returns arbitrary reverse-record strings).
-const TIMED_OUT = Symbol('ens-budget-timeout')
-
 /**
  * Bounded inline resolution for cache misses. Races resolveEnsAndCache
  * against `budgetMs`:
@@ -160,11 +158,103 @@ export async function resolveEnsWithBudget(
   budgetMs: number,
 ): Promise<{ ens: string | null; pending?: Promise<unknown> }> {
   const resolution = resolveEnsAndCache(address)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<typeof TIMED_OUT>((r) => {
-    timer = setTimeout(() => r(TIMED_OUT), budgetMs)
-  })
-  const winner = await Promise.race([resolution, timeout]).finally(() => clearTimeout(timer))
+  const winner = await withinBudget(resolution, budgetMs)
   if (winner === TIMED_OUT) return { ens: null, pending: resolution }
   return { ens: winner }
+}
+
+// ── Display name for the agent summaries: Base primary name first, then ENS ─
+//
+// The one line the user reads before approving names counterparties by their
+// Base-native identity when it exists: the ENSIP-19 primary name for Base's
+// coinType (a Basename like alice.base.eth, or any name whose Base address
+// record points back at them). viem's `getEnsName({ coinType:
+// toCoinType(base.id) })` asks the mainnet Universal Resolver
+// (`reverseWithGateways`), which follows the CCIP-read hops to Base's reverse
+// registrar (through the gateway allowlist above) and checks the name
+// forward-resolves to the address. Falls back to the verified mainnet ENS
+// name from the shared cache above, so that cache's TTL and transient-failure
+// semantics apply unchanged.
+//
+// Only a name that is already ENS-normalized is displayed (isDisplayableName):
+// a reverse record is set by its owner and a label can be arbitrary bytes at
+// the registry, so an un-normalized name could carry spaces, quotes or a
+// newline into the summary line. Both sources pass through it — the mainnet
+// cache normalizes only for its forward check and returns the raw record.
+//
+// Cosmetic, so bounded: the Basename answer is cached per address (1h for a
+// name or a confirmed none; 5min after a failed lookup), lookups are
+// de-duplicated while in flight, and one that hasn't answered within
+// NAME_BUDGET_MS answers null NOW while it continues after the response to
+// fill the caches. The summary always prints the short address beside the
+// name, so a missing name costs nothing and a name can never replace the
+// address.
+
+const BASENAME_TTL = 3600
+const BASENAME_FAIL_TTL = 300
+const NAME_BUDGET_MS = 1500
+const NAME_MAX = 64
+const BASE_COIN_TYPE = toCoinType(base.id)
+const basenameKey = (address: string) => `kismetart:basename:${address.toLowerCase()}`
+const inFlight = new Map<string, Promise<string | null>>()
+
+/** ENS-normalized, single-token, bounded — and free of the summary line's own
+ *  punctuation (the quote marks and arrows lib/agent/summary neutralizes in
+ *  titles), which ENS normalization permits. */
+export function isDisplayableName(name: string): boolean {
+  if (!name || name.length > NAME_MAX || /[\s“”„‟"'()→⇒➔➡]/.test(name)) return false
+  try {
+    return normalize(name) === name
+  } catch {
+    return false
+  }
+}
+
+export async function getDisplayName(address: string): Promise<string | null> {
+  const lc = address.toLowerCase()
+  let lookup = inFlight.get(lc)
+  if (!lookup) {
+    lookup = resolveDisplayName(address).finally(() => inFlight.delete(lc))
+    inFlight.set(lc, lookup)
+  }
+  const name = await withinBudget(lookup, NAME_BUDGET_MS)
+  if (name !== TIMED_OUT) return name
+  // Budget hit: keep the lookup alive past the response so it fills the
+  // caches (outside a request scope — scripts — the promise simply runs).
+  try {
+    after(() => lookup)
+  } catch {
+    /* not inside a request */
+  }
+  return null
+}
+
+async function resolveDisplayName(address: string): Promise<string | null> {
+  const basename = await resolveBasename(address)
+  if (basename) return basename
+  const cached = await getCachedEns(address)
+  const ens = cached !== undefined ? cached : await resolveEnsAndCache(address)
+  return ens && isDisplayableName(ens) ? ens : null
+}
+
+/** Cached Basename lookup. '' caches a confirmed none for BASENAME_TTL; a
+ *  thrown lookup (transport) caches '' only for BASENAME_FAIL_TTL. */
+async function resolveBasename(address: string): Promise<string | null> {
+  const key = basenameKey(address)
+  try {
+    const cached = await redis.get<string>(key)
+    if (cached !== null) return cached || null
+  } catch {
+    // Cache unreadable — resolve anyway (de-duplicated and budgeted by the caller).
+  }
+  try {
+    // viem answers null (not an error) for "no name"; a thrown error is transport.
+    const name = await mainnetClient.getEnsName({ address: address as `0x${string}`, coinType: BASE_COIN_TYPE })
+    const display = name && isDisplayableName(name) ? name : null
+    await redis.set(key, display ?? '', { ex: BASENAME_TTL }).catch(() => {})
+    return display
+  } catch {
+    await redis.set(key, '', { ex: BASENAME_FAIL_TTL }).catch(() => {})
+    return null
+  }
 }

@@ -18,6 +18,8 @@ import { useState } from 'react'
 import { formatUnits } from 'viem'
 import { ChevronRight } from 'lucide-react'
 import { useAgent } from '@/hooks/useAgent'
+import { formatRelativeTime } from '@/lib/inprocess'
+import { describeLastRun } from '@/lib/agent/scout/skipReasons'
 import { AgentCollectPanel } from './AgentCollectPanel'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -28,17 +30,37 @@ export function AgentCollectEntry() {
   useBodyScrollLock(open)
   useEscapeKey(() => setOpen(false), open)
 
-  // Same audience as the old panel — smart-wallet Base Accounts only.
-  if (ag.loading || !ag.eligible) return null
+  if (ag.loading) return null
 
-  // Spender not wired on this deployment → the feature can't run. Show a subdued,
-  // non-interactive note (no dead modal), mirroring the panel's own coming-soon state.
+  // Spender not wired on this deployment → the feature can't run for anyone.
+  // Show a subdued, non-interactive note (no dead modal, and no wallet advice
+  // for a feature that isn't live), mirroring the panel's own coming-soon state.
   if (!ag.configured) {
     return (
       <div className="border border-line bg-surface/40 px-4 py-3">
         <p className="text-[10px] font-mono uppercase tracking-wider text-dim mb-1">Agent Collect</p>
         <p className="text-xs font-mono text-dim leading-relaxed">
           Coming soon — autonomously collect new drops from artists you choose, within a budget you set.
+        </p>
+      </div>
+    )
+  }
+
+  // Smart-wallet Base Accounts only. A plain EOA can't grant the Spend
+  // Permission the agent runs on — say so once instead of hiding the feature.
+  // The same detection answers "no" for a Base Account that has never
+  // transacted (no code on chain yet), so the copy covers both. When no wallet
+  // is connected, or the check itself failed (RPC), stay silent: nothing is
+  // claimed either way.
+  if (!ag.eligible) {
+    if (ag.eligibilityReason !== 'eoa') return null
+    return (
+      <div className="border border-line bg-surface/40 px-4 py-3">
+        <p className="text-[10px] font-mono uppercase tracking-wider text-dim mb-1">Agent Collect</p>
+        <p className="text-xs font-mono text-dim leading-relaxed">
+          Needs a Base Account (smart wallet) that has made at least one transaction. The wallet you’re signed
+          in with can’t grant the spend permission the agent runs on — sign in with your Base Account (and
+          collect or send something once, if it’s brand new) to auto-collect new drops from artists you choose.
         </p>
       </div>
     )
@@ -92,6 +114,9 @@ export function AgentCollectEntry() {
           <span className={`text-xs font-mono leading-relaxed ${summaryClass}`}>{summary}</span>
           <ChevronRight size={14} className="shrink-0 text-muted group-hover:text-dim transition-colors" aria-hidden="true" />
         </div>
+        {scout && ag.lastRun && !ag.running && (
+          <p className="text-[10px] font-mono text-dim mt-1 truncate">{describeLastRun(ag.lastRun, formatRelativeTime(ag.lastRun.at))}</p>
+        )}
       </button>
 
       {open && (

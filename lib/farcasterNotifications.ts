@@ -508,14 +508,21 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
     }
     case 'agent_collect': {
       // Self-notification: the user's own agent collected on their behalf.
-      // Link to their profile (matches NotificationRow's href). amount is
-      // the count; price is the run's total spend in the budget currency.
-      const count = n.amount && n.amount > 1 ? `${n.amount} artworks` : 'an artwork'
+      // Per-collect notices name the artwork and link to it; an older aggregate
+      // notice (count only) links to their profile — matches NotificationRow.
+      // Per-artwork notice (has the token): amount is editions of that artwork.
+      // Legacy aggregate notice (no token): amount is a count of artworks.
+      const subject =
+        n.tokenAddress && n.tokenId
+          ? `${n.amount && n.amount > 1 ? `${n.amount}× ` : ''}${tokenName ? `"${tokenName}"` : 'an artwork'}`
+          : n.amount && n.amount > 1
+            ? `${n.amount} artworks`
+            : 'an artwork'
       const priceLabel = n.price && n.price !== '0' ? ` for ${formatPushPrice(n.price, n.currency)}` : ''
       return {
         title: truncate('Agent collected', TITLE_MAX),
-        body: truncate(`Your agent collected ${count}${priceLabel}`, BODY_MAX),
-        targetUrl: `${SITE_URL}/profile/${n.recipient}`,
+        body: truncate(`Your agent collected ${subject}${priceLabel}`, BODY_MAX),
+        targetUrl: n.tokenAddress && n.tokenId ? momentUrl : `${SITE_URL}/profile/${n.recipient}`,
       }
     }
     case 'raffle_win': {

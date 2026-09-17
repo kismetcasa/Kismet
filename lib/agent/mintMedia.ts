@@ -65,7 +65,12 @@ export function ingestMintMedia(
     const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(media)
     if (!m) return { error: 'Malformed data URI' }
     let mime = m[1]
-    const bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]))
+    let bytes: Buffer
+    try {
+      bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]))
+    } catch {
+      return { error: 'Malformed data URI' } // a bad percent-escape throws URIError
+    }
     let kind = kindOf(mime)
     // A GLB is identified by its bytes, as everywhere else in this codebase:
     // `.glb` has no registered browser MIME, so an assistant that read the
@@ -74,7 +79,11 @@ export function ingestMintMedia(
       kind = 'model'
       mime = GLB_MIME
     }
-    if (!kind) return { error: `Unsupported media type "${mime}" — image/*, video/* or model/gltf-binary (.glb) only` }
+    if (!kind) {
+      return {
+        error: `Unsupported media type "${mime}" — accepted: image/png, image/jpeg, image/gif, image/webp, image/avif, video/mp4, video/webm, video/quicktime, model/gltf-binary (.glb)`,
+      }
+    }
     if (bytes.length > MAX_MEDIA_BYTES) {
       return { error: `Media too large (${(bytes.length / 1048576).toFixed(1)} MB); MCP mint caps at 25 MB — use the Kismet app for larger files` }
     }

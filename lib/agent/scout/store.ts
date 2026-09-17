@@ -10,8 +10,21 @@
  */
 
 import { redis } from '@/lib/redis'
-import type { BudgetUsage, Scout } from './engine'
+import type { BudgetUsage, Scout, SkipReason } from './engine'
 import type { StoredSpendPermission } from './serverExecutor'
+
+/** Outcome of the latest server run — on-open / "Run now" (runScoutServer) or a
+ *  coordinated drop (dropCoordinator) — for the profile card. Written only by
+ *  those run paths, never by the client. */
+export interface ScoutLastRun {
+  /** Unix seconds. */
+  at: number
+  collected: number
+  skipped: number
+  reason?: string
+  /** Per-reason skip counts from the engine's plan, when one was made. */
+  skips?: Partial<Record<SkipReason, number>>
+}
 
 export interface ScoutRecord {
   scout: Scout
@@ -33,6 +46,35 @@ export interface ScoutRecord {
 }
 
 const key = (owner: string) => `kismetart:scout:${owner.toLowerCase()}`
+
+// Run history lives on its OWN key, never inside the record: the record is
+// rewritten whole (read-modify-write) by the run loop, the coordinator and the
+// config route, so a field written from a run would add a second race window
+// per run (a DELETE or a pause landing between the re-read and the write gets
+// clobbered or resurrected) and every PUT would have to carry it. A plain SET
+// of a separate key touches nothing else; a stray write after a delete leaves
+// only a harmless key that expires.
+const lastRunKey = (owner: string) => `kismetart:scout-lastrun:${owner.toLowerCase()}`
+const LAST_RUN_TTL_S = 30 * 86_400
+
+export async function getLastRun(owner: string): Promise<ScoutLastRun | null> {
+  try {
+    const raw = await redis.get<string | ScoutLastRun>(lastRunKey(owner))
+    if (!raw) return null
+    return typeof raw === 'string' ? (JSON.parse(raw) as ScoutLastRun) : raw
+  } catch {
+    return null
+  }
+}
+
+/** Best-effort: run history is cosmetic and must never fail or delay a run. */
+export async function saveLastRun(owner: string, lastRun: ScoutLastRun): Promise<void> {
+  await redis.set(lastRunKey(owner), JSON.stringify(lastRun), { ex: LAST_RUN_TTL_S }).catch(() => {})
+}
+
+export async function deleteLastRun(owner: string): Promise<void> {
+  await redis.del(lastRunKey(owner)).catch(() => {})
+}
 
 // Reverse index: artist address → set of owners whose agent watches them. Lets
 // the drop coordinator gather every watcher of a freshly-dropped artist in one
@@ -109,8 +151,21 @@ export async function saveScout(record: ScoutRecord): Promise<void> {
   await syncWatcherIndex(record.scout.owner, prev?.scout.policy.creators ?? [], record.scout.policy.creators)
 }
 
+// Compare-and-set for the server run paths, which re-read the record and write
+// back a usage or queue change: the write lands only if the record is still
+// exactly what was read, so a pause, turn-off or re-grant that landed
+// meanwhile is never overwritten, and a deleted record is never re-created.
+// Those paths never change the creators, so the watcher index needs no sync.
+const SET_IF_UNCHANGED = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]) return 1 end return 0"
+
+/** @returns false when the stored record changed since `expected` was read, or is gone. */
+export async function saveScoutIfUnchanged(expected: ScoutRecord, next: ScoutRecord): Promise<boolean> {
+  return (await redis.eval(SET_IF_UNCHANGED, [key(expected.scout.owner)], [JSON.stringify(expected), JSON.stringify(next)])) === 1
+}
+
 export async function deleteScout(owner: string): Promise<void> {
   const prev = await getScout(owner)
   await redis.del(key(owner))
   if (prev) await syncWatcherIndex(owner, prev.scout.policy.creators, [])
+  await deleteLastRun(owner)
 }

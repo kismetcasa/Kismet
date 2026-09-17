@@ -22,6 +22,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
+import { withTimeout } from '@/lib/withTimeout'
 
 /** One call the spender submits. `value` is wei (bigint) — the spend()/mint
  *  calldata is built upstream; this is the on-chain submission shape. */
@@ -54,6 +55,15 @@ export interface ScoutSpender {
  */
 export function ownKeySpender(privateKey: Hex): ScoutSpender {
   const account = privateKeyToAccount(privateKey)
+  // Same fail-fast the CDP path applies: users grant their Spend Permission to
+  // NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS, so this key MUST be that address or every
+  // spend() targets a permission it can't draw on. Refuse a misconfig loudly.
+  const configured = process.env.NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS
+  if (configured && configured.toLowerCase() !== account.address.toLowerCase()) {
+    throw new Error(
+      `SCOUT_SPENDER_PRIVATE_KEY address (${account.address}) does not match NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS (${configured}); they must be the same account.`,
+    )
+  }
   const wallet = createWalletClient({
     account,
     chain: base,
@@ -98,10 +108,28 @@ export function ownKeySpender(privateKey: Hex): ScoutSpender {
  * CDP_SCOUT_OWNER_NAME / CDP_SCOUT_ACCOUNT_NAME name the deterministic owner +
  * smart account (stable address across restarts).
  *
- * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of the
- * bundle graph until a CDP spender is actually resolved (mirrors grantBudget's
- * lazy @base-org import). Typechecked against the installed SDK (^1.51.0); a live
+ * The @coinbase/cdp-sdk import is dynamic so the heavy SDK stays out of THIS
+ * route's bundle until a CDP spender is actually resolved (mirrors grantBudget's
+ * lazy @base-org import). Typechecked against the installed SDK (1.51.2); a live
  * Base-mainnet smoke (real creds + one sponsored op) is the remaining gate.
+ *
+ * PIN NOTE — @coinbase/cdp-sdk is pinned EXACT at 1.51.2; 1.52.0 is the
+ * build-verified ceiling. From 1.53.0 the SDK's account constructors
+ * (toEvmSmartAccount / toEvmServerAccount — our getOrCreate* path) statically
+ * import its x402 signer, which needs eight @x402/* peer packages the SDK does
+ * not install. Not merely a missing-peer nuisance: the SDK also reaches the APP
+ * bundle graph via wagmi → @base-org/account (nested copy) → payment/charge.js,
+ * so on 1.53.0+ `next build` fails ("Can't resolve '@x402/evm/…'") and the only
+ * cure is shipping @x402/* into client chunks for a feature Kismet never calls.
+ * What 1.51.2 → 1.55.0 changes on our call chain (diffed from the published
+ * tarballs, 2026-09): sendUserOperation / waitForUserOperation and the EVM
+ * client's getOrCreateAccount / getOrCreateSmartAccount are byte-identical; the
+ * account objects gain additive x402 methods; getBaseNodeRpcUrl tightens a
+ * missing-credentials guard this always-credentialed spender never hits; and
+ * CdpClient / the HTTP layer relax credentials for public (Bazaar) endpoints
+ * without touching the authenticated path. Nothing alters what our calls do,
+ * so newer versions buy nothing here. Bump only when the SDK makes x402 lazy
+ * or Kismet deliberately adopts it.
  */
 export async function cdpSpender(): Promise<ScoutSpender> {
   const apiKeyId = process.env.CDP_API_KEY_ID
@@ -259,9 +287,16 @@ function serialized(spender: ScoutSpender): ScoutSpender {
  *  transient CDP error — or creds added after boot — re-resolves next call. */
 let cachedSpender: Promise<ScoutSpender> | null = null
 
+// The CDP resolution has no timeout of its own (undici's default is minutes).
+// A hung call would otherwise pin EVERY caller behind one cached promise — each
+// run route holding its 900s lock, the coordinator, every turn-off answering
+// "not revoked" — so bound it: a timeout rejects, the cache clears, the next
+// call re-resolves.
+const RESOLVE_TIMEOUT_MS = 20_000
+
 export function getScoutSpender(): Promise<ScoutSpender> {
   if (!cachedSpender) {
-    cachedSpender = (async () => {
+    cachedSpender = withTimeout((async () => {
       const pk = process.env.SCOUT_SPENDER_PRIVATE_KEY
       // The EOA fallback is NON-ATOMIC: it submits spend()→approve→mint as separate
       // txs, so a mint revert AFTER spend() strands the pulled funds in the EOA (the
@@ -278,7 +313,7 @@ export function getScoutSpender(): Promise<ScoutSpender> {
       }
       const spender = pk ? ownKeySpender(pk as Hex) : await cdpSpender()
       return serialized(spender)
-    })()
+    })(), RESOLVE_TIMEOUT_MS, 'Scout spender did not resolve in time (CDP unreachable?)')
     cachedSpender.catch(() => {
       cachedSpender = null
     })

@@ -32,6 +32,6 @@ Non-negotiable rules for acting on Kismet through Base MCP.
 
 - A prepare `4xx`/`5xx` is informative — relay it. Common ones: `409` (no active
   sale / listing inactive), `403` (don't hold the token), `400` (bad input).
-- If an on-chain action confirms but the follow-up record call fails, the
-  on-chain result still stands — report that recording lagged rather than
-  retrying the transaction.
+- If an on-chain action confirms but the follow-up record call answers `403`
+  "not verified on-chain" or `503`, retry the record (never the transaction)
+  after ~5 s, up to 3 times; the on-chain result still stands either way.

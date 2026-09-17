@@ -2,11 +2,18 @@
 
 /**
  * Onboarding for Kismet's per-action AI agent (the Base MCP surface). The agent
- * lives in the user's own assistant (Claude / ChatGPT / Cursor / …) via Base MCP;
- * Kismet just exposes the prepare endpoints + the skill it reads. So "setup" is:
- * connect Base MCP → point the assistant at Kismet's skill → ask. Every write is
- * approved in the user's Base Account (Kismet never holds keys). Mirrors Base's
- * own "Get Started with Base MCP" flow.
+ * lives in the user's own assistant (Claude / ChatGPT / Cursor / Claude Code / …)
+ * via Base MCP; Kismet just exposes the prepare endpoints + the skill it reads.
+ * So "setup" is: connect Base MCP → point the assistant at Kismet's skill → ask.
+ * Every write is approved in the user's Base Account (Kismet never holds keys).
+ * Mirrors Base's own "Get Started with Base MCP" flow.
+ *
+ * "What works where" states Base's custom-plugin fallback ladder honestly: an
+ * assistant with a shell/fetch tool calls every endpoint directly; the Claude.ai
+ * and ChatGPT apps can only fetch a GET URL the user pasted back into the chat,
+ * so there list (its record POST is what publishes the order) and mint
+ * (POST-only) finish in the app. Keep it in step with SKILL.md "Reaching the
+ * endpoints" and plugins/kismet.md "Surface Routing".
  */
 
 import { useState, type ReactNode } from 'react'
@@ -18,12 +25,27 @@ const MANIFEST_URL = `${SITE_URL}/api/agent/manifest`
 // clients add https://mcp.base.org manually.
 const ADD_BASE_MCP_CLAUDE =
   'https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Base%20MCP&connectorUrl=https%3A%2F%2Fmcp.base.org'
-const KISMET_PROMPT = `Use Kismet (an art marketplace on Base) through Base MCP. Open ${SKILL_URL} as your reference and follow it to discover, collect, buy, and list artworks. Run every action through my Base Account for approval.`
+const KISMET_PROMPT = `Use Kismet (an art marketplace on Base) through Base MCP. Open ${SKILL_URL} as your reference and follow it to discover, collect, buy, list, and mint artworks. Run every action through my Base Account for approval.`
 
+// Every example maps onto a path the skill can actually serve: discover
+// (listings, USDC ≤ $5), prepare-collect by artwork URL, prepare-list by URL +
+// price, and prepare-mint from an attached image (Pass holders).
 const EXAMPLES = [
-  'Find new artworks to collect on Kismet under $5',
+  'What’s for sale on Kismet under $5?',
   'Collect the artwork at <paste a Kismet artwork link>',
   'List my artwork <link> for 0.01 ETH',
+  'Mint this image on Kismet as “<title>” — free, open edition',
+]
+
+const SURFACES = [
+  {
+    where: 'Claude Code, Cursor, Codex',
+    what: 'Everything — discover, collect, buy, list, and mint. These assistants call Kismet directly.',
+  },
+  {
+    where: 'Claude.ai and ChatGPT',
+    what: 'Discover, collect, and buy. Your assistant will show you a Kismet link and ask you to paste it back — that is how those apps let it read Kismet. Listing and minting finish here in the app.',
+  },
 ]
 
 function CopyButton({ text, label = 'copy' }: { text: string; label?: string }) {
@@ -64,12 +86,21 @@ export function AgentOnboarding() {
   return (
     <div className="space-y-8">
       <header className="space-y-2">
-        <h1 className="text-lg font-mono uppercase tracking-wider text-ink">Collect with your AI assistant</h1>
+        <h1 className="text-lg font-mono uppercase tracking-wider text-ink">Use Kismet from your AI assistant</h1>
         <p className="text-xs font-mono text-dim leading-relaxed">
-          Connect Base MCP and your assistant can discover, collect, buy, and list artworks on Kismet — you
-          approve each action in your Base Account. Kismet never holds your keys.
+          Connect Base MCP and your assistant can discover, collect, buy, list, and mint artworks on Kismet —
+          you approve each action in your Base Account. Kismet never holds your keys.
         </p>
       </header>
+
+      <div className="bg-surface border border-line p-3 space-y-1">
+        <p className="text-[10px] font-mono uppercase tracking-wider text-accent">Needs a Base Account</p>
+        <p className="text-xs font-mono text-dim leading-relaxed">
+          Base MCP runs on your Base Account — Base’s passkey smart wallet, the one in the Base app. Sign in
+          to Kismet with that same Base Account and everything your assistant collects shows up on your
+          profile.
+        </p>
+      </div>
 
       <div className="space-y-6">
         <Step n={1} title="Connect Base MCP">
@@ -97,7 +128,7 @@ export function AgentOnboarding() {
           </div>
         </Step>
 
-        <Step n={3} title="Ask it to collect">
+        <Step n={3} title="Ask">
           <p className="text-xs font-mono text-dim leading-relaxed">Try:</p>
           <ul className="space-y-1.5">
             {EXAMPLES.map((e) => (
@@ -106,12 +137,25 @@ export function AgentOnboarding() {
               </li>
             ))}
           </ul>
+          <p className="text-[11px] font-mono text-muted leading-relaxed">Minting needs a Kismet Pass.</p>
         </Step>
+      </div>
+
+      <div className="space-y-2">
+        <h2 className="text-xs font-mono uppercase tracking-wider text-ink">What works where</h2>
+        <dl className="space-y-2">
+          {SURFACES.map((s) => (
+            <div key={s.where} className="bg-surface border border-line p-2 space-y-1">
+              <dt className="text-[11px] font-mono text-ink">{s.where}</dt>
+              <dd className="text-[11px] font-mono text-dim leading-relaxed">{s.what}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
 
       <div className="border-t border-line pt-4 space-y-2">
         <p className="text-[10px] font-mono text-subtle leading-relaxed">
-          Every collect, buy, and list is prepared by the agent and executed only when you approve it in
+          Every collect, buy, list, and mint is prepared by the agent and executed only when you approve it in
           your Base Account. The agent can’t move funds without your tap.
         </p>
         <p className="text-[10px] font-mono text-subtle leading-relaxed">

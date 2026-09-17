@@ -11,12 +11,14 @@
  */
 
 import { getPermissionStatus } from '@base-org/account/spend-permission'
-import { sdkRpcOptions } from '@/lib/rpc'
+import { sdkRpcOptions, serverBaseClient } from '@/lib/rpc'
+import { readMintFeeWithBound } from '@/lib/zoraMint'
 import type { Address, Hex } from 'viem'
 import { isKillSwitchEngaged } from './killSwitch'
-import { writeNotification } from '@/lib/notifications'
-import { planRun, type BudgetUsage } from './engine'
-import { getScout, saveScout } from './store'
+import { getMomentMeta, writeNotification } from '@/lib/notifications'
+import { planRun, type BudgetUsage, type Candidate, type Decision, type SkipReason } from './engine'
+import { getScout, saveLastRun, saveScoutIfUnchanged } from './store'
+import { isGrantEnded } from './permission'
 import { discoverCore } from './discoverCore'
 import { createSpendPermissionExecutor } from './serverExecutor'
 import { drainSupersededPermissions } from './revoke'
@@ -26,6 +28,43 @@ export interface ServerRunSummary {
   collected: number
   skipped: number
   reason?: string
+  /** Per-reason counts of the engine's policy skips, when a plan was made. */
+  skips?: Partial<Record<SkipReason, number>>
+}
+
+function countSkips(decisions: readonly Decision[]): Partial<Record<SkipReason, number>> | undefined {
+  const out: Partial<Record<SkipReason, number>> = {}
+  let any = false
+  for (const d of decisions) {
+    if (d.action !== 'skip') continue
+    out[d.reason] = (out[d.reason] ?? 0) + 1
+    any = true
+  }
+  return any ? out : undefined
+}
+
+/** Judge and budget ETH candidates by their per-edition OUTLAY — price plus the
+ *  collection's protocol mint fee — as the coordinator and the executor do, so
+ *  a drop the fee pushes over the per-item cap is a policy skip in the plan
+ *  rather than an execution failure repeated every run. One read per distinct
+ *  collection. */
+async function withMintFees(candidates: Candidate[]): Promise<Candidate[]> {
+  const client = serverBaseClient()
+  const fees = new Map<string, bigint>()
+  for (const c of candidates) {
+    const k = c.collection.toLowerCase()
+    if (c.currency !== 'eth' || fees.has(k)) continue
+    fees.set(k, await readMintFeeWithBound(client as Parameters<typeof readMintFeeWithBound>[0], c.collection as Address))
+  }
+  return candidates.map((c) => {
+    const fee = c.currency === 'eth' ? fees.get(c.collection.toLowerCase()) : undefined
+    if (!fee) return c
+    try {
+      return { ...c, pricePerToken: (BigInt(c.pricePerToken) + fee).toString() }
+    } catch {
+      return c // unparseable price → the engine refuses it as-is
+    }
+  })
 }
 
 /** The user's collected set as `collection:tokenId` keys, so a new run only
@@ -86,8 +125,26 @@ export async function runScoutServer(params: {
   spender: ScoutSpender
   now?: number
 }): Promise<ServerRunSummary> {
-  const { owner, baseUrl, spender } = params
   const now = params.now ?? Math.floor(Date.now() / 1000)
+  const summary = await runCore({ ...params, now })
+  // Every outcome the owner can act on is recorded (nothing new, over budget,
+  // a mid-run stop, failures) — on its own key (store.ts), so it can neither
+  // resurrect a deleted agent nor clobber a concurrent pause. An entry-level
+  // kill switch or a missing agent touches nothing.
+  if (summary.reason !== 'kill switch engaged' && summary.reason !== 'no agent') {
+    await saveLastRun(params.owner, {
+      at: now,
+      collected: summary.collected,
+      skipped: summary.skipped,
+      ...(summary.reason ? { reason: summary.reason } : {}),
+      ...(summary.skips ? { skips: summary.skips } : {}),
+    })
+  }
+  return summary
+}
+
+async function runCore(params: { owner: string; baseUrl: string; spender: ScoutSpender; now: number }): Promise<ServerRunSummary> {
+  const { owner, baseUrl, spender, now } = params
 
   // Emergency stop — fail CLOSED (lib/agent/scout/killSwitch): a Redis blip
   // during an incident must not resume autonomous spending.
@@ -106,7 +163,9 @@ export async function runScoutServer(params: {
   }
   const recipient = owner as Address
 
-  // 1. Anchor the budget window + spend to the on-chain permission.
+  // 1. Anchor the budget window + spend to the on-chain permission. An ended
+  //    grant is inert (and the SDK throws for it) — say so instead of failing.
+  if (isGrantEnded(permission, now)) return { collected: 0, skipped: 0, reason: 'permission inactive' }
   const status = await getPermissionStatus(permission, sdkRpcOptions())
   if (!status.isActive) return { collected: 0, skipped: 0, reason: 'permission inactive' }
   const periodStart = status.currentPeriod.start
@@ -118,7 +177,7 @@ export async function runScoutServer(params: {
   }
 
   // 2. Discover watched artists' drops; plan within budget/policy, excluding owned.
-  const candidates = await discoverCore(scout.policy.creators, baseUrl)
+  const candidates = await withMintFees(await discoverCore(scout.policy.creators, baseUrl))
   if (candidates.length === 0) return { collected: 0, skipped: 0, reason: 'nothing new from your artists' }
 
   // The timeline collected-set is a BINARY (owned/not) pre-filter, correct only
@@ -137,8 +196,9 @@ export async function runScoutServer(params: {
   // (resolved above), so the off-chain item counter mirrors the SpendPermissionManager
   // exactly and can't drift by a period under clock skew near a boundary.
   const plan = planRun(scout, candidates, usage, now, planOwned, periodStart)
+  const skips = countSkips(plan.decisions)
   if (plan.toCollect.length === 0) {
-    return { collected: 0, skipped: plan.decisions.length, reason: 'nothing within your budget/policy' }
+    return { collected: 0, skipped: plan.decisions.length, reason: 'nothing within your budget/policy', skips }
   }
 
   // 3. Execute each: spend (bounded) + mint to the user, via the spender. The
@@ -152,6 +212,8 @@ export async function runScoutServer(params: {
   // Set when an operator engages the kill switch mid-run — remaining candidates
   // are left un-attempted (not policy-skipped, not failed).
   let stoppedByKillSwitch = false
+  // Set when the USER pauses / turns off / deletes the agent mid-run.
+  let stoppedByUser = false
   // We track `failed` SEPARATELY so the logs below can distinguish a quiet run
   // (all policy-skipped — normal) from a broken one (collects throwing — paymaster
   // dead / RPC down / contract changed).
@@ -163,10 +225,35 @@ export async function runScoutServer(params: {
       stoppedByKillSwitch = true
       break
     }
+    // Honor the USER's own controls between collects too. The top-of-run `record`
+    // is a snapshot: a pause, a "turn off" (away=false), or a delete made while a
+    // multi-collect run is in flight must stop the REMAINING spends now, not just
+    // the next run. The kill switch above is the platform's brake; this is the
+    // user's. One Redis GET per collect, beside the kill-switch GET.
+    const live = await getScout(owner)
+    if (!live?.scout || !live.permission || !live.away || live.scout.status !== 'active' || live.scout.mode !== 'auto') {
+      stoppedByUser = true
+      break
+    }
     try {
-      const { txHash, quantity } = await executor.collect(scout, candidate)
+      // The LIVE policy: a cap or artist list edited mid-run applies to the
+      // remaining spends, not just the next run.
+      const { txHash, quantity, spent } = await executor.collect(live.scout, candidate)
       await recordCollect(baseUrl, owner, candidate, txHash, Number(quantity))
       collected += 1
+      // One notice per artwork, carrying the token so the bell links to it, the
+      // title (Kismet's own moment metadata) and what it cost.
+      const name = (await getMomentMeta(candidate.collection, candidate.tokenId).catch(() => null))?.name
+      await writeNotification({
+        type: 'agent_collect',
+        recipient: owner,
+        amount: Number(quantity),
+        currency: candidate.currency,
+        ...(spent > 0n ? { price: spent.toString() } : {}),
+        tokenAddress: candidate.collection,
+        tokenId: candidate.tokenId,
+        ...(name ? { tokenName: name } : {}),
+      }).catch(() => {})
     } catch (err) {
       failed += 1
       // Surface WHY a collect failed. Without this the autonomous path is blind:
@@ -191,29 +278,24 @@ export async function runScoutServer(params: {
   // 4. Persist usage from on-chain truth; notify the user.
   try {
     const end = await getPermissionStatus(permission, sdkRpcOptions())
-    const endUsage: BudgetUsage = {
-      periodStart,
-      spentThisPeriod: end.currentPeriod.spend.toString(),
-      itemsThisPeriod: items + collected,
+    // Merge this run's count onto the FRESH counter (a coordinated collect may
+    // have bumped it meanwhile) and write only if the record is still what was
+    // just read: a pause, turn-off or re-grant landing in between wins — the
+    // write is retried once on top of it — and a deleted agent is never
+    // resurrected (the coordinator's bumpItemUsage makes the same choices).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const fresh = await getScout(owner)
+      if (!fresh) break
+      const base = fresh.usage.periodStart === periodStart ? fresh.usage.itemsThisPeriod : 0
+      const endUsage: BudgetUsage = {
+        periodStart,
+        spentThisPeriod: end.currentPeriod.spend.toString(),
+        itemsThisPeriod: base + collected,
+      }
+      if (await saveScoutIfUnchanged(fresh, { ...fresh, usage: endUsage })) break
     }
-    // Re-read before persisting so a control change made WHILE this run was in
-    // flight — the user pausing, turning the agent off, coming back (away=false),
-    // or re-granting budget — survives. The top-of-run `record` snapshot is stale
-    // by now; blindly saving it would silently RESUME an agent the user just
-    // stopped mid-run. Persist only the authoritative usage onto the freshest
-    // record (fall back to the snapshot if the re-read fails).
-    const fresh = (await getScout(owner)) ?? record
-    await saveScout({ ...fresh, usage: endUsage })
   } catch {
     /* the on-chain cap is the real guard; a stale stored count is harmless */
-  }
-  if (collected > 0) {
-    await writeNotification({
-      type: 'agent_collect',
-      recipient: owner,
-      amount: collected,
-      currency: scout.budget.currency,
-    })
   }
 
   // One run-summary line, emitted ONLY when collects actually failed (a healthy or
@@ -235,6 +317,8 @@ export async function runScoutServer(params: {
   let reason: string | undefined
   if (stoppedByKillSwitch) {
     reason = 'kill switch engaged mid-run — remaining collects halted'
+  } else if (stoppedByUser) {
+    reason = 'agent paused or turned off mid-run — remaining collects halted'
   } else if (failed > 0) {
     reason =
       collected === 0
@@ -242,5 +326,5 @@ export async function runScoutServer(params: {
         : `${failed} of ${plan.toCollect.length} collect(s) failed: ${firstFailure}`
   }
 
-  return { collected, skipped, reason }
+  return { collected, skipped, reason, skips }
 }

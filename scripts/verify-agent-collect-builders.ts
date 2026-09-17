@@ -42,6 +42,13 @@ import {
 import { buildCollectPlan } from '@/lib/agent/collect'
 import { buildCollectBatchPlan } from '@/lib/agent/collectBatch'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buildApproveLink, APPROVE_LINK_NOTE } from '@/lib/agent/prolink'
+import { isDocumentNavigation, renderApprovePage } from '@/lib/agent/approvePage'
+import { batchCollectSummary, buySummary, collectSummary, listSummary, safeTitle } from '@/lib/agent/summary'
+import { isDisplayableName } from '@/lib/ensCache'
+import { shortAddress } from '@/lib/inprocess'
+import { computePlatformFee } from '@/lib/platformFee'
+import { decodeProlink } from '@base-org/account/prolink'
 import { SEAPORT_ADDRESS, buildSellOrder, serializeOrder } from '@/lib/seaport'
 import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import type { Listing } from '@/lib/listings'
@@ -197,7 +204,6 @@ console.log('\nbuildCollectBatchPlan — Scout: sender pays, recipient receives'
   const ethMint = plan.calls.find((c) => eq(c.to, COLLECTION))
   const [ethMintTo] = ethMint ? decodeAbiParameters(parseAbiParameters('address, string'), decodeEthMint(ethMint.data).args[4]) : [undefined]
   check('ETH mint.mintTo == recipient, not the paying account', !!ethMint && eq(ethMintTo as string, RECIPIENT))
-  check('mintTo != the paying account (sender)', !eq(RECIPIENT, ACCOUNT))
 }
 
 // ── Buy: the real buildBuyPlan — USDC fulfill carries NO native value ────────
@@ -270,6 +276,215 @@ console.log('\nbuildBuyPlan — ETH listing carries value == price')
   check('single fulfill call, no approve', plan.calls.length === 1 && plan.approvalIncluded === false)
   check('ETH fulfill value == price', hexToBigInt(plan.calls[0].value as Hex) === price)
   check('totalValue == price', plan.totalValue === price)
+
+  // ── Prolink approve link (lib/agent/prolink.ts) ────────────────────────────
+  // The link is issued only when the SDK's own decoder reproduces the calls
+  // byte-for-byte; that decoder drops leading zero nibbles from calldata, so a
+  // batch carrying the ERC-20 approve selector (0x095ea7b3) must be withheld
+  // while mint / fulfillOrder batches round-trip and get a link.
+  console.log('\nbuildApproveLink — Base app prolink')
+  type Decoded = { version: string; chainId: string; from?: string; calls: { to: string; data: string; value: string }[] }
+  const roundTrip = async (calls: { to: string; data: string; value: string }[], url: string) => {
+    const decoded = await decodeProlink(new URL(url).searchParams.get('p') ?? '')
+    const p = (decoded.params as Decoded[])[0]
+    return {
+      method: decoded.method,
+      p,
+      same:
+        p.calls.length === calls.length &&
+        p.calls.every(
+          (d, i) =>
+            eq(d.to, calls[i].to) && d.data === calls[i].data.toLowerCase() && hexToBigInt(d.value as Hex) === hexToBigInt(calls[i].value as Hex),
+        ),
+    }
+  }
+
+  const buyLink = await buildApproveLink(plan.calls, ACCOUNT)
+  check('ETH buy (fulfillOrder) gets a link', buyLink !== null)
+  check('link is base.app/base-pay?p=…', buyLink?.url.startsWith('https://base.app/base-pay?p=') === true, buyLink?.url.slice(0, 40))
+  if (buyLink) {
+    const rt = await roundTrip(plan.calls, buyLink.url)
+    check('decodes as wallet_sendCalls on Base (0x2105)', rt.method === 'wallet_sendCalls' && rt.p.chainId === '0x2105', rt.p.chainId)
+    check('from is pinned to the paying account', !!rt.p.from && eq(rt.p.from, ACCOUNT), rt.p.from)
+    check('fulfillOrder call round-trips byte-for-byte (to, data, value)', rt.same)
+  }
+
+  const ethCollect = buildCollectPlan({
+    collection: COLLECTION, tokenId: 42n, account: ACCOUNT, quantity: 2n,
+    currency: 'eth', pricePerToken: 1_000_000_000_000_000n, comment: 'gm', mintFee: 111_000_000_000_000n, usdcAllowance: 0n,
+  })
+  const ethLink = await buildApproveLink(ethCollect.calls, ACCOUNT)
+  check('ETH collect (1155 mint) gets a link', ethLink !== null)
+  if (ethLink) check('1155 mint call round-trips byte-for-byte', (await roundTrip(ethCollect.calls, ethLink.url)).same)
+
+  const usdcCovered = buildCollectPlan({
+    collection: COLLECTION, tokenId: 7n, account: ACCOUNT, quantity: 1n,
+    currency: 'usdc', pricePerToken: 5_000_000n, comment: '', mintFee: 0n, usdcAllowance: 5_000_000n,
+  })
+  const usdcLink = await buildApproveLink(usdcCovered.calls, ACCOUNT)
+  check('USDC collect with allowance covered (ERC20Minter mint only) gets a link', usdcLink !== null)
+  if (usdcLink) check('ERC20Minter mint call round-trips byte-for-byte', (await roundTrip(usdcCovered.calls, usdcLink.url)).same)
+
+  const usdcShort = buildCollectPlan({
+    collection: COLLECTION, tokenId: 7n, account: ACCOUNT, quantity: 1n,
+    currency: 'usdc', pricePerToken: 5_000_000n, comment: '', mintFee: 0n, usdcAllowance: 0n,
+  })
+  check('the withheld case really is the approve selector', selector(usdcShort.calls[0].data) === '0x095ea7b3')
+  check('USDC collect with a prepended approve is WITHHELD (decoder would mangle 0x095ea7b3)', (await buildApproveLink(usdcShort.calls, ACCOUNT)) === null)
+  const usdcBuy = buildBuyPlan({
+    listing: { ...listing, currency: 'usdc', price: '5000000', orderComponents: serializeOrder(buildSellOrder({
+      offerer: ACCOUNT, collectionAddress: COLLECTION, tokenId: '7', sellerProceeds: 4_750_000n, royaltyReceiver: RECIPIENT,
+      royaltyAmount: 200_000n, platformFee: 50_000n, platformFeeRecipient: PLATFORM_FEE_RECIPIENT, counter: 0n, currency: 'usdc',
+    })) } as Listing,
+    seaportUsdcAllowance: 0n,
+  })
+  check('USDC buy with a prepended approve is WITHHELD too', (await buildApproveLink(usdcBuy.calls, ACCOUNT)) === null)
+  check('a call whose data starts with a zero byte is WITHHELD', (await buildApproveLink([{ to: COLLECTION, data: '0x00112233', value: '0x0' }], ACCOUNT)) === null)
+  check('an empty batch gets no link', (await buildApproveLink([], ACCOUNT)) === null)
+  check('the link carries the one-way note', buyLink?.note === APPROVE_LINK_NOTE && /transaction hash/.test(APPROVE_LINK_NOTE))
+
+  // The comparator lowercases `to`/`data` and BigInt-compares `value`: checksummed
+  // addresses, upper-case hex data and a zero-padded value must still round-trip.
+  const mixed = await buildApproveLink(
+    [{ to: getAddress(COLLECTION), data: `0x${ethCollect.calls[0].data.slice(2).toUpperCase()}` as Hex, value: '0x00f4240' }],
+    ACCOUNT,
+  )
+  check('mixed-case input (checksummed to, upper-case data, padded value) still round-trips', mixed !== null)
+
+  // Batch with recipient ≠ account (the Scout shape): the payer signs, so the
+  // decoded `from` must be the paying account, never the recipient.
+  const scoutBatch = buildCollectBatchPlan({
+    account: ACCOUNT, recipient: RECIPIENT, usdcAllowance: 0n,
+    items: [{ collection: COLLECTION, tokenId: 30n, quantity: 1n, currency: 'eth', pricePerToken: 1_000_000_000_000_000n, mintFee: 0n, comment: '' }],
+  })
+  const batchLink = await buildApproveLink(scoutBatch.calls, ACCOUNT)
+  check('batch plan (ETH only) gets a link', batchLink !== null)
+  if (batchLink) {
+    const rt = await roundTrip(scoutBatch.calls, batchLink.url)
+    check('batch link: from == the paying account, not the recipient', !!rt.p.from && eq(rt.p.from, ACCOUNT) && !eq(rt.p.from, RECIPIENT))
+    check('batch link: calls round-trip', rt.same)
+  }
+
+  // Navigation gating: only a document navigation gets the page, and format=json
+  // always forces JSON.
+  const nav = (dest: string | null, query = '') => ({
+    headers: new Headers(dest ? { 'sec-fetch-dest': dest } : {}),
+    nextUrl: { searchParams: new URLSearchParams(query) },
+  })
+  check('document navigation → page', isDocumentNavigation(nav('document')) === true)
+  check('no Sec-Fetch-Dest (server-side fetcher) → JSON', isDocumentNavigation(nav(null)) === false)
+  check('iframe / empty dest → JSON', isDocumentNavigation(nav('iframe')) === false && isDocumentNavigation(nav('empty')) === false)
+  check('format=json overrides a navigation', isDocumentNavigation(nav('document', 'format=json')) === false)
+  check('format=JSON (wrong case) does not override', isDocumentNavigation(nav('document', 'format=JSON')) === true)
+
+  // The browser-navigation page embeds the summary (which carries the
+  // seller-controlled listing name) and the envelope JSON — both must be escaped,
+  // and so must every attribute (href) it interpolates.
+  const page = renderApprovePage(
+    { chain: 'base', action: 'buy', calls: plan.calls, summary: 'Buy “<script>alert(1)</script>” & "co" for 0.05 ETH', ...(buyLink ? { link: buyLink } : {}) },
+    '/artwork/0xabc/7',
+  )
+  check('approve page escapes the summary (no raw <script>, & and " escaped)', !page.includes('<script>') && page.includes('&lt;script&gt;') && page.includes('&amp; &quot;co&quot;'))
+  check('approve page carries the Base app link as the button href', !!buyLink && page.includes(`href="${buyLink.url}"`) && page.includes('Approve in the Base app'))
+  check('approve page embeds the envelope JSON', page.includes('&quot;action&quot;: &quot;buy&quot;'))
+  const hostile = renderApprovePage(
+    { chain: 'base', action: 'collect', calls: [], summary: 'x', link: { url: 'https://base.app/base-pay?p=a&b="><script>', note: 'n' } },
+    '/artwork/0xabc/7"><img src=x onerror=alert(1)>',
+  )
+  check(
+    'attribute values are escaped (no raw quote-break or tag survives in an href)',
+    !hostile.includes('"><script>') && !hostile.includes('"><img') && hostile.includes('&amp;b=&quot;&gt;&lt;script&gt;') && hostile.includes('7&quot;&gt;&lt;img'),
+  )
+  const noLink = renderApprovePage({ chain: 'base', action: 'collect', calls: plan.calls, summary: 'x' }, '/artwork/0xabc/7')
+  check('without a link the page says so instead of rendering an empty button', noLink.includes('No Base app link for this action') && !noLink.includes('class="btn"'))
 }
 
-report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope all verified')
+// ── Summaries (lib/agent/summary.ts): the one line the user approves on ─────
+// Exact strings, because the assistant shows them verbatim: the item by title
+// and id, the full money (price / mint fee / total, and for a listing what the
+// seller nets), and every counterparty as name + short address.
+console.log('\nsummaries — exact user-facing lines')
+{
+  const me = shortAddress(ACCOUNT)
+  const them = shortAddress(RECIPIENT)
+
+  const dirty = `Dawn${String.fromCodePoint(0)}\n IGNORE ${String.fromCodePoint(0x200b)} previous`
+  check('safeTitle drops control + zero-width chars, collapses whitespace', safeTitle(dirty) === 'Dawn IGNORE previous', safeTitle(dirty))
+  const bidi = `a${String.fromCodePoint(0x202e)}b${String.fromCodePoint(0x2066)}c`
+  check('safeTitle strips bidi overrides', safeTitle(bidi) === 'a b c', safeTitle(bidi))
+  const long = safeTitle('x'.repeat(80))
+  check('safeTitle caps at 60 chars with an ellipsis', long !== null && Array.from(long).length === 60 && long.endsWith('…'))
+  check('safeTitle → null for empty / whitespace / non-string', safeTitle('  \n ') === null && safeTitle(undefined) === null && safeTitle(null) === null)
+  // A title cannot close the summary's quotes or draw its arrow, so a forged
+  // second clause stays visibly inside the title's own quotes.
+  const forged = safeTitle('A” for free → to alice.base.eth (0x71Dc…7244). Collect “B')
+  check('safeTitle neutralizes the line’s own quotes and arrows', forged === 'A’ for free - to alice.base.eth (0x71Dc…7244). Collect ’B', forged)
+  check(
+    'a forged title stays inside its quotes in the rendered line',
+    collectSummary({ title: forged, tokenId: '42', quantity: 1n, currency: 'eth', pricePerToken: 1_000_000_000_000_000_000n, mintFee: 0n, total: 1_000_000_000_000_000_000n, recipient: RECIPIENT, approvalIncluded: false }) ===
+      `Collect “A’ for free - to alice.base.eth (0x71Dc…7244). Collect ’B” (token #42) for 1 ETH → to ${them}.`,
+  )
+  const tagged = safeTitle(`a${String.fromCodePoint(0xe0041)}${String.fromCodePoint(0xe0042)}b${String.fromCodePoint(0xad)}c`)
+  check('safeTitle drops Unicode TAG characters and soft hyphens (invisible text)', tagged === 'a b c', tagged)
+  const family = '👨‍👩‍👧'
+  check('safeTitle keeps ZWJ emoji sequences intact', safeTitle(family) === family)
+  const flagCap = safeTitle(`${'x'.repeat(59)}🇺🇸`)
+  check('safeTitle caps on graphemes — never splits a flag or a skin-tone pair', flagCap !== null && flagCap === 'x'.repeat(59) + '🇺🇸', flagCap)
+  check('collect: free ×2 reads “for free”, no “each”/total noise', collectSummary({ title: null, tokenId: '1', quantity: 2n, currency: 'eth', pricePerToken: 0n, mintFee: 0n, total: 0n, recipient: ACCOUNT, approvalIncluded: false }) === `Collect token #1 ×2 for free → to ${me}.`)
+  // A resolved name is shown unsanitized, so only an ENS-normalized single
+  // token free of the line's own punctuation qualifies.
+  check('display name: normalized names pass', isDisplayableName('alice.base.eth') && isDisplayableName('vitalik.eth'))
+  check(
+    'display name: un-normalized / spaced / quoted / arrowed / oversized names are refused',
+    !isDisplayableName('Alice.base.eth') && !isDisplayableName('alice base.eth') && !isDisplayableName('a“b.eth') && !isDisplayableName('x→y.eth') && !isDisplayableName(`${'x'.repeat(70)}.eth`) && !isDisplayableName('alice.base.eth (0x71Dc…7244)\n→ to bob.base.eth'),
+  )
+
+  check(
+    'collect: single, USDC, titled, with a Basename',
+    collectSummary({ title: 'Dawn', tokenId: '42', quantity: 1n, currency: 'usdc', pricePerToken: 5_000_000n, mintFee: 0n, total: 5_000_000n, recipient: ACCOUNT, recipientName: 'alice.base.eth', approvalIncluded: false }) ===
+      `Collect “Dawn” (token #42) for $5 → to alice.base.eth (${me}).`,
+  )
+  check(
+    'collect: ×2, ETH, mint fee each, total spelled out',
+    collectSummary({ title: 'Dawn', tokenId: '42', quantity: 2n, currency: 'eth', pricePerToken: 1_000_000_000_000_000n, mintFee: 111_000_000_000_000n, total: 2_222_000_000_000_000n, recipient: ACCOUNT, recipientName: null, approvalIncluded: false }) ===
+      `Collect “Dawn” (token #42) ×2 for 0.001 ETH each + 0.000111 ETH mint fee each, 0.002222 ETH total → to ${me}.`,
+  )
+  check(
+    'collect: free + mint fee, untitled, USDC approval note',
+    collectSummary({ title: null, tokenId: '42', quantity: 1n, currency: 'eth', pricePerToken: 0n, mintFee: 111_000_000_000_000n, total: 111_000_000_000_000n, recipient: ACCOUNT, approvalIncluded: true }) ===
+      `Collect token #42 for free + 0.000111 ETH mint fee, 0.000111 ETH total → to ${me}. Includes a one-time USDC approval, batched into the same approval.`,
+  )
+  check(
+    'batch: totals, mint-fee note, recipient, skipped count',
+    batchCollectSummary({ count: 3, totalLabel: '$8 + 0.001111 ETH', includesMintFees: true, recipient: RECIPIENT, recipientName: null, skipped: 1, approvalIncluded: false }) ===
+      `Collect 3 artworks for $8 + 0.001111 ETH (incl. mint fees) in one approval → to ${them}. Skipped 1 unavailable.`,
+  )
+  check(
+    'batch: a prepended USDC approve is stated, like the single collect and buy lines',
+    batchCollectSummary({ count: 2, totalLabel: '$8', includesMintFees: false, recipient: RECIPIENT, recipientName: null, skipped: 0, approvalIncluded: true }) ===
+      `Collect 2 artworks for $8 in one approval → to ${them}. Includes a one-time USDC approval, batched into the same approval.`,
+  )
+  const zalgo = safeTitle(`a${'́'.repeat(2000)}b`)
+  check('safeTitle bounds stacked combining marks (one grapheme is not unbounded)', !!zalgo && zalgo.length <= 241 && zalgo.endsWith('…'), zalgo?.length)
+  check(
+    'buy: sanitized title, seller as name + short address',
+    buySummary({ title: safeTitle('Art' + String.fromCodePoint(0)), tokenId: '7', seller: RECIPIENT, sellerName: 'bob.base.eth', currency: 'eth', price: 50_000_000_000_000_000n, approvalIncluded: false }) ===
+      `Buy “Art” (token #7) from bob.base.eth (${them}) for 0.05 ETH.`,
+  )
+  const now = 1_800_000_000_000
+  const priceTotal = 10_000_000_000_000_000n // 0.01 ETH
+  const fee = computePlatformFee(priceTotal)
+  check('the listing fee really is 1% (summary names it)', fee === 100_000_000_000_000n, fee)
+  check(
+    'list: net after 1% fee + royalty, 30-day expiry, sign step',
+    listSummary({ title: 'Art', tokenId: '7', currency: 'eth', priceTotal, platformFee: fee, royaltyAmount: 400_000_000_000_000n, sellerProceeds: priceTotal - fee - 400_000_000_000_000n, expiresAt: now + 30 * 86_400_000, now, needsApproval: false }) ===
+      'List “Art” (token #7) for 0.01 ETH — you receive 0.0095 ETH after the 1% Kismet fee (0.0001 ETH) and the creator royalty (0.0004 ETH); expires in 30 days. Sign the order to list.',
+  )
+  check(
+    'list: no royalty, approval-first step',
+    listSummary({ title: null, tokenId: '7', currency: 'usdc', priceTotal: 5_000_000n, platformFee: 50_000n, royaltyAmount: 0n, sellerProceeds: 4_950_000n, expiresAt: now + 30 * 86_400_000, now, needsApproval: true }) ===
+      'List token #7 for $5 — you receive $4.95 after the 1% Kismet fee ($0.05); expires in 30 days. First listing on this collection — run the one-time marketplace approval (send_calls), then sign the order.',
+  )
+}
+
+report('OK — real builders exercised: approve-USDC, ETH value, batch summing, Scout recipient, buy envelope, prolink round-trip all verified')

@@ -6,17 +6,18 @@
  * submits, so NO user signature is needed and turn-off doesn't depend on the
  * browser wallet prompt completing.
  *
- * Why this matters: grants are created with no `end`, so the SDK defaults `end` to
- * the max timestamp — a permission never expires on its own. If a superseded (or
- * the current) permission is not revoked, it stays a live, spendable authorization
- * to our spender forever, invisible to the UI. So every "the user reduced or
- * removed their exposure" path routes through here.
+ * Why this matters: a grant is a live, spendable authorization to our spender
+ * until its `end` — grants made before GRANT_LIFETIME_DAYS (lib/agent/scout/
+ * grantBudget) carry the SDK's "never" end, newer ones a year — and it is
+ * invisible to the UI once superseded. So every "the user reduced or removed
+ * their exposure" path routes through here rather than waiting for expiry.
  */
 
 import { getPermissionStatus, prepareRevokeCallData } from '@base-org/account/spend-permission'
 import { sdkRpcOptions } from '@/lib/rpc'
 import type { Address, Hex } from 'viem'
-import { getScout, saveScout, type ScoutRecord } from './store'
+import { getScout, saveScoutIfUnchanged, type ScoutRecord } from './store'
+import { isGrantEnded } from './permission'
 import type { ScoutSpender } from './spender'
 import type { StoredSpendPermission } from './serverExecutor'
 
@@ -45,6 +46,9 @@ export async function revokePermissionsAsSpender(
 ): Promise<StoredSpendPermission[]> {
   const failed: StoredSpendPermission[] = []
   for (const perm of perms) {
+    // Ended → inert on-chain; the SDK would throw for it (permission.ts), which
+    // would keep it queued forever. Retire it.
+    if (isGrantEnded(perm)) continue
     try {
       const status = await getPermissionStatus(perm, sdkRpcOptions())
       if (status.isRevoked || status.isExpired) continue // already inert → drop from any queue
@@ -72,15 +76,19 @@ export async function drainSupersededPermissions(record: ScoutRecord, spender: S
   const retiredIds = new Set(pending.filter((p) => !failedIds.has(permKey(p))).map(permKey))
   if (retiredIds.size === 0) return // nothing retired → nothing to persist
 
-  // Re-read before persisting: this may be called with a snapshot taken earlier in
-  // a long coordination, so writing it back verbatim could clobber a config change
-  // (pause / budget / away) the user made meanwhile. Remove ONLY the entries we
-  // retired, by identity, preserving whatever the fresh record has since queued.
-  const fresh = (await getScout(record.scout.owner)) ?? record
+  // Re-read before persisting: the snapshot may predate a long on-chain wait, so
+  // writing it back verbatim could clobber a config change the user made
+  // meanwhile — or re-create an agent they turned off. Remove ONLY the entries
+  // retired, by identity, and only if the record is still what was just read;
+  // a concurrent change wins and the retired entries drop out on the next drain
+  // (an already-revoked grant is skipped without a call).
+  const fresh = await getScout(record.scout.owner)
+  if (!fresh) return
   const freshQueue = fresh.supersededPermissions ?? []
   const remaining = freshQueue.filter((p) => !retiredIds.has(permKey(p)))
   if (remaining.length === freshQueue.length) return // fresh queue had none of them
-  if (remaining.length > 0) fresh.supersededPermissions = remaining
-  else delete fresh.supersededPermissions
-  await saveScout(fresh)
+  const next = { ...fresh }
+  if (remaining.length > 0) next.supersededPermissions = remaining
+  else delete next.supersededPermissions
+  await saveScoutIfUnchanged(fresh, next)
 }

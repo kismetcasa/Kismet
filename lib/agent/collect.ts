@@ -9,6 +9,12 @@ import {
 import { withBuilderSuffix } from './calldata'
 import type { AgentCall } from './types'
 
+/** Cap on an agent-requested quantity, shared by the prepare and the record
+ *  routes so a record can never refuse the amount a prepare emitted. The
+ *  on-chain sale's per-wallet limit is the real gate (fetchEligibleTokens);
+ *  this is a sane upper bound so a typo can't build a 10,000× batch. */
+export const MAX_COLLECT_QUANTITY = 50
+
 /**
  * Pure builder for a "collect" (primary mint) EIP-5792 call batch — the exact
  * calldata the web app's useDirectCollect produces, assembled for Base MCP's

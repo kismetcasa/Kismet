@@ -7,9 +7,13 @@ import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { formatPrice } from '@/lib/inprocess'
+import { getDisplayName } from '@/lib/ensCache'
+import { batchCollectSummary } from '@/lib/agent/summary'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { dedupeMomentRefs } from '@/lib/agent/dedupeRefs'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
+import { collectRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
+import { buildApproveLink } from '@/lib/agent/prolink'
 import type { AgentActionEnvelope, AgentRecordHint } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -20,9 +24,9 @@ const MAX_BATCH = 20
 
 /**
  * Prepare a multi-collect ("collect these N") for one Base MCP send_calls
- * approval — the execution behind Co-pilot's batch collect and a Scout's
- * Propose mode. Read-only and inert. Resolves each item's live sale (currency +
- * price + eligibility) on-chain so it never builds a mint that would revert,
+ * approval — a whole basket in one approval. Read-only and inert. Resolves each
+ * item's live sale (currency + price + eligibility) on-chain so it never
+ * builds a mint that would revert,
  * then returns a single EIP-5792 batch plus one /api/collect record per item
  * (all keyed to the shared txHash).
  */
@@ -148,22 +152,37 @@ export async function POST(req: NextRequest) {
       comment,
       pricePerToken: it.pricePerToken.toString(),
       currency: it.currency,
-      txHash: '<REPLACE_WITH_send_calls_txHash>',
+      txHash: TX_HASH_PLACEHOLDER,
     },
+    getUrl: collectRecordUrl({ collection: it.collection, tokenId: it.tokenId.toString(), account: recipient, amount: Number(it.quantity), currency: it.currency, pricePerToken: it.pricePerToken.toString(), comment }),
   }))
 
   const ethTotalLabel = plan.totalNativeValue > 0n ? formatPrice(plan.totalNativeValue.toString(), 'eth') : ''
   const usdcTotalLabel = plan.totalUsdcCost > 0n ? formatPrice(plan.totalUsdcCost.toString(), 'usdc') : ''
   const totalLabel = [usdcTotalLabel, ethTotalLabel].filter(Boolean).join(' + ')
-  const skipNote = skipped.length > 0 ? ` Skipped ${skipped.length} unavailable.` : ''
-  const summary = `Collect ${items.length} artwork${items.length === 1 ? '' : 's'} for ${totalLabel || 'free'} in one approval.${skipNote}`
+  // Name the recipient in the one line the user reads: `recipient` is caller-
+  // supplied and becomes mintTo while the approving wallet pays, so a wrong or
+  // malicious address must be visible before approval, not buried in calldata.
+  // The paying account signs, so the link is pinned to `account`, not `recipient`.
+  const [recipientName, link] = await Promise.all([getDisplayName(recipient), buildApproveLink(plan.calls, account as Address)])
+  const summary = batchCollectSummary({
+    count: items.length,
+    totalLabel,
+    includesMintFees: items.some((i) => i.currency === 'eth' && i.mintFee > 0n),
+    recipient,
+    recipientName,
+    skipped: skipped.length,
+    approvalIncluded: plan.usdcApproveIncluded,
+  })
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'collect',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     records,
+    skipped,
     // A basket can mix ETH and USDC items, so surface BOTH ceilings — collapsing
     // to one currency would silently drop the other's spend cap.
     caps: {
@@ -172,5 +191,5 @@ export async function POST(req: NextRequest) {
     },
   }
 
-  return NextResponse.json({ ...envelope, skipped }, { headers: { 'Cache-Control': 'private, no-store' } })
+  return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }
