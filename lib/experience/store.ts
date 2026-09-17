@@ -169,15 +169,6 @@ export async function releaseCapsule(
   if (holder === machineId) await redis.del(kCapsule(collection, tokenId)).catch(() => {})
 }
 
-export async function saveMachine(m: Machine): Promise<void> {
-  await redis
-    .multi()
-    .set(kMachine(m.id), JSON.stringify(m))
-    .zadd(K_INDEX, { score: m.createdAt, member: m.id })
-    .zremrangebyrank(K_INDEX, 0, -(MAX_MACHINES + 1))
-    .exec()
-}
-
 export async function setMachineState(id: string, state: MachineState): Promise<Machine | null> {
   const m = await getMachine(id)
   if (!m) return null
@@ -218,12 +209,6 @@ export async function putPoolEntry(id: string, e: PoolEntry): Promise<void> {
   // Seed the remaining counter. `-1` is the sentinel for unlimited so the hash
   // holds a number in every slot and HINCRBY never has to special-case a type.
   await redis.hset(kRemaining(id), { [key]: e.supply === 0 ? -1 : e.supply })
-}
-
-export async function removePoolEntry(id: string, e: { collection: string; tokenId: string }): Promise<void> {
-  const key = entryKey(e)
-  await redis.hdel(kPool(id), key)
-  await redis.hdel(kRemaining(id), key)
 }
 
 /** Remaining counts by entry key. `null` = unlimited. Upstash round-trips

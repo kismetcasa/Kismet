@@ -1039,7 +1039,11 @@ console.log('\n9. operator identity')
   const DRIFT = '0xcafe000000000000000000000000000000000003'
   await store.createMachine(machine('mach-c', DRIFT))
   check('a machine holds its own token', await store.reserveCapsule(DRIFT, '1', 'mach-c'))
-  await store.saveMachine(machine('mach-c', '0xcafe000000000000000000000000000000000099'))
+  // Rewrite mach-c's record so it now names a DIFFERENT capsule, straight into
+  // the mock store — production has no whole-record overwrite (createMachine is
+  // NX, setMachineState only flips state), so the store exposes none; the point
+  // under test is reserveCapsule's staleness rule, not how the drift arose.
+  strings.set('kismetart:xp:mach-c:meta', JSON.stringify(machine('mach-c', '0xcafe000000000000000000000000000000000099')))
   check('a reservation whose machine now names a different capsule is stale',
     await store.reserveCapsule(DRIFT, '1', 'mach-b'))
 

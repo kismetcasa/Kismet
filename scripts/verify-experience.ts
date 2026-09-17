@@ -22,7 +22,7 @@ import {
   totalWeight,
   withExcluded,
 } from '../lib/experience/draw.ts'
-import { checkSolvency, coverage, findFloorPiece, pledgedSupply } from '../lib/experience/solvency.ts'
+import { checkSolvency, coverage, findFloorPiece } from '../lib/experience/solvency.ts'
 import {
   canonicalSnapshot,
   commitmentFor,
@@ -391,8 +391,6 @@ console.log('\n5c. cross-machine commitment ledger')
 }
 
 console.log('\n5d. helpers')
-check('pledgedSupply sums capped entries', pledgedSupply([entry({ supply: 2 }), entry({ supply: 3 })]) === 5)
-check('pledgedSupply is null when any entry is unlimited', pledgedSupply([entry({ supply: 0 })]) === null)
 check('findFloorPiece finds the creator open edition', !!findFloorPiece([entry({ supply: 0 })], CREATOR))
 check('findFloorPiece ignores a capped entry', !findFloorPiece([entry({ supply: 3 })], CREATOR))
 check('poolArtists dedupes case-insensitively', poolArtists([entry(), entry({ artist: CREATOR.toUpperCase() })]).length === 1)

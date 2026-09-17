@@ -58,16 +58,6 @@ export interface SolvencyProblem {
   detail: string
 }
 
-/** Total copies the pool can release. null = unbounded (a floor piece exists). */
-export function pledgedSupply(entries: PoolEntry[]): number | null {
-  let sum = 0
-  for (const e of entries) {
-    if (e.supply === 0) return null
-    sum += e.supply
-  }
-  return sum
-}
-
 /** An open-supply entry owned by the machine's creator: the guarantee that any
  *  capsule can always be honoured no matter who else withdraws. */
 export function findFloorPiece(
