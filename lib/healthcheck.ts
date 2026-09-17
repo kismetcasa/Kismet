@@ -114,3 +114,43 @@ export async function assertSmartWalletResolves(): Promise<void> {
   }
   console.log(`[healthcheck] OK: /smartwallet resolves (${ADMIN_ADDRESS} → ${result.address})`)
 }
+
+/**
+ * Boot-time config invariant: the server-only OPERATOR_SMART_WALLET and its
+ * public mirror NEXT_PUBLIC_OPERATOR_SMART_WALLET must name the SAME wallet.
+ * The mirror is what CreateCollectionForm bakes into a new collection's
+ * setupActions ADMIN grant; the server value is what
+ * assertPlatformCollectionAuthorized reads on PLATFORM_COLLECTION. If they
+ * drift, every form deploy grants ADMIN to a wallet inprocess never executes
+ * as, and every relayed platform write into those collections fails upstream
+ * with "No authorized smart wallet found" — silently, because the on-chain
+ * check above still passes for the server value. The 2026-05-29→06-18 window
+ * in which inprocess's /smartwallet lookup returned a DIFFERENT derivation
+ * (artist-id based) than its write gate uses (wallet based) is exactly how such
+ * a drift gets captured into an env var. Logs only; never takes the site down.
+ * Compares the RUNTIME env — if the build-time value the browser bundle
+ * inlined differs from runtime, that is a deploy-pipeline bug this cannot see.
+ */
+export function assertOperatorMirrorMatches(): void {
+  const server = process.env.OPERATOR_SMART_WALLET?.trim()
+  const mirror = process.env.NEXT_PUBLIC_OPERATOR_SMART_WALLET?.trim()
+  if (!server && !mirror) return
+  if (!server || !mirror) {
+    console.error(
+      `[healthcheck] operator wallet env is half-set: OPERATOR_SMART_WALLET=${server || '<unset>'} ` +
+        `NEXT_PUBLIC_OPERATOR_SMART_WALLET=${mirror || '<unset>'} — set BOTH to the same address ` +
+        `(the deploy-time ADMIN grant reads the public one; the platform-collection check reads the server one).`,
+    )
+    return
+  }
+  if (server.toLowerCase() !== mirror.toLowerCase()) {
+    console.error(
+      `[healthcheck] OPERATOR WALLET MIRROR MISMATCH: OPERATOR_SMART_WALLET=${server} but ` +
+        `NEXT_PUBLIC_OPERATOR_SMART_WALLET=${mirror}. New collections grant ADMIN to the public value ` +
+        `while relayed platform writes execute as inprocess's wallet for the account behind ` +
+        `INPROCESS_API_KEY — verify both against GET api.inprocess.world/api/smartwallet?walletAddress=<platform EOA>.`,
+    )
+    return
+  }
+  console.log('[healthcheck] OK: operator wallet env mirror matches')
+}

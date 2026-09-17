@@ -192,7 +192,7 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:intent-nonce:{n}` | string '1' | SET NX EX 300 (`intentAuth.ts:40`) | ▶ consumed via DEL after EIP-712 verify (`:101`), per mint/write | 5 min | C |
 | `kismetart:nonce:{addr}` | string | SETEX 300 (`profile.ts:237`) | ▶ **GETDEL** consume (`:248`) — follow, profile PUT, listing cancel | 5 min | C |
 | `kismetart:rl:{route}:{ip\|id}` | string ctr | 🔥 EVAL INCR+EXPIRE — **every request**, ~56 sites/54 routes, all 60s windows, limits 5–120/min (`ratelimit.ts:38`) | (same EVAL) | 60s | **O** |
-| `kismetart:uq:{kind}:{addr}:d/w` | string ctr ×2 | ▶ EVAL two-bucket check+debit per paid action (`userQuota.ts:136`); kinds: mint 50/250, write 50/250, collection 25/100, transcode 30/120, distribute 100/400, sign-calls 200/1000, update-uri 50/200, upload-bytes 500MB/2GB | (inside EVAL) | 25h / 8d | **O**; admin bypass |
+| `kismetart:uq:{kind}:{addr}:d/w` | string ctr ×2 | ▶ EVAL two-bucket check+debit per paid action (`userQuota.ts:136`); kinds: mint 50/250, write 50/250, collection 25/100, transcode 30/120, distribute 100/400, sign-calls 200/1000, upload-bytes 500MB/2GB | (inside EVAL) | 25h / 8d | **O**; admin bypass |
 | `kismetart:lock:{label}` | string token | ⏱ SET NX EX 60 acquire + Lua CAD release (`leaderLock.ts:34,42`), 'sweep-listings' every 5 min | (in Lua) | 60s | acquire throws→skip |
 | `kismetart:fc:primary:{fid}` | string | SET EX 1h hit / 5m miss (`farcasterAuth.ts:69,77`) | 🔥 GET per Mini-App Bearer request fallback (`:54`) | 1h/5m; `''`=negative | O→live fetch |
 | `kismetart:fc:identity:{fid}` | string | SET on identity change; DEL self-clean/erase (`farcasterAuth.ts:157,127,167`) | 🔥 GET per Bearer request w/o FidProfile (`:118`) | **none** (legacy) | O |
@@ -216,7 +216,7 @@ S = swallowed/best-effort, LKG = last-known-good.
 | `kismetart:pins:{cat}:{addr}` | zset | ▶ ZADD (ZCARD+ZSCORE soft cap 6); ZREM; DEL ×4 erase incl. view mode (`showcase.ts`) | 3× ZRANGE per pins fetch | ≤6/cat | O |
 | `kismetart:profile-public-view:{addr}` | string `'full'`\|`'curated'` | ▶ SET owner choice; SET-once materialization of the derived verdict (read path when derived-curated; pin-write prelude — `showcase.ts`); DEL erase | GET per pins fetch (batched with the 3 ZRANGEs); absent → derived: pins→curated (grandfather), none→full | none | O; unknowns fail private to curated |
 | `kismetart:creator-lists` | hash | 🔧 HSET/HDEL (`creatorLists.ts:142,149`) | HGETALL homepage (`:72`); HGET one (`:119`) | none | O |
-| `kismetart:ens:{addr}` | string | SET EX 1h/1h-''/5m-fail (`ensCache.ts:38-48`) | GET per cold profile resolve (`:25`) | 1h / 5m; forward-verified | O |
+| `kismetart:ens:{addr}` | string | SET EX 24h-name/1h-''/30s-`!transient`-fail (`ensCache.ts`) | GET per cold profile resolve; misses resolve inline-with-budget or via after() warm | 24h / 1h / 30s; forward-verified | O |
 | `kismetart:fc:profile:{fid}` | string JSON/'' | SET EX 1h/5m/**30s transient** (`farcasterProfile.ts:146`) | 🔥 GET per identity resolve (`:72`) | 1h/5m/30s | O |
 | `kismetart:fc:verifications:{fid}` | string JSON/''/'!transient' | SET EX 1h/5m/30s (`:281`); side-effect back-populates reverse index | 🔥 GET per sibling expansion (`:72`) | 1h/5m/30s | O; identity-writes treat null as C |
 | `kismetart:fc:fid-by-addr:{addr}` | string | SET EX 30d per verified addr on any verifications fetch (`:300`) | 🔥 GET `getFidByAddress` — first hop of EVERY identity resolve (`:359`) | 30d refresh | O |

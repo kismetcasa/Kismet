@@ -5,7 +5,7 @@ import { Box, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
 import { videoGatewayUrls } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
-import { MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/media/modelMedia'
+import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/media/modelMedia'
 
 /**
  * The artwork detail view's 3D viewer — the ONE surface in the app that
@@ -211,6 +211,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
           camera-controls
           {...(allowsMotion ? { 'auto-rotate': true } : {})}
           shadow-intensity={MODEL_SHADOW_INTENSITY}
+          environment-image={MODEL_ENVIRONMENT}
           touch-action="pan-y"
           style={{ width: '100%', height: '100%', backgroundColor: bg }}
         />

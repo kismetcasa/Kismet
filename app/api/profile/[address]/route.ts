@@ -5,13 +5,18 @@ import { upsertProfile, upsertFidProfile, getFidProfile, getProfile, consumeNonc
 import { isProfileIdentityHidden, isViewerFidSibling, resolveCanonicalProfile } from '@/lib/addressUnion'
 import { getSessionAddress } from '@/lib/session'
 import { getFarcasterProfileByAddress, getVerifiedAddressesByFid, getVerifiedTwitterByFid } from '@/lib/farcasterProfile'
-import { getCachedEns, resolveEnsAndCache } from '@/lib/ensCache'
+import { getCachedEns, resolveEnsAndCache, resolveEnsWithBudget } from '@/lib/ensCache'
 import { pickProfileIdentity } from '@/lib/profileIdentity'
 import { errorResponse } from '@/lib/apiResponse'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
 import { normalizeSocials, type ProfileSocials } from '@/lib/socials'
 import { getArtistEarnings } from '@/lib/stats'
 import { isEarningsPublic } from '@/lib/earningsVisibility'
+
+// Cold-ENS inline budget (see GET). Generous relative to the batch route's
+// 500ms: one address, and the wait overlaps the earnings and verification
+// reads rather than adding to them.
+const ENS_INLINE_BUDGET_MS = 800
 
 export async function GET(
   req: NextRequest,
@@ -59,6 +64,18 @@ export async function GET(
       })
     }
   }
+  // Cold ENS cache, no username, no FC identity: the header would render as
+  // the bare address, so resolve INLINE within a bounded budget — started
+  // here so it overlaps the earnings/verification reads below rather than
+  // adding to them. The old background-only warm guaranteed every first view
+  // (and every first view after a TTL expiry) showed the truncated address;
+  // that path is now the fallback for budget overrun: the resolution keeps
+  // running past the response (after() keeps the request context alive for
+  // the cache write) and the next view reads warm. FC-named profiles skip the
+  // wait (pickProfileIdentity prefers the FC username) and keep the warm.
+  const ensMiss = !profile.username && cachedEns === undefined
+  const ensInline =
+    ensMiss && !farcaster?.username ? resolveEnsWithBudget(address, ENS_INLINE_BUDGET_MS) : null
   // Public earnings ride along on the profile read so the earnings card needs no
   // separate request (earnings are private until pinned; the owner-private
   // figures come from /api/stats only when an owner views their own unpinned
@@ -105,7 +122,15 @@ export async function GET(
   }))
     ? await getArtistEarnings(canonicalAddress)
     : null
-  if (!profile.username && cachedEns === undefined) {
+  let ens = cachedEns
+  if (ensInline) {
+    const r = await ensInline
+    ens = r.ens
+    if (r.pending) {
+      const pending = r.pending
+      after(() => pending)
+    }
+  } else if (ensMiss) {
     after(() => resolveEnsAndCache(address))
   }
   // Server-side enrichment so existing components auto-propagate FC
@@ -119,11 +144,11 @@ export async function GET(
   //     address is a sibling that inherited from another verification,
   //     or (b) the FidProfile.currentAddress doesn't match. Clients
   //     can use it to canonicalize their URL.
-  const ensName = cachedEns || undefined
+  const ensName = ens || undefined
   // Shared projection (same one /api/profiles uses) so the single + batch
   // routes can't diverge on identity resolution. displayName keeps its
   // nullable contract: '' (nothing resolved) collapses to null as before.
-  const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, cachedEns)
+  const { name, avatarUrl } = pickProfileIdentity(profile, farcaster, ens)
   const displayName = name || null
   // Proof-of-ownership socials inherited from Farcaster. Only X is verifiable
   // on FC today; when present it outranks any manually-claimed `x` and the

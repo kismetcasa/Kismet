@@ -232,6 +232,13 @@ export interface MomentComment {
   // and the UI renders it as "invited to kismet". Absent/'collect' = an
   // on-chain collect comment from the inprocess feed.
   kind?: 'collect' | 'airdrop'
+  // In Process's own username for the sender, shipped on upstream rows since
+  // their 2026-07 comments-contract migration. Display-only LAST-RESORT
+  // fallback for senders with no Kismet/FC/ENS identity — a human-chosen
+  // handle beats a truncated address. Sanitized by normalizeMomentComments
+  // below; the /api/moment/comments route strips it for admin-hidden
+  // identities so it can't leak a name around that gate.
+  username?: string
 }
 
 /**
@@ -284,15 +291,46 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
     // value outside the declared union can only be junk — normalized to
     // absent rather than carried through typed as something it is not.
     const kind = r.kind === 'collect' || r.kind === 'airdrop' ? r.kind : undefined
+    // Upstream username: untrusted display text, so keep only a short,
+    // trimmed, non-address-shaped string and drop everything else (a raw
+    // 0x… here would just re-render the address the fallback exists to
+    // replace — and could spoof a DIFFERENT wallet's identity in a row
+    // that links to the sender's profile).
+    const rawUsername = typeof r.username === 'string' ? r.username.trim() : ''
+    const username =
+      rawUsername.length > 0 && rawUsername.length <= 40 && !/^0x/i.test(rawUsername)
+        ? rawUsername
+        : undefined
     out.push({
       ...r,
       sender: r.sender,
       timestamp,
       comment: typeof r.comment === 'string' ? r.comment : '',
       kind,
+      username,
     } as MomentComment)
   }
   return out
+}
+
+/**
+ * Drop the upstream `username` from rows whose sender is an admin-hidden
+ * identity (lib/addressUnion's sibling-aware closure, lowercased). The batch
+ * profile resolver deliberately answers the empty identity for those senders
+ * so rows render address-only; the upstream field would leak a display name
+ * around that gate. Rows themselves stay — hiding the PROFILE doesn't hide
+ * the on-chain activity. Applied by /api/moment/comments before the fold.
+ */
+export function redactHiddenIdentityUsernames(
+  rows: MomentComment[],
+  hiddenIdentities: Set<string>,
+): MomentComment[] {
+  if (hiddenIdentities.size === 0) return rows
+  return rows.map((c) =>
+    c.username !== undefined && hiddenIdentities.has(c.sender.toLowerCase())
+      ? { ...c, username: undefined }
+      : c,
+  )
 }
 
 /** Convert ar:// or ipfs:// URIs to fetchable HTTPS URLs */

@@ -30,8 +30,14 @@ const FOOTER_LINKS = [
   { href: '/agent', label: 'Agent' },
 ] as const
 
-// Official external profiles — mirrors the Organization sameAs list in
-// lib/structuredData.ts so the visible links and the entity markup agree.
+// Official external links — mirrors the entity markup in lib/structuredData.ts
+// so the visible links and the JSON-LD agree: X + Farcaster are the
+// Organization's sameAs profiles; Kismet Casa is the parentOrganization (a
+// distinct entity, so it rides that edge, not sameAs). This visible,
+// site-wide link to kismetcasa.xyz is also the crawlable half of the
+// two-site link exchange — the reciprocal footer link on kismetcasa.xyz
+// pointing back at kismet.art is what completes it (SEO.md "Cross-site SEO
+// with kismetcasa.xyz").
 const SOCIAL_LINKS = [
   { href: 'https://x.com/kismetdotart', label: 'Twitter' },
   { href: 'https://farcaster.xyz/kismet', label: 'Farcaster' },

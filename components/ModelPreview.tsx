@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { MODEL_SHADOW_INTENSITY } from '@/lib/media/modelMedia'
+import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY } from '@/lib/media/modelMedia'
 
 /**
  * Mint-form preview for a 3D moment: renders the picked GLB, lets the artist
@@ -253,9 +253,11 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
         src={src}
         alt="3D model preview"
         camera-controls
-        // The preview is the poster source, so the shadow has to be here too
-        // or the thumbnail would differ from what the artist posed.
+        // The preview is the poster source, so the shadow and the lighting
+        // have to be here too or the thumbnail would differ from what the
+        // artist posed.
         shadow-intensity={MODEL_SHADOW_INTENSITY}
+        environment-image={MODEL_ENVIRONMENT}
         touch-action="pan-y"
         // Opaque and artist-chosen. JPEG has no alpha, so whatever is here is
         // permanently baked into the poster every feed, share card and embed

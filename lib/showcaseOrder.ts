@@ -17,6 +17,22 @@
 export type PublicViewMode = 'curated' | 'full'
 
 /**
+ * The profile sections an owner can curate. Defined HERE, with the cap below and
+ * the ordering rules, so the client component, the storage module and CI share
+ * one definition of the vocabulary instead of three copies of the same literal;
+ * lib/showcase re-exports both for server callers.
+ */
+export type PinCategory = 'mints' | 'collected' | 'listings'
+
+export const PIN_CATEGORIES: readonly PinCategory[] = ['mints', 'collected', 'listings']
+
+/** Narrow an untrusted value (a request body's `category`, a rendered section
+ *  id) to a pin category. */
+export function isPinCategory(value: unknown): value is PinCategory {
+  return typeof value === 'string' && (PIN_CATEGORIES as readonly string[]).includes(value)
+}
+
+/**
  * Per-category pin cap. A showcase is a tight highlight reel, not a second
  * feed — small by design (GitHub pins 6 repos; IG 3 posts) and the cap also
  * bounds every pins read. 6 fills the curated showcase's lg+ three-column
@@ -80,6 +96,46 @@ export function pinsFirst<T>(items: T[], keyOf: (t: T) => string, order: string[
   if (pinned.length === 0) return items
   pinned.sort((a, b) => (rank.get(keyOf(a)) ?? 0) - (rank.get(keyOf(b)) ?? 0))
   return [...pinned, ...rest]
+}
+
+/**
+ * Pin refs a section cannot render — and therefore cannot offer an unpin
+ * control for, because the control lives on the card.
+ *
+ * A ref goes unreachable in the ordinary course of business: a pinned listing
+ * that sold or was cancelled (the profile keeps only `status === 'active'`), an
+ * artwork sold on out of `collected`, or anything past the un-paginated
+ * fetch window each section reads. The ref survives in Redis either way — it
+ * keeps showing on the owner's public profile and keeps occupying one of their
+ * MAX_PINS_PER_CATEGORY slots, so an owner at the cap is told to "unpin one
+ * first" with nothing on screen to unpin. ProfileView renders these explicitly.
+ *
+ * Deliberately NOT a server-side prune: absence from the rendered list means
+ * "not in this window", which is indistinguishable from "gone", so unpinning on
+ * absence would silently drop pins for artworks that are merely deep in a feed.
+ * The owner decides; this only surfaces the candidates.
+ */
+export function unreachablePins(pinned: string[], rendered: string[]): string[] {
+  if (pinned.length === 0) return []
+  const shown = new Set(rendered)
+  return pinned.filter((ref) => !shown.has(ref))
+}
+
+/**
+ * Split a stored pin ref back into its parts — the inverse of lib/showcase's
+ * `member()`. The collection is 0x-hex and the tokenId is decimal digits, so
+ * the FIRST colon is the only separator (the same parse /api/moments runs on
+ * its id list). Null for anything that isn't that shape: every ref the pins API
+ * stores passed isAddress + isValidTokenId, so a null can only come from
+ * hand-edited data and callers leave it inert rather than acting on a guess.
+ */
+export function parsePinRef(ref: string): { collection: string; tokenId: string } | null {
+  const i = ref.indexOf(':')
+  if (i < 1 || i === ref.length - 1) return null
+  const collection = ref.slice(0, i)
+  const tokenId = ref.slice(i + 1)
+  if (!/^0x[0-9a-f]{40}$/i.test(collection) || !/^\d+$/.test(tokenId)) return null
+  return { collection, tokenId }
 }
 
 /**

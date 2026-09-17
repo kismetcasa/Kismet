@@ -17,8 +17,8 @@ export interface GateConfig {
    *  into this collection (with valid provenance) grants creator access. */
   passCollection: string | null
   /** Emergency kill switch. Enforced server-side on every relayed, platform-
-   *  gas-sponsored write the server can hard-stop: mint + write (lib/mint-proxy),
-   *  distribute + distribute-all, and moment/update-uri. Direct-from-wallet
+   *  gas-sponsored write the server can hard-stop: mint + write (lib/mint-proxy)
+   *  and distribute + distribute-all. Direct-from-wallet
    *  create surfaces via /api/platform-status, where the client disables its
    *  deploy button (CreateCollectionForm) — the on-chain deploy can't be
    *  server-gated, so the button is the stop. Still NOT a stop-EVERYTHING

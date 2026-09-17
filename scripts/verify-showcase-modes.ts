@@ -5,7 +5,12 @@
 // fresh profiles, legacy (pre-rollout) pinners and all three grandfather
 // paths, first pins locking 'full', unpin-all in both eras, explicit choices,
 // partial and total Redis failures (fail-private), the pin cap, newest-first
-// ordering, and admin erase. Hermetic — no live Redis, no env needed.
+// ordering, admin erase, and — since the identity-keying fix — the FC cases
+// that address keying got wrong: pins surviving a canonical-address change,
+// an unpin sweeping every key form, a legacy address-form set still readable
+// and removable, the cap counted on the merged set, the fail-PRIVATE guarantee
+// under an unresolvable identity, and the opposite polarity an ERASE needs.
+// Hermetic — no live Redis, no env needed.
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-showcase-modes.ts
@@ -15,12 +20,16 @@ import { createServer } from 'node:http'
 // ── mock Upstash ────────────────────────────────────────────────────────────
 const strings = new Map<string, string>()
 const zsets = new Map<string, Map<string, number>>()
-const fail = { all: false, cmds: new Set<string>() }
+// `keys` fails only the commands touching one key, with everything else healthy
+// — the shape of the fail-private hole identity keying opened (S22): a single
+// blip on the FC reverse index, not a general outage.
+const fail = { all: false, cmds: new Set<string>(), keys: new Set<string>() }
 
 function exec(cmd: unknown[]): unknown {
   const name = String(cmd[0]).toLowerCase()
   if (fail.all || fail.cmds.has(name)) throw new Error('injected failure')
   const args = cmd.slice(1).map(String)
+  if (fail.keys.has(args[0])) throw new Error('injected failure')
   switch (name) {
     case 'get': return strings.get(args[0]) ?? null
     case 'set': { strings.set(args[0], args[1]); return 'OK' }
@@ -33,7 +42,13 @@ function exec(cmd: unknown[]): unknown {
       const m = zsets.get(args[0]); if (!m) return []
       const entries = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
       const rev = args.some((a) => a.toLowerCase() === 'rev')
-      return (rev ? entries.reverse() : entries).map(([mem]) => mem)
+      const ordered = rev ? entries.reverse() : entries
+      // WITHSCORES returns the flat [member, score, member, score, …] pairs
+      // lib/redis's zpairsToMap parses — the merged cross-scope read needs the
+      // scores, so the mock must not flatten them away.
+      return args.some((a) => a.toLowerCase() === 'withscores')
+        ? ordered.flatMap(([mem, score]) => [mem, score])
+        : ordered.map(([mem]) => mem)
     }
     default: throw new Error(`unsupported cmd ${name}`)
   }
@@ -89,6 +104,12 @@ const rawMode = (a: string): string | null => {
 const seedLegacyPin = (a: string, cat: string, member: string, score: number) => {
   const k = pinKey(cat, a); const m = zsets.get(k) ?? new Map<string, number>()
   m.set(member, score); zsets.set(k, m)
+}
+// Make an address read as FC-verified to `fid`, exactly as lib/farcasterProfile
+// writes its reverse index: redis.set(key, String(fid)) — so the SDK stores the
+// JSON form and reads it back as the string '4242'.
+const seedFid = (a: string, fid: number) => {
+  strings.set(`kismetart:fc:fid-by-addr:${a.toLowerCase()}`, JSON.stringify(String(fid)))
 }
 
 await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -250,6 +271,192 @@ console.log('S13 admin erase')
   check('pins gone', (await sc.getAllPinsChecked(a))?.mints.length === 0)
   check('mode key gone', rawMode(a) === null)
   check('resolves full (fresh state)', await sc.resolvePublicViewMode(a, sc.getAllPinsChecked(a)) === 'full')
+}
+
+// ── S14-S21: identity keying (the unpin bug) ────────────────────────────────
+// Pins used to be keyed by the profile's CANONICAL address, which for an FC
+// user is FidProfile.currentAddress and therefore MOVES (identity switch, the
+// profile PUT, web-first anchor drift). These pin the fix: the identity form is
+// the home, the address form stays readable, and an unpin sweeps both.
+const refsOf = async (a: string, cat: 'mints' | 'collected' | 'listings') =>
+  (await sc.getAllPinsChecked(a))?.[cat] ?? null
+
+console.log('S14 FC pin homes to the identity form, not the address')
+{
+  const walletA = '0xfc00000000000000000000000000000000000001'
+  seedFid(walletA, 4242)
+  check('pin accepted', (await sc.addPin('mints', walletA, '0xC0FFEE', '1')) === true)
+  check('stored under fid:4242', (zsets.get(pinKey('mints', 'fid:4242'))?.size ?? 0) === 1)
+  check('NOT stored under the address', zsets.get(pinKey('mints', walletA)) === undefined)
+}
+
+console.log('S15 the pin survives a canonical-address change')
+{
+  // Same FID, two verified wallets. The owner pins while wallet A is canonical,
+  // then switches identity so wallet B becomes canonical and the profile page
+  // redirects there. Under address keying the pin vanished from the read AND the
+  // unpin ZREM'd the new key, so the removal silently no-op'd.
+  const walletA = '0xfc00000000000000000000000000000000000002'
+  const walletB = '0xfc00000000000000000000000000000000000003'
+  seedFid(walletA, 5150)
+  seedFid(walletB, 5150)
+  await sc.addPin('collected', walletA, '0xBEEF', '9')
+  check('visible from the pinning wallet', (await refsOf(walletA, 'collected'))?.[0] === '0xbeef:9')
+  check('visible from the NEW canonical too', (await refsOf(walletB, 'collected'))?.[0] === '0xbeef:9')
+
+  // The DELETE handler's exact shape, arriving with the new canonical.
+  check('unpin from the new canonical REPORTS the removal',
+    (await sc.removePin('collected', walletB, '0xBEEF', '9')) === true)
+  check('and the pin is actually gone', (await refsOf(walletA, 'collected'))?.length === 0)
+}
+
+console.log('S16 a legacy address-form set is still read, and still removable')
+{
+  // Pinned before identity keying shipped: the ref sits under the address.
+  const wallet = '0xfc00000000000000000000000000000000000004'
+  seedFid(wallet, 6000)
+  seedLegacyPin(wallet, 'listings', '0xdead:3', 1_700_000_000_000)
+  check('legacy ref reads through the union', (await refsOf(wallet, 'listings'))?.[0] === '0xdead:3')
+  check('unpin sweeps the legacy form', (await sc.removePin('listings', wallet, '0xDEAD', '3')) === true)
+  check('gone', (await refsOf(wallet, 'listings'))?.length === 0)
+  check('a repeat unpin is idempotent, and says nothing was removed',
+    (await sc.removePin('listings', wallet, '0xDEAD', '3')) === false)
+}
+
+console.log('S17 re-pinning a legacy ref migrates it home, leaving no duplicate')
+{
+  const wallet = '0xfc00000000000000000000000000000000000005'
+  seedFid(wallet, 7000)
+  seedLegacyPin(wallet, 'mints', '0xaaa:1', 1_700_000_000_000)
+  await sc.addPin('mints', wallet, '0xAAA', '1')
+  check('address form no longer holds it', (zsets.get(pinKey('mints', wallet))?.size ?? 0) === 0)
+  check('identity form does', (zsets.get(pinKey('mints', 'fid:7000'))?.size ?? 0) === 1)
+  check('and it reads exactly once', (await refsOf(wallet, 'mints'))?.length === 1)
+}
+
+console.log('S18 the cap is counted on the MERGED set, not one key')
+{
+  // Three legacy address-form refs + three new ones. A per-key ZCARD would see
+  // 3 and admit a seventh pin the owner could never get back under the cap.
+  const wallet = '0xfc00000000000000000000000000000000000006'
+  seedFid(wallet, 8000)
+  for (let i = 1; i <= 3; i++) seedLegacyPin(wallet, 'mints', `0xbbb:${i}`, 1_700_000_000_000 + i)
+  for (let i = 4; i <= 6; i++) {
+    check(`pin ${i} accepted`, (await sc.addPin('mints', wallet, '0xBBB', String(i))) === true)
+  }
+  check('merged read is exactly at the cap',
+    (await refsOf(wallet, 'mints'))?.length === sc.MAX_PINS_PER_CATEGORY)
+  check('a seventh is rejected (409 path)', (await sc.addPin('mints', wallet, '0xBBB', '7')) === false)
+  check('newest-pinned first survives the merge', (await refsOf(wallet, 'mints'))?.[0] === '0xbbb:6')
+}
+
+console.log('S19 mode setting follows the identity, and a legacy choice still counts')
+{
+  const walletA = '0xfc00000000000000000000000000000000000007'
+  const walletB = '0xfc00000000000000000000000000000000000008'
+  seedFid(walletA, 9000)
+  seedFid(walletB, 9000)
+  await sc.setPublicViewMode(walletA, 'full')
+  check('stored under the identity form', rawMode('fid:9000') === 'full')
+  check('readable from the other wallet after a switch',
+    (await sc.resolvePublicViewMode(walletB, sc.getAllPinsChecked(walletB))) === 'full')
+
+  // A choice made before identity keying lives under the address; it must not be
+  // re-derived away.
+  const legacy = '0xfc00000000000000000000000000000000000009'
+  seedFid(legacy, 9100)
+  strings.set(modeKey(legacy), JSON.stringify('full'))
+  seedLegacyPin(legacy, 'mints', '0xccc:1', 1_700_000_000_000)
+  check('legacy address-scoped choice still wins over derive',
+    (await sc.resolvePublicViewMode(legacy, sc.getAllPinsChecked(legacy))) === 'full')
+}
+
+console.log('S20 non-FC profiles keep byte-identical keys')
+{
+  const plain = '0xbbbb000000000000000000000000000000000001'
+  await sc.addPin('mints', plain, '0xEEE', '5')
+  check('still keyed by lowercase address', (zsets.get(pinKey('mints', plain))?.size ?? 0) === 1)
+  await sc.setPublicViewMode(plain, 'curated')
+  check('mode still keyed by lowercase address', rawMode(plain) === 'curated')
+  check('unpin works', (await sc.removePin('mints', plain, '0xEEE', '5')) === true)
+}
+
+console.log('S21 admin erase clears both key forms')
+{
+  const wallet = '0xfc00000000000000000000000000000000000010'
+  seedFid(wallet, 9200)
+  seedLegacyPin(wallet, 'collected', '0xfff:1', 1_700_000_000_000)
+  await sc.addPin('mints', wallet, '0xFFF', '2')
+  await sc.setPublicViewMode(wallet, 'curated')
+  await sc.clearAllPins(wallet)
+  check('identity-form pins gone', (zsets.get(pinKey('mints', 'fid:9200'))?.size ?? 0) === 0)
+  check('address-form pins gone', (zsets.get(pinKey('collected', wallet))?.size ?? 0) === 0)
+  check('mode gone', rawMode('fid:9200') === null && rawMode(wallet) === null)
+  check('resolves fresh', (await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet))) === 'full')
+}
+
+console.log('S22 an unresolvable identity fails PRIVATE, never open')
+{
+  // The hazard identity keying introduced: pins and the mode key are chosen from
+  // the FC reverse index, so a lookup that reports "couldn't find out" as "not an
+  // FC user" reads the ADDRESS form — which for an FC user holds nothing — finds
+  // no stored mode, derives from pins that also read as nothing, and resolves a
+  // deliberately CURATED profile to 'full', publishing work the owner left out.
+  // Measured before the fix: 'full'. resolveShowcaseScopes now throws on the
+  // unknown, so both reads degrade the way the module's failure policy promises.
+  const wallet = '0xfc00000000000000000000000000000000000011'
+  seedFid(wallet, 9300)
+  await sc.setPublicViewMode(wallet, 'curated')
+  await sc.addPin('mints', wallet, '0xC0FFEE', '1')
+  check('healthy: the owner-chosen mode is served', await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+
+  fail.keys.add(`kismetart:fc:fid-by-addr:${wallet}`)
+  check('identity unknown -> pins read as UNKNOWN, not as empty',
+    (await sc.getAllPinsChecked(wallet)) === null)
+  check('identity unknown -> mode fails private (curated), not open (full)',
+    await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+  // Writes fail CLOSED rather than landing on the wrong keying — which is what a
+  // Redis failure already did before identity keying, when addPin's ZCARD threw.
+  check('a pin write fails closed',
+    await sc.addPin('mints', wallet, '0xC0FFEE', '2').then(() => false, () => true))
+  check('an unpin write fails closed',
+    await sc.removePin('mints', wallet, '0xC0FFEE', '1').then(() => false, () => true))
+  check('the prelude stays best-effort (never throws at the route)',
+    await sc.ensureViewModeForPinChange(wallet).then(() => true, () => false))
+  fail.keys.clear()
+  check('recovered: the owner-chosen mode is served again',
+    await sc.resolvePublicViewMode(wallet, sc.getAllPinsChecked(wallet)) === 'curated')
+  check('recovered: the pin is intact', (await refsOf(wallet, 'mints'))?.[0] === '0xc0ffee:1')
+}
+
+console.log('S23 an erase still erases when the identity is unresolvable')
+{
+  // /api/admin/erase-profile calls clearAllPins(addr).catch(() => {}) — every
+  // purge op is best-effort so one subsystem hiccup can't half-erase and 500,
+  // which means anything that THROWS leaves data behind silently. Reads and
+  // writes fail closed on an unresolvable identity (S22); deletion must not,
+  // or a blip on the FC reverse index lets a profile's pins survive their own
+  // erase. Measured before the fix: 4 keys left behind.
+  const wallet = '0xfc00000000000000000000000000000000000012'
+  seedFid(wallet, 9400)
+  await sc.addPin('mints', wallet, '0xC0FFEE', '1')       // identity form
+  seedLegacyPin(wallet, 'collected', '0xbeef:2', 1_700_000_000_000) // address form
+  strings.set(modeKey(wallet), JSON.stringify('curated'))
+
+  fail.keys.add(`kismetart:fc:fid-by-addr:${wallet}`)
+  await sc.clearAllPins(wallet).catch(() => {})
+  check('address-form pins are erased without the lookup',
+    (zsets.get(pinKey('collected', wallet))?.size ?? 0) === 0)
+  check('the address-scoped mode is erased too', rawMode(wallet) === null)
+  fail.keys.clear()
+
+  // The identity form needs the lookup, so it is cleared on the admin's re-run
+  // — which the route is built for. Healthy, one pass clears everything.
+  await sc.clearAllPins(wallet)
+  check('identity-form pins are erased once the lookup recovers',
+    (zsets.get(pinKey('mints', 'fid:9400'))?.size ?? 0) === 0)
+  check('nothing is left under either form',
+    (await sc.getAllPinsChecked(wallet))?.mints.length === 0)
 }
 
 server.close()

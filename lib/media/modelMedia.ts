@@ -145,6 +145,33 @@ export function modelMomentFields(input: {
 export const MODEL_SHADOW_INTENSITY = '1'
 
 /**
+ * Lighting environment for every 3D surface.
+ *
+ * model-viewer's default (`neutral`) is built to be colour-preserving and,
+ * in its own words, to "show less contrast around the different sides of
+ * the object" — which is the artist's complaint verbatim: on an untextured
+ * model the surfaces are hard to tell apart. Measured on a matte grey sphere
+ * in the installed package, `neutral` produces NO left-to-right shading at
+ * all (1 luminance step across the diameter; the form reads as a flat disc),
+ * where `legacy` — the generated studio model-viewer shipped before 2.0 —
+ * lights it from a keyed side (50 steps) with the same top-to-bottom falloff.
+ * That is the shading ON the model the artist asked for, as distinct from
+ * the grounding shadow on the floor (MODEL_SHADOW_INTENSITY).
+ *
+ * `legacy` is generated in the renderer like `neutral` — nothing is fetched,
+ * and model-viewer's `load` event awaits the environment alongside the
+ * model, so the poster capture (ModelPreview) sees it too. Exposure
+ * compensation applies to both built-in names alike, so overall brightness
+ * is unchanged. It is also the lighting of model-viewer 1.x, i.e. the viewer
+ * the artist remembers from Zora's early days.
+ *
+ * Applied to the mint preview AND the live viewer, for the same reason as
+ * the shadow: the preview is the poster source, and the thumbnail must show
+ * what the artist posed.
+ */
+export const MODEL_ENVIRONMENT = 'legacy'
+
+/**
  * Three-way verdict, from ONE read of the file's first 12 bytes:
  *
  *   'no'        — not a GLB; the caller should go on classifying it

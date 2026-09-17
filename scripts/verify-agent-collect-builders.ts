@@ -462,7 +462,7 @@ console.log('\nsummaries — exact user-facing lines')
   )
   check(
     'buy: sanitized title, seller as name + short address',
-    buySummary({ title: safeTitle('Art '), tokenId: '7', seller: RECIPIENT, sellerName: 'bob.base.eth', currency: 'eth', price: 50_000_000_000_000_000n, approvalIncluded: false }) ===
+    buySummary({ title: safeTitle('Art' + String.fromCodePoint(0)), tokenId: '7', seller: RECIPIENT, sellerName: 'bob.base.eth', currency: 'eth', price: 50_000_000_000_000_000n, approvalIncluded: false }) ===
       `Buy “Art” (token #7) from bob.base.eth (${them}) for 0.05 ETH.`,
   )
   const now = 1_800_000_000_000
