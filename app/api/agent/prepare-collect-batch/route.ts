@@ -121,6 +121,13 @@ export async function POST(req: NextRequest) {
   }
 
   if (items.length === 0) {
+    // fetchEligibleTokens answers [] for a read failure too: an RPC outage must
+    // read as transient (502, retry), never as "nothing collectable".
+    try {
+      await client.getBlockNumber({ cacheTime: 0 })
+    } catch (err) {
+      return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-collect-batch')
+    }
     return errorResponse(409, 'None of the requested items are currently collectable')
   }
 

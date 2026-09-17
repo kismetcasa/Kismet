@@ -83,6 +83,8 @@ const empty = (watchers: number, reason: string): DropCoordinationSummary => ({ 
 export async function runDropCoordination(
   drop: { collection: string; tokenId: string; creator: string },
   baseUrl: string,
+  /** The configured spender by default; a harness passes its own. */
+  resolveSpender: () => Promise<ScoutSpender> = getScoutSpender,
 ): Promise<DropCoordinationSummary> {
   const collection = drop.collection as Address
   // Guard the entry parse: `BigInt(drop.tokenId)` throws on a non-numeric id, and
@@ -130,7 +132,7 @@ export async function runDropCoordination(
   //     a multi-edition spend), and to fail fast when it isn't configured.
   let spender: ScoutSpender
   try {
-    spender = await getScoutSpender()
+    spender = await resolveSpender()
   } catch {
     return empty(live.length, 'spender unconfigured')
   }

@@ -104,6 +104,13 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
     return errorResponse(502, 'Could not read the sale config from chain — try again')
   }
   if (!currency) {
+    // fetchEligibleTokens answers [] for a read failure too: an RPC outage must
+    // read as transient (502, retry), never as "sold out".
+    try {
+      await client.getBlockNumber({ cacheTime: 0 })
+    } catch (err) {
+      return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-collect')
+    }
     return errorResponse(
       409,
       'No active sale for this token — it may be unset, sold out, or you have hit the per-wallet mint limit',

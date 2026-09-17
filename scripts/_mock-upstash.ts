@@ -31,6 +31,9 @@ export interface MockUpstash {
   /** Every EVAL script + keys/args, so a test can see a rate-limit or unindex step ran. */
   evals: { script: string; keys: string[]; args: string[] }[]
   setFailing(failing: boolean): void
+  /** Called with every command before it runs — a test can mutate the store
+   *  there to model a concurrent writer landing between a read and a write. */
+  setIntercept(fn: ((cmd: unknown[]) => void) | null): void
   /** Start listening; resolves to the REST URL to put in UPSTASH_REDIS_REST_URL. */
   start(): Promise<string>
   close(): void
@@ -44,8 +47,10 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
   const zadds: MockUpstash['zadds'] = []
   const evals: MockUpstash['evals'] = []
   let failing = false
+  let intercept: ((cmd: unknown[]) => void) | null = null
 
   function exec(cmd: unknown[]): unknown {
+    intercept?.(cmd)
     const op = String(cmd[0]).toUpperCase()
     const key = String(cmd[1] ?? '')
     if (op === 'ZADD') {
@@ -191,6 +196,9 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
     evals,
     setFailing: (f) => {
       failing = f
+    },
+    setIntercept: (fn) => {
+      intercept = fn
     },
     start: () =>
       new Promise((resolve) => {
