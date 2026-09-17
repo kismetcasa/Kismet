@@ -9,7 +9,7 @@ import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { runDraw } from '@/lib/experience/runDraw'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
-import { deliverPrize, readPrizeBalance, reconcileDelivered } from '@/lib/experience/delivery'
+import { deliverPrize, readDeliveryOutcome } from '@/lib/experience/delivery'
 import {
   advanceClaim,
   buildSnapshot,
@@ -52,8 +52,9 @@ import { filterDeliverable, isDeliverableEntry } from '@/lib/experience/eligibil
  *
  * ── The one rule ──
  *
- * NEVER re-mint on an unknown. Every path holding a prize asks the chain first
- * and mints only on a definitive zero balance. Blind retry is the single action
+ * NEVER re-mint on an unknown. Every path holding a prize that was broadcast
+ * asks CDP what became of THAT userOp first, and mints again only when it is
+ * definitively failed (or was never sent). Blind retry is the single action
  * that turns one payment into two artworks.
  */
 
@@ -157,39 +158,43 @@ async function handle(
     // widens it back and loses the narrowing this branch established. The prize
     // itself is fixed for the whole block — it is the copy already spent.
     const prize = claim.prize
-    // The floor this claim's delivery must beat. Absent only on claims frozen
-    // before the field existed; 0 reproduces the old behaviour, which errs
-    // toward "already delivered" — the safe direction, since the alternative
-    // is minting a second copy for one payment.
-    const minBalance = claim.balanceBefore ?? 0
-    // Only a claim that actually BROADCAST has anything to reconcile. Without
-    // this, a claim whose delivery was refused outright (`unsponsored`, or CDP
-    // unavailable — no userOp, nothing sent) was still measured against the
-    // player's wallet, so any unrelated acquisition of that edition — collecting
-    // it from its own page, an airdrop, a win on another machine — silently
-    // discharged the obligation after the artist's copy had been consumed.
-    const landed = claim.userOpHash
-      ? await reconcileDelivered({
-          collection: prize.collection,
-          tokenId: prize.tokenId,
-          player,
-          minBalance,
+    // A claim that BROADCAST is asked about by its own userOp hash — the one
+    // handle nothing else can move. (An earlier version measured the player's
+    // balance of the edition against a floor; a sibling unit's mint of the
+    // same floor piece satisfied it, and this unit was closed as delivered
+    // having minted nothing. See lib/experience/delivery.) A claim that never
+    // broadcast — sponsorship refused, CDP unavailable — has nothing to ask
+    // and falls straight through to a fresh attempt under the caps below.
+    if (claim.userOpHash) {
+      const receipt = await readDeliveryOutcome({ userOpHash: claim.userOpHash })
+      if (receipt.kind === 'landed') {
+        claim = await advanceClaim(claim, { state: 'delivered', txDelivered: receipt.txHash })
+        await settle(claim, machineId)
+        return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: true })
+      }
+      if (receipt.kind === 'pending') {
+        // Still in flight. The first mint may yet land, so a second one is the
+        // one action that turns a payment into two artworks. Wait.
+        return NextResponse.json({
+          ok: true,
+          claim: publicClaim(claim),
+          resumed: false,
+          reason: 'delivery is still confirming — try again shortly',
         })
-      : false
-    if (landed === true) {
-      claim = await advanceClaim(claim, { state: 'delivered' })
-      await settle(claim, machineId)
-      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: true })
-    }
-    if (landed === null) {
-      // The chain could not answer. Pending is the only safe verdict — minting
-      // on an unknown is how one payment becomes two artworks.
-      return NextResponse.json({
-        ok: true,
-        claim: publicClaim(claim),
-        resumed: false,
-        reason: 'could not read chain state — try again shortly',
-      })
+      }
+      if (receipt.kind === 'unknown') {
+        // CDP could not answer. Pending is the only safe verdict — minting on
+        // an unknown is how one payment becomes two artworks.
+        return NextResponse.json({
+          ok: true,
+          claim: publicClaim(claim),
+          resumed: false,
+          reason: 'could not read delivery state — try again shortly',
+        })
+      }
+      // `failed`: the broadcast reverted or was dropped, so nothing landed and
+      // the obligation is still open. Fall through to a fresh attempt, under
+      // the same eligibility, authority and attempt caps as any other.
     }
 
     // The exclusions the FREEZE applied, re-applied at the moment of delivery.
@@ -237,6 +242,7 @@ async function handle(
     claim = await advanceClaim(claim, { state: claim.state, deliveryAttempts: attempts + 1 })
 
     const outcome = await deliverPrize({
+      claimKey: `${machineId}:${claim.txHash}:${unitIndex}`,
       collection: prize.collection,
       tokenId: prize.tokenId,
       player,
@@ -245,7 +251,7 @@ async function handle(
         claim = await advanceClaim(claim, { state: 'sending', userOpHash })
       },
     })
-    claim = await applyOutcome(claim, outcome, player, minBalance)
+    claim = await applyOutcome(claim, outcome)
     if (claim.state === 'delivered') await settle(claim, machineId)
     return NextResponse.json({
       ok: true,
@@ -365,25 +371,13 @@ async function handle(
     prize: { collection: prize.collection, tokenId: prize.tokenId, artist: prize.artist },
   })
 
-  const freshFloor = await readPrizeBalance({
-    collection: prize.collection,
-    tokenId: prize.tokenId,
-    player,
-  })
-  if (freshFloor === null) {
-    claim = await advanceClaim(claim, {
-      state: 'pending',
-      pendingReason: 'could not read your wallet before delivery — this capsule is safe and will be honoured',
-    })
-    return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
-  }
   claim = await advanceClaim(claim, {
     state: 'drawn',
-    balanceBefore: freshFloor,
     deliveryAttempts: (claim.deliveryAttempts ?? 0) + 1,
   })
 
   const outcome = await deliverPrize({
+    claimKey: `${machineId}:${claim.txHash}:${unitIndex}`,
     collection: prize.collection,
     tokenId: prize.tokenId,
     player,
@@ -392,7 +386,7 @@ async function handle(
       claim = await advanceClaim(claim, { state: 'sending', userOpHash })
     },
   })
-  claim = await applyOutcome(claim, outcome, player, freshFloor)
+  claim = await applyOutcome(claim, outcome)
   if (claim.state === 'delivered') await settle(claim, machineId)
 
   return NextResponse.json({
@@ -408,25 +402,16 @@ async function handle(
 async function applyOutcome(
   claim: ClaimRecord,
   outcome: Awaited<ReturnType<typeof deliverPrize>>,
-  player: string,
-  minBalance: number,
 ): Promise<ClaimRecord> {
   if (outcome.kind === 'delivered') {
     return advanceClaim(claim, { state: 'delivered', txDelivered: outcome.txHash })
   }
-  if (outcome.kind === 'indeterminate' && claim.prize) {
-    const landed = await reconcileDelivered({
-      collection: claim.prize.collection,
-      tokenId: claim.prize.tokenId,
-      player,
-      minBalance,
+  if (outcome.kind === 'indeterminate') {
+    // The userOp is recorded on the claim; the next resume asks about it.
+    return advanceClaim(claim, {
+      state: 'pending',
+      pendingReason: 'delivery submitted but unconfirmed — reconciling',
     })
-    return landed === true
-      ? advanceClaim(claim, { state: 'delivered' })
-      : advanceClaim(claim, {
-          state: 'pending',
-          pendingReason: 'delivery submitted but unconfirmed — reconciling',
-        })
   }
   return advanceClaim(claim, {
     state: 'pending',

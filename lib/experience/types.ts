@@ -87,17 +87,13 @@ export interface ClaimRecord {
   attempt?: number
   /** The selected prize. */
   prize?: { collection: string; tokenId: string; artist: string }
-  /** CDP userOp hash, written before the await so a timeout is traceable. */
+  /** CDP userOp hash, written before the await so a timeout is traceable —
+   *  and the ONLY handle reconciliation uses. Resume asks CDP what became of
+   *  this exact operation (lib/experience/delivery.readDeliveryOutcome), never
+   *  the player's balance of the edition: a balance is moved by every mint of
+   *  that edition, including a sibling unit's of the same capsule, and closed
+   *  claims as delivered that had minted nothing. */
   userOpHash?: string
-  /** The player's balance of the DRAWN edition, read before the first delivery
-   *  was attempted. Reconciliation compares against this, never against zero:
-   *  prizes are ordinary editions a player may already own (and every solvent
-   *  machine carries an unlimited creator floor piece that repeat players win
-   *  again and again), so `balanceOf > 0` answers "do they hold one", not "did
-   *  our mint land". Without the floor, a paid play whose delivery stalled was
-   *  closed as delivered having minted nothing — after the artist's copy had
-   *  already been consumed. */
-  balanceBefore?: number
   /** How many sponsored userOps this claim has broadcast. Distinct from
    *  `attempt`, which counts DRAWS. A prize whose adminMint reverts while the
    *  authority reads look healthy would otherwise retry forever, and every

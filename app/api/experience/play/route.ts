@@ -11,7 +11,7 @@ import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { runDraw } from '@/lib/experience/runDraw'
 import { checkCapsulePurchase, checkPrizeAuthority } from '@/lib/experience/authority'
-import { deliverPrize, readPrizeBalance, reconcileDelivered } from '@/lib/experience/delivery'
+import { deliverPrize } from '@/lib/experience/delivery'
 import {
   addSpark,
   advanceClaim,
@@ -298,29 +298,13 @@ export async function POST(req: NextRequest) {
     prize: { collection: chosen.collection, tokenId: chosen.tokenId, artist: chosen.artist },
   })
 
-  // 8. Deliver. Two things are recorded BEFORE the send: the player's current
-  //    balance of the drawn edition, which is the floor every later
-  //    reconciliation compares against (a prize is an ordinary edition they may
-  //    already hold), and the userOpHash the instant it exists — BEFORE the
-  //    wait — so an indeterminate timeout is reconcilable instead of a mystery.
-  const balanceBefore = await readPrizeBalance({
-    collection: chosen.collection,
-    tokenId: chosen.tokenId,
-    player: account,
-  })
-  if (balanceBefore === null) {
-    // Refusing to deliver on an unreadable balance is the safe direction: with
-    // no floor, a stalled delivery cannot be told from a landed one, and the
-    // recovery path would mint a second copy for one payment.
-    claim = await advanceClaim(claim, {
-      state: 'pending',
-      pendingReason: 'could not read your wallet before delivery — this capsule is safe and will be honoured',
-    })
-    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(claim) })
-  }
-  claim = await advanceClaim(claim, { state: 'drawn', balanceBefore, deliveryAttempts: 1 })
+  // 8. Deliver. The userOpHash is recorded the instant it exists — BEFORE the
+  //    wait — so an indeterminate timeout is a claim that can be asked about by
+  //    hash later (resume → readDeliveryOutcome) instead of a mystery.
+  claim = await advanceClaim(claim, { state: 'drawn', deliveryAttempts: 1 })
 
   const outcome = await deliverPrize({
+    claimKey: `${machineId}:${claim.txHash}:${unitIndex}`,
     collection: chosen.collection,
     tokenId: chosen.tokenId,
     player: account,
@@ -333,20 +317,13 @@ export async function POST(req: NextRequest) {
   if (outcome.kind === 'delivered') {
     claim = await advanceClaim(claim, { state: 'delivered', txDelivered: outcome.txHash })
   } else if (outcome.kind === 'indeterminate') {
-    // NEVER retry here. Ask the chain instead.
-    const landed = await reconcileDelivered({
-      collection: chosen.collection,
-      tokenId: chosen.tokenId,
-      player: account,
-      minBalance: balanceBefore,
+    // NEVER retry here, and nothing to learn by re-asking this instant — the
+    // wait just polled the same status for a minute. Pend; resume resolves it
+    // against the userOp itself.
+    claim = await advanceClaim(claim, {
+      state: 'pending',
+      pendingReason: 'delivery submitted but unconfirmed — reconciling',
     })
-    claim =
-      landed === true
-        ? await advanceClaim(claim, { state: 'delivered' })
-        : await advanceClaim(claim, {
-            state: 'pending',
-            pendingReason: 'delivery submitted but unconfirmed — reconciling',
-          })
   } else {
     claim = await advanceClaim(claim, {
       state: 'pending',

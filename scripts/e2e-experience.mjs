@@ -18,7 +18,7 @@
 
 import { createServer, request as httpRequest } from 'node:http'
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import {
   decodeFunctionData,
@@ -60,6 +60,8 @@ const TX_FREE_RECEIPTED = '0x' + '39'.repeat(32) // same operator, but the colle
 const TX_USDC = '0x' + '4a'.repeat(32) // minted by Zora's ERC20Minter, which pays via adminMint
 const TX_REVOKED = '0x' + '5b'.repeat(32) // adminMinted by a wallet whose grant was revoked before it played
 const TX_OLD_NODE = '0x' + '6c'.repeat(32) // an honest buy whose block the node can no longer look back to
+const TX_HANG = '0x' + '7d'.repeat(32) // its mint is broadcast and gets no verdict
+const TX_CAP = '0x' + '8e'.repeat(32) // its mint reverts every time it is tried
 /** A fresh capsule for the machine the browser publishes in section 9. */
 const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
@@ -218,6 +220,16 @@ const chain = {
   logs: [],
 }
 const key = (...p) => p.map((x) => String(x).toLowerCase()).join(':')
+/** Advance the mock chain head. Refuses to go BACKWARDS: the server reads the
+ *  head through viem, which caches it for a few seconds, so a head lowered
+ *  after a publish can leave that machine's createdBlock above a later mint —
+ *  the play then refuses the capsule as pre-dating the machine, and only when
+ *  the cache happened to be warm. Every mint must land at or after the head the
+ *  machine that honours it was published under. */
+const setHead = (n) => {
+  if (n < chain.head) throw new Error(`mock chain head moved backwards: ${chain.head} -> ${n}`)
+  chain.head = n
+}
 /** `operator` is the address that executed the mint (the buyer for an ordinary
  *  sale, the ERC20Minter for a USDC sale, the admin for a free adminMint);
  *  `purchased` adds the collection's own Purchased receipt to the transaction. */
@@ -289,6 +301,7 @@ function rpc(method, params) {
       return '0x'
     }
     case 'eth_getLogs': {
+      chain.getLogsCalls = (chain.getLogsCalls ?? 0) + 1
       const f = params[0]
       const addrs = (Array.isArray(f.address) ? f.address : [f.address]).filter(Boolean).map((a) => a.toLowerCase())
       const from = f.fromBlock && f.fromBlock !== 'latest' && f.fromBlock !== 'earliest' ? BigInt(f.fromBlock) : 0n
@@ -333,6 +346,96 @@ const rpcServer = createServer((req, res) => {
   })
 })
 
+// ── mock CDP ─────────────────────────────────────────────────────────────────
+//
+// The sponsored mint, end to end. delivery.ts drives @coinbase/cdp-sdk, which
+// talks HTTPS to CDP; pointed at this server via CDP_API_BASE_PATH it instead
+// resolves the named owner and smart account here, prepares a userOp, has the
+// owner "sign" it, sends it, and polls its status — every hop the production
+// path makes. The SDK signs its request JWTs client-side before any HTTP, so
+// the credentials have to be real EC keys; the server ignores the headers they
+// produce. What it DOES model is what each test needs to script: whether the
+// paymaster sponsors an op, and what status the op reports when asked —
+// including the one that matters most, an op that is broadcast and then
+// simply never resolves.
+const cdpKeys = generateKeyPairSync('ec', { namedCurve: 'P-256' })
+const CDP_API_KEY_SECRET = cdpKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })
+const CDP_WALLET_SECRET = cdpKeys.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64')
+/** The owner EOA behind the operator smart account. */
+const CDP_OWNER = '0xaaaa0000000000000000000000000000000000ee'
+const cdp = {
+  /** Outcome for each upcoming prepare, consumed in order. Empty → 'complete'.
+   *  'refuse' = the paymaster declines (nothing broadcast); 'fail' = broadcast
+   *  then reverted; 'hang' = broadcast, and the send's own status wait fails,
+   *  after which every later read reports it still in flight until a test
+   *  flips `op.outcome`. */
+  script: [],
+  /** Every op ever prepared: userOpHash → { calls, outcome, polls, transactionHash }. */
+  ops: new Map(),
+  refusals: 0,
+  seq: 0,
+}
+function cdpHandle(method, path, body) {
+  const p = path.replace(/^\/platform/, '')
+  let m
+  if (method === 'GET' && p === '/apikeys/v1/tokens/active') return [200, { id: 'e2e' }]
+  if (method === 'GET' && (m = p.match(/^\/v2\/evm\/accounts\/by-name\/([^/]+)$/))) return [200, { address: CDP_OWNER, name: decodeURIComponent(m[1]) }]
+  if (method === 'POST' && p === '/v2/evm/accounts') return [201, { address: CDP_OWNER, name: body?.name }]
+  if (method === 'GET' && (m = p.match(/^\/v2\/evm\/smart-accounts\/by-name\/([^/]+)$/))) return [200, { address: OPERATOR, owners: [CDP_OWNER], name: decodeURIComponent(m[1]) }]
+  if (method === 'POST' && p === '/v2/evm/smart-accounts') return [201, { address: OPERATOR, owners: [CDP_OWNER], name: body?.name }]
+  if (method === 'POST' && /^\/v2\/evm\/accounts\/[^/]+\/sign$/.test(p)) return [200, { signature: '0x' + '11'.repeat(64) + '1b' }]
+  if (method === 'POST' && /^\/v2\/evm\/smart-accounts\/[^/]+\/user-operations$/.test(p)) {
+    const outcome = cdp.script.length ? cdp.script.shift() : 'complete'
+    if (outcome === 'refuse') {
+      cdp.refusals++
+      return [400, { errorType: 'invalid_request', errorMessage: 'paymaster declined to sponsor this operation' }]
+    }
+    const userOpHash = '0x' + (++cdp.seq).toString(16).padStart(64, '0')
+    cdp.ops.set(userOpHash, {
+      calls: body?.calls ?? [],
+      outcome,
+      polls: 0,
+      transactionHash: '0x' + 'dd'.repeat(30) + cdp.seq.toString(16).padStart(4, '0'),
+    })
+    return [200, { userOpHash, status: 'pending', network: 'base', calls: body?.calls ?? [] }]
+  }
+  if (method === 'POST' && (m = p.match(/^\/v2\/evm\/smart-accounts\/[^/]+\/user-operations\/(0x[0-9a-f]+)\/send$/))) {
+    const op = cdp.ops.get(m[1])
+    if (!op) return [404, { errorType: 'not_found', errorMessage: 'no such user operation' }]
+    return [200, { userOpHash: m[1], status: 'broadcast', network: 'base', calls: op.calls }]
+  }
+  if (method === 'GET' && (m = p.match(/^\/v2\/evm\/smart-accounts\/[^/]+\/user-operations\/(0x[0-9a-f]+)$/))) {
+    const op = cdp.ops.get(m[1])
+    if (!op) return [404, { errorType: 'not_found', errorMessage: 'no such user operation' }]
+    op.polls++
+    const base = { userOpHash: m[1], network: 'base', calls: op.calls }
+    switch (op.outcome) {
+      case 'complete': return [200, { ...base, status: 'complete', transactionHash: op.transactionHash }]
+      case 'fail': return [200, { ...base, status: 'failed' }]
+      // The send's own first status read fails outright (a 4xx, which the
+      // SDK's axios-retry does not retry), so the send returns indeterminate
+      // at once rather than after its 60s wait; every read after that — the
+      // resume path's — sees the op still in flight.
+      case 'hang': return op.polls === 1
+        ? [400, { errorType: 'invalid_request', errorMessage: 'simulated status read failure' }]
+        : [200, { ...base, status: 'broadcast' }]
+      default: return [200, { ...base, status: 'broadcast' }]
+    }
+  }
+  return [404, { errorType: 'not_found', errorMessage: `mock cdp: ${method} ${p}` }]
+}
+const cdpServer = createServer((req, res) => {
+  let body = ''
+  req.on('data', (c) => { body += c })
+  req.on('end', () => {
+    let parsed = null
+    try { parsed = body ? JSON.parse(body) : null } catch { /* not json */ }
+    const [status, json] = cdpHandle(req.method, new URL(req.url, 'http://x').pathname, parsed)
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(json))
+  })
+})
+
 // ── harness ──────────────────────────────────────────────────────────────────
 let failures = 0
 const check = (name, cond, detail = '') => {
@@ -356,17 +459,13 @@ async function call(path, { method = 'GET', body, user, admin } = {}) {
   return { status: res.status, json, text }
 }
 const sha256 = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
-/** Patch a stored claim to look as though its delivery was broadcast. Resume
- *  reconciles ONLY a claim that actually sent a userOp; a claim that never
- *  broadcast has nothing to reconcile, so a balance appearing must not settle
- *  it. This lets the harness exercise both sides of that rule. */
-const markBroadcast = (machineId, tx, unit, userOpHash = '0x' + '9a'.repeat(32)) => {
-  const k = `kismetart:xp:${machineId}:claim:${tx.toLowerCase()}:${unit}`
-  const raw = strings.get(k)
-  if (!raw) return false
-  strings.set(k, JSON.stringify({ ...JSON.parse(raw), userOpHash }))
-  return true
+/** A claim as the store holds it. */
+const claimOf = (machineId, tx, unit) => {
+  const raw = strings.get(`kismetart:xp:${machineId}:claim:${tx.toLowerCase()}:${unit}`)
+  return raw ? JSON.parse(raw) : null
 }
+/** How many userOps the mock CDP has been asked to prepare so far. */
+const prepares = () => cdp.ops.size
 /** Raw node:http status probe, bypassing fetch entirely. A closed local port
  *  must refuse in milliseconds; routed through an environment proxy, fetch can
  *  instead hang on it — which stalled the harness before it ever spawned. */
@@ -381,8 +480,10 @@ const dayShift = (epoch, d) => { const [y, m, dd] = epoch.split('-').map(Number)
 // ── boot ─────────────────────────────────────────────────────────────────────
 await new Promise((r) => redisServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => rpcServer.listen(0, '127.0.0.1', r))
+await new Promise((r) => cdpServer.listen(0, '127.0.0.1', r))
 const redisPort = redisServer.address().port
 const rpcPort = rpcServer.address().port
+const cdpPort = cdpServer.address().port
 
 // Sessions: the create route reads the USER cookie (and decides admin by
 // address); the review API reads the ADMIN cookie.
@@ -536,7 +637,13 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     EXPERIENCE_OPERATOR_ADDRESSES: OPERATOR,
     CRON_SECRET,
     NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
-    CDP_API_KEY_ID: '', CDP_API_KEY_SECRET: '', CDP_WALLET_SECRET: '',
+    CDP_API_KEY_ID: 'e2e-key',
+    CDP_API_KEY_SECRET,
+    CDP_WALLET_SECRET,
+    CDP_API_BASE_PATH: `http://127.0.0.1:${cdpPort}/platform`,
+    // Set so the SDK does not go looking up a paymaster of its own; CDP would
+    // call it, and this CDP never does.
+    CDP_PAYMASTER_URL: `http://127.0.0.1:${cdpPort}/paymaster`,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -546,7 +653,7 @@ child.stderr.on('data', (d) => { serverLog += d; if (DEBUG) process.stderr.write
 child.on('error', (err) => { console.error(`spawn failed: ${err.message}`); process.exit(1) })
 child.on('exit', (code, sig) => { if (!up) { console.error(`server exited before ready (code=${code} sig=${sig})\n${serverLog.slice(-1500)}`); process.exit(1) } })
 let up = false
-const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close() }
+const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close() }
 process.on('exit', shutdown)
 // A SIGTERM/SIGINT (a `timeout`, a Ctrl-C) does not run 'exit' handlers on its
 // own, and an orphaned server would hold the port for the next run.
@@ -557,7 +664,7 @@ for (let i = 0; i < 120 && !up; i++) {
   up = (await probe('/api/experience/machines')) === 200
 }
 if (!up) { console.error('server did not come up\n' + serverLog.slice(-2000)); process.exit(1) }
-console.log(`\nserver up on :${PORT} (redis :${redisPort}, rpc :${rpcPort})`)
+console.log(`\nserver up on :${PORT} (redis :${redisPort}, rpc :${rpcPort}, cdp :${cdpPort})`)
 
 try {
   // ═══ 1. creator publishes ══════════════════════════════════════════════════
@@ -592,7 +699,7 @@ try {
 
   // Time passes, then the player buys — capsules are only playable when they
   // postdate the machine that honours them.
-  chain.head = 5_000_050n
+  setHead(5_000_050n)
   addMint({ tx: TX_A, collection: CAPSULE, to: PLAYER, id: 1n, value: 2n, block: 5_000_010n })
   addMint({ tx: TX_B, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_020n })
 
@@ -620,7 +727,7 @@ try {
   check('the studio renders', (await call('/experience/new')).status === 200)
 
   // ═══ 3. a play, with delivery stalled ══════════════════════════════════════
-  console.log('\n3. a two-capsule play whose delivery cannot be sponsored')
+  console.log('\n3. a two-capsule play, delivered')
   const bogus = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: '0x' + 'ff'.repeat(32), account: PLAYER, unitIndex: 0 } })
   check('an unknown transaction is refused', bogus.status === 403)
   const wrongOwner = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: ARTIST_B, unitIndex: 0 } })
@@ -630,57 +737,120 @@ try {
   check('the play is accepted', p0.status === 200 && p0.json.ok === true, JSON.stringify(p0.json))
   check('the on-chain unit count comes back', p0.json?.units === 2)
   check('a prize was drawn', !!p0.json?.claim?.prize?.tokenId)
-  check('and the claim pends because nothing can sign the mint', p0.json?.claim?.state === 'pending' && /sponsor|unavailable/.test(p0.json.claim.pendingReason ?? ''), p0.json?.claim?.pendingReason)
+  check('and delivered in the same request, with its mint transaction',
+    p0.json?.claim?.state === 'delivered' && /^0x[0-9a-f]{64}$/.test(p0.json.claim.txDelivered ?? ''),
+    JSON.stringify(p0.json?.claim))
   check('the claim carries its commitment', p0.json?.claim?.commitment === detail.json.fairness.commitment)
+  {
+    // What was actually put on the wire: one userOp, calling adminMint on the
+    // prize's collection, minting exactly one copy of the drawn token to the
+    // player — the same shape lib/experience/delivery's oracle pins, now seen
+    // arriving at CDP.
+    const ops = [...cdp.ops.values()]
+    check('exactly one userOp was broadcast for it', ops.length === 1, String(ops.length))
+    const c0 = ops[0]?.calls?.[0]
+    const word = (i) => (c0?.data ?? '').slice(10 + i * 64, 10 + (i + 1) * 64)
+    check('to the prize collection', c0?.to?.toLowerCase() === p0.json.claim.prize.collection)
+    check('calling adminMint(player, drawn token, 1, …)',
+      (c0?.data ?? '').startsWith(toFunctionSelector('adminMint(address,uint256,uint256,bytes)')) &&
+      word(0).endsWith(PLAYER.slice(2)) &&
+      BigInt('0x' + (word(1) || '0')).toString() === p0.json.claim.prize.tokenId &&
+      BigInt('0x' + (word(2) || '0')) === 1n,
+      (c0?.data ?? '').slice(0, 74))
+  }
 
   const replay = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: PLAYER, unitIndex: 0 } })
   check('replaying returns the recorded claim, never a second draw', replay.json?.replay === true && replay.json.claim.prize.tokenId === p0.json.claim.prize.tokenId)
+  check('nor a second mint', prepares() === 1)
   const overflow = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: PLAYER, unitIndex: 2 } })
   check('a unit the transaction does not cover is refused', overflow.status === 400)
 
   await sleep(400)
   const claims = await call(`/api/experience/claims?machineId=spring-season&account=${PLAYER}`)
-  check('the claims route lists the stalled play', claims.json?.claims?.length === 1 && claims.json.claims[0].unresolved === true)
+  check('the claims route lists the play, settled', claims.json?.claims?.length === 1 && claims.json.claims[0].unresolved === false)
   check('spark was credited', claims.json?.spark === 1)
+  const notif = zsets.get(`kismetart:notif:${PLAYER}`)
+  check('the win notification was written', !!notif && [...notif.keys()].some((raw) => raw.includes('experience_win')))
 
   const disc = await call(`/api/experience/discover?machineId=spring-season&account=${PLAYER}`)
   check('discovery finds both capsule transactions on-chain', disc.status === 200 && disc.json.capsules.length === 2, JSON.stringify(disc.json))
   const dA = disc.json?.capsules?.find((c) => c.txHash === TX_A)
   const dB = disc.json?.capsules?.find((c) => c.txHash === TX_B)
-  check('the played transaction shows both units still owed', dA?.units === 2 && dA?.owedUnits?.length === 2)
+  check('the played transaction shows only its unopened unit still owed', dA?.units === 2 && dA?.owedUnits?.length === 1 && dA.owedUnits[0] === 1, JSON.stringify(dA))
   check('the never-seen "zora.co" mint is surfaced with its unit', dB?.units === 1 && dB?.owedUnits?.[0] === 0)
 
-  // ═══ 4. recovery ═══════════════════════════════════════════════════════════
-  console.log('\n4. recovery')
+  // ═══ 4. recovery: every way a delivery can end, and what resume does with each
+  console.log('\n4. recovery — the delivery state machine')
   const prize = p0.json.claim.prize
-  const r1 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
-  check('resume without a landed mint stays pending', r1.json?.claim?.state === 'pending' && r1.json.resumed === false)
-  check('and does not draw a second prize', r1.json?.claim?.prize?.tokenId === prize.tokenId)
 
-  chain.balances.set(key(prize.collection, PLAYER, prize.tokenId), 1n)
-  const noOp = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
-  check('a claim that never broadcast is NOT settled by the player holding the edition',
-    noOp.json?.claim?.state === 'pending' && noOp.json.resumed === false,
-    JSON.stringify(noOp.json?.claim?.state))
+  // ── the paymaster refuses: nothing was broadcast, so resume simply tries again ──
+  cdp.script.push('refuse')
+  const n0 = prepares()
+  const p1 = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: PLAYER, unitIndex: 1 } })
+  check('a refused sponsorship pends the play', p1.json?.claim?.state === 'pending' && /sponsor/.test(p1.json.claim.pendingReason ?? ''), JSON.stringify(p1.json?.claim))
+  check('with nothing broadcast and no userOp on the claim', prepares() === n0 && !claimOf('spring-season', TX_A, 1)?.userOpHash)
+  const r1 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 1 } })
+  check('resume retries a never-broadcast claim and delivers', r1.json?.claim?.state === 'delivered' && r1.json.resumed === true, JSON.stringify(r1.json))
+  check('with exactly one new userOp', prepares() === n0 + 1)
+  check('and does not draw a second prize', r1.json?.claim?.prize?.tokenId === p1.json.claim.prize.tokenId)
 
-  // Now the recoverable case the resume path actually exists for: a userOp WAS
-  // sent, the process lost track of it, and the mint has since landed.
-  check('the claim can be marked as having broadcast', markBroadcast('spring-season', TX_A, 0))
-  const r2 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
-  check('a broadcast claim whose mint landed reconciles to delivered', r2.json?.claim?.state === 'delivered' && r2.json.resumed === true, JSON.stringify(r2.json))
-  const r3 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, unitIndex: 0 } })
-  check('a delivered claim is inert to further resumes', r3.json?.claim?.state === 'delivered' && r3.json.resumed === false)
+  // ── the mint reverts: broadcast, failed, obligation still open ──
+  cdp.script.push('fail')
+  const pB = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_B, account: PLAYER, unitIndex: 0 } })
+  check('the zora.co capsule plays through the same route', pB.status === 200 && pB.json.ok === true && !!pB.json.claim?.prize)
+  check('a reverted mint pends the play', pB.json?.claim?.state === 'pending' && /reverted/.test(pB.json.claim.pendingReason ?? ''), pB.json?.claim?.pendingReason)
+  check('and records the userOp it sent', /^0x[0-9a-f]{64}$/.test(claimOf('spring-season', TX_B, 0)?.userOpHash ?? ''))
+  const rB = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_B, unitIndex: 0 } })
+  check('resume asks CDP, learns it failed, tries once more — and delivers', rB.json?.claim?.state === 'delivered' && rB.json.resumed === true, JSON.stringify(rB.json))
+
+  // ── broadcast with no verdict: the case the receipt read exists for ──
+  addMint({ tx: TX_HANG, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_040n })
+  cdp.script.push('hang')
+  const pC = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_HANG, account: PLAYER, unitIndex: 0 } })
+  check('a broadcast with no verdict pends as unconfirmed', pC.json?.claim?.state === 'pending' && /unconfirmed/.test(pC.json.claim.pendingReason ?? ''), JSON.stringify(pC.json?.claim))
+  const hashC = claimOf('spring-season', TX_HANG, 0)?.userOpHash
+  check('with its userOp recorded before the wait', /^0x[0-9a-f]{64}$/.test(hashC ?? '') && cdp.ops.has(hashC))
+  const nC = prepares()
+  const rC1 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_HANG, unitIndex: 0 } })
+  check('while CDP reports it still in flight, resume WAITS — it does not re-mint',
+    rC1.json?.claim?.state === 'pending' && rC1.json.resumed === false && /still confirming/.test(rC1.json.reason ?? '') && prepares() === nC,
+    JSON.stringify(rC1.json))
+  cdp.ops.get(hashC).outcome = 'complete'
+  const rC2 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_HANG, unitIndex: 0 } })
+  check('once THAT userOp completes, resume settles it by its own receipt',
+    rC2.json?.claim?.state === 'delivered' && rC2.json.resumed === true && rC2.json.claim.txDelivered === cdp.ops.get(hashC).transactionHash,
+    JSON.stringify(rC2.json?.claim))
+  check('without a second broadcast', prepares() === nC)
+  const rC3 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_HANG, unitIndex: 0 } })
+  check('a delivered claim is inert to further resumes', rC3.json?.claim?.state === 'delivered' && rC3.json.resumed === false)
+
+  // ── the cap: a mint that keeps reverting stops costing gas ──
+  addMint({ tx: TX_CAP, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_041n })
+  cdp.script.push('fail', 'fail', 'fail')
+  const nD = prepares()
+  await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_CAP, account: PLAYER, unitIndex: 0 } })
+  await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_CAP, unitIndex: 0 } })
+  await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_CAP, unitIndex: 0 } })
+  const rD = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_CAP, unitIndex: 0 } })
+  check('three reverted broadcasts exhaust the claim for an operator',
+    rD.json?.claim?.state === 'pending' && /failed repeatedly/.test(rD.json.claim.pendingReason ?? ''), JSON.stringify(rD.json?.claim))
+  check('and a fourth is never sent', prepares() === nD + 3, `${prepares() - nD}`)
 
   await sleep(400)
   const claims2 = await call(`/api/experience/claims?machineId=spring-season&account=${PLAYER}`)
-  check('the claims route now shows it settled', claims2.json?.claims?.find((c) => c.unitIndex === 0)?.unresolved === false)
-  const notif = zsets.get(`kismetart:notif:${PLAYER}`)
-  check('the win notification was written', !!notif && [...notif.keys()].some((raw) => raw.includes('experience_win')))
-
-  const pB = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_B, account: PLAYER, unitIndex: 0 } })
-  check('the zora.co capsule plays through the same route', pB.status === 200 && pB.json.ok === true && !!pB.json.claim?.prize)
+  check('the claims route shows the settled units resolved and the exhausted one still owed',
+    claims2.json?.claims?.filter((c) => c.unresolved).map((c) => c.txHash).join(',') === TX_CAP, JSON.stringify(claims2.json?.claims?.map((c) => [c.txHash.slice(0, 6), c.unitIndex, c.unresolved])))
+  // Discovery after all of the above, from a cold cache: only the exhausted
+  // capsule still owes a unit. Then twice more back to back — the second read
+  // must be served from the cache, not a second log scan.
+  strings.delete(`kismetart:xp:discover:${CAPSULE}:1:${PLAYER}`)
+  const scans = chain.getLogsCalls ?? 0
   const disc2 = await call(`/api/experience/discover?machineId=spring-season&account=${PLAYER}`)
-  check('discovery is cached briefly (unchanged within the TTL)', disc2.json?.capsules?.length === 2)
+  check('discovery now reports only the unit still owed',
+    disc2.json?.capsules?.length === 1 && disc2.json.capsules[0].txHash === TX_CAP && disc2.json.capsules[0].owedUnits.join() === '0',
+    JSON.stringify(disc2.json))
+  await call(`/api/experience/discover?machineId=spring-season&account=${PLAYER}`)
+  check('and a second read within the TTL is served from cache, not a second scan', (chain.getLogsCalls ?? 0) === scans + 1, `${(chain.getLogsCalls ?? 0) - scans} scans`)
 
   // ═══ 5. the verifier ═══════════════════════════════════════════════════════
   console.log('\n5. the verifier')
@@ -711,7 +881,7 @@ try {
     entries: [{ collection: POOL, tokenId: '99', artist: ADMIN, weight: 1, supply: 0 }], splitRecipients: [ADMIN],
   } })
   check('it publishes (grants are checked live at play, not at publish)', noGrant.status === 200 && noGrant.json.machine.state === 'live')
-  chain.head = 5_000_120n
+  setHead(5_000_120n)
   addMint({ tx: TX_N, collection: CAPSULE_3, to: PLAYER, id: 1n, value: 1n, block: 5_000_110n })
   const pN = await call('/api/experience/play', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, account: PLAYER, unitIndex: 0 } })
   check('the play pends with NO prize rather than minting without authority', pN.json?.pending === true && pN.json.claim.prize === null, JSON.stringify(pN.json))
@@ -846,7 +1016,7 @@ try {
   // ═══ 6b-iv. a play is a PURCHASE, not merely a mint ═══════════════════════
   console.log('\n6b-iv. a capsule minted for free is not a play')
   {
-    chain.head = 5_000_300n
+    setHead(5_000_300n)
     // The capsule's own admin mints themselves a capsule at no cost — the same
     // TransferSingle a sale emits, and until now the same play. Refused: the
     // operator holds mint rights on the token and nothing receipted a sale.
@@ -904,52 +1074,53 @@ try {
     (await call('/api/experience/machines/field-recordings')).status === 404 || true)
 
   // ═══ 6c-ii. reconciliation must prove OUR mint, not the player's wallet ═══
-  console.log('\n6c-ii. a player who already owns the prize is not silently discharged')
+  console.log("\n6c-ii. a stalled unit is not settled by its sibling's mint")
   {
-    // The player already holds the machine's floor piece — the ordinary case,
-    // since an unlimited floor is drawn on every play and solvency effectively
-    // requires one. A stalled delivery must NOT read that pre-existing balance
-    // as "we delivered", or the capsule is closed having minted nothing after
-    // the artist's copy was already consumed.
-    // A single-entry pool, so the draw can only land on POOL:7 — the piece the
-    // player already holds. A multi-entry pool would make this test vacuous:
-    // a prize they hold none of reads false under a bare balance test too.
+    // Two units of ONE capsule on a single-entry machine, so both draw the same
+    // floor piece — the ordinary shape of a multi-pull, since every solvent
+    // machine carries an unlimited floor. Unit 0's broadcast gets no verdict;
+    // unit 1's lands. Reconciling by the player's balance of the edition, as an
+    // earlier version did, read unit 1's mint as unit 0's and closed unit 0 as
+    // delivered having minted nothing. Asking CDP about unit 0's OWN userOp
+    // cannot be fooled by anything unit 1 did.
     const solo = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
       id: 'owned-floor', name: 'Owned Floor', capsule: { collection: CAPSULE_9, tokenId: '1' },
       entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
     } })
     check('the single-entry machine publishes', solo.status === 200 && solo.json.machine.state === 'live', JSON.stringify(solo.json).slice(0, 200))
 
-    chain.balances.set(key(POOL, PLAYER, '7'), 5n)
-    chain.head = 5_000_200n
-    addMint({ tx: TX_OWNED, collection: CAPSULE_9, to: PLAYER, id: 1n, value: 1n, block: 5_000_150n })
-    const owned = await call('/api/experience/play', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, account: PLAYER, unitIndex: 0 } })
-    check('the draw lands on the piece the player already holds', owned.json?.claim?.prize?.tokenId === '7')
-    check('the play pends rather than claiming a delivery that never happened',
-      owned.json?.claim?.state === 'pending', JSON.stringify(owned.json?.claim))
-    const owedResume = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
-    check('and resume does NOT discharge it against the pre-existing balance',
-      owedResume.json?.claim?.state === 'pending' && owedResume.json.resumed === false,
-      JSON.stringify(owedResume.json?.claim))
-    // A real increase, but still nothing broadcast — must NOT settle.
-    chain.balances.set(key(POOL, PLAYER, '7'), 6n)
-    const increased = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
-    check('an increase alone does not settle a claim that never broadcast',
-      increased.json?.claim?.state === 'pending', JSON.stringify(increased.json?.claim?.state))
-
-    // Broadcast + an increase ABOVE the recorded floor is the only thing that does.
-    markBroadcast('owned-floor', TX_OWNED, 0)
-    const settled = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
-    check('a broadcast claim settles only on an increase above the recorded floor',
-      settled.json?.claim?.state === 'delivered' && settled.json.resumed === true,
-      JSON.stringify(settled.json?.claim))
+    // Mint AFTER the machine, never move the head backwards. The server reads
+    // the head through viem, which caches it for a few seconds; a head lowered
+    // after a publish leaves that machine's createdBlock above a later mint and
+    // the play is refused as pre-dating it — a timing flake this test carried.
+    setHead(5_000_310n)
+    addMint({ tx: TX_OWNED, collection: CAPSULE_9, to: PLAYER, id: 1n, value: 2n, block: 5_000_305n })
+    cdp.script.push('hang')
+    const u0 = await call('/api/experience/play', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, account: PLAYER, unitIndex: 0 } })
+    const u1 = await call('/api/experience/play', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, account: PLAYER, unitIndex: 1 } })
+    check('both units draw the same floor piece', u0.json?.claim?.prize?.tokenId === '7' && u1.json?.claim?.prize?.tokenId === '7',
+      `u0=${u0.status} ${JSON.stringify(u0.json).slice(0, 160)} | u1=${u1.status} ${JSON.stringify(u1.json).slice(0, 120)}`)
+    check("unit 0 is pending on a broadcast with no verdict", u0.json?.claim?.state === 'pending' && /unconfirmed/.test(u0.json.claim.pendingReason ?? ''), JSON.stringify(u0.json?.claim))
+    check('unit 1 delivered — the same edition, to the same wallet', u1.json?.claim?.state === 'delivered', JSON.stringify(u1.json?.claim))
+    const hash0 = claimOf('owned-floor', TX_OWNED, 0)?.userOpHash
+    check("unit 0's userOp is on record", !!hash0 && cdp.ops.has(hash0), String(hash0))
+    const n = prepares()
+    const r0 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
+    check("unit 0 is NOT settled by its sibling's mint — it is still confirming",
+      r0.json?.claim?.state === 'pending' && r0.json.resumed === false && /still confirming/.test(r0.json.reason ?? ''),
+      JSON.stringify(r0.json))
+    check('and nothing was re-broadcast for it', prepares() === n)
+    if (cdp.ops.has(hash0)) cdp.ops.get(hash0).outcome = 'complete'
+    const r0b = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'owned-floor', txHash: TX_OWNED, unitIndex: 0 } })
+    check('and settles only when its OWN userOp completes',
+      r0b.json?.claim?.state === 'delivered' && r0b.json.claim.txDelivered === cdp.ops.get(hash0).transactionHash, JSON.stringify(r0b.json?.claim))
   }
 
   // ═══ 6c-iii. a resume cannot race an in-flight play ═══════════════════════
   console.log('\n6c-iii. resume refuses a claim a play is still working on')
   {
-    chain.head = 5_000_260n
-    addMint({ tx: TX_RACE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_250n })
+    setHead(5_000_320n)
+    addMint({ tx: TX_RACE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_315n })
     // Fire both at once. Whatever the interleaving, exactly one draw may occur:
     // resume must refuse any claim not in the settled 'pending' state.
     const [a, b] = await Promise.all([
@@ -1058,8 +1229,8 @@ try {
   // really is still honoured, and the token is held for life so no successor can
   // ever exist to honour it twice.
   console.log('\n7b. delisting delists — it does not confiscate')
-  chain.head = 5_000_270n
-  addMint({ tx: TX_DELIST, collection: CAPSULE_2, to: PLAYER, id: 1n, value: 1n, block: 5_000_265n })
+  setHead(5_000_340n)
+  addMint({ tx: TX_DELIST, collection: CAPSULE_2, to: PLAYER, id: 1n, value: 1n, block: 5_000_335n })
   await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'delisted' } })
 
   const shelf = await call('/api/experience/machines')
@@ -1068,16 +1239,17 @@ try {
   check('but its page stays reachable, so a holder can still open what they bought',
     (await call('/api/experience/machines/field-recordings')).status === 200)
 
+  // Its delivery is broadcast and gets no verdict, so the claim has to be
+  // finished through resume — which is the path that used to refuse a delisted
+  // machine, stranding exactly this player.
+  cdp.script.push('hang')
   const stranded = await call('/api/experience/play', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_DELIST, account: PLAYER, unitIndex: 0 } })
   check('a capsule paid for before the delisting is still honoured — it draws, it is not repudiated',
     stranded.status === 200 && !!stranded.json.claim?.prize,
     JSON.stringify(stranded.json ?? {}).slice(0, 300))
-  // (This harness has no CDP credentials, so every delivery ends `pending` and
-  //  is finished through resume. That is the same discharge a paymaster refusal
-  //  takes in production, so driving it here proves the whole path — including
-  //  that resume, too, no longer refuses a delisted machine.)
-  chain.balances.set(key(POOL, PLAYER, '8'), 1n)
-  markBroadcast('field-recordings', TX_DELIST, 0)
+  const hashS = claimOf('field-recordings', TX_DELIST, 0)?.userOpHash
+  check('its userOp is on record', !!hashS && cdp.ops.has(hashS), String(hashS))
+  if (cdp.ops.has(hashS)) cdp.ops.get(hashS).outcome = 'complete'
   const strandedResume = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'field-recordings', txHash: TX_DELIST, unitIndex: 0 } })
   check('and resume settles it on a delisted machine rather than stranding the payment',
     strandedResume.json?.claim?.state === 'delivered' && strandedResume.json.resumed === true,

@@ -2,7 +2,6 @@ import 'server-only'
 import { concat, encodeFunctionData, type Address, type Hex } from 'viem'
 import { COLLECTION_ABI } from '../collections'
 import { BUILDER_DATA_SUFFIX } from '../builderCode'
-import { serverBaseClient } from '../rpc'
 import { acquireLock } from '../redisLock'
 
 /**
@@ -35,23 +34,21 @@ import { acquireLock } from '../redisLock'
  * received their artwork. The Scout's own comment names the stakes — a
  * slow-but-landed mint counted as a skip means "user gets the NFT, /api/collect
  * never records it". So this module NEVER retries an indeterminate send.
- * `reconcileDelivered` reads the chain instead, and only a definitive
- * zero-balance authorises another mint. Blind retry is the single action that
- * can mint twice for one payment.
+ * `readDeliveryOutcome` asks CDP for THAT userOp's own status instead, and only
+ * a definitive `failed` (or a never-broadcast attempt) authorises another mint.
+ * Blind retry is the single action that can mint twice for one payment.
+ *
+ * ── Why the userOp receipt, and not the player's balance ──
+ *
+ * An earlier version answered "did our mint land?" by reading the player's
+ * balance of the drawn edition and comparing it to a floor captured before the
+ * attempt. That measures the EDITION, not the mint: every solvent machine
+ * carries an unlimited floor piece that a multi-pull draws several times over,
+ * and a sibling unit's mint of the same edition raised the balance past this
+ * unit's floor — so a unit whose own userOp never landed was closed as
+ * delivered, and the player was quietly shorted one artwork. A userOp hash is
+ * ours alone; its status cannot be moved by any other mint.
  */
-
-const BALANCE_OF_ABI = [
-  {
-    name: 'balanceOf',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'account', type: 'address' },
-      { name: 'id', type: 'uint256' },
-    ],
-    outputs: [{ type: 'uint256' }],
-  },
-] as const
 
 export type DeliveryOutcome =
   /** Confirmed on-chain. */
@@ -61,31 +58,77 @@ export type DeliveryOutcome =
   /** Broadcast and reverted. The prize is wrong (grant gone, minted out); the
    *  caller may redraw. */
   | { kind: 'reverted'; userOpHash: string; error: string }
-  /** Broadcast, outcome unknown. MUST be reconciled against chain state before
-   *  any further mint is attempted. */
+  /** Broadcast, outcome unknown. MUST be reconciled against the userOp's own
+   *  status (readDeliveryOutcome) before any further mint is attempted. */
   | { kind: 'indeterminate'; userOpHash: string }
   /** Could not even start (misconfiguration). */
   | { kind: 'unavailable'; error: string }
 
-/** The player's current balance of an edition, for the delivery floor above.
- *  null when the chain cannot answer — callers must then refuse to deliver
- *  rather than assume zero, since assuming zero is what turns a stalled
- *  delivery into a second mint. */
-export async function readPrizeBalance(params: {
-  collection: string
-  tokenId: string
-  player: string
-}): Promise<number | null> {
+/** What a userOp's status means for the claim that broadcast it. Pure, so the
+ *  oracle can pin every branch; `readDeliveryOutcome` is the CDP read around it.
+ *
+ *  Only `complete` is a landed mint. `failed` and `dropped` are terminal
+ *  without one, so the obligation is still open and a re-attempt is safe. Every
+ *  other value — `pending`, `signed`, `broadcast`, or a status this code does
+ *  not know — is treated as still in flight: not delivered, and NOT safe to
+ *  re-broadcast, because the first one may yet land. */
+export function deliveryStateFromStatus(status: string | undefined): 'landed' | 'failed' | 'pending' {
+  if (status === 'complete') return 'landed'
+  if (status === 'failed' || status === 'dropped') return 'failed'
+  return 'pending'
+}
+
+export type DeliveryReceipt =
+  | { kind: 'landed'; txHash: string }
+  | { kind: 'failed' }
+  | { kind: 'pending' }
+  /** CDP could not be asked (unconfigured, unreachable, or the op is unknown to
+   *  it). Callers keep the claim pending — never deliver or re-mint on this. */
+  | { kind: 'unknown' }
+
+/** The one signing identity: the named CDP smart account, resolved by name so
+ *  its address survives restarts. Shared by the send and the receipt read so
+ *  the two can never look at different accounts. Throws on any failure; both
+ *  callers map that to their own fail-closed outcome. */
+async function resolveSigner() {
+  const apiKeyId = process.env.CDP_API_KEY_ID
+  const apiKeySecret = process.env.CDP_API_KEY_SECRET
+  const walletSecret = process.env.CDP_WALLET_SECRET
+  if (!apiKeyId || !apiKeySecret || !walletSecret) throw new Error('CDP credentials not configured')
+  const { CdpClient } = await import('@coinbase/cdp-sdk')
+  const cdp = new CdpClient({
+    apiKeyId,
+    apiKeySecret,
+    walletSecret,
+    // Pointable at a stand-in for the end-to-end harness, exactly as the RPC
+    // and Redis URLs are. Unset in production, so the SDK's own default holds.
+    ...(process.env.CDP_API_BASE_PATH ? { basePath: process.env.CDP_API_BASE_PATH } : {}),
+  })
+  const owner = await cdp.evm.getOrCreateAccount({
+    name: process.env.CDP_XP_OWNER_NAME || 'kismet-experience-owner',
+  })
+  return cdp.evm.getOrCreateSmartAccount({
+    name: process.env.CDP_XP_ACCOUNT_NAME || 'kismet-experience-operator',
+    owner,
+  })
+}
+
+/**
+ * What became of a userOp this module broadcast. The only honest answer to
+ * "did our mint land?" after an indeterminate send — asked of the operation
+ * itself, by its hash, so no other mint of the same edition can answer for it.
+ * Never throws: an unreachable or unconfigured CDP is `unknown`, and callers
+ * leave the claim pending on it rather than assume either direction.
+ */
+export async function readDeliveryOutcome(params: { userOpHash: string }): Promise<DeliveryReceipt> {
   try {
-    const bal = (await serverBaseClient().readContract({
-      address: params.collection as Address,
-      abi: BALANCE_OF_ABI,
-      functionName: 'balanceOf',
-      args: [params.player as Address, BigInt(params.tokenId)],
-    })) as bigint
-    return Number(bal)
+    const smartAccount = await resolveSigner()
+    const op = await smartAccount.getUserOperation({ userOpHash: params.userOpHash as Hex })
+    const state = deliveryStateFromStatus(op.status)
+    if (state === 'landed') return { kind: 'landed', txHash: op.transactionHash ?? '' }
+    return { kind: state }
   } catch {
-    return null
+    return { kind: 'unknown' }
   }
 }
 
@@ -102,48 +145,20 @@ export function buildAdminMintCall(to: string, tokenId: string): { data: Hex } {
 }
 
 /**
- * Did OUR delivery land? The only safe question to ask after an indeterminate
- * send — and it must be asked as a DELTA, not as a balance.
+ * Mint the prize. Single-flight per CLAIM, using the same token-CAS lock the
+ * stats rebuild and distribute-all already share, so a claim adopted by resume
+ * while its original play is somehow still alive cannot produce two userOps for
+ * one obligation.
  *
- * `balanceOf(player, id) > 0` answers "does this wallet hold this edition",
- * which is a different question and wrong in both directions. Prizes are
- * ordinary public editions: a player may already hold one from a normal
- * collect, an airdrop, or an earlier win — and solvency effectively requires
- * every machine to carry an unlimited creator floor piece, which repeat players
- * draw over and over. Against a bare `> 0` test, such a claim is written
- * `delivered` having minted nothing, after `consumeOne` already spent the
- * artist's copy: the player paid, the artist lost a copy, and no artwork moved.
- *
- * `minBalance` is the balance read before the first delivery attempt (stored on
- * the claim), so only a genuine increase counts as our mint.
- */
-export async function reconcileDelivered(params: {
-  collection: string
-  tokenId: string
-  player: string
-  minBalance: number
-}): Promise<boolean | null> {
-  try {
-    const bal = (await serverBaseClient().readContract({
-      address: params.collection as Address,
-      abi: BALANCE_OF_ABI,
-      functionName: 'balanceOf',
-      args: [params.player as Address, BigInt(params.tokenId)],
-    })) as bigint
-    return bal > BigInt(Math.max(0, params.minBalance))
-  } catch {
-    // Unknown — the caller must keep the claim pending rather than assume
-    // either direction.
-    return null
-  }
-}
-
-/**
- * Mint the prize. Single-flight per (collection, tokenId, player) so a
- * double-submitted claim cannot produce two userOps for one obligation, using
- * the same token-CAS lock the stats rebuild and distribute-all already share.
+ * Per claim, not per (collection, tokenId, player): two units of one capsule
+ * that both draw the floor piece are two obligations and deserve two mints. A
+ * lock keyed on the piece made the second wait on the first and pend as
+ * "already in flight" — a needless stall, and the trigger for the balance
+ * mis-attribution described at the top of this file.
  */
 export async function deliverPrize(params: {
+  /** `${machineId}:${txHash}:${unitIndex}` — the obligation being paid. */
+  claimKey: string
   collection: string
   tokenId: string
   player: string
@@ -162,29 +177,18 @@ export async function deliverPrize(params: {
    *  the caller can persist `sending` and make a timeout recoverable. */
   onBroadcast?: (userOpHash: string) => Promise<void>
 }): Promise<DeliveryOutcome> {
-  const apiKeyId = process.env.CDP_API_KEY_ID
-  const apiKeySecret = process.env.CDP_API_KEY_SECRET
-  const walletSecret = process.env.CDP_WALLET_SECRET
-  if (!apiKeyId || !apiKeySecret || !walletSecret) {
+  if (!process.env.CDP_API_KEY_ID || !process.env.CDP_API_KEY_SECRET || !process.env.CDP_WALLET_SECRET) {
     return { kind: 'unavailable', error: 'CDP credentials not configured' }
   }
 
-  const lockKey = `kismetart:xp:deliver:${params.collection.toLowerCase()}:${params.tokenId}:${params.player.toLowerCase()}`
+  const lockKey = `kismetart:xp:deliver:${params.claimKey.toLowerCase()}`
   const lock = await acquireLock(lockKey, 120).catch(() => ({ acquired: false, release: async () => {} }))
   if (!lock.acquired) {
-    return { kind: 'unavailable', error: 'delivery already in flight for this prize' }
+    return { kind: 'unavailable', error: 'delivery already in flight for this claim' }
   }
 
   try {
-    const { CdpClient } = await import('@coinbase/cdp-sdk')
-    const cdp = new CdpClient({ apiKeyId, apiKeySecret, walletSecret })
-    const owner = await cdp.evm.getOrCreateAccount({
-      name: process.env.CDP_XP_OWNER_NAME || 'kismet-experience-owner',
-    })
-    const smartAccount = await cdp.evm.getOrCreateSmartAccount({
-      name: process.env.CDP_XP_ACCOUNT_NAME || 'kismet-experience-operator',
-      owner,
-    })
+    const smartAccount = await resolveSigner()
 
     if (
       params.operator &&
@@ -234,7 +238,8 @@ export async function deliverPrize(params: {
       }
       return { kind: 'reverted', userOpHash, error: `userOp status: ${status ?? 'unknown'}` }
     } catch {
-      // Timed out. The op may still land. Do NOT retry — reconcile.
+      // Timed out, or the status read failed mid-wait. The op may still land.
+      // Do NOT retry — the caller pends, and resume asks readDeliveryOutcome.
       return { kind: 'indeterminate', userOpHash }
     }
   } catch (err) {

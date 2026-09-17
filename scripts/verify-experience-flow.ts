@@ -944,7 +944,7 @@ console.log('\n9. operator identity')
   process.env.EXPERIENCE_OPERATOR_ADDRESSES = saved ?? ''
 
   // Delivery fails CLOSED on missing credentials — before the Redis lock and
-  // before anything is broadcast.
+  // before anything is broadcast — and so does the receipt read.
   const delivery = await import(new URL('../lib/experience/delivery.ts', import.meta.url).href)
   const creds = {
     id: process.env.CDP_API_KEY_ID,
@@ -956,6 +956,7 @@ console.log('\n9. operator identity')
   delete process.env.CDP_WALLET_SECRET
   let broadcast = false
   const out = await delivery.deliverPrize({
+    claimKey: 'oracle:0xabc:0',
     collection: COLL,
     tokenId: '1',
     player: '0x' + '3'.repeat(40),
@@ -964,9 +965,26 @@ console.log('\n9. operator identity')
   })
   check('unconfigured delivery is unavailable, not an exception', out.kind === 'unavailable')
   check('and nothing was ever broadcast', !broadcast)
+  check('an unconfigured receipt read is unknown, never a verdict',
+    (await delivery.readDeliveryOutcome({ userOpHash: '0x' + '9'.repeat(64) })).kind === 'unknown')
   if (creds.id) process.env.CDP_API_KEY_ID = creds.id
   if (creds.secret) process.env.CDP_API_KEY_SECRET = creds.secret
   if (creds.wallet) process.env.CDP_WALLET_SECRET = creds.wallet
+
+  // What each CDP userOp status means for the claim that broadcast it. This is
+  // the whole of the reconciliation decision, so every value is pinned: only
+  // `complete` is a landed mint; `failed` and `dropped` are terminal without
+  // one (re-attempt is safe); everything else — including a status this code
+  // has never heard of — is still in flight: not delivered, not re-mintable.
+  const state = delivery.deliveryStateFromStatus as (s: string | undefined) => string
+  check('complete is a landed mint', state('complete') === 'landed')
+  check('failed is terminal with nothing landed', state('failed') === 'failed')
+  check('dropped is terminal with nothing landed', state('dropped') === 'failed')
+  check('pending is still in flight', state('pending') === 'pending')
+  check('signed is still in flight', state('signed') === 'pending')
+  check('broadcast is still in flight', state('broadcast') === 'pending')
+  check('an unknown status is treated as in flight, never as landed or failed',
+    state('some-future-status') === 'pending' && state(undefined) === 'pending')
 
   // The prize mint itself: adminMint(to, id, 1, 0x) carrying Kismet's ERC-8021
   // attribution, exactly like every other write on the platform.
