@@ -60,6 +60,8 @@ const TX_FREE_RECEIPTED = '0x' + '39'.repeat(32) // same operator, but the colle
 const TX_USDC = '0x' + '4a'.repeat(32) // minted by Zora's ERC20Minter, which pays via adminMint
 const TX_REVOKED = '0x' + '5b'.repeat(32) // adminMinted by a wallet whose grant was revoked before it played
 const TX_OLD_NODE = '0x' + '6c'.repeat(32) // an honest buy whose block the node can no longer look back to
+/** A fresh capsule for the machine the browser publishes in section 9. */
+const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
  *  three-transaction evasion of a live permission read. */
 const EVADER = '0x5555000000000000000000000000000000000055'
@@ -424,6 +426,9 @@ chain.sales.set(key('0xcccc000000000000000000000000000000000007', 1), { saleStar
 chain.tokens.set(key('0xcccc000000000000000000000000000000000008', 1), { maxSupply: 10n, totalMinted: 0n })
 chain.sales.set(key('0xcccc000000000000000000000000000000000008', 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
 chain.sales.set(key(CAPSULE_3, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.tokens.set(key(CAPSULE_A, 1), { maxSupply: 20n, totalMinted: 0n })
+chain.perms.set(key(CAPSULE_A, 0, CREATOR2), 2n)
+chain.sales.set(key(CAPSULE_A, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: CREATOR2 })
 
 // Chain: capsules are capped editions; the pool has a creator floor (open)
 // and a capped piece by another artist; the operator holds MINTER (4) on both.
@@ -1106,6 +1111,291 @@ try {
   const before = strings.get(`kismetart:xp:spring-season:seed:${today}`)
   await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
   check('running it again rotates nothing', strings.get(`kismetart:xp:spring-season:seed:${today}`) === before)
+
+  // ═══ 9. the pages as a person sees them ═════════════════════════════════════
+  //
+  // Everything above drives the API. This drives the BUILT APP in a real
+  // Chromium against the same mock chain, so the assertions are about what a
+  // person sees rendered — labels, disabled states, the words on the face of
+  // the machine — which no API check can vouch for. The wallet is a stub
+  // EIP-1193 provider under a Coinbase-WebView user agent: that is the one
+  // environment where the app registers a plain injected connector and
+  // connects it on mount, so the studio's wallet flow runs with no picker to
+  // click through. Session cookies carry the `__Host-` prefix, which a browser
+  // refuses over plain http, so they are added as request headers instead.
+  console.log('\n9. the pages as a person sees them')
+  {
+    const origin = `http://127.0.0.1:${PORT}`
+    // playwright-core is a devDependency and the browser is pre-provisioned in
+    // CI/dev images; if either is missing, skip this section with a notice
+    // rather than failing the suite — the 118 API checks above stand on their
+    // own, and the pages are what this section alone can vouch for.
+    let chromium = null
+    try { ({ chromium } = await import('playwright-core')) } catch { /* not installed */ }
+    if (!chromium) {
+      console.log('  SKIP  browser checks — playwright-core not installed (npm i -D playwright-core)')
+    } else {
+    const candidates = [
+      undefined,
+      '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+      '/opt/pw-browsers/chromium/chrome-linux/chrome',
+    ]
+    let browser = null
+    let launchErr = null
+    for (const executablePath of candidates) {
+      try { browser = await chromium.launch(executablePath ? { executablePath } : {}); break } catch (e) { launchErr = e }
+    }
+    check('a Chromium can be launched (npx playwright-core install chromium, or PLAYWRIGHT_BROWSERS_PATH)', !!browser, String(launchErr?.message ?? '').slice(0, 160))
+    if (browser) {
+      const pageErrors = []
+      /** A page with optional session headers and an optional stub wallet. */
+      const open = async (path, { user, admin, wallet } = {}) => {
+        // The session cookies carry the `__Host-` prefix, so the browser jar
+        // refuses to hold them over plain http (Chromium's CDP setCookie
+        // enforces the prefix's Secure-scheme rule even on loopback), and
+        // route.continue() silently strips a `Cookie` override. extraHTTPHeaders
+        // sidesteps both: it attaches the header at the network layer, and the
+        // Next server reads a plain Cookie header exactly as the API-level
+        // call() helper's requests do. Set at context creation so it rides the
+        // very first navigation, and same-origin only by construction (the
+        // context makes no authenticated cross-origin requests).
+        const cookieHeader = [
+          user && `${USER_COOKIE}=${user}`,
+          admin && `${ADMIN_COOKIE}=${admin}`,
+        ].filter(Boolean).join('; ')
+        const context = await browser.newContext({
+          ...(wallet
+            ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) CoinbaseWallet/1.0 Mobile Safari/604.1', viewport: { width: 390, height: 844 } }
+            : { viewport: { width: 1024, height: 900 } }),
+          ...(cookieHeader ? { extraHTTPHeaders: { cookie: cookieHeader } } : {}),
+        })
+        context.setDefaultTimeout(20_000)
+        if (wallet) {
+          await context.addInitScript((addr) => {
+            const provider = {
+              isCoinbaseWallet: true,
+              async request({ method }) {
+                switch (method) {
+                  case 'eth_requestAccounts':
+                  case 'eth_accounts': return [addr]
+                  case 'eth_chainId': return '0x2105'
+                  case 'net_version': return '8453'
+                  case 'wallet_switchEthereumChain':
+                  case 'wallet_addEthereumChain': return null
+                  case 'wallet_getPermissions':
+                  case 'wallet_requestPermissions': return [{ parentCapability: 'eth_accounts' }]
+                  default: { const e = new Error(`stub wallet: ${method}`); e.code = 4200; throw e }
+                }
+              },
+              on() { return this }, removeListener() { return this }, removeAllListeners() { return this },
+            }
+            Object.defineProperty(window, 'ethereum', { value: provider, configurable: true })
+          }, wallet)
+        }
+        const page = await context.newPage()
+        page.on('pageerror', (e) => pageErrors.push(`${path}: ${e.message}`))
+        await page.goto(`${origin}${path}`, { waitUntil: 'domcontentloaded' })
+        return page
+      }
+      // innerText returns text AS RENDERED, so a `text-transform: uppercase`
+      // label reads back uppercased. Lowercase the haystack so an assertion tests
+      // the words, not the CSS; getByText (raw DOM text) is used where case matters.
+      const text = async (page) => (await page.locator('body').innerText()).replace(/\s+/g, ' ').toLowerCase()
+
+      try {
+        // ── the list ──
+        {
+          const page = await open('/experience')
+          const body = await text(page)
+          check('the list page leads with its name and promise', /experience capsule machines · published odds · every play returns an artwork/.test(body), body.slice(0, 160))
+          check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/experience/new')
+          const rows = page.locator('a[href^="/experience/"]:not([href="/experience/new"])')
+          check('every live machine is a row', (await rows.count()) === 4, String(await rows.count()))
+          check('each renders a state badge', (await rows.allInnerTexts()).every((t) => /\b(live|closed)\b/i.test(t)))
+          await page.context().close()
+        }
+
+        // ── a machine, on sale ──
+        {
+          const page = await open('/experience/spring-season')
+          await page.getByText('insert coin').waitFor()
+          const body = await text(page)
+          check('the face says insert coin', body.includes('insert coin'))
+          check('the pull selector offers ×1 ×5 ×10', ['×1', '×5', '×10'].every((n) => body.includes(n)))
+          const play = page.getByRole('button', { name: 'play', exact: true })
+          check('and play is enabled before any wallet is connected', await play.isEnabled())
+          check('the price is disclosed beside the button', /eth per play \+ network fee/.test(body), body.match(/[\d.]+ eth per play[^.]*/)?.[0] ?? '')
+          await page.getByRole('button', { name: '×5' }).click()
+          check('a multi-pull shows the total and the unit', /eth for 5 · [\d.]+ eth each/.test(await text(page)))
+          check('the header names the creator and the promise', /by 0x[0-9a-f]{4}…[0-9a-f]{4} · every play returns an artwork/.test(body))
+          const odds = page.locator('section', { hasText: "what's inside · published odds" }).locator('a')
+          check('the odds table lists every deliverable piece', (await odds.count()) === 2, String(await odds.count()))
+          const oddsText = (await odds.allInnerTexts()).join(' | ')
+          check('each row shows its supply and a probability', /unlimited|\d+ left/.test(oddsText) && /\d+(\.\d+)?%/.test(oddsText), oddsText)
+          // The "1 in N" ratio renders only for a row strictly between 0 and
+          // 100%. This machine's live distribution shifts run to run as draws
+          // consume its capped copies, so rather than assume a state, assert the
+          // page's ratio count equals the API's count of fractional rows — which
+          // also proves the table a player reads is the one the draw computes.
+          const apiOdds = (await call('/api/experience/machines/spring-season')).json?.odds ?? []
+          const fractional = apiOdds.filter((o) => o.probability > 0 && o.probability < 1).length
+          const ratioCount = (oddsText.match(/1 in /g) ?? []).length
+          check('a ratio is shown for exactly the fractional rows the draw has', ratioCount === fractional, `page=${ratioCount} api=${fractional}`)
+          const commitments = await page.locator('section', { hasText: 'provably fair' }).locator('dd').allInnerTexts()
+          check("today's and tomorrow's commitments are published", commitments.length === 2 && commitments.every((c) => /^[0-9a-f]{64}$/.test(c.trim())), commitments.join(','))
+          check('coverage reads always available on a floor-backed machine', /artworks left: always available/.test(body))
+          const redeem = page.getByRole('button', { name: 'redeem' })
+          check('redeem is disabled until a hash is pasted', await redeem.isDisabled())
+          await page.getByPlaceholder('paste its transaction hash (0x…)').fill(TX_B)
+          check('and enabled once one is', await redeem.isEnabled())
+          check('recent plays are shown', body.includes('recent plays'))
+          check('the verifier is linked', (await page.getByRole('link', { name: /verify a play/ }).getAttribute('href'))?.startsWith('/experience/spring-season/verify'))
+          await page.context().close()
+        }
+
+        // ── a machine whose price cannot be read, and one whose season is over ──
+        {
+          const saved = chain.sales.get(key(CAPSULE, 1))
+          chain.sales.delete(key(CAPSULE, 1))
+          const page = await open('/experience/spring-season')
+          await page.getByText('insert coin').waitFor()
+          const btn = page.getByRole('button', { name: 'price unavailable' })
+          check('an unreadable price disables the button and says so', (await btn.count()) === 1 && (await btn.isDisabled()))
+          check('with the reload hint', /could not read this capsule’s price just now — reload in a moment/.test(await text(page)))
+          check('and no pull selector', !(await text(page)).includes('×5'))
+          chain.sales.set(key(CAPSULE, 1), saved)
+          await page.context().close()
+        }
+        {
+          await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'ended' } })
+          const page = await open('/experience/field-recordings')
+          await page.getByText('insert coin').waitFor()
+          const btn = page.getByRole('button', { name: 'season closed' })
+          check('an ended machine renders, with the button reading season closed', (await btn.count()) === 1 && (await btn.isDisabled()))
+          check('and the redeem path still offered', await page.getByRole('button', { name: 'redeem' }).count() === 1)
+          await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
+          await page.context().close()
+        }
+
+        // ── the verifier ──
+        {
+          // Section 5 left this claim under a tampered commitment.
+          const page = await open(`/experience/spring-season/verify?txHash=${TX_A}`)
+          await page.getByText('MISMATCH').waitFor()
+          check('a tampered commitment renders MISMATCH in red', (await text(page)).includes('mismatch'))
+          strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256(seed) }))
+          await page.reload({ waitUntil: 'domcontentloaded' })
+          await page.getByText('verified', { exact: true }).waitFor()
+          const body = await text(page)
+          check('an honest one renders verified', body.includes('verified the revealed seed matches the commitment published before this play'))
+          check('with the seed revealed, the commitment, and recomputed → delivered', /server seed \(revealed after\) [0-9a-f]{64}/.test(body) && /recomputed → delivered #\d+ → #\d+/.test(body), body.slice(0, 300))
+          check('and the exact lineup the play drew from', body.includes('the exact lineup this play drew from') && /weight \d+ ·/.test(body))
+          await page.getByPlaceholder('capsule transaction hash (0x…)').fill('0x' + 'ee'.repeat(32))
+          await page.getByRole('button', { name: 'verify' }).click()
+          await page.getByText('No such play').waitFor()
+          check('an unknown hash says so', true)
+          await page.context().close()
+        }
+
+        // ── the studio, disconnected ──
+        {
+          const page = await open('/experience/new')
+          await page.getByText('capsule studio').first().waitFor()
+          await page.getByPlaceholder('spring-season').fill('browser-machine')
+          await page.getByPlaceholder('Spring Season').fill('Browser Machine')
+          await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
+          await page.getByPlaceholder('1', { exact: true }).fill('1')
+          await page.getByPlaceholder('collection 0x…').fill(POOL)
+          await page.getByPlaceholder('token').fill('8')
+          await page.getByPlaceholder('artist 0x…').fill(CREATOR2)
+          await page.locator('label:has-text("qty") input').fill('0')
+          await page.getByText('what players will see').waitFor()
+          const oneRow = await text(page)
+          check('the odds preview appears as the lineup is typed', /what players will see #8 by 0x[0-9a-f]{4}…[0-9a-f]{4} unlimited 100%/.test(oneRow), oneRow.match(/what players will see.{0,80}/)?.[0] ?? '')
+          check('and asks for a check to learn the payees', oneRow.includes('run check to see who this capsule actually pays'))
+          // Add a second, equally-weighted piece: two unlimited rows at weight 10
+          // are a real 50/50, which is where the derived percentage and its
+          // "1 in N" ratio actually render (deriveOdds, formatOddsRatio — the
+          // same functions the machine page and the draw use).
+          await page.getByRole('button', { name: 'add artwork' }).click()
+          await page.getByPlaceholder('collection 0x…').nth(1).fill(POOL)
+          await page.getByPlaceholder('token').nth(1).fill('7')
+          await page.getByPlaceholder('artist 0x…').nth(1).fill(ADMIN)
+          await page.locator('label:has-text("qty") input').nth(1).fill('0')
+          const twoRows = await text(page)
+          check('an even two-piece lineup previews as 50.0% each', (twoRows.match(/50\.0%/g) ?? []).length === 2, twoRows.match(/what players will see.{0,120}/)?.[0] ?? '')
+          check('and shows the 1-in-N ratio a fractional row carries', twoRows.includes('1 in 2'), twoRows.match(/1 in \d+/)?.[0] ?? 'none')
+          check('a disconnected visitor is offered connect wallet, not a check that can only fail',
+            (await page.getByRole('button', { name: 'connect wallet' }).count()) === 1 &&
+            (await page.getByRole('button', { name: 'check', exact: true }).count()) === 0)
+          await page.context().close()
+        }
+
+        // ── the studio, connected: check, then publish to review ──
+        {
+          const page = await open('/experience/new', { user: USER_TOKEN, wallet: CREATOR2 })
+          const dryRuns = []
+          const consoleErrs = []
+          const failedReqs = []
+          page.on('response', async (res) => {
+            if (res.url().endsWith('/api/experience/machines') && res.request().method() === 'POST') {
+              dryRuns.push({ status: res.status(), body: (await res.text().catch(() => '')).slice(0, 200) })
+            }
+          })
+          page.on('console', (m) => { if (m.type() === 'error') consoleErrs.push(m.text().slice(0, 200)) })
+          page.on('requestfailed', (r) => failedReqs.push(`${r.method()} ${r.url().replace(origin, '')}: ${r.failure()?.errorText ?? ''}`))
+          page.on('pageerror', (e) => consoleErrs.push(`pageerror: ${e.message.slice(0, 200)}`))
+          await page.getByRole('button', { name: 'check', exact: true }).waitFor()
+          check('a connected wallet sees check and publish', (await page.getByRole('button', { name: 'publish' }).count()) === 1)
+          await page.getByPlaceholder('spring-season').fill('browser-machine')
+          await page.getByPlaceholder('Spring Season').fill('Browser Machine')
+          await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
+          await page.getByPlaceholder('1', { exact: true }).fill('1')
+          await page.getByPlaceholder('collection 0x…').fill(POOL)
+          await page.getByPlaceholder('token').fill('8')
+          await page.getByPlaceholder('artist 0x…').fill(CREATOR2)
+          await page.locator('label:has-text("qty") input').fill('0')
+          await page.getByRole('button', { name: 'check', exact: true }).click()
+          // Wait for the result region either way, so a failing check reports the
+          // server's verdict instead of timing out blind.
+          await page.locator('section', { hasText: /ready|fix before publishing/i }).first().waitFor().catch(() => {})
+          const afterCheck = await text(page)
+          check('check passes against the live gate', afterCheck.includes('every check passed against live on-chain state'),
+            `dryRuns=${JSON.stringify(dryRuns).slice(0, 300)} | console=${JSON.stringify(consoleErrs).slice(0, 300)} | failed=${JSON.stringify(failedReqs).slice(0, 200)} | panel=${afterCheck.match(/(ready|fix before publishing).{0,160}/)?.[0] ?? ''}`)
+          check('and reports the on-chain capsule and who it pays', afterCheck.includes('on-chain: 20 max · 0 minted') && afterCheck.includes('every play pays you alone'), afterCheck.match(/on-chain.{0,40}/)?.[0] ?? '')
+          await page.getByRole('button', { name: 'publish' }).click()
+          await page.getByText('is queued for a curator').waitFor()
+          const afterPublish = await text(page)
+          check('a non-admin publish lands on a confirmation, not a 404',
+            page.url() === `${origin}/experience/new` && afterPublish.includes('browser machine is queued for a curator'), page.url())
+          check('that says where it will live once approved', afterPublish.includes('once approved it will be live at /experience/browser-machine'))
+          const queued = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
+          check('and the machine really is in the review queue', queued.json?.machines?.some((m) => m.machine.id === 'browser-machine' && m.machine.state === 'review'))
+          await page.context().close()
+        }
+
+        // ── the curator's queue ──
+        {
+          const page = await open('/admin/experience', { admin: ADMIN_TOKEN })
+          await page.getByText('Browser Machine').waitFor()
+          await page.getByRole('button', { name: /Browser Machine/ }).click()
+          await page.getByRole('button', { name: 'approve · live' }).waitFor()
+          const body = await text(page)
+          check('the queue shows the submitted machine with its lineup and odds', /browser-machine · by 0x[0-9a-f]{4}…[0-9a-f]{4} · 1 artwork · 20 capsules/.test(body) && /#8 by/.test(body) && body.includes('100%'), body.match(/browser-machine.{0,80}/)?.[0] ?? '')
+          check('approve is enabled because nothing is wrong', await page.getByRole('button', { name: 'approve · live' }).isEnabled())
+          check('and the footer tells the curator what the buttons really do', body.includes('stop new listings only') && body.includes('keeps its capsule token'))
+          await page.getByRole('button', { name: 'approve · live' }).click()
+          await page.getByText('browser-machine \u2192 live').waitFor()
+          check('approving promotes it', (await call('/api/experience/machines/browser-machine')).status === 200)
+          await page.context().close()
+        }
+      } finally {
+        await browser.close()
+      }
+      if (pageErrors.length) console.log(`  (page errors: ${pageErrors.slice(0, 5).join(' || ').slice(0, 600)})`)
+    }
+    }
+  }
 } catch (err) {
   console.log(`  FAIL  harness threw — ${err?.stack ?? err}`)
   failures++

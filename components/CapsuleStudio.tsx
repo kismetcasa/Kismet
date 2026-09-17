@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePassGate } from '@/hooks/usePassGate'
 import { isAddress } from '@/lib/address'
 import { deriveOdds, poolArtists, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
@@ -74,6 +75,7 @@ export function CapsuleStudio() {
   const router = useRouter()
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
+  const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
   const [id, setId] = useState('')
@@ -87,6 +89,11 @@ export function CapsuleStudio() {
   const [checking, setChecking] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
+  /** A machine that went to review. Held here rather than navigated to: the
+   *  machine page is public and 404s anything not yet approved, so the old
+   *  redirect landed every non-admin creator on "not found" the moment their
+   *  "Submitted for review" toast faded. */
+  const [submitted, setSubmitted] = useState<{ id: string; name: string } | null>(null)
 
   const entries = useMemo(() => toEntries(rows), [rows])
   // The real published table, computed by the production function over a
@@ -123,9 +130,15 @@ export function CapsuleStudio() {
     async (dryRun: boolean) => {
       if (dryRun) setChecking(true)
       else setPublishing(true)
-      setAuthRequired(false)
       try {
-        if (!dryRun) await ensureSession({ revalidate: false })
+        // Both buttons need a session, not only publish: every verdict the
+        // check returns — capsule control, who the capsule pays, whose floor
+        // piece it is — is a question about THIS creator, so the route refuses
+        // an anonymous dry run. `revalidate` re-probes after a server 401 —
+        // the module cache says the cookie is fine and the server just said
+        // otherwise — instead of trusting the cache into a permanent no-op.
+        await ensureSession({ revalidate: authRequired })
+        setAuthRequired(false)
         const r = await fetch('/api/experience/machines', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -146,10 +159,13 @@ export function CapsuleStudio() {
           return
         }
         if (!dryRun && body?.machine) {
-          toast.success(
-            body.machine.state === 'live' ? 'Machine is live' : 'Submitted for review',
-          )
-          router.push(`/experience/${body.machine.id}`)
+          if (body.machine.state === 'live') {
+            toast.success('Machine is live')
+            router.push(`/experience/${body.machine.id}`)
+            return
+          }
+          toast.success('Submitted for review')
+          setSubmitted({ id: body.machine.id, name: body.machine.name })
         }
       } catch {
         toast.error(dryRun ? 'Could not validate' : 'Could not publish')
@@ -158,8 +174,32 @@ export function CapsuleStudio() {
         setPublishing(false)
       }
     },
-    [ensureSession, payload, router],
+    [authRequired, ensureSession, payload, router],
   )
+
+  if (submitted) {
+    return (
+      <div className="max-w-3xl mx-auto">
+        <header className="mb-6">
+          <h1 className="text-lg font-mono tracking-wider text-ink">capsule studio</h1>
+        </header>
+        <section className="border border-line p-6">
+          <p className="text-xs font-mono uppercase tracking-widest text-ink">submitted for review</p>
+          <p className="text-[11px] font-mono text-muted mt-2 max-w-lg leading-relaxed">
+            <span className="text-dim">{submitted.name}</span> is queued for a curator. It isn&apos;t public
+            yet; once approved it will be live at{' '}
+            <span className="text-dim">/experience/{submitted.id}</span>.
+          </p>
+          <Link
+            href="/experience"
+            className="inline-block mt-4 text-[11px] font-mono text-dim hover:text-ink underline"
+          >
+            back to experience →
+          </Link>
+        </section>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -352,25 +392,40 @@ export function CapsuleStudio() {
 
       {authRequired && (
         <p className="text-[11px] font-mono text-[#ffcf70] mb-4">
-          Sign in with your wallet to publish — tap publish again.
+          Sign in with your wallet and try again.
         </p>
       )}
 
+      {/* Nothing here can be answered for an anonymous visitor — every check is
+          about the connected creator — so a disconnected wallet gets the one
+          action that makes the others possible, rather than a check whose
+          only outcome is a sign-in error. */}
       <div className="flex flex-wrap gap-2 mt-8 mb-16">
-        <button
-          onClick={() => submit(true)}
-          disabled={checking || publishing || entries.length === 0}
-          className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase border border-line text-dim hover:text-ink disabled:opacity-40"
-        >
-          {checking ? 'checking…' : 'check'}
-        </button>
-        <button
-          onClick={() => submit(false)}
-          disabled={checking || publishing || entries.length === 0 || gatedOut}
-          className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
-        >
-          {publishing ? 'publishing…' : 'publish'}
-        </button>
+        {!address ? (
+          <button
+            onClick={() => void ensureConnected()}
+            className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent"
+          >
+            connect wallet
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => submit(true)}
+              disabled={checking || publishing || entries.length === 0}
+              className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase border border-line text-dim hover:text-ink disabled:opacity-40"
+            >
+              {checking ? 'checking…' : 'check'}
+            </button>
+            <button
+              onClick={() => submit(false)}
+              disabled={checking || publishing || entries.length === 0 || gatedOut}
+              className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
+            >
+              {publishing ? 'publishing…' : 'publish'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
