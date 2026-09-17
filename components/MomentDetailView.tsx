@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useReadContract, useSignMessage, useWriteContract } from 'wagmi'
+import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock, Paperclip } from 'lucide-react'
@@ -25,11 +26,23 @@ import { useComment } from '@/hooks/useComment'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
 import { useFileUpload } from '@/hooks/useFileUpload'
+import { checkCoverImage, checkMintMedia } from '@/lib/media/mintMedia'
+import {
+  DEFAULT_MODEL_BACKGROUND,
+  MODEL_SOFT_WARN_BYTES,
+  asGlbFile,
+  isModelBackgroundId,
+  modelPosterBg,
+  type ModelBackgroundId,
+} from '@/lib/media/modelMedia'
+import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
+import { ModelPoseBar } from './ModelPoseBar'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { useMomentEditPermission, useMomentSaleEditPermission } from '@/hooks/useMomentEditPermission'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
+import { useUpdateMomentUri } from '@/hooks/useUpdateMomentUri'
 import type { WindowFieldEdit } from '@/lib/saleEdit'
 import type { OnchainSaleConfig } from '@/lib/saleConfig'
 import { toLocalInput, parseLocalInputSec } from '@/lib/datetimeLocal'
@@ -54,11 +67,20 @@ import { RaffleButton } from './RaffleButton'
 import { CollectorFileCard } from './CollectorFileCard'
 import { CollectorFileManagePanel } from './CollectorFileManagePanel'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
-import type { CfilePublic } from '@/lib/collectorFileTypes'
+import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
+
+// The 3D pose-and-capture box is creator-only and needs a picked model before
+// it can render anything, so it is code-split (ssr:false) to keep
+// components/ModelPreview off the artwork route's initial JS — the Mini App's
+// hottest route. ModelPreview lazy-loads model-viewer itself; this keeps the
+// wrapper and its capture code out too. Same pattern as ProfileView's
+// AgentCollectEntry.
+const ModelPreview = dynamic(() => import('./ModelPreview').then((m) => m.ModelPreview), { ssr: false })
 import { MomentImage, MomentImg } from './MomentImage'
+import { MomentModel } from './MomentModel'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { normalizeMediaUrl, guessMediaTypeFromUrl } from '@/lib/media/normalizeMediaUrl'
@@ -88,6 +110,9 @@ interface Props {
     animation_url?: string
     content?: { mime?: string; uri?: string }
     kismet_thumbhash?: string
+    // Carried so a freshly-minted 3D moment renders its viewer on the artist's
+    // backdrop during the indexer gap, not the default.
+    kismet_bg?: string
   }
   // Server-side hydration for the collection chip below the title. Without
   // this the chip pops in once the client-side /api/collections fetch lands;
@@ -148,7 +173,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     : undefined
   const ensureConnected = useEnsureConnected()
   const armPendingAction = usePendingAction()
-  const { signMessageAsync } = useSignMessage()
   const { isAdmin, featuredKeys, toggleFeatured, raffleEnabledKeys } = useAdmin()
   const { isInMiniApp } = useFarcaster()
 
@@ -209,6 +233,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [descOverflows, setDescOverflows] = useState(false)
   const [imgError, setImgError] = useState(false)
   const [videoError, setVideoError] = useState(false)
+  const [modelError, setModelError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -235,15 +260,51 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   // so the original ar:// is valid forever and re-uploading it only burns
   // Turbo credits → the "Insufficient balance" 402 artists hit when restoring
   // a large video they'd previously minted).
+  // A 3D pick is remembered by identity, exactly as the mint form does: a GLB
+  // has no positive `File.type` to re-test later, so the gate's verdict is the
+  // only authority on "this pick is a model" (lib/media/mintMedia).
+  const modelPickRef = useRef<File | null>(null)
   const {
     file: mediaFile,
+    preview: mediaPreview,
     inputRef: mediaInputRef,
     onChange: handleMediaFile,
     clear: clearMedia,
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Max 420 MB' }),
+    // The input's `accept` filters the OS picker only (and its "all files"
+    // escape hatch defeats even that), so this is the real gate. Without it
+    // the non-video branch of the save below uploads whatever was picked and
+    // writes its URI straight into `image` — a permanently broken artwork.
+    accept: async (f) => {
+      const verdict = await checkMintMedia(f)
+      if (!verdict.ok) return verdict.reason
+      if (verdict.kind === 'model') modelPickRef.current = f
+      return null
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
   })
+  const isModelPick = !!mediaFile && modelPickRef.current === mediaFile
+  // The posed capture for a 3D pick (components/ModelPreview) and the backdrop
+  // it is shot on — the mint form's contract, verbatim: the poster belongs to
+  // one file and is dropped whenever the pick changes, so a swapped-in model
+  // can never ship the previous model's still. The backdrop starts at what the
+  // artwork already has, so re-posing a 3D moment keeps its look unless the
+  // artist changes it.
+  const [modelPoster, setModelPoster] = useState<File | null>(null)
+  const [modelBg, setModelBg] = useState<ModelBackgroundId>(() => {
+    const current = initialDetail?.metadata?.kismet_bg
+    return isModelBackgroundId(current) ? current : DEFAULT_MODEL_BACKGROUND
+  })
+  useEffect(() => {
+    setModelPoster(null)
+    if (mediaFile && modelPickRef.current === mediaFile && mediaFile.size > MODEL_SOFT_WARN_BYTES) {
+      toast.warning('Large 3D model', {
+        description: `${formatCfileSize(mediaFile.size)} may fail to load on phones — consider Draco compression`,
+      })
+    }
+  }, [mediaFile])
   const [mediaMode, setMediaMode] = useState<'upload' | 'url'>('upload')
   const [existingMediaUrl, setExistingMediaUrl] = useState('')
   const [existingMediaType, setExistingMediaType] = useState<'video' | 'gif' | 'image'>('video')
@@ -258,6 +319,11 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   } = useFileUpload({
     maxBytes: 100 * 1024 * 1024,
     onTooLarge: () => toast.error('Cover too large', { description: 'Max 100 MB' }),
+    accept: async (f) => {
+      const verdict = await checkCoverImage(f)
+      return verdict.ok ? null : verdict.reason
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported cover', { description: reason }),
   })
   const [savingMeta, setSavingMeta] = useState(false)
   // Edit-sale flow: visible only to holders of the on-chain ADMIN|SALES bits
@@ -465,22 +531,24 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     !!creatorAddress &&
     connectedAddress.toLowerCase() === creatorAddress.toLowerCase()
 
-  // On-chain edit authorization — the client mirror of update-uri's
-  // `canUpdateUri`. Lets moment co-admins (collection defaultAdmin +
-  // authorized creators, who hold ADMIN/METADATA but aren't the resolved
-  // creator) see the edit affordance, matching what the backend already
-  // authorizes. Skipped for the creator, whose pencil shows regardless.
-  const canEditMeta = useMomentEditPermission(address, tokenId, { skip: isCreator })
+  // On-chain edit authorization — the SAME rows Zora's updateTokenURI gate
+  // reads (ADMIN|METADATA on the token or collection-wide), because the save
+  // is a direct wallet write (useUpdateMomentUri) whose only backstop is a
+  // gas-estimation revert. No `isCreator` shortcut: a resolved creator without
+  // the bits (a MINTER-only grant in someone else's collection, or an
+  // attribution that outran the chain) must see no pencil rather than a wallet
+  // error. Co-admins who hold the bits (collection defaultAdmin / authorized
+  // creators) see it regardless of attribution.
+  const canEditMeta = useMomentEditPermission(address, tokenId)
   // Sale-window edit authorization — the ADMIN|SALES twin of canEditMeta,
-  // mirroring the exact bits Zora's callSale enforces. Deliberately NO
-  // `skip: isCreator` shortcut (unlike the metadata pencil): update-uri has a
-  // server preflight that turns an unauthorized creator into a clean 403, but
-  // a sale edit is a direct wallet write whose only backstop is a gas-
-  // estimation revert — so the affordance must not outrun the on-chain read.
-  // A resolved creator without the bits (e.g. a MINTER-only grant in someone
-  // else's collection) correctly sees no button instead of a wallet error.
+  // mirroring the exact bits Zora's callSale enforces. Like the metadata
+  // pencil, no `isCreator` shortcut: both are direct wallet writes whose only
+  // backstop is a gas-estimation revert, so neither affordance may outrun its
+  // on-chain read. A resolved creator without the bits (e.g. a MINTER-only
+  // grant in someone else's collection) sees no button instead of a wallet error.
   const canEditSale = useMomentSaleEditPermission(address, tokenId)
   const { updateWindow: updateSaleWindow, endNow: endSaleNow } = useUpdateMomentSale()
+  const { update: updateMomentUri } = useUpdateMomentUri()
   const queryClient = useQueryClient()
 
   // Moment admin per inprocess's momentAdmins (unordered; may include the
@@ -1004,6 +1072,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       let animationUri = detail.metadata.animation_url
       let contentField: { uri?: string; mime?: string } | undefined = detail.metadata.content
       let thumbhash = detail.metadata.kismet_thumbhash
+      // The backdrop a 3D moment's poster was shot on. Carried like the
+      // thumbhash: rebuilding the metadata from scratch used to drop it, so a
+      // title edit silently reset the artist's chosen backdrop to the default.
+      let bg = detail.metadata.kismet_bg
 
       // 1a) RE-POINT MEDIA — point the moment at content already on Arweave.
       // No upload: Arweave is content-addressed, so re-sending bytes only
@@ -1049,7 +1121,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         if (persisted) {
           if (persisted.animationUri) {
             animationUri = persisted.animationUri
-            contentField = { uri: persisted.animationUri, mime: 'video/mp4' }
+            // The banked upload keeps no mime; the pick identity says which
+            // binding it was (a model is the only non-MP4 animation here).
+            contentField = { uri: persisted.animationUri, mime: isModelPick ? GLB_MIME : 'video/mp4' }
+            if (isModelPick) bg = modelBg
             // Poster only applies when no cover is set (the cover block wins).
             if (!coverFile) {
               if (persisted.imageUri) {
@@ -1059,8 +1134,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 // The banked attempt had a cover, so no poster was made. Extract
                 // one now from the re-selected file so a cover-removed retry
                 // still gets a real video frame, not the stale pre-edit image.
+                // A model's poster is the posed capture, not a frame — and it is
+                // not optional (see the fresh branch below).
+                if (isModelPick && !modelPoster) {
+                  throw new Error('Could not capture a preview image of this model — scroll it into view, rotate it once, and try again')
+                }
                 try {
-                  const poster = await extractVideoPoster(mediaFile)
+                  const poster = isModelPick ? modelPoster : await extractVideoPoster(mediaFile)
                   if (poster) {
                     const tp = generateThumbhash(poster)
                     imageUri = await uploadToArweave(poster)
@@ -1120,6 +1200,25 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             } catch (err) {
               console.warn('[MomentDetailView] poster extraction failed', err)
             }
+          }
+        } else if (isModelPick) {
+          // 3D — the mint form's model binding, in effect verbatim: the GLB is
+          // the animation, the posed capture is the still every other surface
+          // renders, and the backdrop rides along in kismet_bg. The poster is
+          // not optional: a posterless 3D moment is invisible everywhere but
+          // this page (components/ModelPreview explains the capture).
+          if (!modelPoster) {
+            throw new Error('Could not capture a preview image of this model — scroll it into view, rotate it once, and try again')
+          }
+          toast.loading('Uploading model…', { id: 'edit-meta' })
+          animationUri = await uploadToArweave(asGlbFile(mediaFile))
+          contentField = { uri: animationUri, mime: GLB_MIME }
+          bg = modelBg
+          if (!coverFile) {
+            const tp = generateThumbhash(modelPoster)
+            imageUri = await uploadToArweave(modelPoster)
+            freshMediaImage = imageUri
+            thumbhash = (await tp) ?? thumbhash
           }
         } else if (isGif) {
           let done = false
@@ -1209,6 +1308,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         ...(animationUri ? { animation_url: animationUri } : {}),
         ...(contentField ? { content: contentField } : {}),
         ...(thumbhash ? { kismet_thumbhash: thumbhash } : {}),
+        // Only a 3D binding carries a backdrop; a re-point or upload of any
+        // other kind drops it along with the model.
+        ...(contentField?.mime === GLB_MIME && bg ? { kismet_bg: bg } : {}),
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })
@@ -1265,31 +1367,28 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         })
       }
 
-      toast.loading('Sign update in wallet…', { id: 'edit-meta' })
-      const nonceRes = await fetch(`/api/profile/${connectedAddress}/nonce`)
-      if (!nonceRes.ok) throw new Error(`Could not fetch nonce (HTTP ${nonceRes.status})`)
-      const { nonce } = (await nonceRes.json().catch(() => ({}))) as { nonce?: string }
-      if (!nonce) throw new Error('Could not fetch nonce (empty response)')
-      const message = `Update Kismet metadata\nCollection: ${address.toLowerCase()}\nToken: ${tokenId}\nURI: ${newUri}\nAddress: ${connectedAddress.toLowerCase()}\nNonce: ${nonce}`
-      const signature = await signMessageAsync({ message })
+      // Direct, artist-signed updateTokenURI from the connected wallet — the
+      // same admin-write family as the sale editor / airdrop / collection
+      // metadata. No relay, no platform key, no nonce dance: the wallet
+      // signature IS the authorization, checked by the contract against the
+      // same ADMIN|METADATA rows `canEditMeta` read to show the pencil.
+      toast.loading('Confirm in wallet…', { id: 'edit-meta' })
+      await updateMomentUri({
+        collection: address as `0x${string}`,
+        tokenId: BigInt(tokenId),
+        newUri,
+        onTxSubmitted: () => toast.loading('Updating on-chain…', { id: 'edit-meta' }),
+      })
 
-      toast.loading('Updating on-chain…', { id: 'edit-meta' })
-      const res = await fetch('/api/moment/update-uri', {
+      // Re-sync Kismet's moment-meta KV (the display name notifications + card
+      // overlays read) from CHAIN truth — the metadata twin of sale-refresh.
+      // Fire-and-forget: the optimistic swap below is what the editor sees,
+      // and inprocess's chain indexer converges the feed on its own cron.
+      void fetch('/api/moment/meta-refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          collectionAddress: address,
-          tokenId,
-          newUri,
-          callerAddress: connectedAddress,
-          signature,
-          nonce,
-          chainId: 8453,
-          displayName: editName.trim(),
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? data.detail ?? data.message ?? 'Update failed')
+        body: JSON.stringify({ collectionAddress: address, tokenId }),
+      }).catch(() => {})
 
       // Warm /api/img's edge cache for the new image so MomentImage's
       // proxy fallback hits cached bytes the moment the optimistic state
@@ -1337,8 +1436,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const media = resolveMomentMedia(meta)
   const isTextMoment = media.kind === 'text'
   const isVideo = media.kind === 'video'
+  const isModel = media.kind === 'model'
   // Still images and gifs open the zoom lightbox; videos use native
-  // fullscreen via their controls.
+  // fullscreen via their controls, and a model promotes to its own viewer.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
   // Low-fi blur for the no-preview fallback. When every gateway is exhausted
   // or the codec is undecodable there's no poster left to show (MomentVideo
@@ -1551,7 +1651,19 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isVideo && media.src && !videoError ? (
+              {isModel && media.modelSrc && !modelError ? (
+                // The one WebGL surface in the app. Tap-to-load, so the
+                // multi-megabyte parse is only paid by a viewer who asked —
+                // see components/MomentModel.
+                <MomentModel
+                  src={media.modelSrc}
+                  poster={media.src}
+                  thumbhash={meta.kismet_thumbhash}
+                  alt={meta.name ?? 'artwork'}
+                  background={meta.kismet_bg}
+                  onAllError={() => setModelError(true)}
+                />
+              ) : isVideo && media.src && !videoError ? (
                 <MomentVideo
                   src={media.src}
                   poster={media.poster}
@@ -1643,15 +1755,16 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 )}
               </h1>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Edit metadata — any address the update-uri backend will
-                    authorize: the resolved creator, plus moment co-admins
-                    (collection defaultAdmin / authorized creators) surfaced
-                    by the on-chain `canEditMeta` read. Pencil expands into a
+                {/* Edit metadata — every address the on-chain updateTokenURI
+                    gate accepts (ADMIN|METADATA on the token or the
+                    collection): the creator when they hold the bits, plus
+                    moment co-admins (collection defaultAdmin / authorized
+                    creators). Gated purely on the `canEditMeta` chain read
+                    because the save is a direct wallet write — the affordance
+                    must never outrun the authorization. Pencil expands into a
                     full inline panel below the title to preserve spatial
-                    locality (you edit what you're looking at). Share +
-                    send moved to a single row beneath the action panel
-                    so secondary actions group together visually. */}
-                {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
+                    locality (you edit what you're looking at). */}
+                {canEditMeta && !editing && !editingSale && !managingFile && detail && (
                   <button
                     onClick={openEditor}
                     className="flex items-center gap-1 text-xs font-mono text-muted hover:text-dim transition-colors"
@@ -1661,12 +1774,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     edit
                   </button>
                 )}
-                {/* Collector-file manager — same authorization as the
-                    metadata pencil (the server re-checks the on-chain
-                    ADMIN|METADATA bits), but its OWN panel: the metadata
-                    editor's save path drags an Arweave wait + a second
-                    signature + a chain write, none of which a file attach
-                    needs. Mutually exclusive with the sibling panels. */}
+                {/* Collector-file manager — the same on-chain ADMIN|METADATA
+                    bits as the metadata pencil, plus the creator shortcut,
+                    which is safe HERE because its server gate answers a clean
+                    403 (no wallet write to revert). Its OWN panel: the
+                    metadata editor's save path drags an Arweave wait + a
+                    wallet signature + a chain write, none of which a file
+                    attach needs. Mutually exclusive with the sibling panels. */}
                 {(isCreator || canEditMeta) && !editing && !editingSale && !managingFile && detail && (
                   <button
                     onClick={() => setManagingFile(true)}
@@ -1775,35 +1889,55 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                     </button>
                   </div>
                   {mediaMode === 'upload' ? (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => mediaInputRef.current?.click()}
-                        disabled={savingMeta}
-                        className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
-                      >
-                        change media
-                      </button>
-                      {mediaFile && (
-                        <>
-                          <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
-                          <button
-                            type="button"
-                            onClick={clearMedia}
-                            disabled={savingMeta}
-                            className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
-                          >
-                            keep current
-                          </button>
-                        </>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => mediaInputRef.current?.click()}
+                          disabled={savingMeta}
+                          className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim border border-line px-2.5 py-1.5 disabled:opacity-50"
+                        >
+                          change media
+                        </button>
+                        {mediaFile && (
+                          <>
+                            <span className="text-[10px] font-mono text-dim truncate max-w-[9rem]" title={mediaFile.name}>{mediaFile.name}</span>
+                            <button
+                              type="button"
+                              onClick={clearMedia}
+                              disabled={savingMeta}
+                              className="text-[10px] font-mono uppercase tracking-widest text-muted hover:text-dim disabled:opacity-50"
+                            >
+                              keep current
+                            </button>
+                          </>
+                        )}
+                        <input
+                          ref={mediaInputRef}
+                          type="file"
+                          accept={`image/*,video/*,.gif,${GLB_EXT},${GLB_MIME}`}
+                          onChange={handleMediaFile}
+                          className="hidden"
+                        />
+                      </div>
+                      {/* A 3D replacement gets the same pose-and-capture box the
+                          mint form has. Nothing else in this panel previews a
+                          file; a model needs it because the framing the artist
+                          leaves it at IS the new thumbnail. Keyed so a swap
+                          remounts rather than re-pointing a live element. */}
+                      {isModelPick && mediaPreview && (
+                        <div className="relative bg-surface border border-line overflow-hidden">
+                          <ModelPreview
+                            key={mediaPreview}
+                            src={mediaPreview}
+                            background={modelPosterBg(modelBg)}
+                            fileName={mediaFile!.name}
+                            onPoster={setModelPoster}
+                            onError={(msg) => toast.error('3D model', { description: msg })}
+                          />
+                          <ModelPoseBar value={modelBg} onChange={setModelBg} />
+                        </div>
                       )}
-                      <input
-                        ref={mediaInputRef}
-                        type="file"
-                        accept="image/*,video/*,.gif"
-                        onChange={handleMediaFile}
-                        className="hidden"
-                      />
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1.5">
@@ -2018,6 +2152,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               <CollectorFileManagePanel
                 collection={address}
                 tokenId={tokenId}
+                primaryIsModel={isModel}
                 onClose={() => setManagingFile(false)}
                 onFileChange={setCfile}
               />

@@ -302,6 +302,16 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
     !ct.startsWith('video/') &&
     !ct.startsWith('image/gif') &&
     !ct.startsWith('image/svg') &&
+    // 3D models (model/gltf-binary). Not a correctness fix — sharp's throw
+    // is already caught below and degrades to serving the original bytes —
+    // but a resize attempt on one costs a full buffer (up to
+    // MAX_RESIZE_SOURCE_BYTES) and a scarce compute slot to reach that same
+    // pass-through. Our own client never asks: MomentModel proxies a model
+    // through the no-?w= streaming URL. This covers a hand-crafted or
+    // mislabeled request. A model stored WITHOUT its Content-Type tag still
+    // arrives as octet-stream and takes the old path, which is why
+    // lib/media/modelMedia.asGlbFile tags them at upload.
+    !ct.startsWith('model/') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
   if (!resizable) {
     // Costs one headers-only fetch (body cancelled) before the streaming

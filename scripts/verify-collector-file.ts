@@ -94,6 +94,32 @@ assert.equal(detectCfileKind(Buffer.from('%PDF-1.7\n%…')), 'pdf')
 // Binary glTF: magic 0x46546C67 LE = ASCII "glTF" (IANA model/gltf-binary).
 assert.equal(detectCfileKind(Buffer.from('glTF\x02\x00\x00\x00rest')), 'glb')
 assert.equal(Buffer.from(CFILE_KINDS.glb.magic!).readUInt32LE(0), 0x46546c67, 'GLB magic drifted from spec')
+// Game Boy cartridges: the Nintendo logo at 0x104 is the signature (offset 0
+// is arbitrary code) and the CGB flag at 0x143 splits gb from gbc. Built from
+// the registry's own constants so a drift in either fails here.
+const cart = (cgbFlag: number, size = 0x150) => {
+  const b = Buffer.alloc(size)
+  Buffer.from(CFILE_KINDS.gb.magic!).copy(b, CFILE_KINDS.gb.magicAt!)
+  if (size > 0x143) b[0x143] = cgbFlag
+  return b
+}
+assert.equal(detectCfileKind(cart(0x00)), 'gb', 'DMG cartridge')
+assert.equal(detectCfileKind(cart(0x80)), 'gbc', 'dual-mode cartridge is Color')
+assert.equal(detectCfileKind(cart(0xc0)), 'gbc', 'Color-only cartridge')
+assert.equal(detectCfileKind(cart(0x00, 0x104 + 4)), null, 'logo cut short accepted')
+assert.equal(detectCfileKind(Buffer.alloc(0x150)), null, 'header with no logo accepted')
+assert.equal(CFILE_KINDS.gb.magicAt, 0x104, 'logo offset drifted from the cartridge header')
+assert.deepEqual(CFILE_KINDS.gb.magic, CFILE_KINDS.gbc.magic, 'gb and gbc must share the logo signature')
+assert.deepEqual(CFILE_KINDS.gb.magic!.slice(0, 4), [0xce, 0xed, 0x66, 0x66], 'Nintendo logo bytes drifted')
+assert.equal(CFILE_KINDS.gbc.requireBit?.at, 0x143, 'CGB flag offset drifted')
+// A zip that happens to carry a logo at 0x104 is still a zip: containers win.
+const zipWithLogo = cart(0x80)
+Buffer.from(CFILE_KINDS.zip.magic!).copy(zipWithLogo, 0)
+assert.equal(detectCfileKind(zipWithLogo), 'zip', 'cartridge matcher overrode zip magic')
+assert.ok(!isViewableCfileKind('gb') && !isViewableCfileKind('gbc'), 'a ROM has no in-page viewer yet (design §7)')
+assert.equal(normalizeCfileName('Pixel Art Gallery - Sylvester.gb', 'gb'), 'Pixel Art Gallery - Sylvester.gb')
+assert.equal(normalizeCfileName('Pixel Art Gallery - Sylvester.gb', 'gbc'), 'Pixel Art Gallery - Sylvester.gbc', 'detected Color kind must force .gbc')
+assert.equal(normalizeCfileName('cart.zip', 'gb'), 'cart.gb', 'claimed .zip must yield to the detected cartridge')
 assert.equal(detectCfileKind(Buffer.from('PK\x05\x06')), null, 'empty archive accepted') // empty central dir
 assert.equal(detectCfileKind(Buffer.from('MZ\x90\x00')), null, 'PE binary accepted')
 assert.equal(detectCfileKind(Buffer.from('%PDF')), null, 'truncated PDF header accepted')

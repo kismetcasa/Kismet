@@ -127,6 +127,24 @@ const COLLECTION_ABI = [
     ],
     outputs: [],
   },
+  // Token-level metadata edit. Gated on-chain by
+  // onlyAdminOrRole(tokenId, PERMISSION_BIT_METADATA) — ADMIN (2) or METADATA
+  // (16) on the token OR collection-wide — and emits the ERC-1155 `URI` event,
+  // which inprocess's chain indexer re-ingests (refetching the metadata JSON
+  // for every re-indexed moment). The artwork editor signs this directly from
+  // the artist's wallet (hooks/useUpdateMomentUri); the incident that retired
+  // the relayed path is recorded in lib/momentUriEdit.ts. Pinned selector-
+  // exact by scripts/verify-metadata-edit.ts.
+  {
+    name: 'updateTokenURI',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'tokenId', type: 'uint256' },
+      { name: '_newURI', type: 'string' },
+    ],
+    outputs: [],
+  },
 ] as const
 
 const FIXED_PRICE_SALE_STRATEGY_ABI = [

@@ -15,7 +15,7 @@ import { ProfileThemeBackdrop } from './ProfileThemeBackdrop'
 import { CustomizePanel } from './CustomizePanel'
 import { themeCssVars } from '@/lib/themeStyle'
 import { foldSearch } from '@/lib/searchText'
-import { orderByPins, pinsFirst, visibleToPublic, MAX_PINS_PER_CATEGORY, type PublicViewMode } from '@/lib/showcaseOrder'
+import { orderByPins, pinsFirst, visibleToPublic, unreachablePins, parsePinRef, isPinCategory, MAX_PINS_PER_CATEGORY, type PinCategory, type PublicViewMode } from '@/lib/showcaseOrder'
 import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
@@ -151,9 +151,14 @@ function loadSectionsConfig(): SectionsConfig {
 
 // ─── pinned showcase ─────────────────────────────────────────────────────────
 
-type PinCategory = 'mints' | 'collected' | 'listings'
 type PinSets = Record<PinCategory, string[]>
 const EMPTY_PINS: PinSets = { mints: [], collected: [], listings: [] }
+
+// How deep each artwork section reads. These sections don't paginate, so this
+// is also the horizon past which a pinned artwork stops being renderable — and
+// therefore stops having an unpin control on its card. renderUnreachablePins
+// quotes this number, so it must not drift from the fetches below.
+const SECTION_FETCH_LIMIT = 50
 
 // Ordering (orderByPins for the curated showcase, pinsFirst for the full
 // profile) lives in lib/showcaseOrder — pure, Redis-free, and CI-verified by
@@ -500,7 +505,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   }, [address])
 
   useEffect(() => {
-    fetch(`/api/timeline?creator=${address}&limit=50`)
+    fetch(`/api/timeline?creator=${address}&limit=${SECTION_FETCH_LIMIT}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setMoments(Array.isArray(d.moments) ? d.moments : []))
       .catch(() => setMoments([]))
@@ -563,7 +568,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   useEffect(() => {
     if (!tier2) return
-    fetch(`/api/timeline?collector=${address}&limit=50`)
+    fetch(`/api/timeline?collector=${address}&limit=${SECTION_FETCH_LIMIT}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setCollected(Array.isArray(d.moments) ? d.moments : []))
       .catch(() => setCollected([]))
@@ -582,7 +587,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   // Tier 3 — below the fold, usually empty for non-artist profiles.
   useEffect(() => {
     if (!tier3) return
-    fetch(`/api/listings?seller=${address}&limit=50`)
+    fetch(`/api/listings?seller=${address}&limit=${SECTION_FETCH_LIMIT}`)
       .then((r) => r.ok ? r.json() : Promise.reject())
       .then((d) => setListings(Array.isArray(d.listings) ? d.listings.filter((l: Listing) => l.status === 'active') : []))
       .catch(() => setListings([]))
@@ -916,6 +921,64 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     return {}
   }
 
+  // ─── pins the section can't render ────────────────────────────────────────
+  // The unpin control lives on the CARD, so a pinned ref the section doesn't
+  // render has no unpin surface anywhere (see unreachablePins in
+  // lib/showcaseOrder for how that happens and why it isn't pruned server-side).
+  // List exactly those refs under the section they belong to, each linking to
+  // its artwork page — which always resolves — with an unpin button. Owner
+  // dashboard only, and only once the section's source has settled: during the
+  // fetch every pin is legitimately "not rendered yet". Renders nothing in the
+  // healthy case, which is the common one.
+  const renderedPinKeys: Record<PinCategory, string[]> = {
+    mints: displayMoments.map(momentPinKey),
+    collected: displayCollected.map(momentPinKey),
+    listings: displayListings.map(listingPinKey),
+  }
+
+  function renderUnreachablePins(category: PinCategory) {
+    if (asVisitor || !pinsLoaded || pinSectionLoading[category]) return null
+    // The mints section swaps its grid for the collections list in
+    // collectionsMode, so no mint card is rendered and every ref would read as
+    // unreachable. Nothing is wrong there — skip.
+    if (category === 'mints' && collectionsMode) return null
+    const refs = unreachablePins(pins[category], renderedPinKeys[category])
+      .map((ref) => ({ ref, parsed: parsePinRef(ref) }))
+      .filter((r): r is { ref: string; parsed: { collection: string; tokenId: string } } => !!r.parsed)
+    if (refs.length === 0) return null
+    return (
+      <div className="mt-4 border border-line p-3">
+        <p className="text-[10px] font-mono text-muted leading-relaxed">
+          pinned, but nothing here to pin it to — sold, no longer held, or past
+          this section&apos;s most recent {SECTION_FETCH_LIMIT}. visitors
+          don&apos;t see {refs.length === 1 ? 'it' : 'them'} either, but{' '}
+          {refs.length === 1 ? 'it still uses 1' : `they still use ${refs.length}`}{' '}
+          of your {MAX_PINS_PER_CATEGORY} pins in this section.
+        </p>
+        <ul className="mt-2 flex flex-col divide-y divide-raised">
+          {refs.map(({ ref, parsed }) => (
+            <li key={ref} className="flex items-center justify-between gap-3 py-1.5">
+              <Link
+                href={`/artwork/${parsed.collection}/${parsed.tokenId}`}
+                className="text-xs font-mono text-dim hover:text-ink transition-colors truncate"
+              >
+                #{parsed.tokenId} · {shortAddress(parsed.collection)}
+              </Link>
+              <button
+                onClick={() => togglePin(category, parsed.collection, parsed.tokenId)}
+                title="Unpin from profile"
+                aria-label={`Unpin #${parsed.tokenId} from profile`}
+                className="shrink-0 min-w-9 min-h-9 flex items-center justify-center text-accent hover:text-ink transition-colors"
+              >
+                <Pin size={15} fill="currentColor" strokeWidth={1.5} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+
   // ─── section content map ──────────────────────────────────────────────────
 
   // Profile uses the compact card density everywhere — keeps each section
@@ -1243,8 +1306,27 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
       {/* Profile header — `relative isolate` so the themed backdrop band can
           sit behind the header (-z) yet paint above main's opaque bg. It's a
-          modal-free region, so isolating it can't trap ProfileView's overlays. */}
-      <div ref={headerRef} className="relative isolate flex flex-col gap-4">
+          modal-free region, so isolating it can't trap ProfileView's overlays.
+
+          Band inset (normalized 2026-09, from artist feedback that the themed
+          header needed "a small padding"): this wrapper's box IS the band — the
+          backdrop paints inset-0 of it — so the inset is owned here, in one
+          place. Each negative margin is paired with the same padding, which
+          grows the box outward while leaving the content column exactly where
+          an unthemed profile puts it: toggling a theme never shifts the header,
+          and an unthemed page renders pixel-identical (nothing paints the box).
+            sides  — to the container's outer edge (16px = px-4; any wider
+                     would overflow narrow viewports where the container is
+                     already flush).
+            top    — 20px on desktop; mobile keeps the band's own bleed up under
+                     the nav (ProfileThemeBackdrop's -top-12), which already
+                     gives the avatar headroom there.
+            bottom — 16px mobile / 20px desktop, so the public-view / customize
+                     row no longer sits on the band's bottom edge. */}
+      <div
+        ref={headerRef}
+        className="relative isolate flex flex-col gap-4 -mx-4 px-4 sm:-mt-5 sm:pt-5 -mb-4 pb-4 sm:-mb-5 sm:pb-5"
+      >
         {theme && <ProfileThemeBackdrop theme={theme} inView={headerInView} />}
         <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
           <div className="relative">
@@ -1791,6 +1873,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               {!isCollapsed && (
                 <div className="pb-8">
                   {sectionContent[section]}
+                  {isPinCategory(section) && renderUnreachablePins(section)}
                 </div>
               )}
             </div>

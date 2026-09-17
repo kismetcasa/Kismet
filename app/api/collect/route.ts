@@ -103,7 +103,10 @@ export async function POST(req: NextRequest) {
       ? body.pricePerToken
       : undefined
   const currency = body.currency === 'usdc' || body.currency === 'eth' ? body.currency : undefined
-  const txHash = body.txHash
+  // Canonical case: the receipt lookup is case-insensitive, but the verify cache
+  // and the idempotency lock below key on this string — a case variant of a
+  // real hash must not read as a new mint.
+  const txHash = typeof body.txHash === 'string' ? body.txHash.toLowerCase() : body.txHash
 
   if (!collectionAddress || !isAddress(collectionAddress)) {
     return errorResponse(400, 'Invalid collectionAddress')

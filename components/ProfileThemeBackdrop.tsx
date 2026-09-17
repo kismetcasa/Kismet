@@ -158,9 +158,13 @@ export function ProfileThemeBackdrop({ theme, inView }: { theme: ProfileTheme; i
   return (
     <div
       aria-hidden
-      // -top-12 (mobile only) bleeds the band up past the container's pt-12 so
-      // it fills the screen from under the nav; sm:top-0 keeps the desktop band.
-      className="pointer-events-none absolute -inset-x-4 bottom-0 -top-12 sm:top-0 -z-10 overflow-hidden"
+      // Fills the header wrapper's box — ProfileView owns the band's inset (its
+      // padded wrapper is the band's geometry, sides to the container's outer
+      // edge), so nothing here bleeds sideways. -top-12 (mobile only) bleeds
+      // the band up past the container's pt-12 so it fills the screen from
+      // under the nav; sm:top-0 keeps the desktop band at the wrapper's padded
+      // top, 20px above the avatar.
+      className="pointer-events-none absolute inset-x-0 bottom-0 -top-12 sm:top-0 -z-10 overflow-hidden"
       style={{ ...rootVars } as CSSProperties}
     >
       <div className="absolute inset-0" style={{ background: baseGradient, ...anim(hueAnim) }} />

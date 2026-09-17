@@ -6,17 +6,17 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
-import { formatPrice } from '@/lib/inprocess'
+import { getMomentMeta } from '@/lib/notifications'
+import { getDisplayName } from '@/lib/ensCache'
 import { parseMomentRef } from '@/lib/agent/refs'
-import { buildCollectPlan } from '@/lib/agent/collect'
+import { buildCollectPlan, MAX_COLLECT_QUANTITY } from '@/lib/agent/collect'
+import { collectRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
+import { collectSummary, safeTitle } from '@/lib/agent/summary'
+import { buildApproveLink } from '@/lib/agent/prolink'
+import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
-
-// Cap agent-requested quantity. The on-chain sale's per-wallet limit is the
-// real gate (enforced by fetchEligibleTokens); this is just a sane upper bound
-// so a typo can't build a 10,000× batch the wallet would choke on.
-const MAX_AGENT_COLLECT_QUANTITY = 50
 
 /**
  * Prepare a "collect" (primary mint) for an AI agent to execute via Base MCP's
@@ -40,12 +40,14 @@ export async function POST(req: NextRequest) {
  * Exists for chat-only surfaces (Claude.ai / ChatGPT consumer apps): Base
  * MCP's web_request reaches only allowlisted hosts there, and the documented
  * fallback ladder's consumer-surface rung is GET-only (the user pastes the
- * URL/response into chat — see Base's custom-plugins reference). Semantically
- * this IS a read: on-chain reads + calldata assembly, no state mutation; the
- * response stays `private, no-store`.
+ * URL back into chat and the assistant fetches it — see Base's custom-plugins
+ * reference). Semantically this IS a read: on-chain reads + calldata assembly,
+ * no state mutation; the response stays `private, no-store`. A browser
+ * navigation to the same URL (the user tapped it) gets a human page with the
+ * summary and the Base app approve link instead of raw JSON.
  */
 export async function GET(req: NextRequest) {
-  return prepareCollect(req, Object.fromEntries(req.nextUrl.searchParams))
+  return prepareCollect(req, Object.fromEntries(req.nextUrl.searchParams), isDocumentNavigation(req))
 }
 
 interface PrepareCollectParams {
@@ -57,7 +59,7 @@ interface PrepareCollectParams {
   comment?: unknown
 }
 
-async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
+async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPage = false) {
   if (!(await checkRateLimit(`agent-prepare-collect:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
@@ -75,7 +77,7 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
 
   const amountNum = Number(body.amount ?? 1)
   const quantity =
-    Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_AGENT_COLLECT_QUANTITY)) : 1n
+    Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_COLLECT_QUANTITY)) : 1n
   // Truncate (don't silently drop) an over-long comment.
   const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
 
@@ -144,19 +146,35 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
     usdcAllowance,
   })
 
-  const priceLabel = formatPrice(pricePerToken.toString(), currency)
-  const qtyLabel = quantity === 1n ? '' : `${quantity}× `
-  const feeNote = currency === 'eth' && mintFee > 0n ? ' (+ protocol mint fee)' : ''
-  const approvalNote = plan.approvalIncluded
-    ? ' Includes a one-time USDC approval, batched into the same approval.'
-    : ''
-  const summary = `Collect ${qtyLabel}token #${tokenId.toString()} for ${priceLabel} each${feeNote}.${approvalNote}`
+  // The one line the user reads: the artwork by title, the full cost (price,
+  // protocol mint fee, total) and the recipient — `account` is caller-supplied
+  // and becomes mintTo while the approving wallet pays, so a wrong or malicious
+  // address must be visible before approval, not buried in calldata. Both
+  // lookups are cosmetic and fail open.
+  const [meta, accountName, link] = await Promise.all([
+    getMomentMeta(collection, tokenId.toString()).catch(() => null),
+    getDisplayName(account),
+    buildApproveLink(plan.calls, account as Address),
+  ])
+  const summary = collectSummary({
+    title: safeTitle(meta?.name),
+    tokenId: tokenId.toString(),
+    quantity,
+    currency,
+    pricePerToken,
+    mintFee,
+    total: currency === 'eth' ? plan.totalValue : plan.totalCost,
+    recipient: account,
+    recipientName: accountName,
+    approvalIncluded: plan.approvalIncluded,
+  })
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'collect',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     record: {
       method: 'POST',
       url: '/api/collect',
@@ -167,8 +185,9 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
         comment,
         pricePerToken: pricePerToken.toString(),
         currency,
-        txHash: '<REPLACE_WITH_send_calls_txHash>',
+        txHash: TX_HASH_PLACEHOLDER,
       },
+      getUrl: collectRecordUrl({ collection, tokenId: tokenId.toString(), account, amount: Number(quantity), currency, pricePerToken: pricePerToken.toString(), comment }),
     },
     caps:
       currency === 'eth'
@@ -176,5 +195,6 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams) {
         : { maxValueUsdc: plan.totalCost.toString() },
   }
 
+  if (asPage) return approvePageResponse(envelope, `/artwork/${collection}/${tokenId.toString()}`)
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }

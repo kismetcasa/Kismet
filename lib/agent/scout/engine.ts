@@ -14,8 +14,8 @@
  *
  * Zero imports on purpose: no network, no viem, no secrets. It's a pure
  * function of (scout, candidates, usage, now) so it can be exhaustively tested
- * (see scripts/verify-agent-scout.ts) and reused identically by the Propose UI
- * and the Auto executor. The on-chain spend + mint is a separate, injected
+ * (see scripts/verify-agent-scout.ts) and reused by the Auto executor (and any
+ * future Propose surface). The on-chain spend + mint is a separate, injected
  * concern (see ./scout/executor.ts), keeping this layer custody-agnostic.
  */
 
@@ -24,6 +24,12 @@
 export type Currency = 'eth' | 'usdc'
 export type ScoutMode = 'propose' | 'auto'
 export type ScoutStatus = 'active' | 'paused'
+
+/** Policy bounds the config route enforces and the panel pre-checks — one
+ *  definition so the two cannot disagree. Editions per drop is capped to bound
+ *  per-drop spend (the dollar budget is the authoritative cap anyway). */
+export const MAX_CREATORS = 50
+export const MAX_EDITIONS_PER_DROP = 10
 
 /** Budget, mirroring a Base Account Spend Permission. Amounts are base units
  *  (wei for ETH, 6dp for USDC) as decimal strings (JSON/Redis-safe). */

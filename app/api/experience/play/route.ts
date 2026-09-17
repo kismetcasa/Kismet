@@ -72,7 +72,9 @@ export async function POST(req: NextRequest) {
   if (!body) return errorResponse(400, 'Invalid body')
 
   const machineId = typeof body.machineId === 'string' ? body.machineId : ''
-  const txHash = body.txHash
+  // Canonical case: the verify cache below is shared with /api/collect and keys
+  // on this string, so a case variant of a hash must hit the same entry.
+  const txHash = typeof body.txHash === 'string' ? body.txHash.toLowerCase() : body.txHash
   const account = body.account?.toLowerCase()
   const unitIndex = Number.isInteger(body.unitIndex) ? Number(body.unitIndex) : 0
 
@@ -192,7 +194,7 @@ export async function POST(req: NextRequest) {
   const fresh: ClaimRecord = {
     machineId,
     claimant: account,
-    txHash: txHash.toLowerCase(),
+    txHash,
     unitIndex,
     state: 'claimed',
     createdAt: now,

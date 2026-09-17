@@ -49,10 +49,10 @@ export const runtime = 'nodejs'
  *   PATCH  — { action: 'rollback', v } — re-activate a history version
  *   DELETE — detach (tombstones serving; history stays artist-visible)
  *
- * Authorization is the update-uri predicate (on-chain ADMIN|METADATA via
+ * Authorization is the metadata-edit predicate (on-chain ADMIN|METADATA via
  * canManageCfile) on a plain session — deliberately NO signed message and NO
  * pass gate, matching the closest platform-spend precedents: /api/upload
- * (50 MB JSON on session only) and update-uri (no pass gate). A
+ * (50 MB JSON on session only) and the since-retired update-uri relay (no pass gate). A
  * readPermissions outage answers 503, never a misleading 403.
  */
 

@@ -259,7 +259,9 @@ function rpc(method, params) {
   switch (method) {
     case 'eth_chainId': return '0x2105'
     case 'eth_blockNumber': return '0x' + chain.head.toString(16)
-    case 'eth_getTransactionReceipt': return chain.receipts.get(String(params[0]).toLowerCase()) ?? null
+    case 'eth_getTransactionReceipt':
+      chain.receiptCalls = (chain.receiptCalls ?? 0) + 1
+      return chain.receipts.get(String(params[0]).toLowerCase()) ?? null
     case 'eth_call': {
       const { to, data } = params[0]
       const tag = params[1]
@@ -762,6 +764,14 @@ try {
   const replay = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: PLAYER, unitIndex: 0 } })
   check('replaying returns the recorded claim, never a second draw', replay.json?.replay === true && replay.json.claim.prize.tokenId === p0.json.claim.prize.tokenId)
   check('nor a second mint', prepares() === 1)
+  // The verify cache is shared with /api/collect and keyed on the hash string:
+  // a case variant must be the same play AND the same cache entry, not a
+  // second receipt lookup (main canonicalises the same way in collect).
+  const receiptsBefore = chain.receiptCalls ?? 0
+  const shouted = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: '0x' + TX_A.slice(2).toUpperCase(), account: PLAYER, unitIndex: 0 } })
+  check('a case variant of the hash is the same play, served from the shared verify cache',
+    shouted.json?.replay === true && shouted.json.claim.prize.tokenId === p0.json.claim.prize.tokenId && (chain.receiptCalls ?? 0) === receiptsBefore,
+    `replay=${shouted.json?.replay} receipts+${(chain.receiptCalls ?? 0) - receiptsBefore}`)
   const overflow = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_A, account: PLAYER, unitIndex: 2 } })
   check('a unit the transaction does not cover is refused', overflow.status === 400)
 

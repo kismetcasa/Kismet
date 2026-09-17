@@ -1,0 +1,270 @@
+'use client'
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY } from '@/lib/media/modelMedia'
+
+/**
+ * Mint-form preview for a 3D moment: renders the picked GLB, lets the artist
+ * pose it, and captures the framing they land on as the moment's poster.
+ *
+ * WHY CAPTURE HERE. A 3D moment ships the same metadata shape as a video one
+ * (`image` still + `animation_url` + `content.mime`), so the still is what
+ * every feed card, OG card, Farcaster embed, collection cover and thumbhash
+ * actually renders — a posterless 3D mint would be invisible on every surface
+ * but one. `<model-viewer>` exposes `toBlob()` over its own canvas, so the
+ * element the artist is already looking at IS the poster source: no second
+ * parse of the model (which would double peak memory, the feature's #1 risk)
+ * and no server-side renderer.
+ *
+ * WHY CONTINUOUSLY, NOT AT SUBMIT. Capture reads the live drawing buffer, and
+ * `modelIsVisible` gates rendering — an element scrolled out of view when the
+ * artist hits mint may hold no current frame. So we capture on `load` and
+ * again whenever the artist stops moving the camera, and hand the newest
+ * result up. Submit then just uses what is already banked, and "the framing
+ * you posed" is literally what ships.
+ *
+ * Capture is sound rather than lucky: model-viewer's renderer sets
+ * `preserveDrawingBuffer: true`, and it dispatches `load` only AFTER awaiting
+ * two rAFs specifically to "wait for shaders to compile and pixels to be
+ * drawn" — so the first frame exists by the time we are called.
+ *
+ * Resolution is the element's rendered size (CSS px x devicePixelRatio), and
+ * deterministically so: while this preview is mounted the renderer's dynamic
+ * render scale is pinned to 1 (see the import effect), because the scale is
+ * load-adaptive — on a busy machine it halves, and a browser E2E run under
+ * CPU load caught it capturing 755px instead of 956px. A frame-rate dip
+ * while posing is a fair price; a permanently lower-resolution poster is
+ * not. At the mint form's column width capture lands roughly 500-1900px —
+ * comfortably above every consumer, since the OG hero draws at 800x800 and
+ * /api/img downscales to 2048. Same convention as extractVideoPoster, which
+ * captures at the video's native size rather than a fixed one.
+ */
+
+/** Matches extractVideoPoster: JPEG, same quality. JPEG has no alpha, which
+ *  is exactly why `capture` composites onto the chosen backdrop itself rather
+ *  than asking model-viewer for a JPEG — see the note there. */
+const POSTER_MIME = 'image/jpeg'
+const POSTER_QUALITY = 0.85
+
+/** Quiet period after the artist stops dragging before we re-capture. Long
+ *  enough that an orbit costs one capture, not one per frame. */
+const RECAPTURE_IDLE_MS = 400
+
+interface ModelViewerElement extends HTMLElement {
+  toBlob(options?: {
+    mimeType?: string
+    qualityArgument?: number
+    idealAspect?: boolean
+  }): Promise<Blob>
+}
+
+interface Props {
+  /** Blob URL for the picked GLB. */
+  src: string
+  /** CSS backdrop. Baked into the captured JPEG (no alpha), so this is what
+   *  the artist is choosing when they pick a background — see
+   *  lib/media/modelMedia.MODEL_BACKGROUNDS. */
+  background: string
+  /** Source file name — the poster is named after it, like the video path. */
+  fileName: string
+  /** Fires with the newest captured poster, or null if capture failed. */
+  onPoster: (poster: File | null) => void
+  /** Fires when the model itself can't be displayed. */
+  onError: (message: string) => void
+}
+
+export function ModelPreview({ src, background, fileName, onPoster, onError }: Props) {
+  const [ready, setReady] = useState(false)
+  const elRef = useRef<ModelViewerElement | null>(null)
+  // Callbacks live in refs so the effect that wires DOM listeners doesn't
+  // re-run (and re-capture) every time the parent re-renders.
+  const onPosterRef = useRef(onPoster)
+  onPosterRef.current = onPoster
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
+  // A capture is an async round-trip through toBlob. If the artist swaps
+  // models mid-flight this instance is already unmounted by the time it
+  // resolves, and reporting then would re-attach the OLD model's still to the
+  // NEW pick — the parent has just cleared it precisely to avoid that.
+  const liveRef = useRef(true)
+  // Whether the scene actually has a model in it. Capturing before `load`
+  // yields a picture of an EMPTY scene — which, once composited, is a
+  // perfectly valid-looking blank JPEG. That would bank a poster for a model
+  // that never rendered and silently defeat the mint's "refuse rather than
+  // ship a posterless 3D moment" guard, because the poster is not null, it is
+  // just blank. Verified reachable: a GLB with a valid 12-byte header and
+  // corrupt chunks passes the gate, never loads, and used to produce two
+  // captures anyway.
+  const loadedRef = useRef(false)
+  useEffect(() => {
+    liveRef.current = true
+    return () => { liveRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    // The render-scale pin below is a STATIC on the shared renderer singleton,
+    // so it must be undone when this preview unmounts — the artwork page's
+    // live viewer (MomentModel) wants the adaptive behaviour back.
+    let restoreScale: (() => void) | undefined
+    ;(async () => {
+      try {
+        // The custom element must be defined before <model-viewer> renders.
+        // Dynamically imported for two reasons: it touches `window` at module
+        // scope (so it cannot be part of an SSR'd bundle), and it is ~475 KB
+        // minified — a static import would blow the /mint route's entry in
+        // bundle-baseline.json well past the 10% guard. Same pattern as
+        // components/CollectorFileViewer.
+        const mod = await import('@google/model-viewer')
+        // Point Draco/KTX2 at OUR copies. model-viewer otherwise fetches these
+        // from www.gstatic.com at render time — an undeclared third-party
+        // origin that would also break under an enforcing CSP. See
+        // public/model-decoders/README.md.
+        mod.ModelViewerElement.dracoDecoderLocation = '/model-decoders/draco/'
+        mod.ModelViewerElement.ktx2TranscoderLocation = '/model-decoders/basis/'
+        // Pin the dynamic render scale to full resolution while posing. The
+        // renderer degrades scale under load, and toBlob captures at the
+        // DEGRADED size — so without this, an artist on a busy machine bakes
+        // a half-resolution poster into a permanent artwork. Scoped to this
+        // preview's lifetime: the live viewer keeps adaptive scaling.
+        if (!cancelled) {
+          const prev = mod.ModelViewerElement.minimumRenderScale
+          mod.ModelViewerElement.minimumRenderScale = 1
+          restoreScale = () => { mod.ModelViewerElement.minimumRenderScale = prev }
+        }
+        if (!cancelled) setReady(true)
+      } catch {
+        if (!cancelled) onErrorRef.current('Could not load the 3D viewer — check your connection and retry.')
+      }
+    })()
+    return () => {
+      cancelled = true
+      restoreScale?.()
+    }
+  }, [])
+
+  const capture = useCallback(async () => {
+    const el = elRef.current
+    if (!el) return
+    try {
+      // THE BACKDROP IS NOT IN THE CANVAS. model-viewer renders the scene
+      // into a TRANSPARENT buffer and lets the element's CSS background show
+      // through behind it in the DOM — so asking it for a JPEG directly
+      // returns the model composited onto BLACK (JPEG has no alpha), whatever
+      // the artist sees on screen. That silently made every poster
+      // black-backed regardless of the chosen background.
+      //
+      // Take a PNG instead, which keeps the alpha, and do the compositing
+      // ourselves onto the colour the artist picked.
+      const png = await el.toBlob({ mimeType: 'image/png' })
+      const bmp = await createImageBitmap(png)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = bmp.width
+        canvas.height = bmp.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('no 2d context')
+        ctx.fillStyle = background
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(bmp, 0, 0)
+        const blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, POSTER_MIME, POSTER_QUALITY),
+        )
+        if (!blob) throw new Error('poster encode failed')
+        if (!liveRef.current) return
+        const base = fileName.replace(/\.[^.]+$/, '') || 'poster'
+        onPosterRef.current(new File([blob], `${base}.jpg`, { type: POSTER_MIME }))
+      } finally {
+        bmp.close()
+      }
+    } catch {
+      if (!liveRef.current) return
+      // Report the miss so the parent never holds a poster this element did
+      // not produce; the mint gate turns a persistent failure into a refusal.
+      onPosterRef.current(null)
+    }
+  }, [fileName, background])
+
+  // The backdrop is baked into the capture, so changing it invalidates the
+  // banked poster. No delay: `capture` fills the colour itself rather than
+  // reading the painted DOM, so there is nothing to wait for.
+  useEffect(() => {
+    if (!loadedRef.current) return
+    void capture()
+  }, [background, capture])
+
+  // Event wiring via a callback ref + addEventListener, NOT on*-props:
+  // React's synthetic event system maps on*-props for known DOM elements
+  // only, never for custom elements, so the prop form silently never fires.
+  const attach = useCallback((node: HTMLElement | null) => {
+    elRef.current = node as ModelViewerElement | null
+    if (!node) return
+    let idle: ReturnType<typeof setTimeout> | undefined
+    const onLoad = () => {
+      loadedRef.current = true
+      void capture()
+    }
+    const onCameraChange = (e: Event) => {
+      // Only the artist's own orbiting should re-frame the poster; the
+      // implicit camera settle after load already rides the `load` capture.
+      const source = (e as CustomEvent<{ source?: string }>).detail?.source
+      if (source !== 'user-interaction') return
+      clearTimeout(idle)
+      idle = setTimeout(() => { void capture() }, RECAPTURE_IDLE_MS)
+    }
+    const onModelError = () =>
+      onErrorRef.current('This 3D model could not be displayed — try exporting it again as .glb')
+    node.addEventListener('load', onLoad)
+    node.addEventListener('camera-change', onCameraChange)
+    node.addEventListener('error', onModelError)
+    return () => {
+      clearTimeout(idle)
+      node.removeEventListener('load', onLoad)
+      node.removeEventListener('camera-change', onCameraChange)
+      node.removeEventListener('error', onModelError)
+    }
+  }, [capture])
+
+  if (!ready) {
+    return (
+      <div className="aspect-square flex items-center justify-center" style={{ backgroundColor: background }}>
+        <p className="text-[11px] font-mono text-muted">loading 3D viewer…</p>
+      </div>
+    )
+  }
+
+  return (
+    // The square comes from THIS wrapper, and the element is sized in
+    // percentages against it. model-viewer's shadow stylesheet sets
+    // `:host { width: 300px; height: 150px; contain: strict }`, and CSS
+    // `aspect-ratio` is ignored when the other dimension is explicitly set —
+    // so an inline `aspectRatio` with no `height` loses to that 150px and
+    // silently produced a full-width, 150px-tall strip.
+    //
+    // That was never only cosmetic: toBlob captures at the element's own
+    // rendered size, so the POSTER was being grabbed at ~620x150 as well —
+    // a squashed letterbox on every square feed card. Sizing the box
+    // explicitly fixes the preview and the capture in one move, and lifts
+    // capture resolution from ~150px tall to the full column width.
+    <div className="relative w-full aspect-square">
+      {/* @ts-expect-error — custom element registered by the lazy import above. */}
+      <model-viewer
+        ref={attach}
+        src={src}
+        alt="3D model preview"
+        camera-controls
+        // The preview is the poster source, so the shadow and the lighting
+        // have to be here too or the thumbnail would differ from what the
+        // artist posed.
+        shadow-intensity={MODEL_SHADOW_INTENSITY}
+        environment-image={MODEL_ENVIRONMENT}
+        touch-action="pan-y"
+        // Opaque and artist-chosen. JPEG has no alpha, so whatever is here is
+        // permanently baked into the poster every feed, share card and embed
+        // will show — which is why it is a decision the artist makes rather
+        // than a site token.
+        style={{ width: '100%', height: '100%', display: 'block', backgroundColor: background }}
+      />
+    </div>
+  )
+}

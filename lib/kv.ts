@@ -52,6 +52,9 @@ export interface CollectionMeta {
   description?: string
   artist?: string // lowercased deployer address
   kismet_thumbhash?: string
+  /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
+   *  the poster, replayed by the artwork page's viewer. */
+  kismet_bg?: string
   // Token ID minted as the collection cover at deploy time (Kismet
   // create-form flow with mint-cover enabled — currently always '1').
   // The featured-collection row dedupes this token from its mint-card

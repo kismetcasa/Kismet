@@ -4,8 +4,10 @@
  * These endpoints return *inert* artifacts — unsigned EIP-5792 call batches
  * and/or EIP-712 typed data — that an AI assistant hands to Base MCP
  * (`send_calls` / `sign`) for the user to approve in their Base Account. The
- * artifacts move no funds until the user signs them, so the prepare endpoints
- * are safe to expose without auth.
+ * artifacts move no funds until the user signs them, so the collect / buy /
+ * list prepares are safe to expose without auth. The one exception is
+ * prepare-mint: it hosts media on Arweave BEFORE any signature (a platform
+ * spend), so it is gated (Pass + quotas + a platform daily cap) rather than open.
  */
 
 export type AgentChain = 'base'
@@ -23,6 +25,12 @@ export interface AgentCall {
   value: `0x${string}`
 }
 
+/** A Base app approve link: the prolink URL and the note the assistant relays. */
+export interface AgentApproveLink {
+  url: string
+  note: string
+}
+
 /** What the assistant should POST/PATCH *after* the user approves, to record
  *  the action in Kismet's off-chain stores. The body mirrors what the web app
  *  posts; any `<...>` placeholder must be filled from the executed result. */
@@ -30,6 +38,10 @@ export interface AgentRecordHint {
   method: 'POST' | 'PATCH'
   url: string
   bodyTemplate: Record<string, unknown>
+  /** Collect and buy only: the same record as one GET URL (relative to the
+   *  Kismet origin) with the txHash placeholder still to fill — for surfaces
+   *  that can only fetch a URL the user pasted (see /api/agent/record). */
+  getUrl?: string
 }
 
 export interface AgentActionEnvelope {
@@ -37,7 +49,7 @@ export interface AgentActionEnvelope {
   action: AgentVerb
   /** EIP-5792 batch for `send_calls` (collect, buy, list-approval). */
   calls?: AgentCall[]
-  /** EIP-712 typed data for `sign` (the Seaport list order). */
+  /** EIP-712 typed data for `sign` (the Seaport order for list, the MintIntent for mint). */
   typedData?: unknown
   /** Human-readable one-liner to show the user before requesting approval. */
   summary: string
@@ -46,6 +58,13 @@ export interface AgentActionEnvelope {
   /** Batch variant: one record call per item, all against the same txHash
    *  (each /api/collect verifies its own token against the shared receipt). */
   records?: AgentRecordHint[]
+  /** Batch collect only: items that could not be collected, with the reason. */
+  skipped?: Array<{ collection: string; tokenId: string; reason: string }>
+  /** Collect / batch collect / buy: a Base app deep link (prolink) carrying the
+   *  same `calls`, for the user to approve in the Base app instead of
+   *  `send_calls`. One-way — no txHash returns; see lib/agent/prolink.ts for
+   *  when it is withheld. */
+  link?: AgentApproveLink
   /** Spend ceilings the agent should honor (and surface to the user), per
    *  currency. A single batch can spend in both (e.g. a mixed collect basket),
    *  so each is independent and present only when that currency is actually

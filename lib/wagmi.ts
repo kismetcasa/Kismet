@@ -5,6 +5,7 @@ import { base, mainnet } from 'wagmi/chains'
 import { connectorsForWallets, getDefaultWallets } from '@rainbow-me/rainbowkit'
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector'
 import { isCoinbaseWebView, isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { withTimeout } from '@/lib/withTimeout'
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
 
@@ -66,14 +67,6 @@ const TIME_BOUNDED_METHODS = new Set([
   'eth_requestAccounts', // connect() — auto-resolved by a live host
   'eth_chainId', // getChainId() — instant on a live host
 ])
-
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms)
-  })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
-}
 
 // Wrap an EIP-1193 provider so the non-interactive connection-probe
 // requests in TIME_BOUNDED_METHODS are time-bounded, while interactive

@@ -10,7 +10,9 @@ import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFo
 import { consumeUserQuota } from '@/lib/userQuota'
 import { checkSmartWalletAdmin } from '@/lib/smartWalletPreflight'
 import { issueIntentNonce } from '@/lib/intentAuth'
+import { getDisplayName } from '@/lib/ensCache'
 import { ingestMintMedia, type MediaKind } from '@/lib/agent/mintMedia'
+import { isModelBackgroundId } from '@/lib/media/modelMedia'
 import { uploadBytesToArweave, uploadJsonToArweave } from '@/lib/arweave/uploadServer'
 import { buildMomentMetadata, buildMintEnvelope, type MintMediaKind, type MintParams } from '@/lib/agent/mint'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
@@ -43,10 +45,17 @@ export const runtime = 'nodejs'
  * Arweave credit), so mint is not on the GET rung — a minting assistant already
  * holds the media locally and POSTs it as a data: URI.
  *
- * The mint reuses the app's builders verbatim (lib/agent/mint) — same
- * salesConfig, metadata shape, CREATE_REFERRAL, MintIntent typed data — so there
- * is zero drift between minting in the Kismet app and minting from an assistant.
+ * The mint reproduces the app's payload shape (lib/agent/mint) — same salesConfig,
+ * metadata fields, CREATE_REFERRAL — and shares lib/intent for the MintIntent
+ * typed data, so the signed body is exactly what /api/mint expects from the app.
  * App defaults apply (free, ETH, open edition, artist keeps a copy).
+ *
+ * 3D (GLB) media is accepted on the same terms as video, with one difference
+ * that follows from "a server can't do what a browser does": the app captures
+ * a model's poster from the posed preview (components/ModelPreview), and a
+ * server cannot render a GLB, so here the poster is caller-supplied and
+ * REQUIRED — it is what every feed, share card and embed shows. `background`
+ * records the backdrop it was shot on for the artwork page's viewer.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
@@ -80,7 +89,7 @@ const firstString = (...vals: unknown[]): string =>
 function normalizeKind(raw: unknown): MintMediaKind | null {
   if (typeof raw !== 'string') return null
   const k = raw.trim().toLowerCase()
-  return k === 'image' || k === 'video' || k === 'text' ? k : null
+  return k === 'image' || k === 'video' || k === 'model' || k === 'text' ? k : null
 }
 
 async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
@@ -94,16 +103,20 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     return errorResponse(400, 'Invalid account — pass the Base Account address from get_wallets')
   }
 
-  const name = firstString(body.name, body.title).slice(0, NAME_MAX)
+  // One documented name per input — the manifest and references/mint.md ARE the
+  // contract, so there are no undocumented aliases (a `content` alias in
+  // particular would collide with media "content" / MomentMetadata.content and
+  // silently route a media caller who forgot `media` into a text artwork).
+  const name = firstString(body.name).slice(0, NAME_MAX)
   if (!name) return errorResponse(400, 'name is required — the title of the artwork')
   const description = firstString(body.description).slice(0, DESCRIPTION_MAX)
 
-  const explicitKind = normalizeKind(body.mediaType ?? body.kind)
-  const media = firstString(body.media, body.mediaUri)
-  // `text`/`tokenContent` only — no `content` alias (it collides with media
-  // "content" and MomentMetadata.content, and would silently route a media
-  // caller who forgot `media` into a text moment).
-  const text = firstString(body.text, body.tokenContent)
+  const explicitKind = normalizeKind(body.mediaType)
+  const media = firstString(body.media)
+  const text = firstString(body.text)
+  if (explicitKind === 'text' && media) {
+    return errorResponse(400, 'mediaType "text" cannot be combined with media — pass text (and no media) for a writing artwork')
+  }
   const isText = explicitKind === 'text' || (!media && !!text)
   if (isText) {
     if (!text) return errorResponse(400, 'text is required for a writing artwork')
@@ -131,10 +144,12 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   // Artist keeps a copy by default (app default: mintToCreatorCount 1). Only an
   // explicit false / "false" / "0" disables it.
   const artistMint = !(body.artistMint === false || body.artistMint === 'false' || body.artistMint === '0')
+  // Raffle opt-in (app default: off). Unsigned — mint-proxy enables it post-mint.
+  const enableRaffle = body.enableRaffle === true || body.enableRaffle === 'true'
 
   // Existing collection (address) vs auto-deploy (no collection → we create one
   // named after the moment, exactly like the app's default mint).
-  const collection = firstString(body.collection, body.collectionAddress)
+  const collection = firstString(body.collection)
   if (collection && !isAddress(collection)) {
     return errorResponse(400, 'collection must be a valid contract address (omit it to auto-create a new collection)')
   }
@@ -146,19 +161,10 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   }
   const payoutRecipient = payoutRecipientRaw ? (payoutRecipientRaw as `0x${string}`) : undefined
 
-  // Validate splits up front (before spending Arweave) so a malformed payout
-  // array fails fast here rather than after upload at /api/mint. Same validator
-  // mint-proxy runs. GET carries splits as a JSON string.
-  let splits: unknown
-  const rawSplits = typeof body.splits === 'string' && body.splits.trim() ? safeJson(body.splits) : body.splits
-  if (Array.isArray(rawSplits) && rawSplits.length > 0) {
-    const v = validateSplitsArray(rawSplits)
-    if (!v.ok) return errorResponse(400, v.error)
-    splits = v.splits
-  }
-
   // ── authorization: the gate that replaces the inert-artifact model, run
-  //    BEFORE any Arweave spend (mirrors mint-proxy's gate order). ──
+  //    BEFORE any Arweave spend, in mint-proxy's order: blocked → paused → gate,
+  //    then payload-level checks (splits) so a blocked / paused / pass-less
+  //    caller gets that uniform reason rather than a 400. ──
   const targetForGate = collection || '0x0000000000000000000000000000000000000000'
   let blocked: boolean, paused: boolean, gateOk: boolean
   try {
@@ -176,6 +182,16 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     const config = await getGateConfig()
     const passName = config.passCollection ? await getPassCollectionName(config.passCollection) : null
     return errorResponse(403, `An artwork from ${passName ?? 'the required collection'} is required to mint`)
+  }
+
+  // Validate splits after the gates (mint-proxy's order) but still before any
+  // Arweave spend, so a malformed payout array fails here rather than after the
+  // upload at /api/mint. Same validator mint-proxy runs.
+  let splits: unknown
+  if (Array.isArray(body.splits) && body.splits.length > 0) {
+    const v = validateSplitsArray(body.splits)
+    if (!v.ok) return errorResponse(400, v.error)
+    splits = v.splits
   }
 
   // Existing-collection preflight — BEFORE any Arweave spend. Minting into a
@@ -226,28 +242,43 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
   }
 
   // ── ingest media (data: bytes or ar://|ipfs:// passthrough — no remote fetch) ──
-  const kind: MintMediaKind = isText ? 'text' : (explicitKind === 'image' || explicitKind === 'video' ? explicitKind : 'image')
+  const kind: MintMediaKind = isText ? 'text' : (explicitKind ?? 'image')
   let mediaUri: string | undefined
   let posterUri: string | undefined
   let mediaMime: string | undefined
   let mediaBytes = 0
   let resolvedKind: MintMediaKind = kind
 
+  // 3D only: the backdrop the poster was shot on, replayed by the viewer.
+  // Validated up front (cheap) so a typo fails before any Arweave spend.
+  const backgroundRaw = firstString(body.background)
+  if (backgroundRaw && !isModelBackgroundId(backgroundRaw)) {
+    return errorResponse(400, 'background must be "white", "dark" or "transparent"')
+  }
+
   if (!isText) {
-    const declared: MediaKind | undefined = kind === 'video' ? 'video' : kind === 'image' ? 'image' : undefined
+    const declared: MediaKind | undefined = kind === 'text' ? undefined : kind
     const ingested = ingestMintMedia(media, declared)
     if ('error' in ingested) return errorResponse(400, ingested.error)
     resolvedKind = ingested.kind // authoritative kind from the actual mime
     mediaMime = ingested.mime
     if (ingested.bytes) mediaBytes += ingested.bytes.length
 
-    // Optional video poster: an already-permanent URI or a data: URI. Browser-
-    // canvas poster extraction isn't reproducible server-side, so the poster is
-    // caller-supplied (optional).
-    const poster = firstString(body.poster, body.posterUri)
+    // Poster: an already-permanent URI or a data: URI. Browser-canvas poster
+    // extraction isn't reproducible server-side, so the poster is caller-
+    // supplied — optional for video, REQUIRED for a model (a posterless 3D
+    // moment is invisible on every surface but the artwork page; the app
+    // refuses the same case at submit).
+    const poster = firstString(body.poster)
+    if (resolvedKind === 'model' && !poster) {
+      return errorResponse(
+        400,
+        'poster is required for a 3D model — a still image of it (data: URI or ar://|ipfs://), shot on the same backdrop as `background`; it is what feeds, share cards and embeds show',
+      )
+    }
     let posterBytesBuf: Buffer | undefined
     let posterMime = 'image/png'
-    if (resolvedKind === 'video' && poster) {
+    if ((resolvedKind === 'video' || resolvedKind === 'model') && poster) {
       const ip = ingestMintMedia(poster, 'image')
       if ('error' in ip) return errorResponse(400, `poster: ${ip.error}`)
       if (ip.kind !== 'image') return errorResponse(400, 'poster must be an image')
@@ -274,7 +305,8 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     if (!within) return errorResponse(429, 'Daily upload limit reached — try again tomorrow or use the Kismet app')
   }
 
-  // ── build + upload token metadata (byte-for-byte the app's shape) ──
+  // ── build + upload token metadata (the app's field shape, minus its
+  //    browser-only kismet_thumbhash / transcode enrichments) ──
   const isAutoDeploy = !collection
   // Text moments have no uploaded image; give them the same generated SVG cover
   // the app uses so feed/marketplace cards render instead of a broken image.
@@ -287,6 +319,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     posterUri,
     mime: mediaMime,
     coverUri: textCover,
+    ...(backgroundRaw ? { background: backgroundRaw } : {}),
   })
 
   let tokenMetadataURI: string
@@ -295,9 +328,9 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     tokenMetadataURI = await uploadJsonToArweave(metadata)
     if (isAutoDeploy) {
       // Auto-deploy: the moment's cover doubles as the collection cover (image
-      // moment → its image; video → its poster; text → the generated cover).
+      // moment → its image; video / 3D → its poster; text → the generated cover).
       const collectionCover =
-        resolvedKind === 'text' ? textCover : resolvedKind === 'video' ? posterUri : mediaUri
+        resolvedKind === 'text' ? textCover : resolvedKind === 'video' || resolvedKind === 'model' ? posterUri : mediaUri
       const collectionMetadata = {
         name: collectionName,
         description,
@@ -324,6 +357,7 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
     currency,
     editions,
     artistMint,
+    ...(enableRaffle ? { enableRaffle: true } : {}),
     ...(collection ? { collection } : { collectionName, collectionUri }),
     ...(payoutRecipient ? { payoutRecipient } : {}),
     ...(splits ? { splits } : {}),
@@ -331,18 +365,13 @@ async function prepareMint(req: NextRequest, body: Record<string, unknown>) {
 
   let envelope: AgentActionEnvelope
   try {
-    const { nonce, expiresAt } = await issueIntentNonce()
-    envelope = buildMintEnvelope(params, nonce, expiresAt)
+    const [{ nonce, expiresAt }, payoutName] = await Promise.all([
+      issueIntentNonce(),
+      payoutRecipient ? getDisplayName(payoutRecipient) : Promise.resolve(null),
+    ])
+    envelope = buildMintEnvelope(params, nonce, expiresAt, { payoutName })
   } catch (err) {
     return upstreamError(502, 'Could not finalize the mint intent — try again', err, 'agent-prepare-mint')
   }
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
-}
-
-function safeJson(s: string): unknown {
-  try {
-    return JSON.parse(s)
-  } catch {
-    return undefined
-  }
 }

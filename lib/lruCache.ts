@@ -38,4 +38,8 @@ export class LRUCache<K, V> {
     }
     this.store.set(key, value)
   }
+
+  delete(key: K): boolean {
+    return this.store.delete(key)
+  }
 }

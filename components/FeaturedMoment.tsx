@@ -11,6 +11,7 @@ import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
+import { ModelBadge } from './ModelBadge'
 import { MomentVideo } from './MomentVideo'
 import { MomentCard } from './MomentCard'
 import { FeatureStar } from './FeatureStar'
@@ -444,6 +445,11 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
             </div>
           )}
 
+          {/* The hero shows a 3D moment's captured still (every surface but the
+              artwork page does — §5 of the design). The badge is the only
+              signal that there is a model to tap through to; top-right is the
+              free corner here (the star owns top-left). */}
+          {media.kind === 'model' && <ModelBadge className="absolute top-2 right-2" />}
           {/* Admin control — tap to feature, hold to set this Mint Pass Display.
               Its own handlers stop the wrapping link from navigating. */}
           <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />

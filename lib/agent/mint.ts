@@ -8,7 +8,8 @@
  * "mint from your AI assistant", and the MCP path inherits every gate/quota/
  * sponsorship control the app mint already enforces. The ONLY thing that differs
  * (and only because a server can't stream to Turbo like a browser can) is media
- * ingestion, which lives in the route + lib/arweave/uploadMedia, not here.
+ * ingestion (lib/agent/mintMedia) and upload (lib/arweave/uploadServer), driven
+ * by the route — not here.
  *
  * Everything in this file is a pure function of its inputs (chain-free,
  * network-free) so it's exhaustively unit-testable — see the agent verify suite.
@@ -18,12 +19,14 @@ import { CREATE_REFERRAL } from '@/lib/config'
 import { USDC_BASE, OPEN_EDITION_MINT_SIZE } from '@/lib/zoraMint'
 import { priceToBaseUnits } from './list'
 import { buildMintIntent, KISMET_INTENT_DOMAIN, MINT_INTENT_TYPES, type MintBody } from '@/lib/intent'
+import { modelMomentFields } from '@/lib/media/modelMedia'
+import { mintSummary } from './summary'
 import type { AgentActionEnvelope } from './types'
 
 /** saleEnd sentinel = "never" (max uint64), matching MintForm's OPEN_ENDED_SALE. */
 const OPEN_ENDED_SALE = OPEN_EDITION_MINT_SIZE.toString()
 
-export type MintMediaKind = 'image' | 'video' | 'text'
+export type MintMediaKind = 'image' | 'video' | 'model' | 'text'
 
 export interface MomentMetadata {
   name: string
@@ -31,32 +34,51 @@ export interface MomentMetadata {
   image?: string
   animation_url?: string
   content?: { uri: string; mime: string }
+  kismet_thumbhash?: string
+  /** 3D moments: the backdrop the poster was shot on (lib/media/modelMedia). */
+  kismet_bg?: string
 }
 
 /**
- * Token metadata JSON (Zora/OpenSea convention), byte-for-byte the shape
- * MintForm uploads:
+ * Token metadata JSON (Zora/OpenSea convention), the same field shape MintForm
+ * uploads (minus its browser-only kismet_thumbhash / transcode enrichments):
  *  - image  → { image }
  *  - video  → { image?(poster), animation_url, content:{uri,mime} }
+ *  - model  → { image(poster), animation_url(GLB), content:{uri,model/gltf-binary},
+ *               kismet_bg } — the video shape with the GLB where the MP4 goes,
+ *               via the ONE builder every 3D producer shares (modelMomentFields)
  *  - text   → { image?(cover) }  (the words live in tokenContent, not here)
  * A video with no poster omits `image` (feeds fall back to the play placeholder)
  * — the poster/thumbhash/transcode enrichments are browser-canvas-only and are
- * intentionally not reproduced server-side (see file header).
+ * intentionally not reproduced server-side (see file header). A MODEL with no
+ * poster is not a valid input: the route refuses it before any spend.
  */
 export function buildMomentMetadata(input: {
   name: string
   description: string
   kind: MintMediaKind
-  /** image kind → the image URI; video kind → the video URI; text kind → unused. */
+  /** image kind → the image URI; video/model kind → the video/GLB URI; text kind → unused. */
   mediaUri?: string
-  /** video kind → optional poster still shown in feeds. */
+  /** video kind → optional poster still shown in feeds; model kind → required. */
   posterUri?: string
   /** video kind → mime for the `content` hint (defaults video/mp4). */
   mime?: string
   /** text kind → optional cover image. */
   coverUri?: string
+  /** model kind → a MODEL_BACKGROUNDS id (default white). */
+  background?: string
 }): MomentMetadata {
   const { name, description, kind } = input
+  if (kind === 'model') {
+    if (!input.mediaUri || !input.posterUri) {
+      throw new Error('a 3D moment needs both the model and its poster')
+    }
+    return {
+      name,
+      description,
+      ...modelMomentFields({ modelUri: input.mediaUri, posterUri: input.posterUri, background: input.background }),
+    }
+  }
   if (kind === 'video') {
     return {
       name,
@@ -95,6 +117,11 @@ export interface MintParams {
   collectionUri?: string
   payoutRecipient?: `0x${string}`
   splits?: unknown
+  /** Opt the artwork into a Kismet raffle at mint (MintForm's "Enable raffle"
+   *  toggle). Rides the record body top-level, NOT the signed intent — see
+   *  lib/intent MintBody.enableRaffle: the creator is independently authorized
+   *  to toggle it any time, and mint-proxy consumes it post-mint. */
+  enableRaffle?: boolean
 }
 
 /**
@@ -135,6 +162,8 @@ export function buildMintBody(p: MintParams): MintBody & { name: string } {
     account: p.account,
     name: p.name,
     ...(p.splits ? { splits: p.splits } : {}),
+    // Top-level, exactly where MintForm puts it ({ ...payload, intent, enableRaffle }).
+    ...(p.enableRaffle ? { enableRaffle: true } : {}),
   }
 }
 
@@ -142,8 +171,15 @@ export function buildMintBody(p: MintParams): MintBody & { name: string } {
  * The full agent envelope: the EIP-712 `MintIntent` to `sign`, plus the record
  * hint the assistant POSTs after signing. Text moments record to `/api/write`
  * (action 'write'); media moments to `/api/mint` (action 'mint').
+ * `display.payoutName` is the resolved Basename / ENS of an explicit
+ * payoutRecipient, for the summary only.
  */
-export function buildMintEnvelope(p: MintParams, nonce: string, expiresAt: number): AgentActionEnvelope {
+export function buildMintEnvelope(
+  p: MintParams,
+  nonce: string,
+  expiresAt: number,
+  display?: { payoutName?: string | null },
+): AgentActionEnvelope {
   const body = buildMintBody(p)
   const action = p.kind === 'text' ? 'write' : 'mint'
   const message = buildMintIntent(body as MintBody, action, nonce, expiresAt)
@@ -156,14 +192,11 @@ export function buildMintEnvelope(p: MintParams, nonce: string, expiresAt: numbe
     message: { ...message, expiresAt: message.expiresAt.toString() },
   }
 
-  const editionsLabel = p.editions && p.editions > 0 ? `${p.editions} edition${p.editions === 1 ? '' : 's'}` : 'open edition'
-  const priceLabel = Number(p.price) > 0 ? `${p.price} ${p.currency.toUpperCase()}` : 'free'
-
   return {
     chain: 'base',
     action: 'mint',
     typedData,
-    summary: `Mint "${p.name}" — ${priceLabel}, ${editionsLabel}${p.collection ? '' : ' (new collection)'}`,
+    summary: mintSummary(p, display?.payoutName),
     record: {
       method: 'POST',
       url: action === 'write' ? '/api/write' : '/api/mint',

@@ -2,17 +2,18 @@ import { type NextRequest } from 'next/server'
 import { redis } from './redis'
 import { markRedisSuccess } from './redisHealth'
 
+/** The headers the client IP is read from, in order — also what an in-process
+ *  delegation forwards so the delegated handler keys its limits on the same
+ *  client (app/api/agent/record). */
+export const CLIENT_IP_HEADERS = ['cf-connecting-ip', 'x-forwarded-for', 'x-real-ip'] as const
+
 export function getClientIp(req: NextRequest): string {
   // `cf-connecting-ip` is set by Cloudflare to the real client's IP and is
   // overwritten on every request, so it can't be spoofed by a client sending
   // a forged X-Forwarded-For. Prefer it when present (Cloudflare in front);
   // fall back to the proxy-chain XFF leftmost otherwise.
-  return (
-    req.headers.get('cf-connecting-ip') ??
-    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
-  )
+  const [cf, xff, real] = CLIENT_IP_HEADERS.map((h) => req.headers.get(h))
+  return cf ?? xff?.split(',')[0].trim() ?? real ?? 'unknown'
 }
 
 // Atomic INCR+EXPIRE via Lua. Two REST calls let a dropped EXPIRE

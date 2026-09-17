@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { getListing } from '@/lib/listings'
 import { getListingVisibility } from '@/lib/hiddenListings'
-import { SEAPORT_ADDRESS } from '@/lib/seaport'
+import { SEAPORT_ABI, SEAPORT_ADDRESS, listingOrderHash } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
-import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { getDisplayName } from '@/lib/ensCache'
 import { buildBuyPlan } from '@/lib/agent/buy'
+import { buyRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
+import { buySummary, safeTitle } from '@/lib/agent/summary'
+import { buildApproveLink } from '@/lib/agent/prolink'
+import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
@@ -35,14 +39,17 @@ export async function POST(req: NextRequest) {
 /**
  * GET variant — same parameters in the query string, same envelope back. For
  * chat-only surfaces where POST to a non-allowlisted host is unreachable (the
- * Base MCP custom-plugin fallback ladder is GET-only there). A pure read:
- * chain reads + calldata assembly, no state mutation.
+ * Base MCP custom-plugin fallback ladder is GET-only there: the user pastes
+ * the URL back and the assistant fetches it). A pure read: chain reads +
+ * calldata assembly, no state mutation. A browser navigation to the same URL
+ * (the user tapped it) gets a human page with the summary and the Base app
+ * approve link instead of raw JSON.
  */
 export async function GET(req: NextRequest) {
-  return prepareBuy(req, Object.fromEntries(req.nextUrl.searchParams))
+  return prepareBuy(req, Object.fromEntries(req.nextUrl.searchParams), isDocumentNavigation(req))
 }
 
-async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account?: unknown }) {
+async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account?: unknown }, asPage = false) {
   if (!(await checkRateLimit(`agent-prepare-buy:${getClientIp(req)}`, 60, 60))) {
     return errorResponse(429, 'Too many requests')
   }
@@ -65,6 +72,41 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
   }
   if (listing.seller.toLowerCase() === account.toLowerCase()) {
     return errorResponse(400, 'You cannot buy your own listing')
+  }
+
+  // The stored status is reconciled from chain only when a listing expires
+  // (lib/listings resolveTerminalStatuses). A fill through any other Seaport
+  // surface — a Base app prolink, another marketplace carrying the same order —
+  // leaves it `active` here for up to 30 days, and a fulfill we hand out for it
+  // reverts only AFTER the user approved it. Ask Seaport itself, one multicall:
+  // the order's own status, and the seller's counter — Seaport derives the hash
+  // it validates from the offerer's CURRENT counter (OrderValidator), so after
+  // an incrementCounter ("cancel all" on another marketplace) the signed order
+  // is unfillable while its stored hash still reads untouched.
+  let orderHash: Hex
+  let signedCounter: bigint
+  try {
+    orderHash = listingOrderHash(listing)
+    signedCounter = BigInt(listing.orderComponents.counter)
+  } catch {
+    return errorResponse(409, 'Listing order is inconsistent')
+  }
+  try {
+    const [[, isCancelled, totalFilled], counter] = (await serverBaseClient().multicall({
+      contracts: [
+        { address: SEAPORT_ADDRESS, abi: SEAPORT_ABI, functionName: 'getOrderStatus', args: [orderHash] },
+        { address: SEAPORT_ADDRESS, abi: SEAPORT_ABI, functionName: 'getCounter', args: [listing.seller as Address] },
+      ],
+      allowFailure: false,
+    })) as [readonly [boolean, boolean, bigint, bigint], bigint]
+    if (totalFilled > 0n || isCancelled) {
+      return errorResponse(409, 'Listing is not active (already filled or cancelled on-chain)')
+    }
+    if (counter !== signedCounter) {
+      return errorResponse(409, 'Listing is not active (the seller invalidated their signed orders on-chain)')
+    }
+  } catch (err) {
+    return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-buy')
   }
 
   const currency: 'eth' | 'usdc' = listing.currency ?? 'eth'
@@ -92,18 +134,25 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
     return errorResponse(409, err instanceof Error ? err.message : 'Listing order is inconsistent')
   }
 
-  const priceLabel = formatPrice(listing.price, currency)
-  const itemLabel = listing.name ? `“${listing.name}”` : `token #${listing.tokenId}`
-  const approvalNote = plan.approvalIncluded
-    ? ' Includes a one-time USDC approval, batched into the same approval.'
-    : ''
-  const summary = `Buy ${itemLabel} from ${shortAddress(listing.seller)} for ${priceLabel}.${approvalNote}`
+  // `listing.name` is seller-set text; safeTitle strips control / invisible
+  // characters and caps it so the line stays one readable line.
+  const [sellerName, link] = await Promise.all([getDisplayName(listing.seller), buildApproveLink(plan.calls, account as Address)])
+  const summary = buySummary({
+    title: safeTitle(listing.name),
+    tokenId: listing.tokenId,
+    seller: listing.seller,
+    sellerName,
+    currency,
+    price: plan.price,
+    approvalIncluded: plan.approvalIncluded,
+  })
 
   const envelope: AgentActionEnvelope = {
     chain: 'base',
     action: 'buy',
     calls: plan.calls,
     summary,
+    ...(link ? { link } : {}),
     // Single-tap buy: marking the order-book listing filled needs no buyer
     // signature — the PATCH route verifies the Seaport OrderFulfilled event from
     // this txHash (matched to the listing's orderHash) and derives the buyer from
@@ -113,11 +162,13 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
       url: `/api/listings/${listing.id}`,
       bodyTemplate: {
         status: 'filled',
-        txHash: '<REPLACE_WITH_send_calls_txHash>',
+        txHash: TX_HASH_PLACEHOLDER,
       },
+      getUrl: buyRecordUrl(listing.id),
     },
     caps: currency === 'eth' ? { maxValueEth: plan.price.toString() } : { maxValueUsdc: plan.price.toString() },
   }
 
+  if (asPage) return approvePageResponse(envelope, `/artwork/${listing.collectionAddress}/${listing.tokenId}`)
   return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }

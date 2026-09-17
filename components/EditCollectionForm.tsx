@@ -13,6 +13,7 @@ import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
 import { loadPersistedCover, savePersistedCover, loadPersistedJson, savePersistedJson } from '@/lib/arweave/uploadPersistence'
 import { CREATE_REFERRAL } from '@/lib/config'
 import { useFileUpload } from '@/hooks/useFileUpload'
+import { checkCoverImage } from '@/lib/media/mintMedia'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useUpdateCollectionMetadata } from '@/hooks/useUpdateCollectionMetadata'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
@@ -81,6 +82,11 @@ export function EditCollectionForm({
   const cover = useFileUpload({
     maxBytes: MAX_IMAGE_BYTES,
     onTooLarge: () => toast.error('Image must be 25MB or smaller'),
+    accept: async (f) => {
+      const verdict = await checkCoverImage(f)
+      return verdict.ok ? null : verdict.reason
+    },
+    onRejected: (_f, reason) => toast.error('Unsupported cover', { description: reason }),
   })
   const { ensureSession } = useUploadSession()
   const { update } = useUpdateCollectionMetadata()

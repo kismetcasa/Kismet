@@ -20,6 +20,7 @@
 
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { createMockUpstash } from './_mock-upstash.ts'
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -58,76 +59,12 @@ const asSpenderCalls = (calls: readonly { to: string; data: string; value: strin
   calls.map((c) => ({ to: c.to, data: c.data, value: BigInt(c.value) }))
 
 // ───────────────────────── mock Upstash REST ─────────────────────────
+// Shared with the route-level harness (scripts/_mock-upstash.ts): strings, the
+// pending-revoke queue's hashes/sets/Lua step, and a ZADD log — answered with
+// the base64 wire encoding the real client decodes.
 
-interface StoredVal {
-  v: string
-  ex?: number
-}
-const redisStore = new Map<string, StoredVal>()
-let redisFailing = false
-
-function execRedisCommand(cmd: unknown[]): unknown {
-  const op = String(cmd[0]).toUpperCase()
-  if (op === 'SET') {
-    const key = String(cmd[1])
-    const val = String(cmd[2])
-    let nx = false
-    let ex: number | undefined
-    for (let i = 3; i < cmd.length; i++) {
-      const t = String(cmd[i]).toUpperCase()
-      if (t === 'NX') nx = true
-      if (t === 'EX') ex = Number(cmd[++i])
-    }
-    if (nx && redisStore.has(key)) return null
-    redisStore.set(key, { v: val, ex })
-    return 'OK'
-  }
-  if (op === 'GET') return redisStore.get(String(cmd[1]))?.v ?? null
-  if (op === 'DEL') {
-    let n = 0
-    for (let i = 1; i < cmd.length; i++) if (redisStore.delete(String(cmd[i]))) n++
-    return n
-  }
-  if (op === 'MGET') {
-    const out: (string | null)[] = []
-    for (let i = 1; i < cmd.length; i++) out.push(redisStore.get(String(cmd[i]))?.v ?? null)
-    return out
-  }
-  if (op === 'SMEMBERS') return []
-  return null // LPUSH/ZADD/EXPIRE/… — accepted, irrelevant to assertions
-}
-
-function startRedisServer(): Promise<string> {
-  const server = http.createServer((req, res) => {
-    let body = ''
-    req.on('data', (c) => (body += c))
-    req.on('end', () => {
-      res.setHeader('content-type', 'application/json')
-      const reply = (x: unknown) => res.end(JSON.stringify(x))
-      if (redisFailing) {
-        const isPipeline = req.url?.includes('pipeline') || req.url?.includes('multi-exec')
-        if (isPipeline) {
-          const cmds = JSON.parse(body) as unknown[][]
-          return reply(cmds.map(() => ({ error: 'mock redis down' })))
-        }
-        return reply({ error: 'mock redis down' })
-      }
-      try {
-        if (req.url?.includes('pipeline') || req.url?.includes('multi-exec')) {
-          const cmds = JSON.parse(body) as unknown[][]
-          return reply(cmds.map((c) => ({ result: execRedisCommand(c) })))
-        }
-        const cmd = JSON.parse(body) as unknown[]
-        return reply({ result: execRedisCommand(cmd) })
-      } catch (e) {
-        return reply({ error: String(e) })
-      }
-    })
-  })
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`))
-  })
-}
+const upstash = createMockUpstash()
+const { store: redisStore, hashes, sets, zadds } = upstash
 
 // ───────────────────────── mock Base JSON-RPC ─────────────────────────
 
@@ -272,7 +209,14 @@ const PERIOD_START = 1_700_000_000
 const rpcState = {
   failing: false,
   ownedBalance: 0n,
+  /** Protocol mint fee the mock collection reports (readMintFeeWithBound). */
+  mintFee: 0n,
+  /** The mock sale's price (RPC `sale` and the app API's sales map). 0 = free. */
+  pricePerToken: 0n,
+  /** Spend already booked in the current period (manager getCurrentPeriod). */
   periodSpend: 0n,
+  /** The manager reports the permission revoked (isRevoked true, isValid false). */
+  revoked: false,
 }
 
 function handleEthCall(to: string, data: Hex): Hex {
@@ -286,14 +230,16 @@ function handleEthCall(to: string, data: Hex): Hex {
   if (target === MANAGER_ADDRESS) {
     const { functionName } = decodeFunctionData({ abi: MANAGER_ABI, data })
     if (functionName === 'getCurrentPeriod') {
+      // Period boundaries are [start, start + period) — `end` exclusive, as the
+      // contract computes them (SpendPermissionManager.getCurrentPeriod).
       return encodeFunctionResult({
         abi: MANAGER_ABI,
         functionName,
-        result: { start: PERIOD_START, end: PERIOD_START + 2_592_000 - 1, spend: rpcState.periodSpend },
+        result: { start: PERIOD_START, end: PERIOD_START + 2_592_000, spend: rpcState.periodSpend },
       })
     }
-    if (functionName === 'isRevoked') return encodeFunctionResult({ abi: MANAGER_ABI, functionName, result: false })
-    return encodeFunctionResult({ abi: MANAGER_ABI, functionName: 'isValid', result: true })
+    if (functionName === 'isRevoked') return encodeFunctionResult({ abi: MANAGER_ABI, functionName, result: rpcState.revoked })
+    return encodeFunctionResult({ abi: MANAGER_ABI, functionName: 'isValid', result: !rpcState.revoked })
   }
   // Strategy / collection reads — dispatch by decode success.
   try {
@@ -305,7 +251,7 @@ function handleEthCall(to: string, data: Hex): Hex {
         saleStart: 0n,
         saleEnd: BigInt(CHAIN_NOW) + 10_000_000n,
         maxTokensPerAddress: 0n,
-        pricePerToken: 0n, // FREE drop — the paid-spend calldata already has byte-exact oracles
+        pricePerToken: rpcState.pricePerToken,
         fundsRecipient: '0x0000000000000000000000000000000000000000',
       },
     })
@@ -323,7 +269,7 @@ function handleEthCall(to: string, data: Hex): Hex {
     return encodeFunctionResult({ abi: BALANCE_ABI, functionName: 'balanceOf', result: rpcState.ownedBalance })
   } catch {}
   decodeFunctionData({ abi: MINT_FEE_ABI, data }) // throws if unknown → surfaces in the test
-  return encodeFunctionResult({ abi: MINT_FEE_ABI, functionName: 'mintFee', result: 0n })
+  return encodeFunctionResult({ abi: MINT_FEE_ABI, functionName: 'mintFee', result: rpcState.mintFee })
 }
 
 const MOCK_BLOCK = {
@@ -404,8 +350,8 @@ function startAppServer(): Promise<string> {
     }
     if (url.pathname === '/api/moments') {
       const sales: Record<string, unknown> = {}
-      sales[`${COLLECTION.toLowerCase()}:1`] = { type: 'fixedPrice', pricePerToken: '0' }
-      sales[`${COLLECTION.toLowerCase()}:2`] = { type: 'fixedPrice', pricePerToken: '0' }
+      sales[`${COLLECTION.toLowerCase()}:1`] = { type: 'fixedPrice', pricePerToken: rpcState.pricePerToken.toString() }
+      sales[`${COLLECTION.toLowerCase()}:2`] = { type: 'fixedPrice', pricePerToken: rpcState.pricePerToken.toString() }
       return res.end(JSON.stringify({ sales }))
     }
     if (url.pathname === '/api/collect') {
@@ -435,7 +381,7 @@ const NATIVE_ETH = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 
 async function main() {
-  const [redisUrl, rpcUrl, appUrl] = await Promise.all([startRedisServer(), startRpcServer(), startAppServer()])
+  const [redisUrl, rpcUrl, appUrl] = await Promise.all([upstash.start(), startRpcServer(), startAppServer()])
   process.env.UPSTASH_REDIS_REST_URL = redisUrl
   process.env.UPSTASH_REDIS_REST_TOKEN = 'mock-token'
   process.env.BASE_RPC_URL = rpcUrl
@@ -555,13 +501,13 @@ async function main() {
 
   // ── 4. Kill switch fail-closed semantics (real module, real store states) ──
   console.log('\nkillSwitch — fail-closed ladder')
-  redisFailing = true
+  upstash.setFailing(true)
   ok(await isKillSwitchEngaged(), 'store down + no last-known-good (cold start) → ENGAGED (halt)')
-  redisFailing = false
+  upstash.setFailing(false)
   ok(!(await isKillSwitchEngaged()), 'store healthy, key absent → not engaged')
-  redisFailing = true
+  upstash.setFailing(true)
   ok(!(await isKillSwitchEngaged()), 'store down but last-known-good=false → stays last-known-good')
-  redisFailing = false
+  upstash.setFailing(false)
   redisStore.set('kismetart:scout-killswitch', { v: '1' })
   ok(await isKillSwitchEngaged(), 'key set → engaged')
   redisStore.delete('kismetart:scout-killswitch')
@@ -632,6 +578,196 @@ async function main() {
   const halted = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
   ok(halted.reason === 'kill switch engaged' && halted.collected === 0, 'engaged kill switch halts a run at entry')
   redisStore.delete('kismetart:scout-killswitch')
+
+  // ── 8. The USER's own controls halt a run mid-flight (no kill switch involved) ──
+  console.log("\nrunScoutServer — the user's own pause / delete halts a run mid-flight")
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  collectPosts.length = 0
+  const pauseSpender = mockSpender(() => {
+    const cur = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+    cur.scout.status = 'paused'
+    redisStore.set(scoutKey, { v: JSON.stringify(cur) })
+  })
+  const pausedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: pauseSpender })
+  ok(pausedRun.collected === 1 && pausedRun.skipped === 1, `pause after the 1st collect → the 2nd is NOT attempted (collected ${pausedRun.collected}, skipped ${pausedRun.skipped})`)
+  ok(/paused or turned off mid-run/.test(pausedRun.reason ?? ''), 'run reports the user stop as its reason')
+  ok(collectPosts.length === 1, 'exactly one record posted — nothing spent after the pause')
+  const afterPause = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record & { lastRun?: unknown }
+  ok(afterPause.scout.status === 'paused' && afterPause.usage.itemsThisPeriod === 1, 'pause persisted; usage merged onto the paused record')
+  const lastRunKey = `kismetart:scout-lastrun:${USER.toLowerCase()}`
+  const pauseHistory = JSON.parse(redisStore.get(lastRunKey)?.v ?? 'null') as { at: number; collected: number; skipped: number; reason?: string } | null
+  ok(
+    !!pauseHistory && pauseHistory.collected === 1 && pauseHistory.skipped === 1 && /paused or turned off mid-run/.test(pauseHistory.reason ?? '') && pauseHistory.at > 0,
+    'run history persisted (collected / skipped / reason / at) for the owner card',
+  )
+  ok(!('lastRun' in afterPause) && redisStore.get(lastRunKey)?.ex === 30 * 86_400, 'run history lives on its own expiring key, never inside the record')
+
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  collectPosts.length = 0
+  const deleteSpender = mockSpender(() => {
+    redisStore.delete(scoutKey) // the user turns the agent off (DELETE) while the 1st collect is in flight
+  })
+  const deletedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: deleteSpender })
+  ok(deletedRun.collected === 1 && /paused or turned off mid-run/.test(deletedRun.reason ?? ''), 'delete after the 1st collect → remaining collects halted')
+  ok(!redisStore.has(scoutKey), 'a DELETED agent is NEVER resurrected by the end-of-run save (no record written back)')
+  ok([...redisStore.keys()].every((k) => !k.startsWith(`kismetart:scout:${USER.toLowerCase()}`)), 'no scout record re-created under the user')
+
+  // ── 9. End-of-run usage MERGES onto the fresh counter (no lost update) ──
+  console.log('\nrunScoutServer — item counter merges onto the fresh record')
+  redisStore.clear()
+  zadds.length = 0
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  // Kismet's own moment metadata for the two drops, so the notices can name them.
+  for (const id of ['1', '2']) {
+    redisStore.set(`kismetart:moment-meta:${COLLECTION.toLowerCase()}:${id}`, { v: JSON.stringify({ creator: ARTIST.toLowerCase(), name: `Dawn ${id}` }) })
+  }
+  collectPosts.length = 0
+  let bumped = false
+  const bumpSpender = mockSpender(() => {
+    if (bumped) return
+    bumped = true
+    // A coordinated collect lands while this run is in flight and bumps the
+    // STORED counter (exactly what dropCoordinator.bumpItemUsage does). The run
+    // must add its own count on top of that, not overwrite it with its stale
+    // top-of-run snapshot.
+    const cur = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+    cur.usage = { ...cur.usage, itemsThisPeriod: 3 }
+    redisStore.set(scoutKey, { v: JSON.stringify(cur) })
+  })
+  const mergedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: bumpSpender })
+  ok(mergedRun.collected === 2, `both candidates collected (got ${mergedRun.collected})`)
+  const afterMerge = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  ok(afterMerge.usage.itemsThisPeriod === 5, `count = 3 (coordinated mid-run) + 2 (this run) = 5, not 2 (got ${afterMerge.usage.itemsThisPeriod})`)
+  const mergeHistory = JSON.parse(redisStore.get(lastRunKey)?.v ?? 'null') as { collected: number; skipped: number; reason?: string } | null
+  ok(mergeHistory?.collected === 2 && mergeHistory.skipped === 0 && mergeHistory.reason === undefined, 'a clean run records collected 2, nothing skipped, no reason')
+  const agentNotices = zadds
+    .filter((z) => z.key === `kismetart:notif:${USER.toLowerCase()}` && z.member.includes('"agent_collect"'))
+    .map((z) => JSON.parse(z.member) as { tokenAddress?: string; tokenId?: string; tokenName?: string; amount?: number })
+  ok(
+    agentNotices.length === 2 &&
+      agentNotices.every((n) => n.tokenAddress?.toLowerCase() === COLLECTION.toLowerCase() && n.amount === 1 && n.tokenName === `Dawn ${n.tokenId}`) &&
+      new Set(agentNotices.map((n) => n.tokenId)).size === 2,
+    `one agent_collect notice per collected artwork in the owner's inbox, each carrying token + title + editions (got ${JSON.stringify(agentNotices)})`,
+  )
+
+  // ── 10. A malformed stored permission (missing fields) is refused, never spent ──
+  console.log('\ncollectViaSpendPermission — missing permission fields fail CLOSED')
+  redisStore.clear()
+  await throws(
+    () => collectViaSpendPermission({ permission: perm({ account: undefined as unknown as Address }), spender: mockSpender(), recipient: USER, item: freeItem(9n) }),
+    /does not match the mint recipient/,
+    'missing permission.account → refused (cannot verify ⇒ do not spend)',
+  )
+  await throws(
+    () => collectViaSpendPermission({ permission: perm({ token: undefined as unknown as Address }), spender: mockSpender(), recipient: USER, item: freeItem(9n) }),
+    /does not match the drop currency/,
+    'missing permission.token → refused (cannot verify ⇒ do not spend)',
+  )
+
+  // ── 11. The per-item cap is FEE-INCLUSIVE at the choke-point ──
+  console.log('\nserverExecutor — maxItemPrice bounds price + protocol mint fee')
+  redisStore.clear()
+  const capZero = { ...record, scout: { ...record.scout, policy: { ...record.scout.policy, maxItemPrice: '0' } } }
+  redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
+  rpcState.mintFee = 1n // free drop (price 0) + a 1 wei protocol fee = 1 wei outlay > cap 0
+  captured.length = 0
+  const feeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(
+    feeRun.collected === 0 && captured.length === 0 && feeRun.skips?.['over-item-price'] === 2 && /nothing within your budget/.test(feeRun.reason ?? ''),
+    `the fee pushes the outlay past the cap → a policy skip in the plan, nothing attempted (reason: ${feeRun.reason}, skips: ${JSON.stringify(feeRun.skips)})`,
+  )
+  rpcState.mintFee = 0n
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
+  const noFeeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(noFeeRun.collected === 2, `same cap with no fee → collects (got ${noFeeRun.collected}): the refusal above was the fee, not the price`)
+
+  // ── 12. Pending-revoke queue: per-owner, retires only what it revoked ──────
+  console.log('\npendingRevokes — per-owner queue (turn-off revoke retries)')
+  const { queuePendingRevokes, dequeuePendingRevoke, drainPendingRevokes } = await import('@/lib/agent/scout/pendingRevokes')
+  const { permKey } = await import('@/lib/agent/scout/revoke')
+  hashes.clear()
+  sets.clear()
+  const OWNER_B = `0x${'bb'.repeat(20)}` as Address
+  const permA = perm()
+  const permA2 = perm({ start: PERIOD_START + 1 })
+  const permB = perm({ account: OWNER_B })
+  const INDEX = 'kismetart:scout-pending-revoke:owners'
+  const hashOf = (o: string) => hashes.get(`kismetart:scout-pending-revoke:${o.toLowerCase()}`)
+  await queuePendingRevokes(USER, [permA, permA2])
+  await queuePendingRevokes(OWNER_B, [permB])
+  await queuePendingRevokes(USER, [permA]) // idempotent re-queue
+  ok(hashOf(USER)?.size === 2 && hashOf(OWNER_B)?.size === 1, 'each owner has their own hash; a re-queue of the same grant does not duplicate it')
+  ok(sets.get(INDEX)?.size === 2, 'both owners indexed')
+  ok([...(hashOf(USER)?.keys() ?? [])].every((k) => k === permKey(permA) || k === permKey(permA2)), 'entries are keyed by the grant identity (permKey)')
+
+  await dequeuePendingRevoke(USER, permA)
+  ok(hashOf(USER)?.size === 1 && hashOf(USER)?.has(permKey(permA2)) === true && sets.get(INDEX)?.has(USER.toLowerCase()) === true, 'dequeue drops exactly that grant and keeps the owner indexed while others remain')
+  await dequeuePendingRevoke(USER, permA2)
+  ok(hashOf(USER)?.size === 0 && sets.get(INDEX)?.has(USER.toLowerCase()) === false && hashOf(OWNER_B)?.size === 1, 'dequeuing the last grant un-indexes that owner only')
+
+  const boom: Spender = { ...mockSpender(), async sendCalls() { throw new Error('boom') } }
+  await drainPendingRevokes(boom, 5)
+  ok(hashOf(OWNER_B)?.size === 1 && sets.get(INDEX)?.has(OWNER_B.toLowerCase()) === true, 'a failed revoke keeps the grant queued and the owner indexed')
+  captured.length = 0
+  await drainPendingRevokes(mockSpender(), 5)
+  ok(
+    captured.length === 1 && hashOf(OWNER_B)?.size === 0 && (sets.get(INDEX)?.size ?? 0) === 0,
+    `a successful drain submits the revoke, retires the entry, and un-indexes the owner (submitted ${captured.length}, queued ${hashOf(OWNER_B)?.size}, indexed ${sets.get(INDEX)?.size ?? 0})`,
+  )
+  await drainPendingRevokes(mockSpender(), 5)
+  ok(captured.length === 1, `an empty queue is a no-op (submitted ${captured.length})`)
+
+  // ── 13. Ended / revoked grants are inert: retired without a call, never a throw ──
+  console.log('\nrevoke + run — ended and revoked grants')
+  const { revokePermissionsAsSpender, drainSupersededPermissions } = await import('@/lib/agent/scout/revoke')
+  const nowSec = Math.floor(Date.now() / 1000)
+  const ended = perm({ start: nowSec - 400 * 86_400, end: nowSec - 10 })
+  captured.length = 0
+  const endedFailed = await revokePermissionsAsSpender([ended], mockSpender())
+  ok(endedFailed.length === 0 && captured.length === 0, 'a grant past its end is retired with no on-chain call (the SDK would throw for it)')
+  rpcState.revoked = true
+  const revokedFailed = await revokePermissionsAsSpender([perm()], mockSpender())
+  ok(revokedFailed.length === 0 && captured.length === 0, 'a grant the manager reports revoked drops out with no call')
+  rpcState.revoked = false
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify({ ...record, permission: ended }) })
+  const endedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(endedRun.reason === 'permission inactive' && endedRun.collected === 0, `a run on an ended grant answers "permission inactive" instead of throwing (got: ${endedRun.reason})`)
+
+  // ── 14. A drain that finishes after the user turned the agent off never re-creates it ──
+  redisStore.clear()
+  const withQueue = { ...record, supersededPermissions: [perm({ start: PERIOD_START + 7 })] }
+  redisStore.set(scoutKey, { v: JSON.stringify(withQueue) })
+  captured.length = 0
+  await drainSupersededPermissions(withQueue as unknown as Parameters<typeof drainSupersededPermissions>[0], mockSpender(() => redisStore.delete(scoutKey)))
+  ok(captured.length === 1 && !redisStore.has(scoutKey), 'the superseded grant is revoked, and the record deleted mid-drain is NOT written back')
+
+  // ── 15. A PAID drop: spend() precedes the mint; an exhausted allowance attempts nothing ──
+  console.log('\nrunScoutServer — paid drop pulls exactly the price before minting')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.pricePerToken = 1_000_000_000_000_000n // 0.001 ETH; allowance 1 ETH, cap 1 ETH
+  captured.length = 0
+  const paidRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  const paidCalls = captured[0]?.calls ?? []
+  ok(paidRun.collected === 2 && captured.length === 2, `both paid drops collected (collected ${paidRun.collected}, submissions ${captured.length})`)
+  ok(
+    paidCalls.length >= 2 && paidCalls[0].to.toLowerCase() === MANAGER_ADDRESS && paidCalls[paidCalls.length - 1].to.toLowerCase() === COLLECTION.toLowerCase(),
+    'each submission is [spend() on the manager …, mint on the collection] — funds pulled before the mint consumes them',
+    JSON.stringify(paidCalls.map((c) => c.to)),
+  )
+  ok(paidCalls[paidCalls.length - 1].value === rpcState.pricePerToken, 'the mint carries exactly the price as value')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.periodSpend = 1_000_000_000_000_000_000n - 1n // 1 wei of allowance left
+  captured.length = 0
+  const brokeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(brokeRun.collected === 0 && captured.length === 0, `an exhausted period allowance attempts nothing (collected ${brokeRun.collected}, submissions ${captured.length}, reason: ${brokeRun.reason})`)
+  rpcState.periodSpend = 0n
+  rpcState.pricePerToken = 0n
 
   console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — scout live-behavior: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

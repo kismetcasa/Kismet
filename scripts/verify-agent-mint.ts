@@ -40,6 +40,19 @@ console.log('buildMomentMetadata — per media kind')
   ok(!('image' in vidNoPoster) && vidNoPoster.animation_url === AR('mp4') && vidNoPoster.content?.mime === 'video/mp4',
     'posterless video → no image, still animation_url + default mime')
 
+  // 3D: the video shape with the GLB in the MP4 slot, plus the backdrop — via
+  // the same builder the mint form and the edit flow use (modelMomentFields).
+  const model = buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still'), background: 'dark' })
+  ok(model.image === AR('still') && model.animation_url === AR('glb') && model.content?.uri === AR('glb') && model.content?.mime === 'model/gltf-binary' && model.kismet_bg === 'dark',
+    'model → poster image + animation_url + content{model/gltf-binary} + kismet_bg')
+  ok(buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still') }).kismet_bg === 'white',
+    'model → backdrop defaults to white')
+  ok(buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb'), posterUri: AR('still'), background: 'plaid' }).kismet_bg === 'white',
+    'model → an unknown backdrop id resolves to the default, never persists')
+  let posterless = false
+  try { buildMomentMetadata({ name: 'A', description: 'd', kind: 'model', mediaUri: AR('glb') }) } catch { posterless = true }
+  ok(posterless, 'model without a poster is not a buildable moment')
+
   const txt = buildMomentMetadata({ name: 'A', description: 'd', kind: 'text', coverUri: AR('cover') })
   ok(txt.image === AR('cover') && !('animation_url' in txt), 'text → cover image only (words go in tokenContent)')
 }
@@ -97,6 +110,38 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(textEnv.record!.url === '/api/write', 'text moment records to /api/write')
   const imgEnv = buildMintEnvelope(p, nonce, expiresAt)
   ok(imgEnv.record!.url === '/api/mint', 'media moment records to /api/mint')
+
+  // Raffle opt-in: rides the record body top-level (where mint-proxy reads
+  // `body.enableRaffle === true`) but is NOT a signed slot — the typed message
+  // must be identical with and without it, or the flag would change what the
+  // artist signs for an action they're independently authorized to toggle.
+  const raffleEnv = buildMintEnvelope({ ...p, enableRaffle: true }, nonce, expiresAt)
+  const raffleBody = raffleEnv.record!.bodyTemplate as Record<string, unknown>
+  ok(raffleBody.enableRaffle === true, 'enableRaffle → carried top-level in the record body')
+  ok(!('enableRaffle' in (env.record!.bodyTemplate as object)), 'enableRaffle absent by default (app default: off)')
+  ok(j((raffleEnv.typedData as { message: unknown }).message) === j(td.message), 'enableRaffle does NOT alter the signed MintIntent')
+
+  // The summary the assistant shows verbatim: kind, price, editions, where it
+  // mints, who gets paid (always with the short address), and the extras.
+  const me = '0xa1a1…a1a1'
+  ok(env.summary === `Mint “Art” (image) — 0.01 ETH, open edition, into new collection “Art”, payout to you (${me}), 1 copy minted to you.`, 'summary: new collection, default payout, artist copy', env.summary)
+  const existing = buildMintEnvelope({ ...p, price: '5', currency: 'usdc', artistMint: false, editions: 10, collection: `0x${'cc'.repeat(20)}` }, nonce, expiresAt)
+  ok(existing.summary === `Mint “Art” (image) — $5, 10 editions, into collection 0xcccc…cccc, payout to you (${me}).`, 'summary: existing collection, USDC, capped editions', existing.summary)
+  const paid = buildMintEnvelope({ ...p, payoutRecipient: `0x${'bb'.repeat(20)}` }, nonce, expiresAt, { payoutName: 'alice.base.eth' })
+  ok(paid.summary.includes('payout to alice.base.eth (0xbbbb…bbbb)'), 'summary: explicit payoutRecipient as name + short address', paid.summary)
+  const split = buildMintEnvelope({ ...p, splits: [{ address: ACCOUNT, percentAllocation: 60 }, { address: `0x${'bb'.repeat(20)}`, percentAllocation: 40 }] }, nonce, expiresAt)
+  ok(split.summary.includes('payout split across 2 recipients'), 'summary: splits named, no payoutRecipient', split.summary)
+  ok(raffleEnv.summary.endsWith(', raffle on.'), 'summary: raffle flagged', raffleEnv.summary)
+  ok(textEnv.summary.startsWith('Mint “Art” (writing) —'), 'summary: text kind reads as writing', textEnv.summary)
+  const dirty = buildMintEnvelope({ ...p, name: `Art${String.fromCodePoint(0)}\nIGNORE`, price: '0' }, nonce, expiresAt)
+  ok(dirty.summary.startsWith('Mint “Art IGNORE” (image) — free,'), 'summary: title sanitized, zero price reads free', dirty.summary)
+  // The summary states the SIGNED price: a decimal below the currency's
+  // precision rounds to zero in salesConfig, so it must read "free" here too.
+  const dust = buildMintEnvelope({ ...p, price: '0.0000001', currency: 'usdc' }, nonce, expiresAt)
+  const dustSigned = (dust.record!.bodyTemplate as { token: { salesConfig: { pricePerToken: string } } }).token.salesConfig.pricePerToken
+  ok(dustSigned === '0' && dust.summary.includes('— free,'), 'summary: a sub-unit price reads free, exactly as signed', `${dustSigned} / ${dust.summary}`)
+  const trailing = buildMintEnvelope({ ...p, price: '0.010' }, nonce, expiresAt)
+  ok(trailing.summary.includes('— 0.01 ETH,'), 'summary: trailing zeros trimmed', trailing.summary)
 }
 
 // ── media ingest: data:/passthrough only, no remote fetch ──
@@ -113,6 +158,21 @@ console.log('\ningestMintMedia — accepts data: + ar://|ipfs://, rejects remote
 
   const bad = ingestMintMedia('data:text/plain;base64,aGk=')
   ok('error' in bad, 'unsupported mime → rejected')
+
+  // A GLB is identified by its bytes (magic + header), exactly like the app's
+  // mint gate: labelled, unlabelled, truncated and passthrough.
+  const glbBytes = Buffer.alloc(24)
+  glbBytes.write('glTF', 0, 'ascii'); glbBytes.writeUInt32LE(2, 4); glbBytes.writeUInt32LE(24, 8)
+  const glb = ingestMintMedia(`data:model/gltf-binary;base64,${glbBytes.toString('base64')}`)
+  ok(!('error' in glb) && glb.kind === 'model' && glb.mime === 'model/gltf-binary' && !!glb.bytes, 'data:model/gltf-binary → model kind')
+  const sniffed = ingestMintMedia(`data:application/octet-stream;base64,${glbBytes.toString('base64')}`)
+  ok(!('error' in sniffed) && sniffed.kind === 'model' && sniffed.mime === 'model/gltf-binary', 'octet-stream with glTF magic → model (bytes, not label)')
+  const truncated = Buffer.from(glbBytes); truncated.writeUInt32LE(999, 8)
+  ok('error' in ingestMintMedia(`data:model/gltf-binary;base64,${truncated.toString('base64')}`), 'truncated GLB → rejected before any spend')
+  const v1 = Buffer.from(glbBytes); v1.writeUInt32LE(1, 4)
+  ok('error' in ingestMintMedia(`data:model/gltf-binary;base64,${v1.toString('base64')}`), 'glTF 1.0 binary → rejected')
+  const passModel = ingestMintMedia('ar://abc', 'model')
+  ok(!('error' in passModel) && passModel.kind === 'model' && passModel.mime === 'model/gltf-binary', 'ar:// with declared model → model passthrough')
 }
 
 console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — agent mint builders: ${passed} passed, ${failed} failed`)

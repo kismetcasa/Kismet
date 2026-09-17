@@ -190,13 +190,15 @@ function MomentOvalImpl({
   const meta = useMemo(() => moment.metadata ?? {}, [moment.metadata])
   const media = useMemo(() => resolveMomentMedia(meta), [meta])
   // Static cover: video → poster; gif → poster if present, else the gif itself
-  // (the optimizer flattens it to a still — see OvalArt); image → the still.
+  // (the optimizer flattens it to a still — see OvalArt); image / model → the
+  // still (resolveMomentMedia puts a model's captured poster in `src`; an oval
+  // never mounts a 3D viewer).
   const stillSrc =
     media.kind === 'video'
       ? media.poster
       : media.kind === 'gif'
         ? media.poster ?? media.src
-        : media.kind === 'image'
+        : media.kind === 'image' || media.kind === 'model'
           ? media.src
           : undefined
 

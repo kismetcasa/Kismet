@@ -40,6 +40,13 @@ when a new version lands — and "playing live with online emu"._
 
 ---
 
+> **ROM KINDS (2026-09-02).** `.gb` / `.gbc` are first-class collector-file
+> kinds (`lib/collectorFileTypes`, `lib/collectorFileCore`): detected by the
+> Nintendo logo at `0x104` plus the CGB flag at `0x143`, served download-only
+> under the cartridge's own extension and MIME. The artist attaches the bare
+> cartridge, so a handheld or an emulator runs it without the zip extraction
+> §7 describes; Play itself (§7) is unchanged and still its own build.
+
 ## 0. What the artist actually asked for
 
 The request, assembled from the conversation:

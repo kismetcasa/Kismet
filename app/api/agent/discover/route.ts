@@ -24,7 +24,11 @@ export const runtime = 'nodejs'
  *   kind=collect            → moments in a collection to mint → nextAction: collect
  *
  * Read-only. The richer "curated" tier (taste-matching, cross-source ranking)
- * is the planned x402-gated upgrade.
+ * is the planned x402-gated upgrade. When it ships, restore the agent-facing
+ * guidance the 2026-09 prompt audit removed because the feature did not exist
+ * yet: the `maxPayment` rule in public/agent-skill/references/safety.md, the
+ * paid-tier paragraph in references/discover.md, and "x402" in the manifest's
+ * untrusted-data safety rule (lib/agent/manifest.ts).
  */
 interface DiscoverRow {
   kind: 'listing' | 'collectable'

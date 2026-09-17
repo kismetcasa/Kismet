@@ -228,7 +228,11 @@ export async function GET(req: NextRequest) {
   // can't disagree with what the card would actually show.
   const rawMedia = searchParams.get('media')
   const media =
-    rawMedia === 'image' || rawMedia === 'video' || rawMedia === 'gif' || rawMedia === 'text'
+    rawMedia === 'image' ||
+    rawMedia === 'video' ||
+    rawMedia === 'gif' ||
+    rawMedia === 'text' ||
+    rawMedia === 'model'
       ? rawMedia
       : null
   // resale=1: only mints with a live secondary listing (the cross-market
