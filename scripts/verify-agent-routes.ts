@@ -78,7 +78,7 @@ const TRANSFER_SINGLE = parseAbi([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
 ])
 
-const rpcState = { filled: false, cancelled: false }
+const rpcState = { filled: false, cancelled: false, counter: 0n }
 const CHAIN_NOW = 1_800_000_000
 
 function handleEthCall(to: string, data: Hex): Hex {
@@ -89,7 +89,8 @@ function handleEthCall(to: string, data: Hex): Hex {
     return encodeFunctionResult({ abi: MULTICALL3_ABI, functionName: 'aggregate3', result: results })
   }
   if (target === SEAPORT) {
-    decodeFunctionData({ abi: SEAPORT_ABI, data })
+    const { functionName } = decodeFunctionData({ abi: SEAPORT_ABI, data })
+    if (functionName === 'getCounter') return encodeFunctionResult({ abi: SEAPORT_ABI, functionName, result: rpcState.counter })
     return encodeFunctionResult({
       abi: SEAPORT_ABI,
       functionName: 'getOrderStatus',
@@ -372,6 +373,10 @@ async function main() {
     const cancelled = await json(`/api/agent/prepare-buy?listingId=lst1&account=${BUYER}&format=json`)
     ok(cancelled.status === 409, 'an order Seaport reports cancelled → 409')
     rpcState.cancelled = false
+    rpcState.counter = 5n
+    const invalidated = await json(`/api/agent/prepare-buy?listingId=lst1&account=${BUYER}&format=json`)
+    ok(invalidated.status === 409 && /invalidated/.test(String(invalidated.body?.error)), 'a seller counter past the signed one (incrementCounter) → 409, though getOrderStatus reads untouched', invalidated.body)
+    rpcState.counter = 0n
 
     // ── 4. scout config lifecycle (session-bound) ──
     console.log('\nscout — GET / PUT / DELETE with the revoke queue')

@@ -78,22 +78,32 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
   // (lib/listings resolveTerminalStatuses). A fill through any other Seaport
   // surface — a Base app prolink, another marketplace carrying the same order —
   // leaves it `active` here for up to 30 days, and a fulfill we hand out for it
-  // reverts only AFTER the user approved it. Ask Seaport itself: one read.
+  // reverts only AFTER the user approved it. Ask Seaport itself, one multicall:
+  // the order's own status, and the seller's counter — Seaport derives the hash
+  // it validates from the offerer's CURRENT counter (OrderValidator), so after
+  // an incrementCounter ("cancel all" on another marketplace) the signed order
+  // is unfillable while its stored hash still reads untouched.
   let orderHash: Hex
+  let signedCounter: bigint
   try {
     orderHash = listingOrderHash(listing)
+    signedCounter = BigInt(listing.orderComponents.counter)
   } catch {
     return errorResponse(409, 'Listing order is inconsistent')
   }
   try {
-    const [, isCancelled, totalFilled] = (await serverBaseClient().readContract({
-      address: SEAPORT_ADDRESS,
-      abi: SEAPORT_ABI,
-      functionName: 'getOrderStatus',
-      args: [orderHash],
-    })) as readonly [boolean, boolean, bigint, bigint]
+    const [[, isCancelled, totalFilled], counter] = (await serverBaseClient().multicall({
+      contracts: [
+        { address: SEAPORT_ADDRESS, abi: SEAPORT_ABI, functionName: 'getOrderStatus', args: [orderHash] },
+        { address: SEAPORT_ADDRESS, abi: SEAPORT_ABI, functionName: 'getCounter', args: [listing.seller as Address] },
+      ],
+      allowFailure: false,
+    })) as [readonly [boolean, boolean, bigint, bigint], bigint]
     if (totalFilled > 0n || isCancelled) {
       return errorResponse(409, 'Listing is not active (already filled or cancelled on-chain)')
+    }
+    if (counter !== signedCounter) {
+      return errorResponse(409, 'Listing is not active (the seller invalidated their signed orders on-chain)')
     }
   } catch (err) {
     return upstreamError(502, 'Chain read failed — try again', err, 'agent-prepare-buy')
