@@ -6,11 +6,13 @@ import { checkRateLimit } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import { deleteLastRun, deleteScout, getLastRun, getScout, saveScout, type ScoutRecord } from '@/lib/agent/scout/store'
-import { freshUsage, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
+import { freshUsage, MAX_CREATORS, MAX_EDITIONS_PER_DROP, type BudgetUsage, type Scout } from '@/lib/agent/scout/engine'
 import { getScoutSpender } from '@/lib/agent/scout/spender'
 import { revokePermissionsAsSpender, permKey } from '@/lib/agent/scout/revoke'
 import { dequeuePendingRevoke, queuePendingRevokes } from '@/lib/agent/scout/pendingRevokes'
+import { permissionTypedData } from '@/lib/agent/scout/permission'
 import type { StoredSpendPermission } from '@/lib/agent/scout/serverExecutor'
+import { TIMED_OUT, withinBudget } from '@/lib/withTimeout'
 
 export const runtime = 'nodejs'
 // DELETE waits (bounded) for the spender's on-chain revoke; give it room past the
@@ -29,8 +31,6 @@ const REVOKE_BUDGET_MS = 20_000
  * lifecycle + item-count usage. Smart-wallet-only in practice — an EOA can't
  * grant the Spend Permission a scout needs, so it never has one to run.
  */
-
-const MAX_CREATORS = 50
 
 export async function GET(req: NextRequest) {
   const owner = await getSessionAddress(req)
@@ -51,6 +51,11 @@ export async function GET(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const owner = await getSessionAddress(req)
   if (!owner) return errorResponse(401, 'Sign in to continue')
+  // Each turn-off can cost the shared spender a sponsored revoke per queued
+  // grant; bound repeats per owner.
+  if (!(await checkRateLimit(`agent-scout-delete:${owner.toLowerCase()}`, 10, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
   // Capture the grants BEFORE deleting the record so we can retire them. Turning
   // the agent off must revoke EVERY live permission to our spender — the current
   // one AND any budget-superseded ones still queued. An un-revoked permission
@@ -70,35 +75,42 @@ export async function DELETE(req: NextRequest) {
   const toRevoke = [record?.permission, ...(record?.supersededPermissions ?? [])].filter(
     (p): p is StoredSpendPermission => !!p,
   )
-  if (toRevoke.length === 0) return NextResponse.json({ ok: true, revoked: true })
+  if (toRevoke.length === 0) return NextResponse.json({ ok: true, revoked: true, queued: true })
 
+  // `queued` tells the client whether a retry is actually stored, so it never
+  // promises "Kismet keeps retrying" for a grant the queue write dropped.
+  let queued = true
+  const enqueue = async (perms: StoredSpendPermission[]) => {
+    try {
+      await queuePendingRevokes(owner, perms)
+    } catch (err) {
+      queued = false
+      console.error('[scout] could not queue a revoke retry', { owner, err: err instanceof Error ? err.message : String(err) })
+    }
+  }
   const revoke = (async (): Promise<boolean> => {
     try {
       const spender = await getScoutSpender()
       const failed = await revokePermissionsAsSpender(toRevoke, spender)
-      if (failed.length > 0) await queuePendingRevokes(owner, failed)
+      if (failed.length > 0) await enqueue(failed)
       return failed.length === 0
     } catch (err) {
       console.error('[scout] revoke-on-delete failed', {
         owner,
         err: err instanceof Error ? err.message : String(err),
       })
-      await queuePendingRevokes(owner, toRevoke).catch(() => {})
+      await enqueue(toRevoke)
       return false
     }
   })()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const budget = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), REVOKE_BUDGET_MS)
-  })
-  const outcome = await Promise.race([revoke, budget]).finally(() => clearTimeout(timer))
-  if (outcome === null) {
+  const outcome = await withinBudget(revoke, REVOKE_BUDGET_MS)
+  if (outcome === TIMED_OUT) {
     // Still in flight: queue now (so a process exit can't strand the grant) and
     // let the submission finish after the response.
-    await queuePendingRevokes(owner, toRevoke).catch(() => {})
+    await enqueue(toRevoke)
     after(() => revoke)
   }
-  return NextResponse.json({ ok: true, revoked: outcome === true })
+  return NextResponse.json({ ok: true, revoked: outcome === true, queued: outcome === true || queued })
 }
 
 export async function PUT(req: NextRequest) {
@@ -162,8 +174,8 @@ export async function PUT(req: NextRequest) {
   // Editions per drop (optional; default 1 = one of each new drop). Capped at 10
   // to bound per-drop spend — the dollar budget is the authoritative cap anyway.
   const maxEditionsPerDrop = p.maxEditionsPerDrop == null ? 1 : p.maxEditionsPerDrop
-  if (!Number.isInteger(maxEditionsPerDrop) || maxEditionsPerDrop < 1 || maxEditionsPerDrop > 10) {
-    return errorResponse(400, 'Invalid editions per drop (1–10)')
+  if (!Number.isInteger(maxEditionsPerDrop) || maxEditionsPerDrop < 1 || maxEditionsPerDrop > MAX_EDITIONS_PER_DROP) {
+    return errorResponse(400, `Invalid editions per drop (1–${MAX_EDITIONS_PER_DROP})`)
   }
 
   const now = Math.floor(Date.now() / 1000)
@@ -194,20 +206,11 @@ export async function PUT(req: NextRequest) {
   }
 
   // Usage (item count + on-chain-reconciled spend) is written ONLY by the server
-  // run loop (runScoutServer / dropCoordinator, via saveScout) — never by the
-  // client, which does not send it. We MUST NOT accept a client `usage`: doing so
-  // let an owner reset their own maxItemsPerPeriod counter by submitting a usage
-  // with a different periodStart, and the run loop then re-anchors to the on-chain
-  // period and collects the full item cap again — defeating the cap (sharpest for
-  // free drops, where the dollar allowance doesn't bind). So here we PRESERVE the
-  // existing usage across every config edit (editing policy or pausing mid-period
-  // must not reset the item count) and start fresh ONLY when the caller stores a
-  // permission that differs from the stored one — i.e. the user signed a NEW Spend
-  // Permission in their wallet, a new on-chain budget window. The reset keys off
-  // that signed artifact, never off the client's `budget.start` snapshot: keyed
-  // on the snapshot, an owner could reset their own counter by resending the
-  // config with a later `start` and no new grant. The on-chain Spend Permission
-  // is the authoritative dollar cap regardless.
+  // run paths, never taken from the client. It is preserved across every config
+  // edit and starts fresh ONLY when a NEW grant arrives — the signed permission
+  // (verified below), never the client's `budget.start` snapshot — or an owner
+  // could reset their own item cap by resending config; free drops, where the
+  // dollar allowance doesn't bind, are what the cap protects.
   const existing = await getScout(owner)
   const regranted =
     !!body.permission && (!existing?.permission || permKey(existing.permission) !== permKey(body.permission))
@@ -249,6 +252,19 @@ export async function PUT(req: NextRequest) {
     if (pd.token && pd.token.toLowerCase() !== expectedToken.toLowerCase()) {
       return errorResponse(400, 'Permission token does not match your budget currency')
     }
+    // The wallet's word, not the client's: the usage reset and both revoke queues
+    // key on this grant's identity, so an unsigned or altered one must never be
+    // stored (it would reset the item cap, and each queued forgery costs the
+    // shared spender a sponsored revoke). Fail CLOSED on a read error — "can't
+    // verify" must mean "don't store".
+    let verified = false
+    try {
+      verified = await serverBaseClient().verifyTypedData(permissionTypedData(owner as `0x${string}`, body.permission))
+    } catch (err) {
+      console.error('[scout] permission signature check failed', { owner, err: err instanceof Error ? err.message : String(err) })
+      return errorResponse(503, 'Could not verify the permission signature — try again')
+    }
+    if (!verified) return errorResponse(400, 'Permission signature does not verify for your address')
   }
 
   const away = typeof body.away === 'boolean' ? body.away : (existing?.away ?? false)

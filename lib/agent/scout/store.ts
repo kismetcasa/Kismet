@@ -151,6 +151,18 @@ export async function saveScout(record: ScoutRecord): Promise<void> {
   await syncWatcherIndex(record.scout.owner, prev?.scout.policy.creators ?? [], record.scout.policy.creators)
 }
 
+// Compare-and-set for the server run paths, which re-read the record and write
+// back a usage or queue change: the write lands only if the record is still
+// exactly what was read, so a pause, turn-off or re-grant that landed
+// meanwhile is never overwritten, and a deleted record is never re-created.
+// Those paths never change the creators, so the watcher index needs no sync.
+const SET_IF_UNCHANGED = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]) return 1 end return 0"
+
+/** @returns false when the stored record changed since `expected` was read, or is gone. */
+export async function saveScoutIfUnchanged(expected: ScoutRecord, next: ScoutRecord): Promise<boolean> {
+  return (await redis.eval(SET_IF_UNCHANGED, [key(expected.scout.owner)], [JSON.stringify(expected), JSON.stringify(next)])) === 1
+}
+
 export async function deleteScout(owner: string): Promise<void> {
   const prev = await getScout(owner)
   await redis.del(key(owner))

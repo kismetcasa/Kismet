@@ -113,7 +113,7 @@ batch because it takes array input.
 
 > **Mint/create** (making a new artwork) is covered — see `references/mint.md`. It
 > is the only verb that requires a **Kismet Pass** (while the Pass gate is
-> enabled — it is in production) and signs an EIP-712 intent
+> on — a runtime setting; a 403 tells you) and signs an EIP-712 intent
 > (`sign`, no `send_calls`) rather than paying from the wallet; you pass the media
 > to the prepare call, which hosts it before returning the intent to sign.
 
@@ -136,12 +136,14 @@ Follow Base MCP's documented fallback ladder, in order:
    security model these surfaces enforce). Parse the envelope and continue
    with `send_calls` as normal.
    Recording (step 5) is POST/PATCH — unreachable here — but collect and buy
-   envelopes also carry `record.getUrl`, the same record as one GET URL: fill
-   its `<REPLACE_WITH_send_calls_txHash>` with the confirmed hash, show it to
-   the user and ask them to paste it back, then fetch it. It records only what
-   the receipt proves (same checks as the POST), so it is safe to send twice.
-   If it can't be sent, the on-chain result still stands; say recording will
-   lag. For list, the record call is what publishes the listing — the signed
+   envelopes also carry `record.getUrl`, the same record as one GET URL: prefix
+   it with `BASE`, fill its `<REPLACE_WITH_send_calls_txHash>` with the
+   confirmed hash, show it to the user and ask them to paste it back, then
+   fetch it. It records only what the receipt proves (same checks as the
+   POST), so it is safe to send twice. A `403` "not verified on-chain" or a
+   `503` is transient: retry it after ~5 s, up to 3 times, then report that
+   recording failed — the on-chain result stands either way. For list, the
+   record call is what publishes the listing — the signed
    order exists nowhere else and has no GET form — so use rung 4 instead of
    signing here. Mint is POST-only, so it is rung 4 here as well.
 4. **UI deep-link, last resort** (batch, list, and mint on a chat-only

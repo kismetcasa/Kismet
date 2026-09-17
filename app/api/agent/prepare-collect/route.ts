@@ -9,19 +9,14 @@ import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getMomentMeta } from '@/lib/notifications'
 import { getDisplayName } from '@/lib/ensCache'
 import { parseMomentRef } from '@/lib/agent/refs'
-import { buildCollectPlan } from '@/lib/agent/collect'
-import { collectRecordUrl } from '@/lib/agent/recordUrl'
+import { buildCollectPlan, MAX_COLLECT_QUANTITY } from '@/lib/agent/collect'
+import { collectRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
 import { collectSummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
 import type { AgentActionEnvelope } from '@/lib/agent/types'
 
 export const runtime = 'nodejs'
-
-// Cap agent-requested quantity. The on-chain sale's per-wallet limit is the
-// real gate (enforced by fetchEligibleTokens); this is just a sane upper bound
-// so a typo can't build a 10,000× batch the wallet would choke on.
-const MAX_AGENT_COLLECT_QUANTITY = 50
 
 /**
  * Prepare a "collect" (primary mint) for an AI agent to execute via Base MCP's
@@ -82,7 +77,7 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
 
   const amountNum = Number(body.amount ?? 1)
   const quantity =
-    Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_AGENT_COLLECT_QUANTITY)) : 1n
+    Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_COLLECT_QUANTITY)) : 1n
   // Truncate (don't silently drop) an over-long comment.
   const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
 
@@ -190,7 +185,7 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
         comment,
         pricePerToken: pricePerToken.toString(),
         currency,
-        txHash: '<REPLACE_WITH_send_calls_txHash>',
+        txHash: TX_HASH_PLACEHOLDER,
       },
       getUrl: collectRecordUrl({ collection, tokenId: tokenId.toString(), account, amount: Number(quantity), currency, pricePerToken: pricePerToken.toString(), comment }),
     },

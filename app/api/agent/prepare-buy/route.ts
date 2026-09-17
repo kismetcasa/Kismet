@@ -10,7 +10,7 @@ import { SEAPORT_ABI, SEAPORT_ADDRESS, listingOrderHash } from '@/lib/seaport'
 import { ERC20_ABI, USDC_BASE } from '@/lib/zoraMint'
 import { getDisplayName } from '@/lib/ensCache'
 import { buildBuyPlan } from '@/lib/agent/buy'
-import { buyRecordUrl } from '@/lib/agent/recordUrl'
+import { buyRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
 import { buySummary, safeTitle } from '@/lib/agent/summary'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import { approvePageResponse, isDocumentNavigation } from '@/lib/agent/approvePage'
@@ -162,7 +162,7 @@ async function prepareBuy(req: NextRequest, body: { listingId?: unknown; account
       url: `/api/listings/${listing.id}`,
       bodyTemplate: {
         status: 'filled',
-        txHash: '<REPLACE_WITH_send_calls_txHash>',
+        txHash: TX_HASH_PLACEHOLDER,
       },
       getUrl: buyRecordUrl(listing.id),
     },

@@ -92,7 +92,20 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
         if ((hashes.get(keys[0])?.size ?? 0) === 0) return sets.get(keys[1])?.delete(args[0]) ? 1 : 0
         return 0
       }
-      // Any other script (the rate limiter's INCR+EXPIRE) → "first hit".
+      // The scout record's compare-and-set (store.ts saveScoutIfUnchanged).
+      if (script.includes('== ARGV[1]')) {
+        const cur = store.get(keys[0])
+        if (!cur || cur.v !== args[0]) return 0
+        store.set(keys[0], { v: args[1], ex: cur.ex })
+        return 1
+      }
+      // The rate limiter's INCR (+ EXPIRE on the first hit): a real counter, so
+      // a limit can trip.
+      if (script.includes('INCR')) {
+        const n = Number(store.get(keys[0])?.v ?? 0) + 1
+        store.set(keys[0], { v: String(n), ex: n === 1 ? Number(args[0]) : store.get(keys[0])?.ex })
+        return n
+      }
       return 1
     }
     if (op === 'SET') {
@@ -132,8 +145,10 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
     return null // LPUSH/EXPIRE/SISMEMBER/… — accepted, irrelevant to assertions
   }
 
+  // Like the real service, a bare "OK" status is sent as-is; the client
+  // special-cases it before base64-decoding every other string.
   const b64 = (x: unknown): unknown =>
-    typeof x === 'string' ? Buffer.from(x, 'utf8').toString('base64') : Array.isArray(x) ? x.map(b64) : x
+    typeof x === 'string' ? (x === 'OK' ? x : Buffer.from(x, 'utf8').toString('base64')) : Array.isArray(x) ? x.map(b64) : x
   /** Encode only the `result` payloads, never the pipeline envelope or `error`. */
   const encodeResults = (x: unknown): unknown => {
     if (Array.isArray(x)) return x.map(encodeResults)

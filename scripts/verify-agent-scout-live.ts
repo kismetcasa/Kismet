@@ -211,7 +211,12 @@ const rpcState = {
   ownedBalance: 0n,
   /** Protocol mint fee the mock collection reports (readMintFeeWithBound). */
   mintFee: 0n,
+  /** The mock sale's price (RPC `sale` and the app API's sales map). 0 = free. */
+  pricePerToken: 0n,
+  /** Spend already booked in the current period (manager getCurrentPeriod). */
   periodSpend: 0n,
+  /** The manager reports the permission revoked (isRevoked true, isValid false). */
+  revoked: false,
 }
 
 function handleEthCall(to: string, data: Hex): Hex {
@@ -225,14 +230,16 @@ function handleEthCall(to: string, data: Hex): Hex {
   if (target === MANAGER_ADDRESS) {
     const { functionName } = decodeFunctionData({ abi: MANAGER_ABI, data })
     if (functionName === 'getCurrentPeriod') {
+      // Period boundaries are [start, start + period) — `end` exclusive, as the
+      // contract computes them (SpendPermissionManager.getCurrentPeriod).
       return encodeFunctionResult({
         abi: MANAGER_ABI,
         functionName,
-        result: { start: PERIOD_START, end: PERIOD_START + 2_592_000 - 1, spend: rpcState.periodSpend },
+        result: { start: PERIOD_START, end: PERIOD_START + 2_592_000, spend: rpcState.periodSpend },
       })
     }
-    if (functionName === 'isRevoked') return encodeFunctionResult({ abi: MANAGER_ABI, functionName, result: false })
-    return encodeFunctionResult({ abi: MANAGER_ABI, functionName: 'isValid', result: true })
+    if (functionName === 'isRevoked') return encodeFunctionResult({ abi: MANAGER_ABI, functionName, result: rpcState.revoked })
+    return encodeFunctionResult({ abi: MANAGER_ABI, functionName: 'isValid', result: !rpcState.revoked })
   }
   // Strategy / collection reads — dispatch by decode success.
   try {
@@ -244,7 +251,7 @@ function handleEthCall(to: string, data: Hex): Hex {
         saleStart: 0n,
         saleEnd: BigInt(CHAIN_NOW) + 10_000_000n,
         maxTokensPerAddress: 0n,
-        pricePerToken: 0n, // FREE drop — the paid-spend calldata already has byte-exact oracles
+        pricePerToken: rpcState.pricePerToken,
         fundsRecipient: '0x0000000000000000000000000000000000000000',
       },
     })
@@ -343,8 +350,8 @@ function startAppServer(): Promise<string> {
     }
     if (url.pathname === '/api/moments') {
       const sales: Record<string, unknown> = {}
-      sales[`${COLLECTION.toLowerCase()}:1`] = { type: 'fixedPrice', pricePerToken: '0' }
-      sales[`${COLLECTION.toLowerCase()}:2`] = { type: 'fixedPrice', pricePerToken: '0' }
+      sales[`${COLLECTION.toLowerCase()}:1`] = { type: 'fixedPrice', pricePerToken: rpcState.pricePerToken.toString() }
+      sales[`${COLLECTION.toLowerCase()}:2`] = { type: 'fixedPrice', pricePerToken: rpcState.pricePerToken.toString() }
       return res.end(JSON.stringify({ sales }))
     }
     if (url.pathname === '/api/collect') {
@@ -665,10 +672,11 @@ async function main() {
   const capZero = { ...record, scout: { ...record.scout, policy: { ...record.scout.policy, maxItemPrice: '0' } } }
   redisStore.set(scoutKey, { v: JSON.stringify(capZero) })
   rpcState.mintFee = 1n // free drop (price 0) + a 1 wei protocol fee = 1 wei outlay > cap 0
+  captured.length = 0
   const feeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
   ok(
-    feeRun.collected === 0 && /exceeds your per-item price cap/.test(feeRun.reason ?? ''),
-    `the fee pushes the outlay past the cap → refused, nothing spent (reason: ${feeRun.reason})`,
+    feeRun.collected === 0 && captured.length === 0 && feeRun.skips?.['over-item-price'] === 2 && /nothing within your budget/.test(feeRun.reason ?? ''),
+    `the fee pushes the outlay past the cap → a policy skip in the plan, nothing attempted (reason: ${feeRun.reason}, skips: ${JSON.stringify(feeRun.skips)})`,
   )
   rpcState.mintFee = 0n
   redisStore.clear()
@@ -711,6 +719,55 @@ async function main() {
   )
   await drainPendingRevokes(mockSpender(), 5)
   ok(captured.length === 1, `an empty queue is a no-op (submitted ${captured.length})`)
+
+  // ── 13. Ended / revoked grants are inert: retired without a call, never a throw ──
+  console.log('\nrevoke + run — ended and revoked grants')
+  const { revokePermissionsAsSpender, drainSupersededPermissions } = await import('@/lib/agent/scout/revoke')
+  const nowSec = Math.floor(Date.now() / 1000)
+  const ended = perm({ start: nowSec - 400 * 86_400, end: nowSec - 10 })
+  captured.length = 0
+  const endedFailed = await revokePermissionsAsSpender([ended], mockSpender())
+  ok(endedFailed.length === 0 && captured.length === 0, 'a grant past its end is retired with no on-chain call (the SDK would throw for it)')
+  rpcState.revoked = true
+  const revokedFailed = await revokePermissionsAsSpender([perm()], mockSpender())
+  ok(revokedFailed.length === 0 && captured.length === 0, 'a grant the manager reports revoked drops out with no call')
+  rpcState.revoked = false
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify({ ...record, permission: ended }) })
+  const endedRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(endedRun.reason === 'permission inactive' && endedRun.collected === 0, `a run on an ended grant answers "permission inactive" instead of throwing (got: ${endedRun.reason})`)
+
+  // ── 14. A drain that finishes after the user turned the agent off never re-creates it ──
+  redisStore.clear()
+  const withQueue = { ...record, supersededPermissions: [perm({ start: PERIOD_START + 7 })] }
+  redisStore.set(scoutKey, { v: JSON.stringify(withQueue) })
+  captured.length = 0
+  await drainSupersededPermissions(withQueue as unknown as Parameters<typeof drainSupersededPermissions>[0], mockSpender(() => redisStore.delete(scoutKey)))
+  ok(captured.length === 1 && !redisStore.has(scoutKey), 'the superseded grant is revoked, and the record deleted mid-drain is NOT written back')
+
+  // ── 15. A PAID drop: spend() precedes the mint; an exhausted allowance attempts nothing ──
+  console.log('\nrunScoutServer — paid drop pulls exactly the price before minting')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.pricePerToken = 1_000_000_000_000_000n // 0.001 ETH; allowance 1 ETH, cap 1 ETH
+  captured.length = 0
+  const paidRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  const paidCalls = captured[0]?.calls ?? []
+  ok(paidRun.collected === 2 && captured.length === 2, `both paid drops collected (collected ${paidRun.collected}, submissions ${captured.length})`)
+  ok(
+    paidCalls.length >= 2 && paidCalls[0].to.toLowerCase() === MANAGER_ADDRESS && paidCalls[paidCalls.length - 1].to.toLowerCase() === COLLECTION.toLowerCase(),
+    'each submission is [spend() on the manager …, mint on the collection] — funds pulled before the mint consumes them',
+    JSON.stringify(paidCalls.map((c) => c.to)),
+  )
+  ok(paidCalls[paidCalls.length - 1].value === rpcState.pricePerToken, 'the mint carries exactly the price as value')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.periodSpend = 1_000_000_000_000_000_000n - 1n // 1 wei of allowance left
+  captured.length = 0
+  const brokeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(brokeRun.collected === 0 && captured.length === 0, `an exhausted period allowance attempts nothing (collected ${brokeRun.collected}, submissions ${captured.length}, reason: ${brokeRun.reason})`)
+  rpcState.periodSpend = 0n
+  rpcState.pricePerToken = 0n
 
   console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — scout live-behavior: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

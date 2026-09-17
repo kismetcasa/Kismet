@@ -26,8 +26,9 @@ GET BASE/api/agent/prepare-buy?listingId=the-id-from-discover&account=0x…&form
 - **USDC** → `[approve, fulfillOrder]` when allowance is short, else just
   `[fulfillOrder]`.
 
-A `409` means the listing is no longer active (filled/cancelled/expired); a `400`
-means you're the seller.
+A `409` means the listing cannot be filled (filled, cancelled, expired, or the
+seller invalidated their signed orders on-chain — relay the message); a `404`
+means no such listing; a `400` means you're the seller.
 
 ## 2. Execute
 
@@ -55,8 +56,11 @@ PATCH BASE/api/listings/{id}    ({ "status": "filled", "txHash": "0x…" })
 
 That's it — no buyer signature. The backend re-decodes the Seaport
 `OrderFulfilled` event from your txHash (matched to this listing's order) and
-derives the buyer from it, so a bogus PATCH can't fake a sale. If the PATCH lags,
-the purchase still happened on-chain; just report that recording lagged.
+derives the buyer from it, so a bogus PATCH can't fake a sale. A `403`
+"not verified on-chain" or a `503` is transient (Kismet's RPC is behind the
+wallet): retry the same record after ~5 s, up to 3 times, then report that
+recording failed — never re-run the wallet step. The purchase stands on-chain
+either way.
 
 On a surface that can only fetch a pasted URL (SKILL.md rung 3), use the
 envelope's `record.getUrl` instead: fill the txHash placeholder, show the URL

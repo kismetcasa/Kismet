@@ -90,7 +90,7 @@ export async function collectViaSpendPermission(params: {
    *  concurrent path minted in between (coordinator vs on-open overshooting the
    *  target). Omit to skip the re-check. */
   editionTarget?: bigint
-}): Promise<{ txHash: Hex }> {
+}): Promise<{ txHash: Hex; quantity: bigint }> {
   const { permission, spender, recipient, editionTarget } = params
   let item = params.item
 
@@ -172,7 +172,8 @@ export async function collectViaSpendPermission(params: {
     // (the default), which the composed mint immediately consumes.
     spendCalls = (await prepareSpendCallData(permission, cost, undefined, sdkRpcOptions())).map(toSpenderCall)
   }
-  return await spender.sendCalls(composeScoutCollect(spendCalls, plan.calls))
+  const { txHash } = await spender.sendCalls(composeScoutCollect(spendCalls, plan.calls))
+  return { txHash, quantity: item.quantity }
 }
 
 /**
@@ -247,12 +248,10 @@ export function createSpendPermissionExecutor(cfg: {
         if (headroom < quantity) quantity = headroom
       }
       if (!cfg.spender.atomic) quantity = 1n
-      if (quantity > 1n) {
-        const perEdition = token.pricePerToken + (candidate.currency === 'eth' ? mintFee : 0n)
-        if (perEdition > 0n) {
-          const affordable = (await getPermissionStatus(cfg.permission, sdkRpcOptions())).remainingSpend / perEdition
-          if (affordable < quantity) quantity = affordable
-        }
+      const perEdition = token.pricePerToken + (candidate.currency === 'eth' ? mintFee : 0n)
+      if (quantity > 1n && perEdition > 0n) {
+        const affordable = (await getPermissionStatus(cfg.permission, sdkRpcOptions())).remainingSpend / perEdition
+        if (affordable < quantity) quantity = affordable
       }
       if (quantity < 1n) quantity = 1n // attempt one; the allowance check is the final guard
 
@@ -268,8 +267,8 @@ export function createSpendPermissionExecutor(cfg: {
       // Pass the edition target so collectViaSpendPermission re-clamps against an
       // in-lock balance read (the `editions`/quantity above were sized from a
       // pre-lock fetchEligibleTokens read — see the TOCTOU note there).
-      const { txHash } = await collectViaSpendPermission({ ...cfg, item, editionTarget: editions })
-      return { txHash, quantity }
+      const minted = await collectViaSpendPermission({ ...cfg, item, editionTarget: editions })
+      return { txHash: minted.txHash, quantity: minted.quantity, spent: perEdition * minted.quantity }
     },
   }
 }

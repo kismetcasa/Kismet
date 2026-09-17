@@ -28,8 +28,9 @@ import type { Candidate, Scout } from './engine'
  */
 export interface ScoutExecutor {
   /** Execute one approved collect under the scout's budget. Returns the tx hash
-   *  of the on-chain mint (which /api/collect then verifies) and the number of
+   *  of the on-chain mint (which /api/collect then verifies), the number of
    *  editions actually minted (1 unless a multi-edition top-up on an atomic
-   *  spender). */
-  collect(scout: Scout, candidate: Candidate): Promise<{ txHash: `0x${string}`; quantity: bigint }>
+   *  spender) and what they cost the user in the drop currency's base units
+   *  (price plus the protocol mint fee for ETH, per edition), for their notice. */
+  collect(scout: Scout, candidate: Candidate): Promise<{ txHash: `0x${string}`; quantity: bigint; spent: bigint }>
 }

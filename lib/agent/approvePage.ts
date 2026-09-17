@@ -38,6 +38,10 @@ export function approvePageResponse(envelope: AgentActionEnvelope, backUrl: stri
       'Cache-Control': 'private, no-store',
       Vary: 'Sec-Fetch-Dest',
       'X-Robots-Tag': 'noindex',
+      // The page has one inline stylesheet and no script; the site-wide CSP
+      // is report-only, so enforce a closed one here (ASVS 3.4.3 / 3.4.6).
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'Cross-Origin-Opener-Policy': 'same-origin',
     },
   })
 }

@@ -25,7 +25,8 @@ import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
 import { isValidTokenId } from '@/lib/address'
-import { getWatchers, getScoutsBatch, getScout, saveLastRun, saveScout, type ScoutRecord } from './store'
+import { getWatchers, getScoutsBatch, getScout, saveLastRun, saveScoutIfUnchanged, type ScoutRecord } from './store'
+import { isGrantEnded } from './permission'
 import { drainPendingRevokes } from './pendingRevokes'
 import { evaluateCandidate, type Candidate } from './engine'
 import { allocateRoundRobin, fairOrder, OPEN_EDITION_SUPPLY, type DropWatcher } from './allocate'
@@ -67,6 +68,9 @@ interface Bidder {
   /** On-chain currentPeriod.start, captured during bidding — the authoritative
    *  anchor for both the policy item-cap gate and the post-collect usage bump. */
   periodStart: number
+  /** The drop as this watcher's engine judged it (fee-inclusive price, the
+   *  artist wallet they listed), re-judged against their LIVE policy at spend time. */
+  candidate: Candidate
 }
 
 const empty = (watchers: number, reason: string): DropCoordinationSummary => ({ watchers, collected: 0, recipients: 0, reason })
@@ -192,6 +196,7 @@ export async function runDropCoordination(
         // the policy gate (so the item-cap is judged against the chain's period).
         let periodStart: number
         let budgetEditions = target
+        if (isGrantEnded(r.permission!, now)) return // inert on-chain; the SDK would throw
         try {
           const status = await getPermissionStatus(r.permission!, sdkRpcOptions())
           if (!status.isActive) return
@@ -211,7 +216,7 @@ export async function runDropCoordination(
         if (evaluateCandidate(r.scout, candidate, r.usage, now, undefined, periodStart).action !== 'collect') return // policy gate
         const perWallet = maxPerAddress > 0n ? Number(maxPerAddress - balance) : Number.MAX_SAFE_INTEGER
         const affordable = Math.max(0, Math.min(target, Math.floor(budgetEditions), Math.floor(perWallet)))
-        if (affordable >= 1) bidders.push({ record: r, owner: r.scout.owner as Address, target, affordable, periodStart })
+        if (affordable >= 1) bidders.push({ record: r, owner: r.scout.owner as Address, target, affordable, periodStart, candidate })
       }),
     )
   }
@@ -250,6 +255,9 @@ export async function runDropCoordination(
     // snapshot's (which the next drain revokes).
     const liveRec = await getScout(b.owner)
     if (!liveRec?.scout || !liveRec.permission || !liveRec.away || liveRec.scout.status !== 'active' || liveRec.scout.mode !== 'auto') continue
+    // …and their LIVE policy: a cap or artist list edited during the fan-out
+    // applies to the remaining spends.
+    if (evaluateCandidate(liveRec.scout, b.candidate, liveRec.usage, now, undefined, b.periodStart).action !== 'collect') continue
     const item: BatchCollectItem = {
       collection,
       tokenId,
@@ -260,15 +268,18 @@ export async function runDropCoordination(
       comment: '',
     }
     try {
-      const { txHash } = await collectViaSpendPermission({ permission: liveRec.permission, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
-      await recordCollect(baseUrl, b.owner, drop, currency, a.editions, txHash)
+      const { txHash, quantity } = await collectViaSpendPermission({ permission: liveRec.permission, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })
+      const editions = Number(quantity)
+      await recordCollect(baseUrl, b.owner, drop, currency, editions, txHash)
       // Tell the user their agent collected (mirrors the on-open run's notice),
-      // carrying the token so the bell links to the artwork.
+      // carrying the token so the bell links to the artwork, and what it cost.
+      const spent = perEdition * quantity
       await writeNotification({
         type: 'agent_collect',
         recipient: b.owner,
-        amount: a.editions,
+        amount: editions,
         currency,
+        ...(spent > 0n ? { price: spent.toString() } : {}),
         tokenAddress: drop.collection,
         tokenId: drop.tokenId,
         ...(dropName ? { tokenName: dropName } : {}),
@@ -277,10 +288,10 @@ export async function runDropCoordination(
       // one item regardless of editions — so maxItemsPerPeriod stays enforced
       // across the coordinator + on-open paths (the on-chain allowance is still the
       // hard dollar cap). Best-effort, anchored to the watcher's on-chain period.
-      await bumpItemUsage(b.record, b.periodStart).catch(() => {})
+      await bumpItemUsage(b.owner, b.periodStart).catch(() => {})
       // Run history for the owner's card, on its own key (never in the record).
-      await saveLastRun(b.owner, { at: Math.floor(Date.now() / 1000), collected: a.editions, skipped: 0, reason: 'collected a new drop the moment it landed' })
-      collected += a.editions
+      await saveLastRun(b.owner, { at: Math.floor(Date.now() / 1000), collected: editions, skipped: 0, reason: 'collected a new drop the moment it landed' })
+      collected += editions
       recipients += 1
     } catch (err) {
       // sold out mid-run / allowance race / concurrent-collect lock — skip; self-heals
@@ -347,19 +358,22 @@ async function readBalances(
 }
 
 /** Increment a watcher's per-period DROP count by one after a coordinated collect,
- *  so maxItemsPerPeriod is enforced across the coordinator + on-open paths. Re-reads
- *  the record (to reduce clobbering a concurrent on-open update), rolls to the
- *  on-chain period anchor, then saves. Best-effort; the on-chain Spend Permission
- *  allowance is the authoritative cap regardless of this off-chain counter. */
-async function bumpItemUsage(record: ScoutRecord, periodStart: number): Promise<void> {
-  const fresh = await getScout(record.scout.owner)
-  if (!fresh) return // record was deleted mid-coordination (user turned off) — never resurrect it
-  const u = fresh.usage
-  const usage =
-    u.periodStart === periodStart
-      ? { ...u, itemsThisPeriod: u.itemsThisPeriod + 1 }
-      : { periodStart, spentThisPeriod: '0', itemsThisPeriod: 1 }
-  await saveScout({ ...fresh, usage })
+ *  so maxItemsPerPeriod is enforced across the coordinator + on-open paths. Reads
+ *  the record fresh, rolls to the on-chain period anchor, and writes only if the
+ *  record is still what was read (retried once): a concurrent pause or turn-off
+ *  wins, a deleted agent is never resurrected. Best-effort; the on-chain Spend
+ *  Permission allowance is the authoritative cap regardless of this counter. */
+async function bumpItemUsage(owner: string, periodStart: number): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const fresh = await getScout(owner)
+    if (!fresh) return
+    const u = fresh.usage
+    const usage =
+      u.periodStart === periodStart
+        ? { ...u, itemsThisPeriod: u.itemsThisPeriod + 1 }
+        : { periodStart, spentThisPeriod: '0', itemsThisPeriod: 1 }
+    if (await saveScoutIfUnchanged(fresh, { ...fresh, usage })) return
+  }
 }
 
 /** Record one verified collect on the proof-gated /api/collect (it re-checks the

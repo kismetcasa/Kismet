@@ -61,8 +61,10 @@ POST BASE/api/collect    (record.bodyTemplate with txHash filled)
 ```
 
 `/api/collect` independently verifies the mint on-chain before crediting, so this
-is safe to call and idempotent. If it returns non-2xx the mint still happened —
-just report that recording lagged.
+is safe to call and idempotent. A `403` "not verified on-chain" or a `503` is
+transient (Kismet's RPC is behind the wallet): retry the same record after
+~5 s, up to 3 times, then report that recording failed — never re-run the
+wallet step. The mint stands on-chain either way.
 
 On a surface that can only fetch a pasted URL (SKILL.md rung 3), use the
 envelope's `record.getUrl` instead: replace `<REPLACE_WITH_send_calls_txHash>`
@@ -86,6 +88,7 @@ POST BASE/api/agent/prepare-collect-batch
   "comment": "great set" }             // optional mint comment
 ```
 
+Up to 20 items, one edition each (use single `prepare-collect` for quantities).
 It returns one `calls` batch (a single `send_calls` approval — USDC items share
 one summed approve) plus a `records[]` array (one `/api/collect` per item). After
 the single approval confirms, POST each `records[]` entry with the **same**

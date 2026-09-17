@@ -19,18 +19,10 @@ import { formatUnits } from 'viem'
 import { ChevronRight } from 'lucide-react'
 import { useAgent } from '@/hooks/useAgent'
 import { formatRelativeTime } from '@/lib/inprocess'
-import { describeRunReason } from '@/lib/agent/scout/skipReasons'
-import type { ScoutLastRun } from '@/lib/agent/scout/store'
+import { describeLastRun } from '@/lib/agent/scout/skipReasons'
 import { AgentCollectPanel } from './AgentCollectPanel'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
-
-/** `Last run 3h ago · collected 1` / `· nothing new from your artists`. */
-function lastRunLine(r: ScoutLastRun): string {
-  const when = formatRelativeTime(r.at)
-  const what = r.collected > 0 ? `collected ${r.collected}` : (describeRunReason(r.reason) ?? 'nothing to collect')
-  return `Last run ${when === 'just now' ? when : `${when} ago`} · ${what}`
-}
 
 export function AgentCollectEntry() {
   const ag = useAgent()
@@ -123,7 +115,7 @@ export function AgentCollectEntry() {
           <ChevronRight size={14} className="shrink-0 text-muted group-hover:text-dim transition-colors" aria-hidden="true" />
         </div>
         {scout && ag.lastRun && !ag.running && (
-          <p className="text-[10px] font-mono text-dim mt-1 truncate">{lastRunLine(ag.lastRun)}</p>
+          <p className="text-[10px] font-mono text-dim mt-1 truncate">{describeLastRun(ag.lastRun, formatRelativeTime(ag.lastRun.at))}</p>
         )}
       </button>
 

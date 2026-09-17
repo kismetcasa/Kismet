@@ -12,7 +12,7 @@ import { batchCollectSummary } from '@/lib/agent/summary'
 import { parseMomentRef } from '@/lib/agent/refs'
 import { dedupeMomentRefs } from '@/lib/agent/dedupeRefs'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
-import { collectRecordUrl } from '@/lib/agent/recordUrl'
+import { collectRecordUrl, TX_HASH_PLACEHOLDER } from '@/lib/agent/recordUrl'
 import { buildApproveLink } from '@/lib/agent/prolink'
 import type { AgentActionEnvelope, AgentRecordHint } from '@/lib/agent/types'
 
@@ -25,8 +25,8 @@ const MAX_BATCH = 20
 /**
  * Prepare a multi-collect ("collect these N") for one Base MCP send_calls
  * approval — a whole basket in one approval. Read-only and inert. Resolves each
- * item's live sale (currency +
- * price + eligibility) on-chain so it never builds a mint that would revert,
+ * item's live sale (currency + price + eligibility) on-chain so it never
+ * builds a mint that would revert,
  * then returns a single EIP-5792 batch plus one /api/collect record per item
  * (all keyed to the shared txHash).
  */
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
       comment,
       pricePerToken: it.pricePerToken.toString(),
       currency: it.currency,
-      txHash: '<REPLACE_WITH_send_calls_txHash>',
+      txHash: TX_HASH_PLACEHOLDER,
     },
     getUrl: collectRecordUrl({ collection: it.collection, tokenId: it.tokenId.toString(), account: recipient, amount: Number(it.quantity), currency: it.currency, pricePerToken: it.pricePerToken.toString(), comment }),
   }))
@@ -172,6 +172,7 @@ export async function POST(req: NextRequest) {
     recipient,
     recipientName,
     skipped: skipped.length,
+    approvalIncluded: plan.usdcApproveIncluded,
   })
 
   const envelope: AgentActionEnvelope = {
@@ -181,6 +182,7 @@ export async function POST(req: NextRequest) {
     summary,
     ...(link ? { link } : {}),
     records,
+    skipped,
     // A basket can mix ETH and USDC items, so surface BOTH ceilings — collapsing
     // to one currency would silently drop the other's spend cap.
     caps: {
@@ -189,5 +191,5 @@ export async function POST(req: NextRequest) {
     },
   }
 
-  return NextResponse.json({ ...envelope, skipped }, { headers: { 'Cache-Control': 'private, no-store' } })
+  return NextResponse.json(envelope, { headers: { 'Cache-Control': 'private, no-store' } })
 }

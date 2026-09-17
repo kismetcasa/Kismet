@@ -72,6 +72,9 @@ export function useAgent() {
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
   const [removing, setRemoving] = useState(false)
+  // False after a turn-off whose spender-side revoke was still in flight: the
+  // next setup must grant fresh rather than reuse a grant about to be revoked.
+  const reuseGrant = useRef(true)
   const [lastRun, setLastRun] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const autoRanRef = useRef(false)
@@ -155,7 +158,8 @@ export function useAgent() {
         }
         const allowance =
           cfg.currency === 'eth' ? parseEther(cfg.allowance) : parseUnits(cfg.allowance, 6)
-        const permission = await grantScoutBudget({ currency: cfg.currency, allowance, periodInDays: cfg.periodInDays })
+        const permission = await grantScoutBudget({ currency: cfg.currency, allowance, periodInDays: cfg.periodInDays }, { reuse: reuseGrant.current })
+        reuseGrant.current = true
 
         // Build the engine budget snapshot from the REAL granted permission so the
         // engine + the chain share one window + allowance.
@@ -253,15 +257,17 @@ export function useAgent() {
       // a failed turn-off.
       await ensureSession()
       const r = await fetch('/api/agent/scout', { method: 'DELETE' })
-      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; revoked?: boolean; error?: string }
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; revoked?: boolean; queued?: boolean; error?: string }
       if (!r.ok) throw new Error(d.error ?? 'Could not turn off the agent')
       let note: string | null = null
       if (d.revoked !== true && state.permission) {
+        reuseGrant.current = false
         try {
           await revokeScoutBudget(state.permission)
         } catch {
-          note =
-            'Agent Collect is off. Its budget grant is still being revoked — Kismet keeps retrying, and you can revoke it from your Base Account any time.'
+          note = d.queued
+            ? 'Agent Collect is off. Its budget grant is still being revoked — Kismet keeps retrying, and you can revoke it from your Base Account any time.'
+            : 'Agent Collect is off, but its budget grant could not be revoked — revoke it from your Base Account.'
         }
       }
       setState(EMPTY)

@@ -4,6 +4,7 @@ import { base, mainnet } from 'viem/chains'
 import { normalize } from 'viem/ens'
 import { redis } from '@/lib/redis'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { TIMED_OUT, withinBudget } from '@/lib/withTimeout'
 
 // Shared ENS reverse-resolution cache, used by both /api/profile/[address]
 // (single) and /api/profiles (batch) so the two never diverge on how a
@@ -139,10 +140,6 @@ export async function resolveEnsAndCache(address: string): Promise<string | null
   }
 }
 
-// Unique marker so a race timeout can never be confused with a resolution
-// result (getEnsName returns arbitrary reverse-record strings).
-const TIMED_OUT = Symbol('ens-budget-timeout')
-
 /**
  * Bounded inline resolution for cache misses. Races resolveEnsAndCache
  * against `budgetMs`:
@@ -161,11 +158,7 @@ export async function resolveEnsWithBudget(
   budgetMs: number,
 ): Promise<{ ens: string | null; pending?: Promise<unknown> }> {
   const resolution = resolveEnsAndCache(address)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<typeof TIMED_OUT>((r) => {
-    timer = setTimeout(() => r(TIMED_OUT), budgetMs)
-  })
-  const winner = await Promise.race([resolution, timeout]).finally(() => clearTimeout(timer))
+  const winner = await withinBudget(resolution, budgetMs)
   if (winner === TIMED_OUT) return { ens: null, pending: resolution }
   return { ens: winner }
 }
@@ -186,8 +179,8 @@ export async function resolveEnsWithBudget(
 // Only a name that is already ENS-normalized is displayed (isDisplayableName):
 // a reverse record is set by its owner and a label can be arbitrary bytes at
 // the registry, so an un-normalized name could carry spaces, quotes or a
-// newline into the summary line. The mainnet path is protected the same way
-// (resolveEnsAndCache normalizes before the forward check).
+// newline into the summary line. Both sources pass through it — the mainnet
+// cache normalizes only for its forward check and returns the raw record.
 //
 // Cosmetic, so bounded: the Basename answer is cached per address (1h for a
 // name or a confirmed none; 5min after a failed lookup), lookups are
@@ -206,9 +199,10 @@ const basenameKey = (address: string) => `kismetart:basename:${address.toLowerCa
 const inFlight = new Map<string, Promise<string | null>>()
 
 /** ENS-normalized, single-token, bounded — and free of the summary line's own
- *  punctuation, which ENS normalization permits. */
+ *  punctuation (the quote marks and arrows lib/agent/summary neutralizes in
+ *  titles), which ENS normalization permits. */
 export function isDisplayableName(name: string): boolean {
-  if (!name || name.length > NAME_MAX || /[\s“”„‟"'()→⇒]/.test(name)) return false
+  if (!name || name.length > NAME_MAX || /[\s“”„‟"'()→⇒➔➡]/.test(name)) return false
   try {
     return normalize(name) === name
   } catch {
@@ -223,32 +217,24 @@ export async function getDisplayName(address: string): Promise<string | null> {
     lookup = resolveDisplayName(address).finally(() => inFlight.delete(lc))
     inFlight.set(lc, lookup)
   }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const budget = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), NAME_BUDGET_MS)
-  })
+  const name = await withinBudget(lookup, NAME_BUDGET_MS)
+  if (name !== TIMED_OUT) return name
+  // Budget hit: keep the lookup alive past the response so it fills the
+  // caches (outside a request scope — scripts — the promise simply runs).
   try {
-    const name = await Promise.race([lookup, budget])
-    if (name === null && inFlight.has(lc)) {
-      // Budget hit: keep the lookup alive past the response so it fills the
-      // caches (outside a request scope — scripts — the promise simply runs).
-      try {
-        after(() => lookup)
-      } catch {
-        /* not inside a request */
-      }
-    }
-    return name
-  } finally {
-    if (timer) clearTimeout(timer)
+    after(() => lookup)
+  } catch {
+    /* not inside a request */
   }
+  return null
 }
 
 async function resolveDisplayName(address: string): Promise<string | null> {
   const basename = await resolveBasename(address)
   if (basename) return basename
   const cached = await getCachedEns(address)
-  return cached !== undefined ? cached : await resolveEnsAndCache(address)
+  const ens = cached !== undefined ? cached : await resolveEnsAndCache(address)
+  return ens && isDisplayableName(ens) ? ens : null
 }
 
 /** Cached Basename lookup. '' caches a confirmed none for BASENAME_TTL; a

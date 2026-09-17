@@ -17,9 +17,10 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { formatUnits, isAddress, parseUnits } from 'viem'
 import { useAgent, type AgentConfigInput, type WatchedArtist } from '@/hooks/useAgent'
-import { describeRunReason, describeSkips } from '@/lib/agent/scout/skipReasons'
-import { formatRelativeTime } from '@/lib/inprocess'
-import type { ScoutLastRun } from '@/lib/agent/scout/store'
+import { describeLastRun } from '@/lib/agent/scout/skipReasons'
+import { MAX_CREATORS, MAX_EDITIONS_PER_DROP } from '@/lib/agent/scout/engine'
+import { ETERNITY_END } from '@/lib/agent/scout/grantBudget'
+import { formatRelativeTime, shortAddress } from '@/lib/inprocess'
 
 const PERIODS = [
   { label: 'per day', days: 1 },
@@ -27,28 +28,13 @@ const PERIODS = [
   { label: 'per month', days: 30 },
 ] as const
 
-const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
-const label = (a: WatchedArtist) => a.username || short(a.address)
+const label = (a: WatchedArtist) => a.username || shortAddress(a.address)
 
-/** `Last run 3h ago: collected 1, skipped 2 — 2 over your per-item cap; stopped mid-run.` */
-function lastRunText(r: ScoutLastRun): string {
-  const when = formatRelativeTime(r.at)
-  const head = `Last run ${when === 'just now' ? when : `${when} ago`}: `
-  const reason = describeRunReason(r.reason)
-  const body = r.collected > 0 ? `collected ${r.collected}${r.skipped ? `, skipped ${r.skipped}` : ''}` : (reason ?? 'nothing to collect')
-  const skips = describeSkips(r.skips)
-  // With collects, the reason (a mid-run stop, failures) still matters — append it.
-  const tail = r.collected > 0 && reason ? `; ${reason}` : ''
-  return `${head}${body}${skips ? ` — ${skips}` : ''}${tail}.`
-}
-
-const MAX_CREATORS = 50
-
-/** ` · grant expires 12/3/2027` for a finite grant; older grants have no end
- *  (the SDK's "never" sentinel is far beyond any real date). */
+/** ` · grant expires 12/3/2027` for a finite grant; older grants carry the
+ *  SDK's "never" end. */
 function grantExpiry(permission: ReturnType<typeof useAgent>['permission']): string {
   const end = permission?.permission.end
-  if (typeof end !== 'number' || end > 4_102_444_800) return ''
+  if (typeof end !== 'number' || end >= ETERNITY_END) return ''
   return ` · grant expires ${new Date(end * 1000).toLocaleDateString()}`
 }
 
@@ -168,7 +154,7 @@ export function AgentCollectPanel({
     if (!Number.isInteger(n) || n < 1) return 'Items per period must be at least 1.'
     if (mode === 'editions') {
       const ed = parseInt(editions, 10)
-      if (!Number.isInteger(ed) || ed < 1 || ed > 10) return 'Editions per drop must be between 1 and 10.'
+      if (!Number.isInteger(ed) || ed < 1 || ed > MAX_EDITIONS_PER_DROP) return `Editions per drop must be between 1 and ${MAX_EDITIONS_PER_DROP}.`
     }
     return null
   }
@@ -218,7 +204,7 @@ export function AgentCollectPanel({
   const active = ag.scout?.status === 'active'
   const showForm = !ag.scout || editing
   const watching = ag.scout
-    ? ag.scout.policy.creators.map((a) => ag.artistLabels?.[a] || short(a)).join(', ')
+    ? ag.scout.policy.creators.map((a) => ag.artistLabels?.[a] || shortAddress(a)).join(', ')
     : ''
 
   return (
@@ -262,7 +248,7 @@ export function AgentCollectPanel({
 
           {ag.lastRun ? (
             <p className="text-[10px] font-mono text-dim leading-relaxed">
-              {ag.running ? 'Checking your artists…' : lastRunText(ag.lastRun)}
+              {ag.running ? 'Checking your artists…' : describeLastRun(ag.lastRun, formatRelativeTime(ag.lastRun.at), true)}
             </p>
           ) : active ? (
             <p className="text-[10px] font-mono text-subtle leading-relaxed">
@@ -396,8 +382,8 @@ export function AgentCollectPanel({
                         disabled={artists.some((x) => x.address === u.address)}
                         className="w-full text-left px-2 py-1.5 text-xs font-mono text-ink hover:bg-raised transition-colors disabled:opacity-40 flex items-center justify-between gap-2"
                       >
-                        <span className="truncate">{u.username || short(u.address)}</span>
-                        <span className="text-[10px] text-subtle shrink-0">{short(u.address)}</span>
+                        <span className="truncate">{u.username || shortAddress(u.address)}</span>
+                        <span className="text-[10px] text-subtle shrink-0">{shortAddress(u.address)}</span>
                       </button>
                     ))
                   )}

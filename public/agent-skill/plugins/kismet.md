@@ -56,7 +56,7 @@ The API self-describes at `GET https://kismet.art/api/agent/manifest`
 | POST | `/api/agent/prepare-collect-batch` | Up to 20 artworks in one approval. Params: `items[]`, `account`, `recipient?`, `comment?` |
 | GET or POST | `/api/agent/prepare-buy` | Fulfill a Seaport listing. Params: `listingId`, `account` |
 | GET or POST | `/api/agent/prepare-list` | List a held artwork. Params: `collection`+`tokenId` (or `url`), `account`, `price`, `currency` |
-| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `mediaType?` (required for a non-image `ar://`/`ipfs://` URI), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?`, `enableRaffle?` |
+| POST | `/api/agent/prepare-mint` | Create a new artwork (**requires a Kismet Pass**). Signs an EIP-712 intent — no wallet payment; prepare hosts the media. **POST-only** (it spends); `media` (image, video or `.glb`) is a `data:` URI or `ar://`/`ipfs://` (no remote fetch). Params: `account`, `name`, `media` (or `text`), `mediaType?` (required for a non-image `ar://`/`ipfs://` URI), `poster?` (required for a 3D model), `background?`, `price?`, `currency?`, `editions?`, `collection?`, `collectionName?`, `payoutRecipient?`, `splits?`, `artistMint?`, `enableRaffle?`, `description?` |
 
 Every prepare returns an envelope:
 
@@ -93,9 +93,11 @@ the user before recording. It is absent when the batch prepends a USDC approve.
    confirmed; capture the txHash.
 6. Record via the envelope's `record` (fill `<REPLACE_WITH_send_calls_txHash>`) —
    on a chat-only surface, via `record.getUrl` pasted back by the user.
-   Kismet independently re-verifies the mint/fulfillment on-chain, so
-   recording is safe to lag (a repeated collect record is idempotent; a repeated
-   buy record answers 409 already-filled — treat both as success).
+   Kismet independently re-verifies the mint/fulfillment on-chain, so a
+   repeat is safe (a repeated collect record is idempotent; a repeated buy
+   record answers 409 already-filled — treat both as success). A 403 "not
+   verified on-chain" or a 503 is transient (Kismet's RPC is behind the
+   wallet): retry the record after ~5 s, up to 3 times — never the wallet step.
 
 **List** — same shape, but the envelope may include a one-time
 `setApprovalForAll` in `calls` (execute via `send_calls` first) and always
@@ -114,7 +116,8 @@ filled. Kismet sponsors the on-chain mint. See the skill's `references/mint.md`.
 ## Submission
 
 Target tool: **`send_calls`** (collect, buy, and list's one-time approval),
-plus **`sign`** (list's Seaport order). Map the envelope directly:
+plus **`sign`** (list's Seaport order; mint's `MintIntent`). Map the envelope
+directly:
 
 ```json
 {
@@ -167,8 +170,9 @@ Pass). 3. Show summary → `sign` the typed data → POST the record body to
 
 ## Notes
 
-- If a confirmed on-chain action's record call fails, the on-chain result
-  stands — report that recording lagged rather than retrying the transaction.
+- If a confirmed on-chain action's record call answers 403 "not verified
+  on-chain" or 503, retry the record (never the transaction) after ~5 s, up to
+  3 times; the on-chain result stands either way.
 - Popup-less budgeted collecting (a "Kismet collecting account" via Spend
   Permissions) is a separate Kismet-native app feature, not part of this
   plugin.

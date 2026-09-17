@@ -17,6 +17,7 @@ import { getAccount } from '@wagmi/core'
 import { wagmiConfig } from '@/lib/wagmi'
 import { USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
 import type { StoredSpendPermission } from './serverExecutor'
+import { isGrantEnded } from './permission'
 
 const BASE_CHAIN_ID = 8453
 
@@ -29,12 +30,13 @@ export type ScoutPermission = StoredSpendPermission
 
 /** New grants carry a finite `end`. The SDK's default is "never", which is why a
  *  stranded grant has to be chased by the revoke machinery at all; a bounded
- *  lifetime caps that exposure. The agent's own status reads the expiry, and
- *  the inactive path already tells the owner to set it up again. */
-export const GRANT_LIFETIME_DAYS = 365
+ *  lifetime caps that exposure. scoutBudgetStatus reports an ended grant
+ *  inactive (the SDK itself throws for one), and the panel then says to set it
+ *  up again. */
+const GRANT_LIFETIME_DAYS = 365
 /** The SDK's "never" end (2^48 − 1) — what grants made before the finite
  *  lifetime carry. */
-const ETERNITY_END = 281474976710655
+export const ETERNITY_END = 281474976710655
 /** A matching grant is reused only with at least this much lifetime left. */
 const REUSE_MIN_REMAINING_S = 30 * 86_400
 
@@ -48,12 +50,18 @@ async function connected(): Promise<{ provider: ProviderInterface; account: `0x$
 }
 
 /** Grant (or re-grant) the bounded budget to the scout spender. One signature. */
-export async function grantScoutBudget(p: {
-  currency: BudgetCurrency
-  /** Allowance per period, base units (wei / USDC-6). */
-  allowance: bigint
-  periodInDays: number
-}): Promise<ScoutPermission> {
+export async function grantScoutBudget(
+  p: {
+    currency: BudgetCurrency
+    /** Allowance per period, base units (wei / USDC-6). */
+    allowance: bigint
+    periodInDays: number
+  },
+  /** `reuse: false` forces a fresh grant — after a turn-off whose spender-side
+   *  revoke is still in flight, a matching grant that reads active now would be
+   *  revoked under the new agent moments later. */
+  opts: { reuse?: boolean } = {},
+): Promise<ScoutPermission> {
   if (!SCOUT_SPENDER) throw new Error('Agent Collect is not available yet')
   const { requestSpendPermission, fetchPermissions, getPermissionStatus } = await spendPerm()
   const { provider, account } = await connected()
@@ -69,17 +77,19 @@ export async function grantScoutBudget(p: {
   // grant close to its end is renewed rather than reused, so "set it up again"
   // near expiry actually renews.
   const nowSec = Math.floor(Date.now() / 1000)
-  try {
-    const perms = await fetchPermissions({ account, chainId: BASE_CHAIN_ID, spender: SCOUT_SPENDER, provider })
-    for (const perm of perms) {
-      const d = perm.permission
-      if (d.token.toLowerCase() !== token.toLowerCase()) continue
-      if (d.allowance !== p.allowance.toString() || d.period !== periodSeconds) continue
-      if (d.end >= ETERNITY_END || d.end - nowSec < REUSE_MIN_REMAINING_S) continue
-      if ((await getPermissionStatus(perm)).isActive) return perm
+  if (opts.reuse !== false) {
+    try {
+      const perms = await fetchPermissions({ account, chainId: BASE_CHAIN_ID, spender: SCOUT_SPENDER, provider })
+      for (const perm of perms) {
+        const d = perm.permission
+        if (d.token.toLowerCase() !== token.toLowerCase()) continue
+        if (d.allowance !== p.allowance.toString() || d.period !== periodSeconds) continue
+        if (d.end >= ETERNITY_END || d.end - nowSec < REUSE_MIN_REMAINING_S) continue
+        if ((await getPermissionStatus(perm)).isActive) return perm
+      }
+    } catch {
+      /* fall through to a fresh grant */
     }
-  } catch {
-    /* fall through to a fresh grant */
   }
 
   return requestSpendPermission({
@@ -94,8 +104,23 @@ export async function grantScoutBudget(p: {
   })
 }
 
-/** Live status of a granted budget (remaining this period, next reset, active). */
+/** Live status of a granted budget (remaining this period, next reset, active).
+ *  An ended grant is answered here as inactive: on-chain it reverts
+ *  (AfterSpendPermissionEnd) and the SDK throws for it, which would leave the
+ *  panel with no status and no "set it up again". */
 export async function scoutBudgetStatus(permission: ScoutPermission) {
+  if (isGrantEnded(permission)) {
+    const end = permission.permission.end
+    return {
+      remainingSpend: 0n,
+      nextPeriodStart: new Date(end * 1000),
+      isRevoked: false,
+      isExpired: true,
+      isActive: false,
+      isApprovedOnchain: false,
+      currentPeriod: { start: end, end, spend: 0n },
+    }
+  }
   const { getPermissionStatus } = await spendPerm()
   return getPermissionStatus(permission)
 }

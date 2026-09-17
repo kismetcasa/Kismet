@@ -23,10 +23,14 @@ import type { MintParams } from './mint'
  */
 
 const TITLE_MAX = 60
+// A grapheme can stack combining marks without limit ("zalgo"), so the
+// grapheme cap alone bounds nothing; bound the code points too.
+const TITLE_MAX_CODE_POINTS = 240
 
 // Control (Cc), format (Cf: bidi controls, zero-width, soft hyphen, the TAG
-// block…) and line/paragraph separators are dropped. ZWJ (U+200D) and VS16
-// (U+FE0F) are format characters emoji sequences are built from, so they stay.
+// block…) and line/paragraph separators are dropped. ZWJ (U+200D) is a format
+// character emoji sequences are built from, so it stays (VS16, U+FE0F, is a
+// mark, never matched here).
 const DROPPED = /(?![‍️])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
 // The summary's own punctuation: a title must not be able to close the quotes
 // around it or draw the "→ to" arrow.
@@ -55,11 +59,13 @@ export function safeTitle(raw: string | null | undefined): string | null {
     .trim()
   if (cleaned.length === 0) return null
   const units = graphemes ? Array.from(graphemes.segment(cleaned), (s) => s.segment) : Array.from(cleaned)
-  return units.length > TITLE_MAX ? `${units.slice(0, TITLE_MAX - 1).join('')}…` : cleaned
+  const capped = units.length > TITLE_MAX ? `${units.slice(0, TITLE_MAX - 1).join('')}…` : cleaned
+  const points = Array.from(capped)
+  return points.length > TITLE_MAX_CODE_POINTS ? `${points.slice(0, TITLE_MAX_CODE_POINTS - 1).join('')}…` : capped
 }
 
 /** `alice.base.eth (0x71Dc…7244)` when a name resolved, else the short address. */
-export function nameLabel(address: string, name?: string | null): string {
+function nameLabel(address: string, name?: string | null): string {
   return name ? `${name} (${shortAddress(address)})` : shortAddress(address)
 }
 
@@ -101,10 +107,11 @@ export function batchCollectSummary(p: {
   recipient: string
   recipientName?: string | null
   skipped: number
+  approvalIncluded: boolean
 }): string {
   const fees = p.includesMintFees ? ' (incl. mint fees)' : ''
   const skipNote = p.skipped > 0 ? ` Skipped ${p.skipped} unavailable.` : ''
-  return `Collect ${p.count} artwork${p.count === 1 ? '' : 's'} for ${p.totalLabel || 'free'}${fees} in one approval → to ${nameLabel(p.recipient, p.recipientName)}.${skipNote}`
+  return `Collect ${p.count} artwork${p.count === 1 ? '' : 's'} for ${p.totalLabel || 'free'}${fees} in one approval → to ${nameLabel(p.recipient, p.recipientName)}.${p.approvalIncluded ? USDC_APPROVAL_NOTE : ''}${skipNote}`
 }
 
 export function buySummary(p: {

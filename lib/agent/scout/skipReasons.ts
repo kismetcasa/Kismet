@@ -1,11 +1,12 @@
 import type { SkipReason } from './engine'
+import type { ScoutLastRun } from './store'
 
 /**
  * Owner-facing wording for the engine's skip reasons (lib/agent/scout/engine
  * SkipReason), for the run history on the profile card. Pure and import-free
- * beyond the type, so the client bundle and the verify scripts can share it.
+ * beyond the types, so the client bundle and the verify scripts can share it.
  */
-export const SKIP_REASON_LABEL: Record<SkipReason, string> = {
+const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   paused: 'while paused',
   'permission-inactive': 'budget grant inactive',
   'currency-mismatch': 'priced in a different currency',
@@ -50,4 +51,23 @@ export function describeSkips(skips?: Partial<Record<SkipReason, number>> | null
     .sort((a, b) => b[1] - a[1])
     .map(([reason, n]) => `${n} ${SKIP_REASON_LABEL[reason] ?? reason}`)
   return parts.length > 0 ? parts.join(', ') : null
+}
+
+/**
+ * The owner's run-history line. `when` is the already-formatted relative time
+ * ("3h" / "just now"), kept out of here so this stays import-free. The short
+ * form (`Last run 3h ago · collected 1`) is the profile card's; the detailed
+ * form adds the skip breakdown and, with collects, the reason (a mid-run stop,
+ * failures): `Last run 3h ago: collected 1, skipped 2 — 2 over your per-item
+ * cap; stopped mid-run.`
+ */
+export function describeLastRun(r: ScoutLastRun, when: string, detailed = false): string {
+  const head = `Last run ${when === 'just now' ? when : `${when} ago`}`
+  const reason = describeRunReason(r.reason)
+  const collected = r.collected > 0 ? `collected ${r.collected}` : null
+  if (!detailed) return `${head} · ${collected ?? reason ?? 'nothing to collect'}`
+  const body = collected ? `${collected}${r.skipped ? `, skipped ${r.skipped}` : ''}` : (reason ?? 'nothing to collect')
+  const skips = describeSkips(r.skips)
+  const tail = collected && reason ? `; ${reason}` : ''
+  return `${head}: ${body}${skips ? ` — ${skips}` : ''}${tail}.`
 }

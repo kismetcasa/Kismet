@@ -29,7 +29,7 @@ import {
   type Hex,
 } from 'viem'
 import { createMockUpstash } from './_mock-upstash.ts'
-import { SEAPORT_ABI, buildSellOrder, serializeOrder } from '@/lib/seaport'
+import { SEAPORT_ABI, buildSellOrder, listingOrderHash, serializeOrder } from '@/lib/seaport'
 import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { shortAddress } from '@/lib/inprocess'
 
@@ -57,6 +57,8 @@ const COLLECTION = getAddress(`0x${'c0'.repeat(20)}`)
 const SPENDER = getAddress(`0x${'cc'.repeat(20)}`)
 const NATIVE_ETH = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 const RECORD_TX = `0x${'7a'.repeat(32)}` as Hex
+const RECORD_TX2 = `0x${'7b'.repeat(32)}` as Hex
+const OTHER = getAddress(`0x${'ac'.repeat(20)}`)
 const PRICE = 1_000_000_000_000_000n // 0.001 ETH
 const MINT_FEE = 111_000_000_000_000n
 const LISTING_PRICE = 50_000_000_000_000_000n // 0.05 ETH
@@ -78,7 +80,19 @@ const TRANSFER_SINGLE = parseAbi([
   'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
 ])
 
-const rpcState = { filled: false, cancelled: false, counter: 0n }
+const rpcState = {
+  filled: false,
+  cancelled: false,
+  counter: 0n,
+  /** eth_call answers a JSON-RPC error (chain read failure). */
+  failing: false,
+  /** The universal signature validator's answer (a deployless eth_call, no `to`). */
+  sigValid: true,
+  /** How many receipt reads still answer null before the receipt "indexes". */
+  pendingReceipts: 0,
+  lastOrderHash: '',
+  lastCounterOfferer: '',
+}
 const CHAIN_NOW = 1_800_000_000
 
 function handleEthCall(to: string, data: Hex): Hex {
@@ -89,8 +103,12 @@ function handleEthCall(to: string, data: Hex): Hex {
     return encodeFunctionResult({ abi: MULTICALL3_ABI, functionName: 'aggregate3', result: results })
   }
   if (target === SEAPORT) {
-    const { functionName } = decodeFunctionData({ abi: SEAPORT_ABI, data })
-    if (functionName === 'getCounter') return encodeFunctionResult({ abi: SEAPORT_ABI, functionName, result: rpcState.counter })
+    const { functionName, args } = decodeFunctionData({ abi: SEAPORT_ABI, data })
+    if (functionName === 'getCounter') {
+      rpcState.lastCounterOfferer = String(args[0]).toLowerCase()
+      return encodeFunctionResult({ abi: SEAPORT_ABI, functionName, result: rpcState.counter })
+    }
+    if (functionName === 'getOrderStatus') rpcState.lastOrderHash = String(args[0]).toLowerCase()
     return encodeFunctionResult({
       abi: SEAPORT_ABI,
       functionName: 'getOrderStatus',
@@ -141,7 +159,7 @@ const MOCK_BLOCK = {
 }
 
 /** A successful mint receipt: one TransferSingle of token 42 to USER. */
-function mockReceipt() {
+function mockReceipt(hash: Hex) {
   const topics = encodeEventTopics({
     abi: TRANSFER_SINGLE,
     eventName: 'TransferSingle',
@@ -164,14 +182,14 @@ function mockReceipt() {
         logIndex: '0x0',
         removed: false,
         topics,
-        transactionHash: RECORD_TX,
+        transactionHash: hash,
         transactionIndex: '0x0',
       },
     ],
     logsBloom: `0x${'00'.repeat(256)}`,
     status: '0x1',
     to: COLLECTION,
-    transactionHash: RECORD_TX,
+    transactionHash: hash,
     transactionIndex: '0x0',
     type: '0x2',
   }
@@ -189,13 +207,25 @@ function startRpcServer(): Promise<string> {
           if (rpc.method === 'eth_chainId') return { jsonrpc: '2.0', id: rpc.id, result: '0x2105' }
           if (rpc.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: rpc.id, result: '0x10' }
           if (rpc.method === 'eth_getBlockByNumber') return { jsonrpc: '2.0', id: rpc.id, result: MOCK_BLOCK }
-          if (rpc.method === 'eth_getCode') return { jsonrpc: '2.0', id: rpc.id, result: '0x6080' }
+          if (rpc.method === 'eth_getCode') {
+            // Only USER is a deployed smart wallet; anyone else is an EOA.
+            const addr = String((rpc.params as [string])[0]).toLowerCase()
+            return { jsonrpc: '2.0', id: rpc.id, result: addr === USER.toLowerCase() ? '0x6080' : '0x' }
+          }
           if (rpc.method === 'eth_getTransactionReceipt') {
             const hash = String((rpc.params as [string])[0]).toLowerCase()
-            return { jsonrpc: '2.0', id: rpc.id, result: hash === RECORD_TX ? mockReceipt() : null }
+            if (rpcState.pendingReceipts > 0) {
+              rpcState.pendingReceipts--
+              return { jsonrpc: '2.0', id: rpc.id, result: null }
+            }
+            return { jsonrpc: '2.0', id: rpc.id, result: hash === RECORD_TX || hash === RECORD_TX2 ? mockReceipt(hash as Hex) : null }
           }
           if (rpc.method === 'eth_call') {
-            const call = (rpc.params as [{ to: string; data: Hex }])[0]
+            if (rpcState.failing) return { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: 'mock: chain read failure' } }
+            const call = (rpc.params as [{ to?: string; data: Hex }])[0]
+            // No `to`: viem's deployless universal-signature-validator call
+            // (verifyTypedData / verifyHash) — answer the boolean it expects.
+            if (!call.to) return { jsonrpc: '2.0', id: rpc.id, result: `0x${'00'.repeat(31)}${rpcState.sigValid ? '01' : '00'}` }
             return { jsonrpc: '2.0', id: rpc.id, result: handleEthCall(call.to, call.data) }
           }
           return { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: `unhandled ${rpc.method}` } }
@@ -377,6 +407,15 @@ async function main() {
     const invalidated = await json(`/api/agent/prepare-buy?listingId=lst1&account=${BUYER}&format=json`)
     ok(invalidated.status === 409 && /invalidated/.test(String(invalidated.body?.error)), 'a seller counter past the signed one (incrementCounter) → 409, though getOrderStatus reads untouched', invalidated.body)
     rpcState.counter = 0n
+    ok(
+      rpcState.lastOrderHash === listingOrderHash(listing).toLowerCase() && rpcState.lastCounterOfferer === SELLER.toLowerCase(),
+      "the guard asks Seaport about THIS listing's order hash and THIS seller's counter",
+      { hash: rpcState.lastOrderHash, offerer: rpcState.lastCounterOfferer },
+    )
+    rpcState.failing = true
+    const down = await json(`/api/agent/prepare-buy?listingId=lst1&account=${BUYER}&format=json`)
+    ok(down.status === 502 && !down.body?.calls, 'a chain read failure fails CLOSED: 502 and no calls handed out', down.body)
+    rpcState.failing = false
 
     // ── 4. scout config lifecycle (session-bound) ──
     console.log('\nscout — GET / PUT / DELETE with the revoke queue')
@@ -450,7 +489,48 @@ async function main() {
       headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify({ scout: draft, permission, away: true, artistLabels: {} }),
     })
-    ok(reput.status === 200 && queued?.size === 0 && (upstash.sets.get('kismetart:scout-pending-revoke:owners')?.size ?? 0) === 0, 're-adopting the same grant dequeues it (a later drain cannot kill the new agent)')
+    ok(
+      reput.status === 200 && (upstash.hashes.get(`kismetart:scout-pending-revoke:${USER.toLowerCase()}`)?.size ?? 0) === 0 && (upstash.sets.get('kismetart:scout-pending-revoke:owners')?.size ?? 0) === 0,
+      're-adopting the same grant dequeues it (a later drain cannot kill the new agent)',
+    )
+
+    // The item counter is the server's. Only a NEW grant the wallet actually
+    // signed resets it — never a resent config, never a forged permission.
+    const recKey = `kismetart:scout:${USER.toLowerCase()}`
+    const stored = () => JSON.parse(upstash.store.get(recKey)!.v) as { usage: { itemsThisPeriod: number }; supersededPermissions?: unknown[] }
+    upstash.store.set(recKey, { v: JSON.stringify({ ...stored(), usage: { ...JSON.parse(upstash.store.get(recKey)!.v).usage, itemsThisPeriod: 3 } }) })
+    const putWith = (body: Record<string, unknown>) =>
+      json('/api/agent/scout', { method: 'PUT', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) })
+    const resent = await putWith({ scout: { ...draft, budget: { ...draft.budget, start: now + 500 } }, permission, away: true, artistLabels: {} })
+    ok(resent.status === 200 && stored().usage.itemsThisPeriod === 3, 'resending the same grant with a later budget.start keeps the item counter', resent.body?.usage)
+    const noGrant = await putWith({ scout: draft, away: true, artistLabels: {} })
+    ok(noGrant.status === 200 && stored().usage.itemsThisPeriod === 3, 'a config PUT without a permission keeps the counter')
+    const forgedPermission = { ...permission, permission: { ...permission.permission, start: now + 1 } }
+    rpcState.sigValid = false
+    const forged = await putWith({ scout: draft, permission: forgedPermission, away: true, artistLabels: {} })
+    ok(forged.status === 400 && /signature/.test(String(forged.body?.error)), 'a permission whose signature does not verify for the owner is refused (400)', forged.body)
+    ok(stored().usage.itemsThisPeriod === 3 && !stored().supersededPermissions, 'the forged grant reset nothing and queued nothing')
+    rpcState.sigValid = true
+    rpcState.failing = true
+    const unverifiable = await putWith({ scout: draft, permission: forgedPermission, away: true, artistLabels: {} })
+    // viem's verifyHash answers false (not a throw) when the validator call
+    // fails, so this refuses as 400; a transport-level throw would be the 503.
+    ok(
+      (unverifiable.status === 400 || unverifiable.status === 503) && stored().usage.itemsThisPeriod === 3 && !stored().supersededPermissions,
+      'a signature the RPC cannot check is refused either way — nothing stored, nothing reset',
+      unverifiable.body,
+    )
+    rpcState.failing = false
+    const regrant = await putWith({ scout: draft, permission: forgedPermission, away: true, artistLabels: {} })
+    ok(regrant.status === 200 && stored().usage.itemsThisPeriod === 0 && stored().supersededPermissions?.length === 1, 'a new grant that verifies starts a fresh counter and stashes the old grant for a spender-side revoke')
+    const token2 = 'cafebabe'.repeat(8)
+    upstash.store.set(`kismetart:session:${token2}`, { v: OTHER.toLowerCase() })
+    const eoa = await json('/api/agent/scout', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', cookie: `__Host-kismet_session=${token2}` },
+      body: JSON.stringify({ scout: draft, away: true, artistLabels: {} }),
+    })
+    ok(eoa.status === 403, 'an owner without code (EOA) cannot store an agent (403)', eoa.body)
 
     // ── 5. record-by-GET delegates to the on-chain-verified record handler ──
     console.log('\nrecord — GET form delegates to /api/collect and PATCH /api/listings')
@@ -459,11 +539,21 @@ async function main() {
     const badVerb = await json(`/api/agent/record?verb=nope&txHash=${RECORD_TX}`)
     ok(badVerb.status === 400, 'unknown verb → 400')
     upstash.zadds.length = 0
+    const noCurrency = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&pricePerToken=${PRICE}&txHash=${RECORD_TX}`)
+    ok(noCurrency.status === 400 && /currency/.test(String(noCurrency.body?.error)), 'a price without its currency is refused (the handler would store it unverified)', noCurrency.body)
     const rec = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX}`)
     ok(rec.status === 200 && rec.body?.ok === true, 'a collect whose receipt shows the TransferSingle is recorded (200 ok)', rec.text.slice(0, 200))
     ok(rec.headers.get('cache-control') === 'private, no-store', 'record response is private, no-store')
-    await new Promise((r) => setTimeout(r, 300)) // let after() work land
-    const artistNotice = upstash.zadds.find((z) => z.key === `kismetart:notif:${ARTIST.toLowerCase()}` && z.member.includes('"collect"'))
+    // after() work (receipt re-verification + the artist's notice) lands
+    // asynchronously; poll for it rather than sleeping a fixed time.
+    const artistNotices = () => upstash.zadds.filter((z) => z.key === `kismetart:notif:${ARTIST.toLowerCase()}` && z.member.includes('"collect"'))
+    const until = async (cond: () => boolean, ms = 5_000) => {
+      const deadline = Date.now() + ms
+      while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+      return cond()
+    }
+    await until(() => artistNotices().length >= 1)
+    const artistNotice = artistNotices()[0]
     ok(!!artistNotice && artistNotice.member.includes(USER.toLowerCase()), "the artist gets the 'collect' notification naming the collector", artistNotice?.member.slice(0, 160))
     const again = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX}`)
     ok(again.status === 200 && again.body?.ok === true, 'recording the same tx again is idempotent (200)', again.text.slice(0, 120))
@@ -471,9 +561,11 @@ async function main() {
     // side effects (a second artist notice, another trending bump).
     const upper = `0x${RECORD_TX.slice(2).toUpperCase()}`
     const variant = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${upper}`)
-    await new Promise((r) => setTimeout(r, 300))
-    const artistNotices = upstash.zadds.filter((z) => z.key === `kismetart:notif:${ARTIST.toLowerCase()}` && z.member.includes('"collect"'))
-    ok(variant.status === 200 && artistNotices.length === 1, 'an upper-case variant of the same tx is recorded once, not twice (canonical txHash)', { status: variant.status, notices: artistNotices.length })
+    await until(() => artistNotices().length >= 2, 1_000) // must NOT happen; give it a moment to be sure
+    ok(variant.status === 200 && artistNotices().length === 1, 'an upper-case variant of the same tx is recorded once, not twice (canonical txHash)', { status: variant.status, notices: artistNotices().length })
+    rpcState.pendingReceipts = 2
+    const lagged = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX2}`)
+    ok(lagged.status === 200 && rpcState.pendingReceipts === 0, 'a receipt the RPC has not indexed yet is retried in-route until it lands (200)', { status: lagged.status, pending: rpcState.pendingReceipts })
     const wrongTx = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&txHash=0x${'99'.repeat(32)}`)
     ok(wrongTx.status === 403 && /not verified/.test(String(wrongTx.body?.error)), 'a tx with no matching receipt is refused by the verified handler (403)', wrongTx.body)
     ok(
@@ -485,6 +577,14 @@ async function main() {
     ok(head.status === 405, 'HEAD (link previews) is refused, never runs a record', head.status)
     const buyRec = await json(`/api/agent/record?verb=buy&listingId=nope&txHash=${RECORD_TX}`)
     ok(buyRec.status === 404, 'buy record for an unknown listing → 404 from the listing handler', buyRec.body)
+    // Last, because it exhausts this IP's record budget: the one GET that
+    // writes is rate-limited (30/min), so a link cannot be hammered.
+    let limited = 0
+    for (let i = 0; i < 40 && !limited; i++) {
+      const r = await fetch(`${base}/api/agent/record?verb=nope&txHash=${RECORD_TX}`)
+      if (r.status === 429) limited = i + 1
+    }
+    ok(limited > 0 && limited <= 40, `the record GET rate-limits this client (429 after ${limited} more requests)`)
 
     console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — agent routes end-to-end: ${passed} passed, ${failed} failed`)
     stop()

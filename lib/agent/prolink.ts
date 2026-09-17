@@ -1,6 +1,6 @@
 import { decodeProlink, encodeProlink } from '@base-org/account/prolink'
 import type { Address } from 'viem'
-import type { AgentCall } from './types'
+import type { AgentApproveLink, AgentCall } from './types'
 
 /**
  * Base app "prolink" deep links for the send_calls envelopes (collect, batch
@@ -26,12 +26,7 @@ import type { AgentCall } from './types'
  * buy (allowance short) — while every other selector we emit (0x359f1302 and
  * 0xf54f216a mint, 0xb3a34c4c fulfillOrder) round-trips and gets a link.
  */
-export interface AgentApproveLink {
-  url: string
-  note: string
-}
-
-export const BASE_APP_PROLINK_URL = 'https://base.app/base-pay'
+const BASE_APP_PROLINK_URL = 'https://base.app/base-pay'
 const BASE_CHAIN_ID_HEX = '0x2105' // 8453
 
 export const APPROVE_LINK_NOTE =

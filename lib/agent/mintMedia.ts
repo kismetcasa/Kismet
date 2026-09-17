@@ -65,7 +65,12 @@ export function ingestMintMedia(
     const m = /^data:([^;,]+)(;base64)?,([\s\S]*)$/.exec(media)
     if (!m) return { error: 'Malformed data URI' }
     let mime = m[1]
-    const bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]))
+    let bytes: Buffer
+    try {
+      bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]))
+    } catch {
+      return { error: 'Malformed data URI' } // a bad percent-escape throws URIError
+    }
     let kind = kindOf(mime)
     // A GLB is identified by its bytes, as everywhere else in this codebase:
     // `.glb` has no registered browser MIME, so an assistant that read the

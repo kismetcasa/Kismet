@@ -65,7 +65,7 @@ viewer). Render the poster on that same backdrop. The moment carries the video
 metadata shape with the GLB as `animation_url` and `content.mime`
 `model/gltf-binary`.
 
-**Limits.** 20 prepares per minute per IP; 500 MB per day of hosted bytes per
+**Limits.** 20 prepares per minute per IP; 500 MB per day (2 GB per week) of hosted bytes per
 account (a writing artwork debits a flat 16 KB); any `data:` media or poster is
 capped at 25 MB (larger → the Kismet app); `name` is truncated to 200 and
 `description` to 5000 characters, and `text` over 5000 characters is rejected;

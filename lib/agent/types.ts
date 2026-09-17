@@ -25,6 +25,12 @@ export interface AgentCall {
   value: `0x${string}`
 }
 
+/** A Base app approve link: the prolink URL and the note the assistant relays. */
+export interface AgentApproveLink {
+  url: string
+  note: string
+}
+
 /** What the assistant should POST/PATCH *after* the user approves, to record
  *  the action in Kismet's off-chain stores. The body mirrors what the web app
  *  posts; any `<...>` placeholder must be filled from the executed result. */
@@ -58,7 +64,7 @@ export interface AgentActionEnvelope {
    *  same `calls`, for the user to approve in the Base app instead of
    *  `send_calls`. One-way — no txHash returns; see lib/agent/prolink.ts for
    *  when it is withheld. */
-  link?: { url: string; note: string }
+  link?: AgentApproveLink
   /** Spend ceilings the agent should honor (and surface to the user), per
    *  currency. A single batch can spend in both (e.g. a mixed collect basket),
    *  so each is independent and present only when that currency is actually

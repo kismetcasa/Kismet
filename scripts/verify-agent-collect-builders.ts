@@ -204,7 +204,6 @@ console.log('\nbuildCollectBatchPlan — Scout: sender pays, recipient receives'
   const ethMint = plan.calls.find((c) => eq(c.to, COLLECTION))
   const [ethMintTo] = ethMint ? decodeAbiParameters(parseAbiParameters('address, string'), decodeEthMint(ethMint.data).args[4]) : [undefined]
   check('ETH mint.mintTo == recipient, not the paying account', !!ethMint && eq(ethMintTo as string, RECIPIENT))
-  check('mintTo != the paying account (sender)', !eq(RECIPIENT, ACCOUNT))
 }
 
 // ── Buy: the real buildBuyPlan — USDC fulfill carries NO native value ────────
@@ -457,9 +456,16 @@ console.log('\nsummaries — exact user-facing lines')
   )
   check(
     'batch: totals, mint-fee note, recipient, skipped count',
-    batchCollectSummary({ count: 3, totalLabel: '$8 + 0.001111 ETH', includesMintFees: true, recipient: RECIPIENT, recipientName: null, skipped: 1 }) ===
+    batchCollectSummary({ count: 3, totalLabel: '$8 + 0.001111 ETH', includesMintFees: true, recipient: RECIPIENT, recipientName: null, skipped: 1, approvalIncluded: false }) ===
       `Collect 3 artworks for $8 + 0.001111 ETH (incl. mint fees) in one approval → to ${them}. Skipped 1 unavailable.`,
   )
+  check(
+    'batch: a prepended USDC approve is stated, like the single collect and buy lines',
+    batchCollectSummary({ count: 2, totalLabel: '$8', includesMintFees: false, recipient: RECIPIENT, recipientName: null, skipped: 0, approvalIncluded: true }) ===
+      `Collect 2 artworks for $8 in one approval → to ${them}. Includes a one-time USDC approval, batched into the same approval.`,
+  )
+  const zalgo = safeTitle(`a${'́'.repeat(2000)}b`)
+  check('safeTitle bounds stacked combining marks (one grapheme is not unbounded)', !!zalgo && zalgo.length <= 241 && zalgo.endsWith('…'), zalgo?.length)
   check(
     'buy: sanitized title, seller as name + short address',
     buySummary({ title: safeTitle('Art' + String.fromCodePoint(0)), tokenId: '7', seller: RECIPIENT, sellerName: 'bob.base.eth', currency: 'eth', price: 50_000_000_000_000_000n, approvalIncluded: false }) ===

@@ -25,6 +25,12 @@ export type Currency = 'eth' | 'usdc'
 export type ScoutMode = 'propose' | 'auto'
 export type ScoutStatus = 'active' | 'paused'
 
+/** Policy bounds the config route enforces and the panel pre-checks — one
+ *  definition so the two cannot disagree. Editions per drop is capped to bound
+ *  per-drop spend (the dollar budget is the authoritative cap anyway). */
+export const MAX_CREATORS = 50
+export const MAX_EDITIONS_PER_DROP = 10
+
 /** Budget, mirroring a Base Account Spend Permission. Amounts are base units
  *  (wei for ETH, 6dp for USDC) as decimal strings (JSON/Redis-safe). */
 export interface ScoutBudget {

@@ -22,6 +22,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { redis } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
+import { withTimeout } from '@/lib/withTimeout'
 
 /** One call the spender submits. `value` is wei (bigint) — the spend()/mint
  *  calldata is built upstream; this is the on-chain submission shape. */
@@ -292,14 +293,6 @@ let cachedSpender: Promise<ScoutSpender> | null = null
 // "not revoked" — so bound it: a timeout rejects, the cache clears, the next
 // call re-resolves.
 const RESOLVE_TIMEOUT_MS = 20_000
-
-function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms)
-  })
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
-}
 
 export function getScoutSpender(): Promise<ScoutSpender> {
   if (!cachedSpender) {
