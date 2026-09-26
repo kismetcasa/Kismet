@@ -106,6 +106,7 @@ const ARTIST_B_TOKEN = 'e2e-artist-b-session-token'
 const CURATOR = '0x7777000000000000000000000000000000007777'
 const CURATOR_TOKEN = 'e2e-curator-session-token'
 const TX_BOX = '0x' + '2d'.repeat(32) // a play on the machine whose rarity is by supply
+const TX_BOX_2 = '0x' + '3e'.repeat(32) // the next play on it, after a copy has gone
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
 const CRON_SECRET = 'e2e-cron-secret'
@@ -1708,6 +1709,17 @@ try {
     const after = await odds()
     check('and the odds shift by the copy it took',
       won === '7' ? Math.abs(after['7'] - 2 / 3) < 1e-9 : after['14'] === 0 && after['7'] === 1, `${won} ${JSON.stringify(after)}`)
+    // The next play freezes the box as it is NOW — one copy lighter — which is
+    // the only place a draw that fell back to the weights typed at publish
+    // (equal to the copies on day one) would show.
+    setHead(chain.head + 2n)
+    addMint({ tx: TX_BOX_2, collection: CAPSULE_S, to: PLAYER, id: 1n, value: 1n, block: chain.head - 1n })
+    await call('/api/experience/play', { method: 'POST', body: { machineId: 'box-season', txHash: TX_BOX_2, account: PLAYER, unitIndex: 0 } })
+    const claim2 = JSON.parse(strings.get(`kismetart:xp:box-season:claim:${TX_BOX_2}:0`) ?? 'null')
+    const weightsOf = (c) => Object.fromEntries((c?.snapshot ?? []).map((e) => [e.tokenId, e.weight]))
+    check('the next play draws from the copies left after it',
+      weightsOf(claim2)['7'] === (won === '7' ? 2 : 3) && (weightsOf(claim2)['14'] ?? 0) === (won === '7' ? 1 : 0),
+      `${won} ${JSON.stringify(weightsOf(claim2))}`)
   }
 
   // ═══ 6j. reveal machines ══════════════════════════════════════════════════
@@ -2209,13 +2221,16 @@ try {
           check('the panel lists the reveal machines the piece is in', /new voices · reveal · live/.test(await text(page)), (await text(page)).match(/in \d machines?.{0,120}/)?.[0] ?? '')
           const signed = chain.walletTxs.length
           await page.getByRole('switch', { name: 'on · turn off' }).click()
-          await page.getByRole('switch', { name: 'off · turn on' }).waitFor()
+          await page.getByRole('switch', { name: 'off · turn on' }).waitFor({ timeout: 8000 }).catch(() => {})
           check('turning it off takes no signature', chain.walletTxs.length === signed)
           const lineupNow = async () => ((await call('/api/experience/machines/new-voices')).json?.lineup ?? []).map((p) => p.tokenId).sort().join(',')
           check('and takes the piece out of the live machine', (await lineupNow()) === '1,6', await lineupNow())
-          await page.getByRole('switch', { name: 'off · turn on' }).click()
-          await page.getByRole('switch', { name: 'on · turn off' }).waitFor()
+          await page.getByRole('switch', { name: 'off · turn on' }).click().catch(() => {})
+          await page.getByRole('switch', { name: 'on · turn off' }).waitFor({ timeout: 8000 }).catch(() => {})
           check('turning it back on returns it', (await lineupNow()) === '1,2,6', await lineupNow())
+          // Leave the piece as found, whatever happened above, so what follows
+          // tests its own subject rather than this block's outcome.
+          await call('/api/experience/piece', { method: 'POST', user: USER_TOKEN, body: { collection: REVEAL, tokenId: '2', available: true } })
           await page.context().close()
         }
 
@@ -2293,17 +2308,17 @@ try {
           check('one Kismet has no maker for is flagged as you build', rows.includes('kismet has no record of who made this — only artworks minted on kismet can go in'))
           check('as is one its artist turned off', rows.includes('its artist has turned machines off for this piece'))
           await page.getByRole('button', { name: 'check', exact: true }).click()
-          await page.locator('section', { hasText: /fix before publishing/i }).first().waitFor()
+          await page.locator('section', { hasText: /fix before publishing/i }).first().waitFor({ timeout: 8000 }).catch(() => {})
           check('the check refuses both, by piece', /fix before publishing.*kismet has no record of who made .*:5.*isn't available for machines/.test(await text(page)), (await text(page)).match(/fix before publishing.{0,240}/)?.[0] ?? '')
           await page.getByRole('button', { name: 'Remove artwork 3' }).click()
           await page.getByRole('button', { name: 'Remove artwork 2' }).click()
           await page.getByRole('button', { name: 'check', exact: true }).click()
-          await page.getByText('Every piece can go in').waitFor()
+          await page.getByText('Every piece can go in').waitFor({ timeout: 8000 }).catch(() => {})
           const ready = await text(page)
           check('once they are gone it is ready, and says what each piece shows as today',
             ready.includes('on sale now · free') && ready.includes('shows up when its sale opens'), ready.match(/the lineup.{0,300}/)?.[0] ?? '')
           await page.getByRole('button', { name: 'publish' }).click()
-          await page.getByText('is queued for a curator').waitFor()
+          await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
           check('publishing queues it for a curator', (await text(page)).includes('browser picks is queued for a curator'))
           check('as a reveal machine with the two pieces',
             (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-picks' && r.machine.kind === 'reveal' && r.pool.length === 2))
