@@ -12,7 +12,7 @@ import {
   clampSweepN,
   selectSweepItems,
   sweepItemToMoment,
-  type SweepIndexItem,
+  type SweepResponseItem,
 } from '@/lib/sweepIndexCore'
 
 export const runtime = 'nodejs'
@@ -34,11 +34,6 @@ const PUBLIC_CACHE = 'public, s-maxage=30, stale-while-revalidate=120'
 // feature; without it the pill appears within 30 s plus the 60 s flag memo.
 const DISABLED_CACHE = 'public, s-maxage=30'
 const NO_STORE = 'private, no-store'
-
-interface SweepResponseItem extends SweepIndexItem {
-  creatorProfile: { username: string | null; avatarUrl: string | null }
-  collection: { name: string | null; image: string | null } | null
-}
 
 export async function GET(req: NextRequest) {
   if (!(await checkRateLimit(`sweep:${getClientIp(req)}`, 60, 60))) {

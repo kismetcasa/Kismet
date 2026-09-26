@@ -12,6 +12,7 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { trackFunnel } from '@/lib/funnel'
 import { DiscoverPillBar } from './DiscoverFilters'
+import { SweepButton } from './SweepButton'
 import {
   clearedFilters,
   discoverUrl,
@@ -789,6 +790,9 @@ export function DiscoverMarketView({
               </button>
             ))}
           </div>
+          {/* The one sweep entry point (SWEEP_IMPLEMENTATION.md §1.1): renders
+              nothing until /api/sweep reports an enabled, non-empty pool. */}
+          <SweepButton />
           <div className="text-right leading-tight">
             <div className="font-mono text-[11px] uppercase tracking-widest text-subtle">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>

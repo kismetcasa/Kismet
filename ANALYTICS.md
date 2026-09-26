@@ -257,10 +257,10 @@ guaranteed by `private, no-store` on the admin variant plus `Vary: Cookie`.
 
 This is the platform's **only behavioral analytics**. There is deliberately no
 third-party analytics service; the funnel is "the smallest honest instrument":
-seven named events, counts only — **no identifiers, no session IDs, no paths,
+thirteen named events, counts only — **no identifiers, no session IDs, no paths,
 no user agents, nothing per-user**.
 
-The seven events, in funnel order, and where they fire:
+The events, in funnel order, and where they fire:
 
 | Event | Fired from | When |
 | --- | --- | --- |
@@ -271,6 +271,9 @@ The seven events, in funnel order, and where they fire:
 | `collect_success` | `useDirectCollect` | Collect confirmed |
 | `mint_attempt` | `MintForm` | Mint submitted |
 | `mint_success` | `MintForm` (both paths) | Mint confirmed |
+| `sweep_open` | `useSweep` | Sweep sheet opened from `/discover` |
+| `sweep_attempt` | `useSweep` | Sweep wallet prompt requested (basket verified and simulated) |
+| `sweep_success` | `useSweep` | Sweep bundle confirmed on-chain |
 
 Pipeline: `trackFunnel()` sends a fire-and-forget beacon
 (`navigator.sendBeacon`, keepalive-fetch fallback) → `POST /api/funnel`

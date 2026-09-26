@@ -12,6 +12,7 @@ import { getBlock, multicall, readContract } from 'viem/actions'
 import {
   MAX_REASONABLE_MINT_FEE_WEI,
   MULTICALL3_ADDRESS,
+  MULTICALL3_BALANCE_ABI,
   USDC_BASE,
   ZORA_1155_MINT_FEE_ABI,
   ZORA_1155_TOKEN_INFO_ABI,
@@ -752,4 +753,166 @@ export async function readMintFeesWithBound(
     out.set(unique[i], fee)
   })
   return out
+}
+
+export interface EligibleTokenRef {
+  collection: Address
+  tokenId: bigint
+}
+
+export interface EligibleTokenMulti extends EligibleToken {
+  collection: Address
+}
+
+export interface EligibleTokensMultiResult {
+  items: EligibleTokenMulti[]
+  /** The account's native balance from the same aggregate; null when the read
+   *  failed as a whole (the caller must treat that as "could not verify"). */
+  ethBalance: bigint | null
+}
+
+/**
+ * Cross-collection sibling of fetchEligibleTokens, for the sweep's click-time
+ * verification (SWEEP_IMPLEMENTATION.md §4.1). ONE Multicall3 aggregate3 —
+ * via aggregate3Strict, which on the browser client is a single eth_call:
+ * viem's call scheduler never re-batches a request whose calldata is itself
+ * an aggregate3 — reads, per ref, the FixedPriceSaleStrategy row, the token's
+ * supply and the account's balance, plus the account's native balance in a
+ * trailing slot. ETH-only by design: the sweep never mints through the
+ * ERC20Minter, so that strategy is not read.
+ *
+ * Per-row rules are IDENTICAL to fetchEligibleTokens: the shared window rule
+ * (live only), the shared supply rule, DROP on a failed balance read (an
+ * atomic bundle must never carry an unverified row), skip when the account
+ * already holds `excludeOwnedAtOrAbove` (default 1 — "one of each"), skip at
+ * the per-wallet cap. An unreadable supply row (non-Zora contract) counts as
+ * open, as everywhere else. Paid-ness is NOT decided here (the sweep applies
+ * it on the result, price > 0), so the function stays a faithful sibling.
+ *
+ * Failure contract: an RPC-level failure returns no items AND a null balance.
+ * Callers must not read that as "nothing eligible".
+ */
+export async function fetchEligibleTokensMulti(
+  client: AnyClient,
+  refs: readonly EligibleTokenRef[],
+  account: Address,
+  excludeOwnedAtOrAbove: bigint = 1n,
+): Promise<EligibleTokensMultiResult> {
+  if (refs.length === 0) return { items: [], ethBalance: null }
+
+  let now: bigint
+  try {
+    now = (await getBlock(client, { blockTag: 'latest' })).timestamp
+  } catch {
+    now = BigInt(Math.floor(Date.now() / 1000))
+  }
+
+  // Three slots per ref (sale, supply, balance) + one trailing balance slot.
+  const calls = refs.flatMap((r) => [
+    {
+      target: ZORA_FIXED_PRICE_STRATEGY,
+      callData: encodeFunctionData({
+        abi: FPSS_SALE_ABI,
+        functionName: 'sale',
+        args: [r.collection, r.tokenId],
+      }),
+    },
+    {
+      target: r.collection,
+      callData: encodeFunctionData({
+        abi: ZORA_1155_TOKEN_INFO_ABI,
+        functionName: 'getTokenInfo',
+        args: [r.tokenId],
+      }),
+    },
+    {
+      target: r.collection,
+      callData: encodeFunctionData({
+        abi: ERC1155_BALANCE_ABI,
+        functionName: 'balanceOf',
+        args: [account, r.tokenId],
+      }),
+    },
+  ])
+  calls.push({
+    target: MULTICALL3_ADDRESS,
+    callData: encodeFunctionData({
+      abi: MULTICALL3_BALANCE_ABI,
+      functionName: 'getEthBalance',
+      args: [account],
+    }),
+  })
+
+  let res: readonly { success: boolean; returnData: Hex }[]
+  try {
+    res = await aggregate3Strict(client, calls)
+  } catch {
+    return { items: [], ethBalance: null }
+  }
+
+  const items: EligibleTokenMulti[] = []
+  for (let i = 0; i < refs.length; i++) {
+    const saleRes = res[3 * i]
+    const infoRes = res[3 * i + 1]
+    const balRes = res[3 * i + 2]
+    if (!saleRes?.success) continue
+    let sale: { saleStart: bigint; saleEnd: bigint; maxTokensPerAddress: bigint; pricePerToken: bigint }
+    try {
+      sale = decodeFunctionResult({ abi: FPSS_SALE_ABI, functionName: 'sale', data: saleRes.returnData })
+    } catch {
+      continue
+    }
+    if (classifyOnchainSaleWindow(sale, now) !== 'live') continue
+
+    let info: { maxSupply: bigint; totalMinted: bigint } | null = null
+    if (infoRes?.success) {
+      try {
+        const d = decodeFunctionResult({
+          abi: ZORA_1155_TOKEN_INFO_ABI,
+          functionName: 'getTokenInfo',
+          data: infoRes.returnData,
+        })
+        info = { maxSupply: d.maxSupply, totalMinted: d.totalMinted }
+      } catch {
+        info = null
+      }
+    }
+    const supply = classifyTokenSupply(info)
+    if (supply.soldOut) continue
+
+    // Fail-closed on the balance read, exactly like fetchEligibleTokens.
+    if (!balRes?.success) continue
+    let balance: bigint
+    try {
+      balance = decodeFunctionResult({ abi: ERC1155_BALANCE_ABI, functionName: 'balanceOf', data: balRes.returnData })
+    } catch {
+      continue
+    }
+    if (balance >= excludeOwnedAtOrAbove) continue
+    if (sale.maxTokensPerAddress > 0n && balance >= sale.maxTokensPerAddress) continue
+
+    items.push({
+      collection: refs[i].collection,
+      tokenId: refs[i].tokenId,
+      pricePerToken: sale.pricePerToken,
+      maxPerAddress: sale.maxTokensPerAddress,
+      ownedBalance: balance,
+      remainingSupply: supply.remaining,
+    })
+  }
+
+  let ethBalance: bigint | null = null
+  const balSlot = res[3 * refs.length]
+  if (balSlot?.success) {
+    try {
+      ethBalance = decodeFunctionResult({
+        abi: MULTICALL3_BALANCE_ABI,
+        functionName: 'getEthBalance',
+        data: balSlot.returnData,
+      })
+    } catch {
+      ethBalance = null
+    }
+  }
+  return { items, ethBalance }
 }

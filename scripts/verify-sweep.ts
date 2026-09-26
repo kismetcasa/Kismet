@@ -16,7 +16,13 @@
 //     unattributed items never grouped, deterministic for any input order;
 //     the DORMANT options (perArtist, floorWei) behave as documented;
 //   - the pool cut, the serve prefix (3n floored at 30), the ?n= clamp, the
-//     serve-time hide filters, and the Moment projection /api/sweep enriches.
+//     serve-time hide filters, and the Moment projection /api/sweep enriches;
+//   - the client half (lib/sweepBatch.ts): every signed sub-call decodes to
+//     1155.mint(FPSS, id, 1, [KISMET_REFERRAL], (mintTo, comment)) with value
+//     = price + fee; the signed bundle is STRICT (allowFailure false on every
+//     call); the simulated bundle is the same calls with allowFailure true;
+//     the budget trim is a cheapest-first prefix; simulation results map by
+//     position and fail closed on a length mismatch.
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-sweep.ts
 
 import { classifyOnchainSaleWindow, classifyTokenSupply } from '../lib/saleConfig.ts'
@@ -38,6 +44,19 @@ import {
   type SweepIndexItem,
 } from '../lib/sweepIndexCore.ts'
 import { MAX_COLLECT_ALL_BATCH, OPEN_EDITION_MINT_SIZE } from '../lib/zoraMint.ts'
+import {
+  SWEEP_GAS_HEADROOM_WEI,
+  applySimulation,
+  buildSweepCalls,
+  sweepBundle,
+  sweepSimulationArgs,
+  sweepTotalValue,
+  trimToBudget,
+  type SweepBasketItem,
+} from '../lib/sweepBatch.ts'
+import { DEFAULT_COLLECT_COMMENT } from '../lib/inprocess.ts'
+import { FPSS, MINT_1155_ABI, REFERRAL } from './_agent-verify-helpers.ts'
+import { decodeAbiParameters, decodeFunctionData, getAddress, parseAbiParameters, parseEther } from 'viem'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -299,6 +318,64 @@ console.log('sweepItemToMoment / constants')
 check('SWEEP_MAX_N is the collect-all cap', SWEEP_MAX_N === MAX_COLLECT_ALL_BATCH && SWEEP_MAX_N === 20)
 check('SWEEP_POOL_SIZE is 6 × the cap', SWEEP_POOL_SIZE === 6 * SWEEP_MAX_N)
 check('sweepKey lowercases the collection', sweepKey(COL_A, '1') === `${COL_A.toLowerCase()}:1`)
+
+// ── 7. client half: the bundle the user signs, the one the client simulates ──
+console.log('buildSweepCalls / sweepBundle / sweepSimulationArgs')
+{
+  const MINT_TO = getAddress('0x71Dc000000000000000000000000000000007244')
+  const items: SweepBasketItem[] = [
+    { address: COL_A as `0x${string}`, tokenId: 7n, priceWei: 1_000n, feeWei: FEE },
+    { address: COL_B as `0x${string}`, tokenId: 12n, priceWei: 5_000_000_000_000_000n, feeWei: FEE },
+  ]
+  const calls = buildSweepCalls(items, MINT_TO)
+  check('one sub-call per basket item, to each item\'s OWN collection', calls.length === 2 && calls[0].to === items[0].address && calls[1].to === items[1].address)
+  check('each sub-call carries price + fee as its value', calls[0].value === 1_000n + FEE && calls[1].value === 5_000_000_000_000_000n + FEE)
+  const decoded = calls.map((c) => decodeFunctionData({ abi: MINT_1155_ABI, data: c.data }))
+  check('every call is 1155.mint', decoded.every((d) => d.functionName === 'mint'))
+  const [d0, d1] = decoded
+  check('minter is the inprocess FixedPriceSaleStrategy', getAddress(d0.args[0]) === getAddress(FPSS) && getAddress(d1.args[0]) === getAddress(FPSS))
+  check('tokenId and quantity 1 per call', d0.args[1] === 7n && d1.args[1] === 12n && d0.args[2] === 1n && d1.args[2] === 1n)
+  check('rewards recipient is KISMET_REFERRAL (treasury)', d0.args[3].length === 1 && getAddress(d0.args[3][0]) === getAddress(REFERRAL) && getAddress(d1.args[3][0]) === getAddress(REFERRAL))
+  const [to0, comment0] = decodeAbiParameters(parseAbiParameters('address, string'), d0.args[4])
+  check('minterArguments encode mintTo + the default collect comment', getAddress(to0) === MINT_TO && comment0 === DEFAULT_COLLECT_COMMENT)
+  const custom = buildSweepCalls(items.slice(0, 1), MINT_TO, 'hello')
+  const [, commentC] = decodeAbiParameters(parseAbiParameters('address, string'), decodeFunctionData({ abi: MINT_1155_ABI, data: custom[0].data }).args[4])
+  check('a custom comment passes through', commentC === 'hello')
+  check('sweepTotalValue sums every sub-call value', sweepTotalValue(calls) === 1_000n + FEE + 5_000_000_000_000_000n + FEE)
+
+  const strict = sweepBundle(calls)
+  check('signed bundle: aggregate3Value', strict.functionName === 'aggregate3Value')
+  check('signed bundle: allowFailure is FALSE on every sub-call (never loosen — stranding hazard)', strict.args[0].every((c) => c.allowFailure === false))
+  check('signed bundle: targets / calldata / values align with the calls', strict.args[0].every((c, i) => c.target === calls[i].to && c.callData === calls[i].data && c.value === calls[i].value))
+  check('signed bundle: msg.value is the sum', strict.value === sweepTotalValue(calls))
+
+  const sim = sweepSimulationArgs(calls)
+  check('simulation args: allowFailure is TRUE on every sub-call', sim.args[0].every((c) => c.allowFailure === true))
+  check('simulation args: same targets / calldata / values as the signed bundle', sim.args[0].every((c, i) => c.target === strict.args[0][i].target && c.callData === strict.args[0][i].callData && c.value === strict.args[0][i].value))
+  check('simulation args: same msg.value and function', sim.value === strict.value && sim.functionName === strict.functionName)
+  check('empty basket → no calls, zero value', buildSweepCalls([], MINT_TO).length === 0 && sweepTotalValue([]) === 0n)
+}
+
+console.log('trimToBudget / applySimulation / headroom')
+{
+  const w = (n: number) => ({ id: n, outlayWei: BigInt(n) })
+  const items = [w(1), w(2), w(3), w(4)] // ascending, sum 10
+  const exact = trimToBudget(items, 10n)
+  check('exact fit keeps everything', exact.kept.length === 4 && exact.dropped.length === 0)
+  const partial = trimToBudget(items, 6n)
+  check('budget 6 keeps the prefix 1+2+3, drops the rest', partial.kept.map((i) => i.id).join() === '1,2,3' && partial.dropped.map((i) => i.id).join() === '4')
+  check('budget below the first item keeps nothing', trimToBudget(items, 0n).kept.length === 0 && trimToBudget(items, 0n).dropped.length === 4)
+  check('negative budget keeps nothing', trimToBudget(items, -1n).kept.length === 0)
+  check('empty input → empty output', trimToBudget([], 5n).kept.length === 0 && trimToBudget([], 5n).dropped.length === 0)
+  check('trim is a PREFIX (never skips a cheaper item to fit a later one)', trimToBudget([w(5), w(1)], 1n).kept.length === 0)
+
+  const sim = applySimulation(['a', 'b', 'c'], [true, false, true])
+  check('applySimulation maps by position', sim.kept.join() === 'a,c' && sim.dropped.join() === 'b')
+  const mismatch = applySimulation(['a', 'b'], [true])
+  check('applySimulation length mismatch drops everything (fail-closed)', mismatch.kept.length === 0 && mismatch.dropped.join() === 'a,b')
+  check('applySimulation on empty input', applySimulation([], []).kept.length === 0)
+  check('gas headroom is 0.0005 ETH', SWEEP_GAS_HEADROOM_WEI === parseEther('0.0005'))
+}
 
 console.log(failures === 0 ? '\nverify-sweep: ALL PASS' : `\nverify-sweep: ${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -1,7 +1,8 @@
 # Sweep branch — line-by-line code review
 
 _Every added, changed, or removed **code** line on `claude/blissful-thompson-ri31io`
-relative to `main` (14 files; the three Markdown documents are out of scope),
+relative to `main` (21 code files across the index/API phase, §1–§12, and the
+client phase, §13–§19; the Markdown documents are out of scope),
 with a verdict per line or per inseparable unit (a statement that spans lines,
 a docblock) and the exact reason it earns its place — or the fix applied when
 it did not. Line numbers refer to the files as they stand after this review's
@@ -25,16 +26,22 @@ as this document.
 | # | File:line (after fix) | Finding | Fix |
 |---|---|---|---|
 | F1 | `lib/sweepIndex.ts:81–85` | **Robustness bug.** A candidate's `addr` can originate from an upstream inprocess row (`m.address`), not only the validated tracked set. An invalid address would throw inside `encodeFunctionData` (line 129) and abort **every** rebuild until that row changed — one bad upstream row would silently freeze the pool forever. | Validate with `isAddress` and skip the row, the same tolerance the census shows such rows. |
-| F2 | `scripts/verify-sweep.ts:281` | **Vacuous assertion.** The check ended with `&& ha.length < 60 + 1`; the maximum possible length is 60, so the clause could never fail and only pretended to test something. | Removed the clause; the meaningful predicate (no `ART_3` row survives) stays. |
+| F2 | `scripts/verify-sweep.ts:300` | **Vacuous assertion.** The check ended with `&& ha.length < 60 + 1`; the maximum possible length is 60, so the clause could never fail and only pretended to test something. | Removed the clause; the meaningful predicate (no `ART_3` row survives) stays. |
 | F3 | `app/api/admin/sweep/route.ts:24–34` | **Dishonest fallback.** `isSweepEnabled().catch(() => false)` reported *disabled* when the truth was *unknown* (Redis unreadable) — an operator could conclude the feature is off while it is on. | A flag-read failure is a 503. The comment also records the memo caveat: a cached verdict can outlive a blip that nulls the index. |
-| F4 | `app/api/sweep/route.ts:32–35, 58` | **Slow flag propagation.** The flag-off answer carried `stale-while-revalidate=120`, so a shared cache could serve "disabled" for up to 150 s after an operator enabled the feature. | Separate `DISABLED_CACHE` without SWR (≤ 30 s plus the 60 s memo). |
+| F4 | `app/api/sweep/route.ts:32–35, 53` | **Slow flag propagation.** The flag-off answer carried `stale-while-revalidate=120`, so a shared cache could serve "disabled" for up to 150 s after an operator enabled the feature. | Separate `DISABLED_CACHE` without SWR (≤ 30 s plus the 60 s memo). |
 | F5 | `lib/sweepIndex.ts:44–48` | **Wrong number in a comment.** Said "≈ 20 KB of calldata"; a 200-element `Call3[]` encodes to 256 bytes per element = ≈ 51 KB, with ≈ 58 KB of return data. It also cited a gas figure that was not derived. | Corrected sizes with the encoding arithmetic; the gas claim is now qualitative and true. |
 | F6 | `lib/zoraMint.ts:66–70` | **Vague reason.** "must not carry the payable mint() entry along" did not say why a second ABI exists at all. | States the real reason: keeping the payable `mint()` unexported forces every mint encoding through `buildEthMintCall`, the treasury-critical single source. |
 | F7 | `lib/statsHealth.ts:3–4` | **Formatting wart.** My edit had broken a sentence across a two-word line. | Reflowed. |
 
+_Line numbers throughout §1–§12 are as of the client phase: the client phase
+inserted one import line in `lib/saleConfig.ts` (after line 14), removed five
+lines from `app/api/sweep/route.ts` (the response type moved to the core), and
+added header and import lines to `scripts/verify-sweep.ts` (after lines 19 and
+40); every anchor below was re-read against the final files._
+
 Also added under review: a comment at `lib/sweepIndex.ts:77–79` giving the
 patron re-check its reason (it would otherwise read as dead duplication of the
-census's exclusion), and `Moment[]` typing at `app/api/sweep/route.ts:92` in
+census's exclusion), and `Moment[]` typing at `app/api/sweep/route.ts:87` in
 place of an indirect `ReturnType<…>[]`.
 
 **Considered and deliberately left unchanged**
@@ -48,7 +55,19 @@ place of an indirect `ReturnType<…>[]`.
 | `keyOf` and `interleaveTier` lowercasing already-lowercase input | `lib/sweepRank.ts` is a public pure API; its own contract cannot assume the index's normalization, and the verifier feeds it mixed case. |
 | `export const runtime = 'nodejs'` on both routes | Matches every sibling API route that touches Redis and viem. |
 
-**Checks after the fixes:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (77 assertions; F2 removed a vacuous clause from one of them, not an assertion).
+**Checks after the fixes:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (77 assertions at this revision; 104 after the client phase — F2 removed a vacuous clause from one of them, not an assertion).
+
+**Client phase — findings caught by the same review before commit** (the code
+in §13–§19 was read line by line before it was committed; these are what that
+read changed, recorded so the commit is not mistaken for a first draft):
+
+| # | File:line (after fix) | Finding | Fix |
+|---|---|---|---|
+| C1 | `hooks/useSweep.ts` (removed) | A `void sweepTotalValue` line "referenced" an otherwise-unused import so the import would not be flagged — a line whose only purpose was to justify another line. | Import and line removed; the verifier is where `sweepTotalValue` earns its place. |
+| C2 | `hooks/useSweep.ts:142–143` | An all-invalid pool page fell through to `fetchEligibleTokensMulti` with no refs, whose empty-input answer is indistinguishable from an RPC failure, so the sheet would have said "could not verify" instead of "nothing to sweep". | Early return before the read. |
+| C3 | `hooks/useSweep.ts:219–224` | If three consecutive simulations failed on insufficient funds, the loop could exit with a basket that never passed a simulation, and that basket would have reached the wallet. | On the last allowed simulation the remainder is shed as unaffordable; a non-empty basket is now always one that passed a simulation. |
+| C4 | `hooks/useSweep.ts:246–250` | When the gas estimate was unavailable the final affordability check was skipped entirely. | The constant headroom stands in for a missing estimate, so the check always runs. |
+| C5 | `components/SweepSheet.tsx:223–224` | With an empty basket the totals line rendered "0 artworks · free" (`formatPrice("0")` prints "free"). | The price is shown only when the total is non-zero. |
 
 ---
 
@@ -66,7 +85,7 @@ place of an indirect `ReturnType<…>[]`.
 | 83–87 | Docblock | Keep | The contract callers rely on: the whole ranked list, not a prefix. |
 | 88–115 | `rankSweepCandidates` | Keep | 92–93: copy before sort — `sort` mutates in place and the caller's array must survive; the floor filter produces the copy when set. 94: one sort. 96–102: tiers are contiguous runs of equal outlay after the sort, so a linear scan segments them. 104–105: a cap applies only when it is an integer ≥ 1 (pinned 211–213: 0, −1, 1.5, NaN are ignored); a silently applied `perArtist: 0` would rank nothing. 106–114: the cap walk keeps each artist's earliest (cheapest) items and never counts unattributed ones (pinned 207–209). |
 
-## 2. `lib/sweepIndexCore.ts` — new, 229 lines
+## 2. `lib/sweepIndexCore.ts` — new, 253 lines (1–229 here; 231–253 in §18)
 
 | Lines | Unit | Verdict | Why |
 |---|---|---|---|
@@ -118,14 +137,14 @@ place of an indirect `ReturnType<…>[]`.
 
 | Lines | Unit | Verdict | Why |
 |---|---|---|---|
-| 1–10 | viem import | Keep | Each new import is used: `decodeFunctionResult` 743, `encodeFunctionData` 734, `multicall3Abi` 711, `Hex` 706–707. |
-| 12–21 | zoraMint import | Keep | `MAX_REASONABLE_MINT_FEE_WEI` 751, `MULTICALL3_ADDRESS` 710, `ZORA_1155_MINT_FEE_ABI` 734/744. |
-| 127–147 | `OnchainSaleWindow`, `classifyOnchainSaleWindow` | Keep | Extracted from the three `continue`s `fetchEligibleTokens` had (now line 245) in their original order (unset, ended, scheduled); the docblock records why ended precedes scheduled. Pinned 118–124. |
-| 149–163 | `classifyTokenSupply` | Keep | The removed block tested `isOpenEdition` then `totalMinted >= maxSupply`; identical outcomes, now also returning `remaining` for capped rows. Pinned 129–139. |
-| 245 | Window call in `fetchEligibleTokens` | Keep | Behavior-identical: a row is skipped iff it is not live. |
-| 260–266 | Supply call in `fetchEligibleTokens` | Keep | Behavior-identical: `continue` on an exhausted capped edition; `remainingSupply` only for capped rows (`undefined` for open or unreadable). `const` because nothing reassigns it. |
-| 689–715 | `aggregate3Strict` | Keep | 708: an empty batch short-circuits (a pointless round trip otherwise). 709–714: `readContract` on Multicall3 `aggregate3` with `allowFailure: true` per sub-call — per-row reverts return `success: false`, an RPC failure throws. The docblock's claim about viem's `multicall` was checked against `viem/actions/public/multicall.ts`: a rejected chunk is appended as per-call failures when `allowFailure` is true. |
-| 717–755 | `readMintFeesWithBound` | Keep | 732: lowercased dedup so the map's keys match the index's addresses. 734: one calldata for all targets (`mintFee()` takes no arguments). 739–753: a call to an address without code returns success with empty data, which the decode rejects, so such a "collection" is dropped — fail-closed. 751 applies the exported bound, not a copy. |
+| 1–10 | viem import | Keep | Each new import is used: `decodeFunctionResult` 744, `encodeFunctionData` 735, `multicall3Abi` 712, `Hex` 707–708. |
+| 12–22 | zoraMint import | Keep | `MAX_REASONABLE_MINT_FEE_WEI` 752, `MULTICALL3_ADDRESS` 711, `ZORA_1155_MINT_FEE_ABI` 735/745 (line 15, `MULTICALL3_BALANCE_ABI`, is the client phase's: §18). |
+| 128–148 | `OnchainSaleWindow`, `classifyOnchainSaleWindow` | Keep | Extracted from the three `continue`s `fetchEligibleTokens` had (now line 246) in their original order (unset, ended, scheduled); the docblock records why ended precedes scheduled. Pinned at verifier 137–143. |
+| 150–164 | `classifyTokenSupply` | Keep | The removed block tested `isOpenEdition` then `totalMinted >= maxSupply`; identical outcomes, now also returning `remaining` for capped rows. Pinned at verifier 148–158. |
+| 246 | Window call in `fetchEligibleTokens` | Keep | Behavior-identical: a row is skipped iff it is not live. |
+| 261–267 | Supply call in `fetchEligibleTokens` | Keep | Behavior-identical: `continue` on an exhausted capped edition; `remainingSupply` only for capped rows (`undefined` for open or unreadable). `const` because nothing reassigns it. |
+| 690–716 | `aggregate3Strict` | Keep | 709: an empty batch short-circuits (a pointless round trip otherwise). 710–715: `readContract` on Multicall3 `aggregate3` with `allowFailure: true` per sub-call — per-row reverts return `success: false`, an RPC failure throws. The docblock's claim about viem's `multicall` was checked against `viem/actions/public/multicall.ts`: a rejected chunk is appended as per-call failures when `allowFailure` is true. |
+| 718–756 | `readMintFeesWithBound` | Keep | 733: lowercased dedup so the map's keys match the index's addresses. 735: one calldata for all targets (`mintFee()` takes no arguments). 740–754: a call to an address without code returns success with empty data, which the decode rejects, so such a "collection" is dropped — fail-closed. 752 applies the exported bound, not a copy. |
 
 ## 5. `lib/catalogCensus.ts` — modified (changed lines only)
 
@@ -165,24 +184,24 @@ place of an indirect `ReturnType<…>[]`.
 | 79–86 | Comment | Keep | Records the three decisions a maintainer would otherwise re-derive: same walk, abort inheritance, own health phase, runs while the flag is off. |
 | 87–99 | Sweep phase | Keep | Own try/catch so an RPC blip records as `sweep-index` and not as a census failure; the log carries the two numbers an operator needs (`eligible`, `pool`); the error message is bounded by `recordStatsRun`. |
 
-## 8. `app/api/sweep/route.ts` — new, 116 lines
+## 8. `app/api/sweep/route.ts` — new, 111 lines
 
 | Lines | Unit | Verdict | Why |
 |---|---|---|---|
-| 1–16 | Imports | Keep | All used: `NextRequest`/`NextResponse` throughout; `Moment` 92; rate limit 44; `errorResponse` 45; the three hide sets 76–78; enrichment 94; index + flag 53, 61; `SWEEP_MAX_N` 64/113, `clampSweepN` 47, `selectSweepItems` 86, `sweepItemToMoment` 94, `SweepIndexItem` 38. |
+| 1–16 | Imports | Keep | All used: `NextRequest`/`NextResponse` throughout; `Moment` 87; rate limit 39; `errorResponse` 40; the three hide sets 71–73; enrichment 89; index + flag 48, 56; `SWEEP_MAX_N` 59/108, `clampSweepN` 42, `selectSweepItems` 81, `sweepItemToMoment` 89, `SweepResponseItem` 93. |
 | 18 | `runtime` | Keep | Consistent with sibling routes that touch Redis and viem. |
 | 20–30 | Comment | Keep | The viewer-independence decision is the reason this response may be edge-cached; a reader changing the cache header needs it. |
 | 31–36 | Cache constants | Keep (F4) | Three distinct policies for three distinct answers: pool (30 s + SWR), disabled (30 s, no SWR), failure (never). |
-| 38–41 | `SweepResponseItem` | Keep | The two enrichment overlays are the only fields added to the index item; typing them keeps the response contract explicit. |
-| 43–47 | Rate limit, `n` | Keep | Same budget as `agent-discover`; `n` is clamped before any work. |
-| 49–56 | Flag read | Keep | Fail closed and uncached on a blip (comment 49–50); a cached "off" would pin the feature dark for the window. |
-| 57–59 | Flag off | Keep | Cached without SWR (F4). |
-| 61–67 | No index | Keep | An honest empty pool with the same shape as a full one, cacheable — a client needs no special case. |
-| 69–85 | Hide sets | Keep | The sets throw on a Redis failure by design (strictRead); serving the pool unfiltered would reveal hidden work, so the failure is a 503 and never cached. |
-| 86 | Selection | Keep | The serve-time rules live in the core (pure, verified). |
-| 88–97 | Enrichment | Keep | Display-only, so a failure degrades to bare addresses rather than a 5xx; the comment records why that leaks nothing. |
-| 98–110 | Response items | Keep | Index by position is sound because enrichment returns `moments.map(...)` (same length, same order). The overlay fields are null when absent so the client never reads `undefined`. |
-| 112–115 | Response | Keep | Carries `maxN` and `n` so the client can render the size toggle from the server's own limits. |
+| (was 38–41) | `SweepResponseItem` | Moved | The two enrichment overlays are the only fields added to the index item; the type now lives in the pure core (`lib/sweepIndexCore.ts:231–238`, §18) so the client parses exactly what the route emits. |
+| 38–42 | Rate limit, `n` | Keep | Same budget as `agent-discover`; `n` is clamped before any work. |
+| 44–51 | Flag read | Keep | Fail closed and uncached on a blip (comment 44–45); a cached "off" would pin the feature dark for the window. |
+| 52–54 | Flag off | Keep | Cached without SWR (F4). |
+| 56–62 | No index | Keep | An honest empty pool with the same shape as a full one, cacheable — a client needs no special case. |
+| 64–80 | Hide sets | Keep | The sets throw on a Redis failure by design (strictRead); serving the pool unfiltered would reveal hidden work, so the failure is a 503 and never cached. |
+| 81 | Selection | Keep | The serve-time rules live in the core (pure, verified). |
+| 83–92 | Enrichment | Keep | Display-only, so a failure degrades to bare addresses rather than a 5xx; the comment records why that leaks nothing. |
+| 93–105 | Response items | Keep | Index by position is sound because enrichment returns `moments.map(...)` (same length, same order). The overlay fields are null when absent so the client never reads `undefined`. |
+| 107–110 | Response | Keep | Carries `maxN` and `n` so the client can render the size toggle from the server's own limits. |
 
 ## 9. `app/api/admin/sweep/route.ts` — new, 68 lines
 
@@ -215,23 +234,119 @@ place of an indirect `ReturnType<…>[]`.
 | 21 | `verify:sweep` | Keep | Same invocation shape as its siblings (alias loader, strip-types, warning suppression). |
 | 33 | `check` | Keep | Placed after `verify:sale-index` so the sale-config oracles run together; CI runs `check`. |
 
-## 12. `scripts/verify-sweep.ts` — new, 304 lines
+## 12. `scripts/verify-sweep.ts` — new, 381 lines (index half; the client half is §19)
 
 | Lines | Unit | Verdict | Why |
 |---|---|---|---|
-| 1–20 | Header | Keep | Lists what the oracle guards and how to run it, the convention every sibling verifier follows. |
-| 22–40 | Imports | Keep | Every import is exercised below; relative `.ts` paths are what the strip-types runner resolves. |
-| 42–49 | `check` | Keep | The repo's pass/fail harness shape; a failing check is visible and counted. |
-| 51–58 | Constants | Keep | `NOW` fixed so window tests are deterministic; `FEE` is Zora's real fee; `COL_A` is mixed-case on purpose (156, 274, 301 depend on it). |
-| 60–98 | Factories | Keep | `sale`, `cand`, `rk`, `idx` make each assertion one line; each default is the common case so tests state only what differs. |
-| 99–114 | PRNG, `shuffle`, `keys` | Keep | Deterministic randomness so a property failure reproduces; `shuffle` is what proves order-independence (183, 194, 227). |
-| 116–124 | Window rule (7 checks) | Keep | Covers every branch of `classifyOnchainSaleWindow` plus the sentinel and the malformed row; each can fail if a comparison flips. |
-| 126–140 | Supply rule (6 checks) | Keep | Null, both open forms, room, exhausted, over-minted — every branch of `classifyTokenSupply`. |
-| 142–169 | Admission (20 checks) | Keep | Each drop reason once (152–154) and each carried field once (156–163); 166–168 pin the absent-key rule and null passthrough. |
-| 171–217 | Ranking (16 checks) | Keep | Cross-tier order (175); the farming scenario (184–186); artist order by newest (190); singleton nulls (195); unknown dates last (200); the cap's three properties (207–209); invalid caps (211–213); floor (215); no-option identity (216). |
-| 218–249 | Property sweep (5 checks) | Keep | 300 random items: monotone outlay, permutation preserved, determinism, the farming property over every tier, and the cap bound. These are the assertions that catch a regression the hand-written cases miss. |
-| 251–261 | Pool cut (4 checks) | Keep | Input is cheapest-last so the cut demonstrably ranks before it cuts. |
-| 262–283 | Serve selection (8 checks) | Keep (F2 at 281) | Prefix sizes for 10 and 20, order preservation, and each of the four hide filters including the case-insensitive key. |
-| 284–288 | `clampSweepN` (5 checks) | Keep | Absent, garbage, floor, ceiling, in-range. |
-| 290–301 | Projection + constants (6 checks) | Keep | The three projection facts the route relies on, the cap identity, the pool multiple, the key normalization. |
-| 303–304 | Exit | Keep | Non-zero exit is what makes `npm run check` fail. |
+| 1–26 | Header | Keep | Lists what the oracle guards and how to run it, the convention every sibling verifier follows (20–25, the client-half bullet, is §19's). |
+| 28–46 | Imports | Keep | Every import is exercised below; relative `.ts` paths are what the strip-types runner resolves (47–59 are §19's). |
+| 61–68 | `check` | Keep | The repo's pass/fail harness shape; a failing check is visible and counted. |
+| 70–77 | Constants | Keep | `NOW` fixed so window tests are deterministic; `FEE` is Zora's real fee; `COL_A` is mixed-case on purpose (175, 293, 320 depend on it). |
+| 79–117 | Factories | Keep | `sale`, `cand`, `rk`, `idx` make each assertion one line; each default is the common case so tests state only what differs. |
+| 118–133 | PRNG, `shuffle`, `keys` | Keep | Deterministic randomness so a property failure reproduces; `shuffle` is what proves order-independence (202, 213, 246). |
+| 135–143 | Window rule (7 checks) | Keep | Covers every branch of `classifyOnchainSaleWindow` plus the sentinel and the malformed row; each can fail if a comparison flips. |
+| 145–159 | Supply rule (6 checks) | Keep | Null, both open forms, room, exhausted, over-minted — every branch of `classifyTokenSupply`. |
+| 161–188 | Admission (20 checks) | Keep | Each drop reason once (171–173) and each carried field once (175–182); 185–187 pin the absent-key rule and null passthrough. |
+| 190–236 | Ranking (16 checks) | Keep | Cross-tier order (194); the farming scenario (203–205); artist order by newest (209); singleton nulls (214); unknown dates last (219); the cap's three properties (226–228); invalid caps (230–232); floor (234); no-option identity (235). |
+| 237–268 | Property sweep (5 checks) | Keep | 300 random items: monotone outlay, permutation preserved, determinism, the farming property over every tier, and the cap bound. These are the assertions that catch a regression the hand-written cases miss. |
+| 270–280 | Pool cut (4 checks) | Keep | Input is cheapest-last so the cut demonstrably ranks before it cuts. |
+| 281–302 | Serve selection (8 checks) | Keep (F2 at 300) | Prefix sizes for 10 and 20, order preservation, and each of the four hide filters including the case-insensitive key. |
+| 303–307 | `clampSweepN` (5 checks) | Keep | Absent, garbage, floor, ceiling, in-range. |
+| 309–320 | Projection + constants (6 checks) | Keep | The three projection facts the route relies on, the cap identity, the pool multiple, the key normalization. |
+| 380–381 | Exit | Keep | Non-zero exit is what makes `npm run check` fail. |
+
+---
+
+## 13. `lib/sweepBatch.ts` — new, 125 lines
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 1–3 | Imports | Keep | `encodeFunctionData` 55; `Address`/`Hex` in the types; `DEFAULT_COLLECT_COMMENT` as the comment default (44); the two zoraMint builders 47/70/81 — every mint encoding goes through `buildEthMintCall`, which is the treasury rule. |
+| 5–9 | Header | Keep | States the property the verifier relies on: no network, so the invariants are pinned without an RPC. |
+| 11–24 | `SweepBasketItem`, `SweepCall` | Keep | The four inputs a mint needs and the three outputs a call carries; nothing from the index rides along, so a stale index value can never reach calldata. |
+| 26–33 | `SWEEP_GAS_HEADROOM_WEI` | Keep | The constant the balance trim reserves before simulation (the node rejects an `eth_call` whose `value` the sender cannot cover — verified in go-ethereum's `buyGas`). Pinned at verifier 377. |
+| 35–57 | `buildSweepCalls` | Keep | 47–54: `buildEthMintCall` with quantity 1 and the live price and fee; 55: encoded once, `to` is the item's own collection (cross-collection is the point). Pinned 331–344: decoded back to `mint(FPSS, id, 1, [KISMET_REFERRAL], (mintTo, comment))`, value = price + fee. |
+| 59–61 | `sweepTotalValue` | Keep | Used by the verifier to assert the bundle's `msg.value` equals the sum (350); the hook sums rows instead because its rows carry the outlay. |
+| 63–71 | `sweepBundle` | Keep | The strict bundle is `buildMulticall3Batch` unchanged; the wrapper exists so the docblock can carry the stranding warning next to the one call site that could loosen it. Pinned 347–350. |
+| 73–88 | `sweepSimulationArgs` | Keep | Derived from the strict bundle (81) and only `allowFailure` flipped (85), so targets, calldata and values can never disagree between what is simulated and what is signed. Pinned 352–355. |
+| 90–109 | `trimToBudget` | Keep | A cheapest-first prefix (92–93 explain why a prefix is the right subset and why tail drops cannot invalidate earlier sub-calls). 104 breaks on the first overflow; 108 returns the rest as dropped. Pinned 363–370, including the "never skips a cheaper item" property. |
+| 111–125 | `applySimulation` | Keep | Position mapping (120–123); a length mismatch drops everything (117) because an unattributed slot must never be signed. Pinned 372–376. |
+
+## 14. `lib/sweepSimulate.ts` — new, 78 lines
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 1–4 | Imports | Keep | `PublicClient`/`Address` types; `walkError` (41) is the repo's depth-capped error-chain walker; `MULTICALL3_ADDRESS` 27/65; the two builders 25/62. |
+| 6–8 | Header | Keep | The one fact a reader must know: both calls are read-only, so failure costs nothing. |
+| 10 | `SweepSimulation` | Keep | Three outcomes the hook branches on (per-slot flags, insufficient funds, other). |
+| 12–38 | `simulateSweep` | Keep | 23: an empty basket needs no call. 26–33: `simulateContract` on the allowFailure=true args with `value` and `account` — the exact bundle, not a stand-in. 34: per-slot `success`. 35–36: the error is classified so the hook can shed rows on insufficient funds instead of failing the sheet. |
+| 40–47 | `isInsufficientFunds` | Keep | Matches viem's `InsufficientFundsError` by name and the node's message text through the wrapped chain; either alone misses one of the two shapes wagmi/viem produce. |
+| 49–78 | `estimateSweepGasCost` | Keep | 60: zero for an empty basket. 62–73: gas on the STRICT bundle (what is signed) times `maxFeePerGas`, in parallel. 74: wei. 75–77: null on failure so the caller falls back to the headroom rather than trusting a number it does not have. |
+
+## 15. `hooks/useSweep.ts` — new, 507 lines
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 1–34 | Imports | Keep | Each is used: react hooks; wagmi `useConfig`/`usePublicClient`/`useWriteContract` (298–300); `getAccount` (416, 429); `base` (266, 299, 429, 438, 453); `toast` (344, 356, 382, 412, 418, 424, 461, 468, 475); viem types; `isAddress`/`isValidTokenId` (107); `useEnsureBase` (301), `useEnsureConnected` (302), `useWalletRecovery` (303); `BUILDER_DATA_SUFFIX` (448, 456); `trackFunnel` (334, 422, 476); `reportClientError` (288); `DEFAULT_COLLECT_COMMENT` (269, 446); the two chain reads (145, 152); `rankSweepCandidates` (184); the core constant, key and types (20–24); `MULTICALL3_ADDRESS`/`buildEthMintCall` (454, 440); the batch helpers (27–33); the simulation pair (214, 246). |
+| 36–47 | Header | Keep | The state machine and the sentence that governs the whole file: everything that costs money is decided from live chain state, never from the index. |
+| 49–80 | Types | Keep | Every status is rendered by the sheet's `buttonLabel` (SweepSheet 22–45); every row state is either rendered (`Row` 74–107) or filtered (`reserve`, sheet 135). `priceWei`/`feeWei`/`outlayWei` are the live values the calls are built from (118–123). |
+| 82–100 | `UseSweepReturn` | Keep | Each field is consumed by the sheet (113) except `gasCostWei` and `updatedAt`, which the design's footnotes name for the next UI pass; they cost two fields and no reads. |
+| 102–105 | Constants | Keep | Toast id shared with the recovery flow; the simulation cap the design fixes at "initial + two refills"; the same record retry count `useDirectCollect` uses. |
+| 107–125 | Helpers | Keep | 107: the pool row is re-validated at the trust boundary even though the server validated it. 109–116: pending rows carry zeros until verified. 118–123: rows → basket items with the live values only. 125: the basket sum. |
+| 127–129 | `Verified` | Keep | The two outcomes `open` branches on; an RPC failure is its own shape so it can never be mistaken for an empty basket. |
+| 131–260 | `verifyBasket` | Keep (C2–C4) | 143: empty page = nothing to sweep. 145–148: one aggregate3 for price/supply/ownership/balance; a null balance is the aggregate failing, reported as "could not verify" (never "nothing eligible"). 150–158: live fees, RPC failure reported the same way. 160–181: each pool row is re-decided from the live read with a reason the sheet shows; 169–174 re-applies the paid rule so a price edited to zero since the build cannot slip in. 183–196: re-rank on live outlay with the index's rule. 198–206: budget trim before simulation, because the node rejects an `eth_call` the sender cannot fund. 208–241: simulate → drop → refill → re-simulate, bounded (212, 231), refills only from cheaper-than-room reserve rows (234), and — C3 — a non-empty basket is always one that passed a simulation. 243–250: gas refinement, C4. 252–259: rows assembled in display order with reasons. |
+| 262–295 | `recordOne` | Keep | The `/api/collect` body the record endpoint verifies (collection, canonical tokenId, chainId, the bare price, the shared tx hash); bounded backoff because the server 403s until its own RPC sees the receipt (`useDirectCollect` precedent); `keepalive` so a navigation cannot drop it; the diagnostics sink on total loss because the mint has already landed. |
+| 297–324 | Hook state | Keep | 298–303: the wagmi/recovery hooks. 305–310: six pieces of state, each rendered or returned. 312–318: rows are mirrored into a ref so `confirm` reads the latest removal, not a stale closure. 319–320: the double-tap latch. 321–323: the open sequence that discards a superseded verification (size toggle, "sweep the next N"). 324: the ref the recovery retry calls. |
+| 326–390 | `open` | Keep | 328: sequence stamp. 329–334: reset, then the funnel event. 336–341: connect on demand (host wallet in a Mini App, modal on web); a declined connect is `idle`, not an error. 342–346: no public client is an error, not a silent empty. 348–363: the pool fetch, cached at the edge; disabled or empty is `empty`. 364–367: rows appear immediately as pending (the sheet opens instantly). 369–376: chain switch through the recovery toast. 378–387: verification. Every await is followed by a sequence re-check (337, 354, 359, 372, 379) so a stale result never overwrites a newer open. |
+| 392–404 | `remove`, `restore` | Keep | Toggle a basket row out and back; only those two states transition, so a dropped row cannot be "restored" into the bundle. |
+| 406–488 | `confirm` | Keep | 407: the recovery flag is consumed first (the hook contract). 408–420: latch, basket, client, authoritative signer (the wagmi store, so a wallet connected in this same tap counts). 421–424: latch set, funnel event, status, toast. 427–431: chain switch and the wagmi-store chain guard right before the send. 432–458: one item → direct `1155.mint` (keeps `Purchased.sender` = user); more → the strict Multicall3 bundle; both with the builder-code suffix. 460–465: receipt with the same 300 s bound as collect-all; a revert throws (nothing was charged). 467–469: records in parallel with bounded retry. 471–478: rows → swept, result, success toast, funnel, recovery ack. 479–487: the recovery toast with a retry that re-enters `confirm`; the latch is released in `finally`. |
+| 490–507 | Return | Keep | `totalWei` and `unaffordable` are derived from rows on every render so the sheet never holds a second copy. |
+
+## 16. `components/SweepSheet.tsx` — new, 244 lines
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 1–13 | Imports | Keep | `useEffect`/`useRef` (115, 122–126); `X` (95, 188); `formatEther` (136); the three modal hooks (116–118); `useEthUsd` (114); the hook and its types; `MomentImage` (66); `formatPrice`/`shortAddress` (41, 60, 82, 224); the two size constants (20). |
+| 15–18 | Header | Keep | Names the sheet's job: the trust surface, everything visible before the prompt. |
+| 20 | `SIZES` | Keep | 10 and 20 from the shared constants, never literals. |
+| 22–45 | `buttonLabel` | Keep | One place maps every status to the primary button's text; `ready` with an empty basket is spelled out separately from `empty`. |
+| 47–110 | `Row` | Keep | 59–60: name falls back to the token id, artist to the enriched username then the short address. 61: dimmed states. 64–68: 40 px thumbnail through the same image component the feeds use, with the thumbhash placeholder. 73–86: the right column says exactly one thing per state — verifying, the reason, swept, or price + fee. 87–107: remove (44 px target, labelled) and undo, both disabled while busy. |
+| 112–126 | Setup | Keep | Modal behaviors (116–118) in the `PatronInfoModal` pattern plus the focus trap. 120–126: open once on mount through a ref so wallet-state re-renders (which re-create `open`) cannot re-fetch. |
+| 128–138 | Derived values | Keep | `busy` gates every control; reserve rows are hidden (135); the USD label only when a rate and a total exist (136); the button is disabled exactly when a tap could do nothing (138). |
+| 140–143 | `onPrimary` | Keep | `ready` confirms; `error`/`done`/`idle` re-open (re-verify) — a retry after an on-chain revert must re-verify, not resend. |
+| 145–157 | Dialog shell | Keep | Backdrop closes, card stops propagation; `role`/`aria-modal`/`aria-label` for the trap; `bg-black/80` and `bg-surface` as the sibling modal uses. |
+| 158–191 | Header row | Keep | Title, subtitle, the size toggle (`aria-pressed`, disabled while busy, no-op on the current size), and a 44 px close. |
+| 193–205 | Rows | Keep | Scroll-bounded list; the empty message names the actual state (loading / error / nothing). |
+| 207–240 | Footer | Keep (C5) | `aria-live` totals (done → count + Basescan link; else count and, when non-zero, the total with USD); the primary button; the footnote with the unaffordable count. |
+
+## 17. `components/SweepButton.tsx` — new, 44 lines
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 1–6 | Imports | Keep | `useState` (22); `dynamic` (13); `useQuery` (23); the response type (15, 18). |
+| 8–11 | Header | Keep | The only behavior worth stating: nothing renders unless the pool is enabled and non-empty. |
+| 13 | Lazy sheet | Keep | The sheet (hook, wagmi writes, image component) loads only when opened, so `/discover`'s initial JS carries only the button. |
+| 15–19 | `fetchSweepAvailability` | Keep | A non-OK answer is "disabled", never an exception into the header. |
+| 21–44 | Component | Keep | `staleTime` matches the endpoint's cache plus the flag memo (26–28); the discriminated-union check (30) is what lets TypeScript admit `items`; the button's classes are the header's own `stats` button with the accent border; the sheet mounts only while open. |
+
+## 18. `components/DiscoverMarketView.tsx`, `lib/funnel.ts`, `app/api/sweep/route.ts`, `lib/sweepIndexCore.ts`, `lib/saleConfig.ts`
+
+| File:lines | Unit | Verdict | Why |
+|---|---|---|---|
+| `DiscoverMarketView.tsx:15` | Import | Keep | Used at 795. |
+| `DiscoverMarketView.tsx:793–795` | Mount | Keep | Between the market toggle and the stats block in the sticky header's top row — the one placement the decision names; the comment says when it renders nothing. |
+| `funnel.ts` (+3 events, +4 comment lines, 1 reworded) | Events | Keep | The three events the hook fires (334, 422, 476); `app/api/funnel` and `lib/funnelServer` derive their allowlist and read set from this array, so nothing else changes. The header's "seven named events" was already false (the array held ten; it now holds thirteen) and is now a count-free sentence. |
+| `app/api/sweep/route.ts` (−6/+1) | Shared type | Keep | The response item type moved to the pure core so the client and the route cannot drift. |
+| `sweepIndexCore.ts:231–253` | `SweepResponseItem`, `SweepApiResponse` | Keep | The two shapes the client parses; a discriminated union so a disabled answer carries no items to misread. |
+| `saleConfig.ts:15` | Import | Keep | `MULTICALL3_BALANCE_ABI` used at 840/909. |
+| `saleConfig.ts:758–772` | Types | Keep | `EligibleTokenMulti` extends the existing `EligibleToken` (same per-row fields) plus the collection, so the sibling functions stay interchangeable; `ethBalance: null` is the documented "could not verify" signal. |
+| `saleConfig.ts:774–918` | `fetchEligibleTokensMulti` | Keep | 801: empty refs short-circuit. 803–808: chain time as `fetchEligibleTokens`. 811–844: three slots per ref plus the balance slot, all through `aggregate3Strict` — one `eth_call` on the browser client (viem's `shouldPerformMulticall` returns false for aggregate3 calldata; verified in `actions/public/call.ts`). 846–851: RPC failure → no items AND null balance. 854–902: the same per-row rules as `fetchEligibleTokens`, in the same order, with the shared classifiers (865, 880) and the fail-closed balance rule (884); the owned skip defaults to 1 ("one of each"). 904–917: the trailing balance. |
+
+## 19. `scripts/verify-sweep.ts` — client-half additions
+
+| Lines | Unit | Verdict | Why |
+|---|---|---|---|
+| 20–25 | Header | Keep | Names what the new section guards. |
+| 47–59 | Imports | Keep | The batch helpers under test, the comment default, the FPSS / referral / mint ABI from the shared verifier helpers (sourced from production constants, not hand-copied), and viem's decoders. |
+| 322–357 | Bundle oracles (17 checks) | Keep | Every signed sub-call is decoded back to `mint` with the FPSS minter, the token id, quantity 1, the treasury referral, and `(mintTo, comment)` minter arguments (331–343); the sum (344); the strict bundle's function, `allowFailure === false` on every entry, alignment and `msg.value` (346–350); the simulated bundle's `allowFailure === true` with identical targets, calldata, values, `msg.value` and function (352–355); the empty basket (356). |
+| 359–378 | Trim / simulation / headroom (10 checks) | Keep | Exact fit, partial prefix, zero and negative budgets, empty input, the prefix property (363–370); position mapping, the fail-closed mismatch, empty input (372–376); the headroom constant (377). |

@@ -227,3 +227,27 @@ export function sweepItemToMoment(it: SweepIndexItem): Moment {
     },
   }
 }
+
+/**
+ * One row as /api/sweep returns it: the index item plus the feeds' identity
+ * overlay (enrichMomentsWithKismetMeta), so the sheet needs no per-row fetch.
+ */
+export interface SweepResponseItem extends SweepIndexItem {
+  creatorProfile: { username: string | null; avatarUrl: string | null }
+  collection: { name: string | null; image: string | null } | null
+}
+
+/**
+ * The /api/sweep envelope. `enabled: false` is the whole answer while the
+ * flag is off (or unreadable); the client renders nothing on it.
+ */
+export type SweepApiResponse =
+  | { enabled: false }
+  | {
+      enabled: true
+      updatedAt: number | null
+      eligible: number
+      maxN: number
+      n: number
+      items: SweepResponseItem[]
+    }

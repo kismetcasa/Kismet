@@ -949,8 +949,12 @@ batches via Multicall3 (`aggregate3Value` for pure-ETH) or EIP-5792
 re-enters the same `/api/collect`. A flag-gated **sweep index**
 (`lib/sweepIndex.ts`: the cheapest live ETH-priced mints across every tracked
 collection, rebuilt by the hourly cron from the census walk, served by
-`/api/sweep`) is the discovery half of the planned cross-collection sweep —
-`SWEEP_DESIGN.md` / `SWEEP_IMPLEMENTATION.md`; its client half is not built yet. A **secondary buy** is a separate Seaport
+`/api/sweep`) is the discovery half of the cross-collection **sweep**; the
+client half (`hooks/useSweep.ts`: one cross-collection aggregate3 to re-verify
+price / supply / ownership / balance, an eth_call simulation of the exact
+bundle, then a strict Multicall3 `aggregate3Value` on any wallet) is the sheet
+behind the `sweep` button in `/discover`'s header — `SWEEP_DESIGN.md` /
+`SWEEP_IMPLEMENTATION.md`. Both halves sit behind `kismetart:sweep-enabled`. A **secondary buy** is a separate Seaport
 `fulfillOrder` settled via `PATCH /api/listings/[id]` using `OrderFulfilled`-event
 verification. _(Note: the collect path does **not** go through inprocess — that's the
 mint/create relay.)_

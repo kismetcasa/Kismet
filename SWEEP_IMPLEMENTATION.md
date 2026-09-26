@@ -9,13 +9,14 @@ document specifies what to build, file by file, and closes with an honest
 assessment of what is left to be desired (including whether a cap or a floor
 is needed — short answer: not for v1, keep the hooks)._
 
-> **Revision 2 (2026-09-26) — validated and partially built.** Every claim in
-> this design was checked against the code and, where it cites external
-> behavior, against the source (Multicall3, go-ethereum, viem 2.55.10). The
-> architecture held; seven statements were corrected and are folded into the
-> body below, marked ✏️ in §10. The **index and the API are built and
-> verified** behind the flag (§11); the client phase (§4–5) is unchanged and
-> still to build.
+> **Revision 3 (2026-09-26) — validated and built.** Every claim in this
+> design was checked against the code and, where it cites external behavior,
+> against the source (Multicall3, go-ethereum, viem 2.55.10). The architecture
+> held; seven statements were corrected and are folded into the body below,
+> marked ✏️ in §10. The **index, the API and the client phase are built and
+> verified** behind the flag (§11). The one deviation from the design as
+> written: the sheet formats ETH through the existing `formatPrice`, so
+> `formatEthChip` was not moved.
 
 > **Scope in one line.** FixedPriceSaleStrategy sales on Base only → one
 > Multicall3 `aggregate3Value` transaction → `/api/collect` records, exactly
@@ -468,12 +469,11 @@ Add `'sweep_open' | 'sweep_attempt' | 'sweep_success'` to `FUNNEL_EVENTS`
 - Sheet: the `PatronInfoModal` skeleton (fixed inset, `bg-black/80`, centered
   `max-w-md` card, `border-line`, mono uppercase header), rows in a
   `flex-col gap-2`, thumbnails 40 px via `MomentImage` (`src` = raw
-  `image` URI, thumbhash placeholder), artist chip from the enriched creator
-  (username/avatar), price in `formatPrice(priceWei, 'eth')` with the fee as a
-  muted `+ fee` suffix, `×` per row (44 px hit area). Totals row uses
-  `formatEther` trimmed to 4 dp (the `formatEthChip` helper in
-  `CollectAllAction.tsx` — move it to `lib/earningsFormat.ts` or export it)
-  and `useEthUsd` for the `≈ $` label (hidden when null).
+  `image` URI, thumbhash placeholder), artist from the enriched creator
+  (username, else the short address), price in `formatPrice(priceWei, 'eth')`
+  with the fee as a muted `+ fee` suffix, `×` per row (44 px hit area).
+  Totals row uses `formatPrice` on the summed outlay (✏️ no `formatEthChip`
+  move needed) and `useEthUsd` for the `≈ $` label (hidden when null).
 - Button label follows `status` exactly as `CollectAllAction.statusLabel`
   does; disabled while `verifying`/in flight; `aria-live="polite"` on the
   totals so screen readers hear the count change after verification.
@@ -658,7 +658,7 @@ written; ✏️ = corrected (the body above already carries the correction);
 | `app/api/sweep/route.ts` | Public pool read: rate-limited, flag-gated, hide-filtered at serve time, enriched, edge-cached 30 s |
 | `app/api/admin/sweep/route.ts` | Flag GET/POST with admin session + audit log; GET reports the index snapshot |
 | `app/api/admin/stats-health/route.ts` | `sweepIndex` phase, `snapshots.sweepIndex`, separate `sweepHealthy` |
-| `scripts/verify-sweep.ts`, `package.json` | 77 assertions over the pure rules; wired into `npm run check` as `verify:sweep` |
+| `scripts/verify-sweep.ts`, `package.json` | 104 assertions over the pure rules (index half and client half); wired into `npm run check` as `verify:sweep` |
 
 **Checks run:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (77/77) · `verify:agent` ✅ ·
 `verify:sale-index` ✅ · `verify:sale-edit` ✅ · `verify-moments-batch` ✅ · `verify-stats` ✅ ·
@@ -669,8 +669,16 @@ that accompanied this revision.
 hour) → `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
 Until then `/api/sweep` answers `{ enabled: false }` and no UI exists that calls it.
 
-**Still to build (client phase):** `fetchEligibleTokensMulti`,
-`lib/sweepBatch.ts`, `lib/sweepSimulate.ts`, `hooks/useSweep.ts`, `SweepSheet` +
-the single `SweepButton` at the top of `/discover` (§1.1), the three funnel
-events, the `formatEthChip` move, docs. Optional v1.1: pool refresh on read,
-append on mint, the agent envelope.
+**Client phase (shipped in the same session, behind the same flag):**
+
+| File | What |
+|---|---|
+| `lib/saleConfig.ts` `fetchEligibleTokensMulti` | ONE aggregate3 (a single eth_call on the browser client — viem never re-batches an aggregate3) for sale / supply / balance per ref + the wallet's ETH balance; per-row rules identical to `fetchEligibleTokens` |
+| `lib/sweepBatch.ts` | Pure: `buildSweepCalls` (every call via `buildEthMintCall`), `sweepBundle` (strict), `sweepSimulationArgs` (same calls, allowFailure on), `trimToBudget`, `applySimulation`, the gas headroom |
+| `lib/sweepSimulate.ts` | `simulateSweep` (eth_call, per-slot success, insufficient-funds classification), `estimateSweepGasCost` |
+| `hooks/useSweep.ts` | The state machine: pool → live re-verification → live re-rank → balance trim → simulate/refill (≤ 3) → gas refinement → strict Multicall3 (or direct mint for one item) → receipt → `/api/collect` × N with bounded retry; funnel events |
+| `components/SweepSheet.tsx`, `components/SweepButton.tsx` | The trust surface and the one entry point; `DiscoverMarketView` mounts the button in its sticky header's top row |
+| `lib/funnel.ts`, `ANALYTICS.md` | `sweep_open`, `sweep_attempt`, `sweep_success` |
+| `scripts/verify-sweep.ts` | + the client-half oracles: calldata decoding, strict vs simulated bundles, trim, simulation mapping |
+
+Optional v1.1, unchanged: pool refresh on read, append on mint, the agent envelope.
