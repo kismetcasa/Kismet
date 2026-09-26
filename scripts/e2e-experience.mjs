@@ -214,6 +214,14 @@ const SEL = {
   balance: toFunctionSelector('balanceOf(address,uint256)'),
   sale: toFunctionSelector('sale(address,uint256)'),
 }
+/** Multicall3 — the browser's wagmi client batches every read through it. */
+const MULTICALL3 = parseAbi(['function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)'])
+SEL.aggregate3 = toFunctionSelector('aggregate3((address,bool,bytes)[])')
+/** The writes the browser section's wallet can sign and the mock chain applies. */
+const WALLET_WRITES = parseAbi([
+  'function addPermission(uint256 tokenId, address user, uint256 permissionBits)',
+  'function removePermission(uint256 tokenId, address user, uint256 permissionBits)',
+])
 const OPEN = 18446744073709551615n
 
 const chain = {
@@ -230,6 +238,8 @@ const chain = {
   sales: new Map(),    // `${collection}:${id}` -> { saleStart, saleEnd, pricePerToken, fundsRecipient }
   receipts: new Map(), // txHash -> receipt
   logs: [],
+  /** Every transaction the browser's wallet signed, in order. */
+  walletTxs: [],
 }
 const key = (...p) => p.map((x) => String(x).toLowerCase()).join(':')
 /** Advance the mock chain head. Refuses to go BACKWARDS: the server reads the
@@ -265,6 +275,30 @@ function addMint({ tx, collection, to, id, value, block, operator = to, purchase
     from: to, to: collection, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
     contractAddress: null, logs, logsBloom: '0x' + '0'.repeat(512), status: '0x1', type: '0x2',
   })
+}
+
+/** What the browser section's wallet does when asked to sign: apply the call
+ *  to the mock chain and hand back a receipted hash. Only the writes a test
+ *  drives are modelled; anything else lands as a revert. */
+function walletSend(tx) {
+  chain.walletTxs.push({ to: tx.to, data: tx.data })
+  const hash = '0x' + 'e7'.repeat(28) + chain.walletTxs.length.toString(16).padStart(8, '0')
+  let ok = true
+  try {
+    const { functionName, args } = decodeFunctionData({ abi: WALLET_WRITES, data: tx.data })
+    const k = key(tx.to, args[0], args[1])
+    const cur = chain.perms.get(k) ?? 0n
+    chain.perms.set(k, functionName === 'addPermission' ? cur | args[2] : cur & ~args[2])
+  } catch {
+    ok = false
+  }
+  const blockHex = '0x' + chain.head.toString(16)
+  chain.receipts.set(hash, {
+    transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), blockNumber: blockHex,
+    from: tx.from, to: tx.to, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
+    contractAddress: null, logs: [], logsBloom: '0x' + '0'.repeat(512), status: ok ? '0x1' : '0x0', type: '0x2',
+  })
+  return hash
 }
 
 function rpc(method, params) {
@@ -312,7 +346,31 @@ function rpc(method, params) {
         const { args } = decodeFunctionData({ abi: BALANCE, data })
         return encodeFunctionResult({ abi: BALANCE, functionName: 'balanceOf', result: chain.balances.get(key(to, args[0], args[1])) ?? 0n })
       }
+      if (sel === SEL.aggregate3) {
+        const { args } = decodeFunctionData({ abi: MULTICALL3, data })
+        const returnData = args[0].map((c) => {
+          try {
+            const r = rpc('eth_call', [{ to: c.target, data: c.callData }, tag])
+            return { success: r !== '0x', returnData: r }
+          } catch {
+            return { success: false, returnData: '0x' }
+          }
+        })
+        return encodeFunctionResult({ abi: MULTICALL3, functionName: 'aggregate3', result: returnData })
+      }
       return '0x'
+    }
+    // Enough of a node for a browser wallet to prepare and send a transaction.
+    case 'eth_estimateGas': return '0x5208'
+    case 'eth_gasPrice':
+    case 'eth_maxPriorityFeePerGas': return '0x1'
+    case 'eth_getTransactionCount': return '0x0'
+    case 'eth_getBlockByNumber': return {
+      number: '0x' + chain.head.toString(16), hash: '0x' + 'bb'.repeat(32), parentHash: '0x' + 'aa'.repeat(32),
+      timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), baseFeePerGas: '0x1', gasLimit: '0x1c9c380', gasUsed: '0x0',
+      miner: ZERO, extraData: '0x', transactions: [], uncles: [], nonce: '0x0000000000000000', difficulty: '0x0',
+      logsBloom: '0x' + '0'.repeat(512), sha3Uncles: '0x' + '00'.repeat(32), stateRoot: '0x' + '00'.repeat(32),
+      receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', totalDifficulty: '0x0',
     }
     case 'eth_getLogs': {
       chain.getLogsCalls = (chain.getLogsCalls ?? 0) + 1
@@ -1301,6 +1359,8 @@ try {
   check('the review API needs the admin cookie', (await call('/api/admin/experience?state=review')).status === 401)
   const queue = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
   check('the queue shows it with a live solvency verdict', queue.status === 200 && queue.json.machines.length === 1 && queue.json.machines[0].problems.length === 0, JSON.stringify(queue.json).slice(0, 300))
+  check('a queued machine is not named on its pieces',
+    !(await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.machines?.some((m) => m.id === 'field-recordings'))
   // The artist revokes while the machine waits. The queue must show it, and
   // approval must refuse, rather than put on sale a pool nothing can deliver.
   chain.perms.delete(key(POOL, 8, OPERATOR))
@@ -1313,6 +1373,7 @@ try {
   const promote = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
   check('the curator promotes it', promote.status === 200 && promote.json.machine.state === 'live')
   check('and it is public now', (await call('/api/experience/machines/field-recordings')).status === 200)
+  check('and named on its pieces now', (await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.machines?.some((m) => m.id === 'field-recordings'))
   const list = await call('/api/experience/machines')
   check('the public list carries every live machine',
     list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,redraw,spring-season',
@@ -1343,6 +1404,16 @@ try {
     entries: [{ collection: POOL_WIDE, tokenId: '1', artist: ADMIN, weight: 1, supply: 0 }], dryRun: true,
   } })
   check('a collection-wide grant allows the piece', wide.status === 200 && wide.json?.problems?.length === 0, JSON.stringify(wide.json).slice(0, 240))
+
+  // ═══ 6g. an artwork's standing with capsule machines ═════════════════════
+  console.log('\n6g. the allowance panel\'s read')
+  const p7 = await call(`/api/experience/piece?collection=${POOL}&tokenId=7`)
+  check('a granted piece reads allowed on its own row, naming the delivery account',
+    p7.json?.operator === OPERATOR && p7.json.allowed === true && p7.json.scope === 'piece', JSON.stringify(p7.json).slice(0, 200))
+  check('and lists the public machines that include it', p7.json?.machines?.some((m) => m.id === 'spring-season' && m.state === 'live'))
+  const pWide = await call(`/api/experience/piece?collection=${POOL_WIDE}&tokenId=1`)
+  check('a collection-wide grant reads as such', pWide.json?.allowed === true && pWide.json.scope === 'collection')
+  check('a malformed piece is refused', (await call(`/api/experience/piece?collection=nope&tokenId=1`)).status === 400)
 
   // ═══ 6e. the credential gate, and the credential as a coin slot ═══════════
   console.log('\n6e. the Pass gate actually gates')
@@ -1474,7 +1545,7 @@ try {
     if (browser) {
       const pageErrors = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -1495,11 +1566,35 @@ try {
           ...(cookieHeader ? { extraHTTPHeaders: { cookie: cookieHeader } } : {}),
         })
         context.setDefaultTimeout(20_000)
+        // `onChain`: the page reads and writes the mock chain. Its wagmi
+        // client's reads go to a public Base RPC URL, rerouted here; the
+        // wallet's own calls — gas, nonce, the signed transaction — go to the
+        // same mock through an exposed function, and a signed transaction is
+        // applied to it (walletSend). Opt-in, so every other page keeps a
+        // wallet that can do nothing but name its account.
+        if (onChain) {
+          await context.exposeFunction('__e2eRpc', (method, params) =>
+            method === 'eth_sendTransaction' ? walletSend(params[0]) : rpc(method, params ?? []))
+          await context.route((url) => url.origin !== origin, async (route) => {
+            const req = route.request()
+            const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'POST, OPTIONS' }
+            if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
+            const body = req.postData() ?? ''
+            if (req.method() !== 'POST' || !body.includes('"jsonrpc"')) return route.abort()
+            const r = await fetch(`http://127.0.0.1:${rpcPort}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+            return route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'application/json' }, body: await r.text() })
+          })
+        }
+        // `moment`: the artwork page's detail, which it otherwise fetches from
+        // In Process — served the way scripts/e2e/model-media.mjs serves it.
+        if (moment) {
+          await context.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(moment) }))
+        }
         if (wallet) {
           await context.addInitScript((addr) => {
             const provider = {
               isCoinbaseWallet: true,
-              async request({ method }) {
+              async request({ method, params }) {
                 switch (method) {
                   case 'eth_requestAccounts':
                   case 'eth_accounts': return [addr]
@@ -1509,7 +1604,10 @@ try {
                   case 'wallet_addEthereumChain': return null
                   case 'wallet_getPermissions':
                   case 'wallet_requestPermissions': return [{ parentCapability: 'eth_accounts' }]
-                  default: { const e = new Error(`stub wallet: ${method}`); e.code = 4200; throw e }
+                  default: {
+                    if (typeof window.__e2eRpc === 'function') return window.__e2eRpc(method, params)
+                    const e = new Error(`stub wallet: ${method}`); e.code = 4200; throw e
+                  }
                 }
               },
               on() { return this }, removeListener() { return this }, removeAllListeners() { return this },
@@ -1713,6 +1811,41 @@ try {
           await page.getByRole('button', { name: 'approve · live' }).click()
           await page.getByText('browser-machine \u2192 live').waitFor()
           check('approving promotes it', (await call('/api/experience/machines/browser-machine')).status === 200)
+          await page.context().close()
+        }
+
+        // ── an artist allows capsule machines on their piece ──
+        // Nothing else in the app can grant this, and the publish gate refuses
+        // any piece without it, so this panel is the only door into a machine.
+        // The artist's own wallet signs; the mock chain applies the write; the
+        // panel re-reads the chain once the receipt lands.
+        {
+          chain.perms.delete(key(POOL, 99, OPERATOR))
+          const moment = {
+            uri: 'ar://meta', owner: ADMIN, momentAdmins: [ADMIN], saleConfig: null,
+            metadata: { name: 'Piece Ninety Nine', description: 'An artwork used to validate the allowance panel.', image: '' },
+          }
+          const visitor = await open(`/artwork/${POOL}/99`, { moment })
+          await visitor.getByText('Piece Ninety Nine').first().waitFor()
+          check('a visitor sees no allowance panel', (await visitor.getByRole('button', { name: /capsule machines/i }).count()) === 0)
+          await visitor.context().close()
+
+          const page = await open(`/artwork/${POOL}/99`, { wallet: ADMIN, onChain: true, moment })
+          const panel = page.getByRole('button', { name: /capsule machines/i })
+          await panel.waitFor()
+          check('the artist sees it, reading not allowed', /not allowed/i.test(await panel.innerText()), await panel.innerText())
+          await panel.click()
+          const body = await text(page)
+          check('it names the machines that include the piece', body.includes('no grant') && body.includes('redraw'), body.match(/in \d machines?.{0,80}/)?.[0] ?? '')
+          const signed = chain.walletTxs.length
+          await page.getByRole('button', { name: 'allow capsule machines' }).click()
+          await page.getByRole('button', { name: 'stop allowing' }).waitFor()
+          check('allowing is one signature from the artist\'s own wallet', chain.walletTxs.length === signed + 1)
+          check('and the delivery account now holds MINTER on that piece', chain.perms.get(key(POOL, 99, OPERATOR)) === 4n)
+          check('which the publish gate reads the same way', (await call(`/api/experience/piece?collection=${POOL}&tokenId=99`)).json?.allowed === true)
+          await page.getByRole('button', { name: 'stop allowing' }).click()
+          await page.getByRole('button', { name: 'allow capsule machines' }).waitFor()
+          check('stopping revokes it', (chain.perms.get(key(POOL, 99, OPERATOR)) ?? 0n) === 0n)
           await page.context().close()
         }
       } finally {

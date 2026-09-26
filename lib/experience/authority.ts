@@ -40,20 +40,20 @@ export interface AuthorityResult {
 }
 
 /**
- * Does the delivery account hold mint rights on this piece?
+ * Where the delivery account's mint rights on this piece come from, if any.
  *
  * The grant is the artist's consent: they give the experience operator MINTER
  * on a piece, and revoke it to withdraw. Either row authorises `adminMint`,
  * which ORs the piece's own row with the collection-wide one (tokenId 0), so
  * both are read — the piece's first, because that is the grant the artwork
- * page writes. `undefined` when the chain or the operator could not be read;
- * every caller fails closed on it.
+ * page writes. `null` when neither row grants; `undefined` when the chain or
+ * the operator could not be read, and every caller fails closed on that.
  */
-export async function readOperatorGrant(
+export async function readOperatorGrantScope(
   collection: string,
   tokenId: string,
   options: { retries?: number } = {},
-): Promise<boolean | undefined> {
+): Promise<'piece' | 'collection' | null | undefined> {
   const operator = await experienceOperator()
   if (!operator) return undefined
   const client = serverBaseClient()
@@ -61,12 +61,23 @@ export async function readOperatorGrant(
   try {
     const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
     const onToken = await readPermissions(client, collection as Address, BigInt(tokenId), operator as Address, { retries })
-    if (grants(onToken)) return true
+    if (grants(onToken)) return 'piece'
     const onCollection = await readPermissions(client, collection as Address, 0n, operator as Address, { retries })
-    return grants(onCollection)
+    return grants(onCollection) ? 'collection' : null
   } catch {
     return undefined
   }
+}
+
+/** Does the delivery account hold mint rights on this piece? See
+ *  readOperatorGrantScope; `undefined` when that could not be read. */
+export async function readOperatorGrant(
+  collection: string,
+  tokenId: string,
+  options: { retries?: number } = {},
+): Promise<boolean | undefined> {
+  const scope = await readOperatorGrantScope(collection, tokenId, options)
+  return scope === undefined ? undefined : scope !== null
 }
 
 /**

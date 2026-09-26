@@ -3,7 +3,7 @@
 import { useAccount, useReadContracts } from 'wagmi'
 import { type Address, isAddress } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
-import { canEditMomentMetadata, canEditMomentSale } from '@/lib/permissions'
+import { canEditMomentMetadata, canEditMomentSale, hasAdminBit } from '@/lib/permissions'
 
 /**
  * Shared on-chain permission probe for the edit affordances: reads
@@ -95,4 +95,14 @@ export function useMomentSaleEditPermission(
   options: { skip?: boolean } = {},
 ): boolean {
   return useMomentPermission(collection, tokenId, canEditMomentSale, options)
+}
+
+/** ADMIN on the token or collection-wide — what Zora's addPermission and
+ *  removePermission require, so it gates the capsule-machine allowance. */
+export function useMomentAdminPermission(
+  collection: string,
+  tokenId: string,
+  options: { skip?: boolean } = {},
+): boolean {
+  return useMomentPermission(collection, tokenId, hasAdminBit, options)
 }

@@ -487,6 +487,14 @@ export async function settleDeliveredCopy(
   if (after < 0) await redis.hincrby(key, machineId, 1).catch(() => {})
 }
 
+/** Every machine that has this piece in its pool. The pledge ledger doubles as
+ *  the index: publish writes a field for every entry, unlimited ones included
+ *  (as 0), and a delivery only ever decrements a field, never removes it. */
+export async function machinesUsingPiece(collection: string, tokenId: string): Promise<string[]> {
+  const raw = (await redis.hgetall<Record<string, unknown>>(kCommit(collection, tokenId))) ?? {}
+  return Object.keys(raw)
+}
+
 /** Supply pledged for an edition by machines OTHER than `exceptMachineId`. */
 export async function otherPledges(
   collection: string,
