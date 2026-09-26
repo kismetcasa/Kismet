@@ -1810,9 +1810,10 @@ try {
           check('and shows the 1-in-N ratio a fractional row carries', twoRows.includes('1 in 2'), twoRows.match(/1 in \d+/)?.[0] ?? 'none')
           await page.getByRole('button', { name: 'add artwork' }).click()
           await page.getByPlaceholder('collection 0x…').nth(2).fill(`${origin}/artwork/${POOL}/16`)
-          await page.getByText('hasn\u2019t allowed capsule machines yet').or(page.getByText("hasn't allowed capsule machines yet")).first().waitFor()
+          const fixLink = page.getByRole('link', { name: "the piece's page" }).first()
+          const flagged = await fixLink.waitFor({ timeout: 8000 }).then(() => true, () => false)
           check('a piece its artist has not allowed is flagged while the lineup is built, with where to fix it',
-            (await page.getByRole('link', { name: 'the piece\u2019s page' }).or(page.getByRole('link', { name: "the piece's page" })).first().getAttribute('href')) === `/artwork/${POOL}/16`)
+            flagged && (await fixLink.getAttribute('href')) === `/artwork/${POOL}/16`)
           check('a disconnected visitor is offered connect wallet, not a check that can only fail',
             (await page.getByRole('button', { name: 'connect wallet' }).count()) === 1 &&
             (await page.getByRole('button', { name: 'check', exact: true }).count()) === 0)
@@ -1842,8 +1843,8 @@ try {
           await page.getByPlaceholder('collection 0x…').fill(`${origin}/artwork/${POOL}/8`)
           check('pasting an artwork link fills in its collection and token',
             (await page.getByPlaceholder('collection 0x…').inputValue()) === POOL && (await page.getByPlaceholder('token').inputValue()) === '8')
-          await page.getByText('allowed for capsule machines', { exact: true }).waitFor()
-          check('and the artist Kismet recorded, with the piece\'s standing', (await page.getByPlaceholder('artist 0x…').inputValue()) === CREATOR2)
+          const standing = await page.getByText('allowed for capsule machines', { exact: true }).waitFor({ timeout: 8000 }).then(() => true, () => false)
+          check('and the artist Kismet recorded, with the piece\'s standing', standing && (await page.getByPlaceholder('artist 0x…').inputValue()) === CREATOR2)
           await page.locator('label:has-text("qty") input').fill('0')
           await page.getByRole('button', { name: 'check', exact: true }).click()
           // Wait for the result region either way, so a failing check reports the
@@ -1893,8 +1894,14 @@ try {
             metadata: { name: 'Piece Ninety Nine', description: 'An artwork used to validate the allowance panel.', image: '' },
           }
           const visitor = await open(`/artwork/${POOL}/99`, { moment })
+          let visitorLookups = 0
+          visitor.on('request', (r) => { if (r.url().includes('/api/experience/piece')) visitorLookups++ })
           await visitor.getByText('Piece Ninety Nine').first().waitFor()
-          check('a visitor sees no allowance panel', (await visitor.getByRole('button', { name: /capsule machines/i }).count()) === 0)
+          // Absence is only evidence once the panel has had time to appear: an
+          // immediate count passes even when it would render a moment later.
+          await visitor.waitForTimeout(2500)
+          check('a visitor sees no allowance panel, and never asks for one',
+            visitorLookups === 0 && (await visitor.getByRole('button', { name: /capsule machines/i }).count()) === 0)
           await visitor.context().close()
 
           const page = await open(`/artwork/${POOL}/99`, { wallet: ADMIN, onChain: true, moment })
