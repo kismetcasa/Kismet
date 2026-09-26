@@ -13,7 +13,7 @@ POST BASE/api/agent/prepare-collect
   "url": "BASE/artwork/0x…/42", // alternative to collection+tokenId
   "account": "0xYourBaseAccount",
   "amount": 1,                 // optional, default 1, max 50 (larger is clamped)
-  "comment": "great piece"    // optional mint comment
+  "comment": "great piece"    // optional mint comment; blank → "collected on kismet"
 }
 ```
 
@@ -85,7 +85,7 @@ POST BASE/api/agent/prepare-collect-batch
 { "items": [ { "collection": "0x…", "tokenId": "1" }, { "url": "BASE/artwork/0x…/2" } ],
   "account": "0xYourBaseAccount",
   "recipient": "0xOptionalCollector",  // optional, defaults to account
-  "comment": "great set" }             // optional mint comment
+  "comment": "great set" }             // optional mint comment; blank → "collected on kismet"
 ```
 
 Up to 20 items, one edition each (use single `prepare-collect` for quantities).
