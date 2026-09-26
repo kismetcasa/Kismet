@@ -2325,7 +2325,7 @@ try {
     if (browser) {
       const pageErrors = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2342,7 +2342,7 @@ try {
         const context = await browser.newContext({
           ...(wallet
             ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) CoinbaseWallet/1.0 Mobile Safari/604.1', viewport: { width: 390, height: 844 } }
-            : { viewport: { width: 1024, height: 900 } }),
+            : { viewport: viewport ?? { width: 1024, height: 900 } }),
           ...(cookieHeader ? { extraHTTPHeaders: { cookie: cookieHeader } } : {}),
         })
         context.setDefaultTimeout(20_000)
@@ -2394,6 +2394,12 @@ try {
             }
             Object.defineProperty(window, 'ethereum', { value: provider, configurable: true })
           }, wallet)
+        }
+        // `storage`: localStorage the page finds on load, as a returning visitor's would be.
+        if (storage) {
+          await context.addInitScript((entries) => {
+            for (const [k, v] of Object.entries(entries)) localStorage.setItem(k, v)
+          }, storage)
         }
         const page = await context.newPage()
         page.on('pageerror', (e) => pageErrors.push(`${path}: ${e.message}`))
@@ -2967,6 +2973,76 @@ try {
           check('the curator sees that collects earn them the referral, paid automatically, and what has been paid',
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
           await own.context().close()
+        }
+
+        // ── the Discover "play" tab ──
+        // A draggable tab like the others: after home by default, placed after
+        // home in a returning visitor's saved order, kept wherever they moved
+        // it; it lists the live machines, and with none, offers to build one.
+        {
+          const tabsOf = async (pg) => (await pg.locator('[data-tab]').allInnerTexts()).map((t) => t.trim().toLowerCase()).join(',')
+          const home = async (opts = {}) => {
+            const pg = await open('/', opts)
+            await pg.locator('[data-tab="play"]').waitFor()
+            return pg
+          }
+          let pg = await home()
+          check('a first visit shows play right after home', (await tabsOf(pg)) === 'featured,trending,home,play,artists', await tabsOf(pg))
+          await pg.locator('[data-tab="play"]').click()
+          const live = ((await call('/api/experience/machines')).json?.machines ?? []).filter((m) => m.state === 'live').map((m) => `/experience/${m.id}`).sort()
+          const rows = pg.locator('div:not([hidden]) > div.mt-4 a[href^="/experience/"]')
+          await rows.first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const shown = (await rows.evaluateAll((as) => as.map((a) => a.getAttribute('href')))).sort()
+          check('it lists every live machine, each opening that machine, and no closed one', live.length > 0 && shown.join() === live.join(), `${shown.length} shown vs ${live.length} live`)
+          check('and is remembered as the tab to return to', (await pg.evaluate(() => localStorage.getItem('kismetart:active-tab'))) === 'play')
+          await pg.context().close()
+
+          pg = await home({ storage: { 'kismetart:tab-order': JSON.stringify(['roster', 'main', 'featured', 'trending']) } })
+          check('a visitor who arranged their tabs finds play right after home, the rest as they left them', (await tabsOf(pg)) === 'artists,home,play,featured,trending', await tabsOf(pg))
+          await pg.context().close()
+          pg = await home({ storage: { 'kismetart:tab-order': JSON.stringify(['play', 'featured', 'trending', 'main', 'roster']) } })
+          check('and one who moved play keeps it where they put it', (await tabsOf(pg)) === 'play,featured,trending,home,artists', await tabsOf(pg))
+          await pg.context().close()
+
+          // Moved like any tab: press, hold, drag it past its neighbour.
+          pg = await home()
+          const box = await pg.locator('[data-tab="play"]').boundingBox()
+          const next = await pg.locator('[data-tab="roster"]').boundingBox()
+          await pg.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+          await pg.mouse.down()
+          await pg.waitForTimeout(400)
+          for (let i = 1; i <= 10; i++) await pg.mouse.move(box.x + box.width / 2 + (next.x + next.width - box.x) * (i / 10), box.y + box.height / 2)
+          await pg.mouse.up()
+          await pg.waitForTimeout(300)
+          check('play can be dragged like the other tabs, and the new order is saved',
+            (await tabsOf(pg)) === 'featured,trending,home,artists,play' &&
+              (await pg.evaluate(() => localStorage.getItem('kismetart:tab-order'))) === JSON.stringify(['featured', 'trending', 'main', 'roster', 'play']),
+            `${await tabsOf(pg)} saved=${await pg.evaluate(() => localStorage.getItem('kismetart:tab-order'))}`)
+          await pg.context().close()
+
+          // Nothing on the shelves: the way to build the first.
+          const index = zsets.get('kismetart:xp:index')
+          zsets.delete('kismetart:xp:index')
+          try {
+            pg = await home({ storage: { 'kismetart:active-tab': 'play' } })
+            const build = pg.getByRole('link', { name: 'build gachapon' })
+            await build.waitFor({ timeout: 10_000 }).catch(() => {})
+            check('with no machine to play, it offers to build one', (await text(pg)).includes('nothing to play yet') && (await build.getAttribute('href')) === '/experience/new')
+            await pg.context().close()
+          } finally {
+            zsets.set('kismetart:xp:index', index)
+          }
+
+          // Five tabs on a phone: nothing spills sideways.
+          for (const width of [390, 360]) {
+            pg = await home({ viewport: { width, height: 800 } })
+            const fits = await pg.evaluate(() => {
+              const tabs = [...document.querySelectorAll('[data-tab]')].map((t) => t.getBoundingClientRect())
+              return document.documentElement.scrollWidth <= window.innerWidth && tabs.every((r) => r.right <= window.innerWidth)
+            })
+            check(`at ${width}px the five tabs fit without scrolling the page sideways`, fits, `scrollWidth=${await pg.evaluate(() => document.documentElement.scrollWidth)}`)
+            await pg.context().close()
+          }
         }
 
         // ── the bell: where each machine notice takes you ──
