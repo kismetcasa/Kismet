@@ -1,7 +1,19 @@
-import type { Address, Chain, Client, Transport } from 'viem'
+import {
+  decodeFunctionResult,
+  encodeFunctionData,
+  multicall3Abi,
+  type Address,
+  type Chain,
+  type Client,
+  type Hex,
+  type Transport,
+} from 'viem'
 import { getBlock, multicall, readContract } from 'viem/actions'
 import {
+  MAX_REASONABLE_MINT_FEE_WEI,
+  MULTICALL3_ADDRESS,
   USDC_BASE,
+  ZORA_1155_MINT_FEE_ABI,
   ZORA_1155_TOKEN_INFO_ABI,
   ZORA_ERC20_MINTER,
   ZORA_FIXED_PRICE_STRATEGY,
@@ -112,6 +124,44 @@ const STRATEGY_BY_CURRENCY = {
 // a server-side createPublicClient without re-typing.
 type AnyClient = Client<Transport, Chain | undefined>
 
+/** Where an on-chain sale row sits relative to chain time `now`. */
+export type OnchainSaleWindow = 'unset' | 'scheduled' | 'ended' | 'live'
+
+/**
+ * THE window rule, shared by every mintability read: fetchEligibleTokens (the
+ * collect-all / agent / scout pre-flight) and the sweep index builder
+ * (lib/sweepIndexCore). A strategy with no row for the token returns an
+ * all-zero struct — `saleEnd === 0` is "unset", never "no deadline" (the
+ * open-ended sentinel is max uint64, which is > now). Ended is checked before
+ * scheduled so a malformed row with end < start reads as ended, not upcoming.
+ * Pure, so scripts/verify-sweep.ts pins it with synthetic rows.
+ */
+export function classifyOnchainSaleWindow(
+  sale: { saleStart: bigint; saleEnd: bigint },
+  now: bigint,
+): OnchainSaleWindow {
+  if (sale.saleEnd === 0n) return 'unset'
+  if (sale.saleEnd <= now) return 'ended'
+  if (sale.saleStart > now) return 'scheduled'
+  return 'live'
+}
+
+/**
+ * THE supply rule, shared the same way: a CAPPED edition (per isOpenEdition)
+ * whose totalMinted has reached maxSupply is sold out; open editions and an
+ * unreadable row (null — non-Zora-1155 contracts, older versions without
+ * getTokenInfo) are never sold out and carry no `remaining`, so the mint
+ * itself stays the backstop. Pure.
+ */
+export function classifyTokenSupply(
+  info: { maxSupply: bigint; totalMinted: bigint } | null | undefined,
+): { soldOut: boolean; remaining: bigint | undefined } {
+  if (!info) return { soldOut: false, remaining: undefined }
+  if (isOpenEdition(info.maxSupply)) return { soldOut: false, remaining: undefined }
+  if (info.totalMinted >= info.maxSupply) return { soldOut: true, remaining: 0n }
+  return { soldOut: false, remaining: info.maxSupply - info.totalMinted }
+}
+
 /**
  * Filter `tokenIds` down to those currently mintable on `collection` via the
  * selected strategy:
@@ -192,9 +242,7 @@ export async function fetchEligibleTokens(
       pricePerToken: bigint
       currency?: Address
     }
-    if (sale.saleEnd === 0n) continue
-    if (sale.saleEnd <= now) continue
-    if (sale.saleStart > now) continue
+    if (classifyOnchainSaleWindow(sale, now) !== 'live') continue
     // ERC20Minter supports any ERC20; collect-all only knows how to handle
     // USDC (decimals + approve target). Skip exotic currencies cleanly.
     if (
@@ -209,14 +257,13 @@ export async function fetchEligibleTokens(
     // the mint will revert at submit time as a fallback. `remainingSupply` is
     // carried for the drop coordinator's round-robin bound (undefined = open
     // edition / unknown → unbounded by supply).
-    let remainingSupply: bigint | undefined
-    if (infoRes.status === 'success' && infoRes.result) {
-      const info = infoRes.result as { maxSupply: bigint; totalMinted: bigint }
-      if (!isOpenEdition(info.maxSupply)) {
-        if (info.totalMinted >= info.maxSupply) continue
-        remainingSupply = info.maxSupply - info.totalMinted
-      }
-    }
+    const supply = classifyTokenSupply(
+      infoRes.status === 'success' && infoRes.result
+        ? (infoRes.result as { maxSupply: bigint; totalMinted: bigint })
+        : null,
+    )
+    if (supply.soldOut) continue
+    const remainingSupply = supply.remaining
 
     candidates.push({
       tokenId: tokenIds[i],
@@ -637,4 +684,72 @@ export async function resolveSoldOutKeys(
   } finally {
     if (timer) clearTimeout(timer)
   }
+}
+
+/**
+ * Multicall3 `aggregate3` with EXPLICIT failure semantics, for index builders
+ * that must never persist a partial result:
+ *   - a sub-call that REVERTS (e.g. getTokenInfo on a non-Zora contract) comes
+ *     back as `success: false` and the caller skips that row;
+ *   - an RPC-level failure (transport error, timeout, rate limit) THROWS.
+ * viem's `multicall` action cannot express that: with `allowFailure: true` a
+ * rejected chunk is silently flattened into per-call failures (every row of
+ * the chunk reads as "unreadable"), and with `allowFailure: false` one
+ * reverting row throws the whole chunk. An hourly build that hit a transient
+ * RPC error under the former would overwrite a good index with an empty one —
+ * the exact silent wipe the census's abort-don't-overwrite stance forbids.
+ * Callers chunk the calls themselves (response size, not calldata, is the
+ * bound: getTokenInfo returns a `uri` string per row).
+ */
+export async function aggregate3Strict(
+  client: AnyClient,
+  calls: readonly { target: Address; callData: Hex }[],
+): Promise<readonly { success: boolean; returnData: Hex }[]> {
+  if (calls.length === 0) return []
+  return readContract(client, {
+    address: MULTICALL3_ADDRESS,
+    abi: multicall3Abi,
+    functionName: 'aggregate3',
+    args: [calls.map((c) => ({ target: c.target, allowFailure: true, callData: c.callData }))],
+  })
+}
+
+/**
+ * Batched sibling of lib/zoraMint readMintFeeWithBound: ONE aggregate3 reads
+ * mintFee() for every collection and returns a lowercased-address → fee map
+ * holding ONLY the collections whose fee is within the shared sanity bound
+ * (MAX_REASONABLE_MINT_FEE_WEI). A collection whose read reverts or whose fee
+ * exceeds the bound is simply ABSENT — callers treat absence as "do not mint
+ * from this collection" (fail-closed per collection). An RPC-level failure
+ * throws (aggregate3Strict), so a builder aborts instead of dropping every
+ * collection at once.
+ */
+export async function readMintFeesWithBound(
+  client: AnyClient,
+  collections: readonly Address[],
+): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>()
+  const unique = [...new Set(collections.map((c) => c.toLowerCase()))] as Address[]
+  if (unique.length === 0) return out
+  const callData = encodeFunctionData({ abi: ZORA_1155_MINT_FEE_ABI, functionName: 'mintFee' })
+  const res = await aggregate3Strict(
+    client,
+    unique.map((target) => ({ target, callData })),
+  )
+  res.forEach((r, i) => {
+    if (!r.success) return
+    let fee: bigint
+    try {
+      fee = decodeFunctionResult({
+        abi: ZORA_1155_MINT_FEE_ABI,
+        functionName: 'mintFee',
+        data: r.returnData,
+      })
+    } catch {
+      return
+    }
+    if (fee > MAX_REASONABLE_MINT_FEE_WEI) return
+    out.set(unique[i], fee)
+  })
+  return out
 }

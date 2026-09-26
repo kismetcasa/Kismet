@@ -946,7 +946,11 @@ idempotency gate; then synchronous `creditValidityOnce` (Pass), the trending zse
 collected list, and a server-derived notification price. **Collect-all**
 batches via Multicall3 (`aggregate3Value` for pure-ETH) or EIP-5792
 `wallet_sendCalls`. The **agent variant** returns inert EIP-5792 calldata that
-re-enters the same `/api/collect`. A **secondary buy** is a separate Seaport
+re-enters the same `/api/collect`. A flag-gated **sweep index**
+(`lib/sweepIndex.ts`: the cheapest live ETH-priced mints across every tracked
+collection, rebuilt by the hourly cron from the census walk, served by
+`/api/sweep`) is the discovery half of the planned cross-collection sweep —
+`SWEEP_DESIGN.md` / `SWEEP_IMPLEMENTATION.md`; its client half is not built yet. A **secondary buy** is a separate Seaport
 `fulfillOrder` settled via `PATCH /api/listings/[id]` using `OrderFulfilled`-event
 verification. _(Note: the collect path does **not** go through inprocess — that's the
 mint/create relay.)_

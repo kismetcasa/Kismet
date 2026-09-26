@@ -1,6 +1,7 @@
 import { redis } from './redis'
 
-// Heartbeat for the hourly stats pipeline (rebuild + catalog census). The
+// Heartbeat for the hourly stats pipeline (rebuild + catalog census + sweep
+// index). The
 // pipeline's integrity guards ABORT on an anomaly (implausible shrink,
 // value-jump/unit-drift, scope collapse, unreadable collection) and preserve
 // the last good snapshot — the safe behavior — but the only prior signal was a
@@ -11,7 +12,7 @@ import { redis } from './redis'
 // external monitor can alert. Best-effort: recording never throws and never
 // blocks the run it measures.
 
-export type StatsPhase = 'rebuild' | 'census'
+export type StatsPhase = 'rebuild' | 'census' | 'sweep-index'
 export type StatsRunStatus = 'ok' | 'error' | 'skipped'
 
 export interface StatsPhaseHealth {
@@ -83,7 +84,7 @@ export async function recordStatsRun(
   }
 }
 
-/** Persisted health for both phases (null when a phase has never recorded). */
+/** Persisted health for every phase (null when a phase has never recorded). */
 export async function getStatsHealth(): Promise<Record<StatsPhase, StatsPhaseHealth | null>> {
   const read = async (phase: StatsPhase): Promise<StatsPhaseHealth | null> => {
     try {
@@ -95,6 +96,10 @@ export async function getStatsHealth(): Promise<Record<StatsPhase, StatsPhaseHea
       return null
     }
   }
-  const [rebuild, census] = await Promise.all([read('rebuild'), read('census')])
-  return { rebuild, census }
+  const [rebuild, census, sweepIndex] = await Promise.all([
+    read('rebuild'),
+    read('census'),
+    read('sweep-index'),
+  ])
+  return { rebuild, census, 'sweep-index': sweepIndex }
 }

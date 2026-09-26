@@ -431,7 +431,9 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:stats:secondary-counted:<listingId>` | Resale-volume idempotency claims | Once per fill |
 | `kismetart:stats:pending-credits` | Reconcile outbox — royalty/volume whose fill-time eval hard-failed, retried idempotently by the hourly cron (bounded, dropped after ~24 attempts) | On fill-eval failure; drained hourly |
 | `kismetart:stats:last-rebuild` | Shrink + value-jump guard baseline (counted, in-scope, eth, usdc) | After each successful rebuild |
-| `kismetart:stats:health:{rebuild,census}` | Pipeline heartbeat — last run/success/error per phase | Every sync-stats run outcome |
+| `kismetart:stats:health:{rebuild,census,sweep-index}` | Pipeline heartbeat — last run/success/error per phase (`sweep-index` has its own `sweepHealthy` verdict on the health route, never folded into `healthy`) | Every sync-stats run outcome |
+| `kismetart:sweep-index` | Cheapest live ETH-priced mints across tracked collections — the sweep candidate pool (JSON, ≤ 120 items; `lib/sweepIndex.ts`, served by `/api/sweep`) | Hourly, right after the census, from the same walk; last good survives an aborted build |
+| `kismetart:sweep-enabled` | Sweep feature flag (`'1'` = on; read via `isFlagSet`) | Admin toggle (`/api/admin/sweep`) |
 | `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |
 | `kismetart:funnel:<event>:<YYYY-MM-DD>` | Funnel day counters | Per beacon; 90-day TTL |
 | `kismetart:stats:pass-exclude` | Patron `default_admin`+`payout`+`creator` payees, unioned into the pass exclude set | Per rebuild; 7-day TTL |

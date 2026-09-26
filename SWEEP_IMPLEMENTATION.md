@@ -9,6 +9,14 @@ document specifies what to build, file by file, and closes with an honest
 assessment of what is left to be desired (including whether a cap or a floor
 is needed — short answer: not for v1, keep the hooks)._
 
+> **Revision 2 (2026-09-26) — validated and partially built.** Every claim in
+> this design was checked against the code and, where it cites external
+> behavior, against the source (Multicall3, go-ethereum, viem 2.55.10). The
+> architecture held; seven statements were corrected and are folded into the
+> body below, marked ✏️ in §10. The **index and the API are built and
+> verified** behind the flag (§11); the client phase (§4–5) is unchanged and
+> still to build.
+
 > **Scope in one line.** FixedPriceSaleStrategy sales on Base only → one
 > Multicall3 `aggregate3Value` transaction → `/api/collect` records, exactly
 > the primitives the per-collection collect-all already ships. Everything new
@@ -41,7 +49,9 @@ new on-chain surface is a read-only simulation.
 A `sweep` pill in the Discover page's **trending** and **main** feed headers,
 rendered beside the existing sort pills through `PaginatedGrid`'s `header`
 slot (`components/DiscoverPage.tsx`, `TrendingFeed` / `MainFeed`; the
-`FilterPill` component is the visual). It reads as a content action, not a
+`FilterPill` component is the visual — ✏️ it is module-local to
+`DiscoverPage.tsx`, so either export it or mount the pill from that file). It
+reads as a content action, not a
 filter, so it gets the accent-bordered style with a small `Sparkles` (or
 `Layers`) icon and no `aria-pressed`. Hidden while `/api/sweep` reports
 `enabled: false` or an empty pool.
@@ -138,8 +148,12 @@ rebuildStats() → rebuildCatalogCensus() → rebuildSweepIndex(catalog) → rec
 ```
 
 each in its own try/catch and each recorded through `recordStatsRun` (extend
-`StatsPhase` in `lib/statsHealth.ts` with `'sweep-index'` so `/admin`'s
-stats-health panel shows index age and last error).
+`StatsPhase` in `lib/statsHealth.ts` with `'sweep-index'` so the
+`/api/admin/stats-health` endpoint reports index age and last error — ✏️ there
+is no dashboard panel; it is the JSON ops read an uptime monitor points at.
+The sweep phase gets its own `sweepHealthy` verdict rather than folding into
+`healthy`, so a sweep-only failure never pages the stats pipeline and vice
+versa).
 
 ### 2.2 Chain reads (two passes, chunked)
 
@@ -148,10 +162,14 @@ stats-health panel shows index age and last error).
 1. **Candidates** = `catalog.items` where `!hidden`, `isValidTokenId(m.token_id)`,
    `addr !== PATRON_COLLECTION_ADDRESS`.
 2. **Pass 1 — sale rows.** One `FPSS.sale(addr, id)` per candidate
-   (`FPSS_SALE_ABI`), `allowFailure: true`, chunked **200 candidates per
-   `multicall`** with an explicit `batchSize` large enough that a chunk is one
-   `eth_call` (the default 1,024-byte calldata chunking would split it into
-   dozens). Keep rows with `saleEnd !== 0n`, `saleStart <= now`,
+   (`FPSS_SALE_ABI`), chunked **200 candidates per call** through
+   `aggregate3Strict` (`lib/saleConfig.ts`) — ✏️ not viem's `multicall`
+   action: with `allowFailure: true` that action flattens a *rejected chunk*
+   (an RPC-level failure) into per-call failures, so a transient blip would
+   read as "every row unreadable" and overwrite a good index with an empty
+   one. `aggregate3Strict` calls Multicall3 `aggregate3` directly: a reverting
+   row is `success: false` (skipped), an RPC failure **throws** and the rebuild
+   aborts with the last good blob intact. Keep rows with `saleEnd !== 0n`, `saleStart <= now`,
    `saleEnd > now`, `pricePerToken > 0n` — the exact `fetchEligibleTokens`
    window rule, plus the paid rule. `now` = latest block timestamp, as there.
    This pass is cheap (fixed-size structs, no strings) and typically discards
@@ -163,9 +181,11 @@ stats-health panel shows index age and last error).
    editions (`!isOpenEdition(maxSupply) && totalMinted >= maxSupply`); carry
    `remaining` for capped ones. Drop every token of a collection whose
    `mintFee` exceeds the `readMintFeeWithBound` bound (fail-closed per
-   collection, never per run) — expose the bound via a new batched reader
-   `readMintFeesWithBound(client, collections[])` in `lib/zoraMint.ts` so the
-   constant stays single-source.
+   collection, never per run) — the batched reader
+   `readMintFeesWithBound(client, collections[])` lives in `lib/saleConfig.ts`
+   beside the other chain reads and imports the bound
+   (`MAX_REASONABLE_MINT_FEE_WEI`, ✏️ previously module-private, now exported)
+   from `lib/zoraMint.ts` so the constant stays single-source.
 4. **Outlay** `outlayWei = pricePerToken + mintFee` — the exact `value`
    `buildEthMintCall` will put on the sub-call.
 
@@ -178,7 +198,8 @@ of a tier never come from one wallet), then newest `created_at` (KV-pinned
 as a pure function:
 
 ```ts
-// lib/sweepRank.ts (pure, no I/O — verifier target)
+// lib/sweepRank.ts (pure, no I/O — verifier target); the string-wei adapter,
+// the admission rule and the pool cut live in lib/sweepIndexCore.ts
 export interface RankOptions {
   /** Optional per-artist ceiling; undefined = no cap (v1 default). */
   perArtist?: number
@@ -208,11 +229,12 @@ export interface SweepIndexItem {
   creator: string | null // resolved + folded
   createdAt: string | null
   // Moment-shaped preview fields so /api/sweep can run the feed's identity
-  // enrichment (enrichMomentsWithKismetMeta) unchanged:
+  // enrichment (enrichMomentsWithKismetMeta) unchanged. ✏️ No collectionName:
+  // enrichment already stitches the curated-collection chip (kismetCollection)
+  // at serve time, exactly as the feeds get it.
   name?: string
   image?: string
   thumbhash?: string
-  collectionName?: string | null
 }
 export interface SweepIndex {
   updatedAt: number
@@ -222,7 +244,7 @@ export interface SweepIndex {
   items: SweepIndexItem[]
 }
 export const SWEEP_INDEX_KEY = 'kismetart:sweep-index'   // in lib/redis.ts beside SALE_ENDS_KEY
-const POOL_SIZE = 120                                    // 6 × MAX_COLLECT_ALL_BATCH
+export const SWEEP_POOL_SIZE = 120                       // 6 × MAX_COLLECT_ALL_BATCH (lib/sweepIndexCore.ts)
 ```
 
 One `redis.set(SWEEP_INDEX_KEY, index)` per rebuild (≈ 30–40 KB at the pool
@@ -253,20 +275,31 @@ the chain-only refresh is safe to hang off a public read.
 GET /api/sweep?n=10            n ∈ [1, 20], default 10
 → 200 {
     enabled: true,
-    updatedAt: 1790000000000,
+    updatedAt: 1790000000000,    // null before the first build
     eligible: 37,
-    items: SweepIndexItem[]      // top max(3n, 30) after serve-time filters, enriched
+    maxN: 20, n: 10,
+    items: (SweepIndexItem & {   // top max(3n, 30) after serve-time filters
+      creatorProfile: { username, avatarUrl },      // from enrichment
+      collection: { name, image } | null,           // curated-collection chip
+    })[]
   }
-→ 200 { enabled: false }         // flag off or no index yet
+→ 200 { enabled: false }         // flag off (cached 30 s) — or, uncached, on a flag-read failure
+→ 503 { error }                  // hide sets unreadable: fail CLOSED, never serve unfiltered
 Cache-Control: public, s-maxage=30, stale-while-revalidate=120
 ```
 
 Route rules (`app/api/sweep/route.ts`):
 
 - `checkRateLimit('sweep:' + ip, 60, 60)` (same budget as `agent-discover`).
-- **Flag**: `kismetart:flags:sweep` (a plain string `'1'`/`'0'`, read with a
-  15-min memo like the hide sets; default **off** until launch). Toggle from
-  the admin dashboard; no deploy needed to pause the feature.
+- **Flag**: `kismetart:sweep-enabled` — ✏️ named like the existing flags
+  (`kismetart:platform:paused`, `kismetart:scout-killswitch`) and read through
+  `lib/gateFlags.isFlagSet`, because Upstash JSON-parses a stored `'1'` back to
+  the number `1` (the bug that once made the platform-pause flag never
+  persist). `'1'` = on, absent = off (the launch default); memoized 60 s;
+  fails **closed** on a Redis error. Toggled by `POST /api/admin/sweep`
+  (`{ enabled }`, admin session + audit log, the `scout-killswitch` shape);
+  `GET /api/admin/sweep` also reports the index snapshot so an operator can
+  confirm a build has run before enabling. No deploy needed to pause.
 - **Serve-time hide filter**: re-apply `getHiddenMomentsSet`,
   `getHiddenCollectionsSet`, `getHiddenUsersSet` (memoized, 15 min) so a piece
   hidden after the hourly build disappears within 15 minutes, not 60.
@@ -311,9 +344,9 @@ per-wallet cap, fail-closed per row on a failed balance read, the
 `saleConfigsFromMulticall` precedent). The ETH-only sweep never reads the
 ERC20Minter.
 
-`readMintFeesWithBound(client, collections[])` (in `lib/zoraMint.ts`) is a
-second, smaller multicall — or fold it into the same call as extra slots;
-either way it is one round trip. The bound is enforced per collection; a
+`readMintFeesWithBound(client, collections[])` (in `lib/saleConfig.ts`,
+shipped with the index) is a second, smaller aggregate — or fold it into the
+same call as extra slots; either way it is one round trip. The bound is enforced per collection; a
 collection over the bound is dropped with reason `fee-out-of-bounds`, never
 thrown.
 
@@ -477,9 +510,10 @@ N records instead of N fetches of the same receipt.
 - **Existing checks** cover the rest: `typecheck`, `lint`, `verify:a11y`
   (the sheet's text), `check:bundle` (the hook is small; the sheet lazy-loads
   behind the pill).
-- **Rollout**: ship with `kismetart:flags:sweep = 0`; run the cron once
-  (`/api/cron/sync-stats?secret=…`) to materialize the index; check
-  `/admin` stats-health for the `sweep-index` phase; enable the flag; watch
+- **Rollout**: ship with `kismetart:sweep-enabled` absent (off); run the cron
+  once (`/api/cron/sync-stats?secret=…`) to materialize the index; check
+  `/api/admin/stats-health` (`sweepIndex`, `sweepHealthy`) or
+  `GET /api/admin/sweep`; enable with `POST /api/admin/sweep {"enabled":true}`; watch
   `sweep_open → sweep_attempt → sweep_success` in the funnel and the
   simulation drop rate (log `[sweep] simulation dropped {n}` client-side via
   `reportClientError` at a sampled rate) — a high drop rate means the pool
@@ -520,14 +554,16 @@ else is either bounded by construction (cheapest-first), shown before signing
 | File | Change | ≈ lines |
 |---|---|---|
 | `lib/catalogCensus.ts` | Split `runCensus` into `resolveCatalog` + `censusFromCatalog`; return the catalog | 60 (moves) |
-| `lib/sweepIndex.ts` | Build (two-pass chain reads, filters, pool cut, persist) + `getSweepIndex` | 220 |
+| `lib/sweepIndex.ts` | Build (two-pass chain reads, persist), `getSweepIndex`, flag read/write | 220 |
+| `lib/sweepIndexCore.ts` | Pure: record shape, admission, string-wei adapter, pool cut, serve selection, Moment projection | 200 |
 | `lib/sweepRank.ts` | Pure ranker with tie-breaks and the two dormant options | 80 |
-| `lib/saleConfig.ts` | `classifySaleRow` (extracted), `fetchEligibleTokensMulti` | 120 |
-| `lib/zoraMint.ts` | `readMintFeesWithBound` (batched, same bound) | 30 |
+| `lib/saleConfig.ts` | `classifyOnchainSaleWindow` + `classifyTokenSupply` (extracted, shared), `aggregate3Strict`, `readMintFeesWithBound`; later `fetchEligibleTokensMulti` | 150 |
+| `lib/zoraMint.ts` | Export the fee bound + a `mintFee()`-only ABI | 10 |
+| `app/api/admin/sweep/route.ts` | Flag GET/POST (admin session, audit log) | 60 |
 | `lib/sweepBatch.ts`, `lib/sweepSimulate.ts` | Bundle builder, simulation + pure mapping | 120 |
-| `lib/redis.ts`, `lib/statsHealth.ts`, `lib/funnel.ts` | `SWEEP_INDEX_KEY`, `'sweep-index'` phase, three funnel events | 15 |
+| `lib/redis.ts`, `lib/statsHealth.ts`, `lib/funnel.ts` | `SWEEP_INDEX_KEY` + `SWEEP_ENABLED_KEY`, `'sweep-index'` phase, three funnel events | 20 |
 | `app/api/cron/sync-stats/route.ts` | Third phase after the census | 25 |
-| `app/api/sweep/route.ts` | Flag, rate limit, serve-time hide filter, enrichment, cache headers | 120 |
+| `app/api/sweep/route.ts` | Flag, rate limit, serve-time hide filter, enrichment, cache headers | 110 |
 | `hooks/useSweep.ts` | State machine, verify/simulate/trim, send, record | 300 |
 | `components/SweepSheet.tsx`, `components/SweepPill.tsx` | Sheet + entry pill, lazy-loaded | 280 |
 | `components/DiscoverPage.tsx` | Mount the pill in two headers | 15 |
@@ -537,3 +573,91 @@ else is either bounded by construction (cheapest-first), shown before signing
 ≈ 1,650 lines including the verifier. Sequencing: index + API first (can
 ship dark behind the flag and be inspected from `/admin`), then helpers +
 verifier, then hook + sheet. No contract work, no new environment variables.
+
+---
+
+## 10. Validation record (2026-09-26)
+
+Every claim the design makes was traced to its source. ✅ = verified as
+written; ✏️ = corrected (the body above already carries the correction);
+⚠️ = not verifiable from this environment, stated with a hedge.
+
+**On-chain and protocol behavior**
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| Multicall3 `aggregate3Value` dispatches each sub-call to its own `target` with its own `value`, so a cross-collection ETH batch is one tx | ✅ | `lib/zoraMint.ts` `buildMulticall3Batch`; Multicall3 source (`mds1/multicall`, `src/Multicall3.sol`) |
+| `allowFailure=true` on a reverting value-carrying sub-call strands the ETH in Multicall3 | ✅ | Source: the failed `call{value}` leaves `val` in the contract, `msg.value == valAccumulator` still holds, and there is no withdraw/`receive` |
+| `eth_call` with `from` + `value` fails when the sender cannot cover the value, so the balance trim must run before simulation | ✅ | go-ethereum `core/state_transition.go`: `buyGas` adds `msg.Value` to the balance check unconditionally; `execute` re-checks `CanTransfer` |
+| ERC20Minter pulls USDC from `msg.sender`, ruling out Multicall3 for USDC | ✅ (moot for ETH-only) | `lib/zoraMint.ts` `buildMulticall3Batch` docblock |
+| Zora `mintFee()` is read per collection with a 0.01 ETH sanity bound | ✅ | `readMintFeeWithBound`; the bound is now exported |
+
+**Library and toolchain**
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| viem `multicall` chunks by calldata bytes with a 1,024-byte default | ✅ | viem 2.55.10 `actions/public/multicall.ts` (`batchSize ?? 1024`) |
+| A large `batchSize` makes a 200-read chunk one `eth_call` | ✏️ replaced | The same action turns a *rejected* chunk into per-call failures under `allowFailure: true`; the builder now uses `aggregate3Strict` (throws on RPC failure, skips reverting rows) |
+| `simulateContract`, `estimateContractGas`, `estimateFeesPerGas` exist for the client phase | ✅ | `node_modules/viem/_types/actions/public/` |
+| Base's viem chain definition carries the Multicall3 address | ✅ | `viem/_esm/chains/definitions/base.js` |
+| Verify scripts import production modules with the `@/` alias under bare Node | ✅ | `scripts/ts-alias-hooks.mjs`; `verify:sweep` runs that way |
+
+**Codebase contracts**
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| The census walk already resolves creators (KV override), folds smart wallets, and applies the three hide sets | ✅ | `lib/catalogCensus.ts`; refactored into `resolveCatalog` + `censusFromCatalog` with the counts unchanged (same set-cardinalities, computed per item) |
+| `recordStatsRun` / `StatsPhase` extend cleanly | ✅ | `lib/statsHealth.ts`; `getStatsHealth` now reads three phases |
+| `/api/admin/stats-health` is a dashboard panel | ✏️ | It is a JSON ops endpoint (`app/api/admin/stats-health/route.ts`); it now reports `sweepIndex` + `sweepHealthy` without touching `healthy` |
+| `/api/collect` allows 60/min per IP, sized for a 20-batch, and verifies each `TransferSingle` against the named collection | ✅ | `app/api/collect/route.ts` (`checkRateLimit('collect:…', 60, 60)`, `verifyMintOnChain` requires `log.address === collection`) — a multi-collection receipt verifies per item |
+| Adding funnel events needs a server allowlist change too | ✅ (no extra work) | `app/api/funnel/route.ts` builds its allowlist from `FUNNEL_EVENTS`, so extending the array updates both |
+| `FilterPill` can be reused by the pill | ✏️ | It is module-local to `components/DiscoverPage.tsx`; export it or mount the pill there |
+| `formatEthChip` is reusable | ✏️ | Module-local to `components/CollectAllAction.tsx`; move or export it (client phase) |
+| `enrichMomentsWithKismetMeta` supplies username/avatar and the curated-collection chip from a `Moment[]` | ✅ | `lib/momentEnrichment.ts`; `collectionName` was therefore dropped from the index |
+| Flag as `kismetart:flags:sweep`, plain `'1'/'0'` | ✏️ | Renamed `kismetart:sweep-enabled` to match the existing flags, read via `isFlagSet` (Upstash returns the number `1` for a stored `'1'`) |
+| `MAX_REASONABLE_MINT_FEE_WEI` is importable | ✏️ | It was module-private; exported now |
+| `MomentMeta.createdAt` is the pinned first-seen instant | ✅ | `lib/notifications.ts` |
+| Patron collection constant is lowercase and excluded by the census | ✅ | `lib/patronCollection.ts`, `lib/catalogCensus.ts` |
+| `getHiddenMomentsSet` and siblings throw on a Redis failure (strictRead) | ✅ | `lib/hiddenMoments.ts`; `/api/sweep` therefore fails closed with a 503 |
+
+**Not verifiable here**
+
+| Claim | Status |
+|---|---|
+| Farcaster Mini App host wallet executes `wallet_sendCalls` atomically | ⚠️ Moot for ETH-only: the sweep is a plain `eth_sendTransaction` to Multicall3 |
+| Live catalog size today | ⚠️ The July snapshot (42 artworks / 30 collections) is the latest number in the repo; the builder is sized for thousands |
+| Per-mint gas on Base | ⚠️ The repo's ≈ 250k estimate is used; the cap exists for preview readability, not cost |
+
+---
+
+## 11. Build status (2026-09-26) — index + API shipped behind the flag
+
+**Shipped (all behind `kismetart:sweep-enabled`, default off):**
+
+| File | What |
+|---|---|
+| `lib/sweepRank.ts` | Pure ranker (outlay asc → artist interleave per tier → newest → key); dormant `perArtist` / `floorWei` |
+| `lib/sweepIndexCore.ts` | Record shape, `isLivePaidSale`, `buildSweepItem`, pool cut, `clampSweepN`, `selectSweepItems`, `sweepItemToMoment` |
+| `lib/sweepIndex.ts` | `rebuildSweepIndex(catalog)` (two chunked `aggregate3Strict` passes + batched fees), `getSweepIndex`, `isSweepEnabled` (60 s memo, fail-closed), `setSweepEnabled` |
+| `lib/saleConfig.ts` | `classifyOnchainSaleWindow`, `classifyTokenSupply` (now also used by `fetchEligibleTokens`, behavior unchanged), `aggregate3Strict`, `readMintFeesWithBound` |
+| `lib/catalogCensus.ts` | `resolveCatalog` + `censusFromCatalog`; `rebuildCatalogCensus` returns `{ census, catalog }` |
+| `lib/zoraMint.ts`, `lib/redis.ts`, `lib/statsHealth.ts` | Exported fee bound + `mintFee()` ABI; the two keys; the `'sweep-index'` phase |
+| `app/api/cron/sync-stats/route.ts` | Third phase after the census, own try/catch + health record; runs whether or not the flag is on |
+| `app/api/sweep/route.ts` | Public pool read: rate-limited, flag-gated, hide-filtered at serve time, enriched, edge-cached 30 s |
+| `app/api/admin/sweep/route.ts` | Flag GET/POST with admin session + audit log; GET reports the index snapshot |
+| `app/api/admin/stats-health/route.ts` | `sweepIndex` phase, `snapshots.sweepIndex`, separate `sweepHealthy` |
+| `scripts/verify-sweep.ts`, `package.json` | 80 assertions over the pure rules; wired into `npm run check` as `verify:sweep` |
+
+**Checks run:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (80/80) · `verify:agent` ✅ ·
+`verify:sale-index` ✅ · `verify:sale-edit` ✅ · `verify-moments-batch` ✅ · `verify-stats` ✅ ·
+`verify-gate-flags` ✅ · `next build` — see the commit message for the outcome of the run
+that accompanied this revision.
+
+**To turn it on:** deploy → `GET /api/cron/sync-stats?secret=…` once (or wait for the
+hour) → `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
+Until then `/api/sweep` answers `{ enabled: false }` and no UI exists that calls it.
+
+**Still to build (client phase, unchanged design):** `fetchEligibleTokensMulti`,
+`lib/sweepBatch.ts`, `lib/sweepSimulate.ts`, `hooks/useSweep.ts`, `SweepSheet` +
+pill, the three funnel events, the `formatEthChip` move, docs. Optional v1.1:
+pool refresh on read, append on mint, the agent envelope.

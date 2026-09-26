@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import crypto from 'node:crypto'
 import { rebuildStats, reconcilePendingCredits } from '@/lib/stats'
 import { rebuildCatalogCensus } from '@/lib/catalogCensus'
+import { rebuildSweepIndex } from '@/lib/sweepIndex'
 import { recordStatsRun } from '@/lib/statsHealth'
 import { errorResponse } from '@/lib/apiResponse'
 
@@ -63,17 +64,39 @@ export async function GET(req: NextRequest) {
     // rebuild lock was held so an overlapping manual trigger doesn't double
     // the fan-out. Own try/catch: a census abort must not read as a rebuild
     // failure in the logs, and a failed rebuild (whose data source is the
-    // transfers feed, not the timeline) doesn't block the census either.
+    // transfers feed, not the timeline) doesn't block the census either. The
+    // sweep index rides inside the census branch (it needs the walk's output).
     if (!rebuildSkipped) {
       const censusStarted = Date.now()
       try {
-        const census = await rebuildCatalogCensus()
-        if ('skipped' in census) {
+        const result = await rebuildCatalogCensus()
+        if ('skipped' in result) {
           console.log('[sync-stats] census skipped (already running)')
           await recordStatsRun('census', 'skipped')
         } else {
-          console.log('[sync-stats] census ok', { ...census, ms: Date.now() - censusStarted })
+          console.log('[sync-stats] census ok', { ...result.census, ms: Date.now() - censusStarted })
           await recordStatsRun('census', 'ok')
+
+          // Sweep index (lib/sweepIndex.ts) — built from the SAME resolved
+          // catalog the census just walked, so the catalog is never walked
+          // twice and a census abort (unreadable collection, implausible
+          // shrink) means no index rebuild either: the last good pool stays.
+          // Own try/catch + own health phase: an RPC blip here must read as a
+          // sweep-index failure, not a census failure. Runs whether or not the
+          // sweep flag is on, so enabling the feature is instant.
+          const sweepStarted = Date.now()
+          try {
+            const index = await rebuildSweepIndex(result.catalog)
+            console.log('[sync-stats] sweep-index ok', {
+              eligible: index.eligible,
+              pool: index.items.length,
+              ms: Date.now() - sweepStarted,
+            })
+            await recordStatsRun('sweep-index', 'ok')
+          } catch (err) {
+            console.error('[sync-stats] sweep-index failed', err)
+            await recordStatsRun('sweep-index', 'error', err instanceof Error ? err.message : String(err))
+          }
         }
       } catch (err) {
         console.error('[sync-stats] census failed', err)
