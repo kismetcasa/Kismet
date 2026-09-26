@@ -71,3 +71,32 @@ export function parseArtworkRef(input: string): { collection: string; tokenId: s
   if (!m) return null
   return { collection: m[1].toLowerCase(), tokenId: BigInt(m[2]).toString() }
 }
+
+/**
+ * What a machine notice says, by what happened (Notification.note on an
+ * `experience_status`): a headline, a line of detail, and the push title. One
+ * table for the bell row and the Farcaster push, so they cannot drift, and
+ * worded for both kinds of machine — a reveal machine sells nothing itself.
+ */
+export function experienceStatusCopy(
+  note: string | undefined,
+  name: string,
+  actor?: string | null,
+): { headline: string; detail: string; title: string } {
+  switch (note) {
+    case 'live':
+      return { headline: `${name} is live`, detail: 'Approved and on the shelves.', title: 'Your machine is live' }
+    case 'ended':
+      return { headline: `${name} was closed by a curator`, detail: 'Anything already bought through it is still honoured.', title: 'Machine closed' }
+    case 'delisted':
+      return { headline: `${name} was delisted by a curator`, detail: 'Anything already bought through it is still honoured.', title: 'Machine delisted' }
+    case 'rejected':
+      return { headline: `${name} wasn’t approved`, detail: 'It never went on the shelves, so nothing was sold.', title: 'Machine not approved' }
+    case 'empty':
+      return { headline: `${name} has given out every artwork`, detail: 'End its season so no one buys a capsule it can’t fill.', title: 'Your machine is empty' }
+    case 'review':
+      return { headline: `${name} is waiting for review`, detail: actor ? `Submitted by ${actor}.` : 'Open the review queue.', title: 'Machine to review' }
+    default:
+      return { headline: `${name} was updated`, detail: '', title: 'Machine update' }
+  }
+}

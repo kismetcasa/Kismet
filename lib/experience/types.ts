@@ -70,6 +70,10 @@ export interface ClaimRecord {
   txHash: string
   /** Which unit of a multi-quantity capsule mint this claim covers. */
   unitIndex: number
+  /** Capsules in the purchase this unit belongs to — so a win can be told
+   *  once per purchase, on unit 0, whichever route delivers it. Absent on
+   *  claims made before the field. */
+  units?: number
   state: ClaimState
   createdAt: number
   /** Frozen eligible set. The draw is a pure function of this and the seed. */

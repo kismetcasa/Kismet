@@ -22,6 +22,7 @@ import {
   pickIndex,
   poolArtists,
   selectByHash,
+  mayRunDry,
   totalWeight,
   withExcluded,
   withLiveStanding,
@@ -39,6 +40,7 @@ import {
 } from '../lib/experience/fairness.ts'
 import {
   artworkTitle,
+  experienceStatusCopy,
   formatOddsRatio,
   formatProbability,
   formatRemaining,
@@ -535,6 +537,28 @@ console.log('\n5f2. the draw follows the chain (D1)')
   check('the input snapshot is not modified', A.remaining === 5 && B.remaining === null)
   const odds = deriveOdds(live)
   check('the published odds cover only what can be delivered', odds.length === 2 && Math.abs(odds.reduce((t, o) => t + o.probability, 0) - 1) < 1e-12)
+}
+
+console.log('\n5f3. the empty check runs only when a play could have emptied the machine')
+{
+  check('the last copy of the last piece: could run dry', mayRunDry([snap({ remaining: 1 })]))
+  check('nothing left at all: could run dry', mayRunDry([snap({ remaining: 0 })]) && mayRunDry([]))
+  check('two copies left: cannot', !mayRunDry([snap({ remaining: 2 })]))
+  check('one copy each of two pieces: cannot', !mayRunDry([snap({ tokenId: '1', remaining: 1 }), snap({ tokenId: '2', remaining: 1 })]))
+  check('an open edition never runs dry', !mayRunDry([snap({ remaining: null, supply: 0 })]))
+  check('a piece that cannot be drawn is not counted', mayRunDry([snap({ tokenId: '1', remaining: 1 }), snap({ tokenId: '2', remaining: 5, weight: 0 })]))
+}
+
+console.log('\n5f4. what a machine notice says')
+{
+  const all = ['live', 'ended', 'delisted', 'rejected', 'empty', 'review'].map((n) => ({ n, ...experienceStatusCopy(n, '"M"', '0xabc…def') }))
+  check('every outcome has its own headline and push title', new Set(all.map((c) => c.headline)).size === 6 && new Set(all.map((c) => c.title)).size === 6)
+  check('each names the machine', all.every((c) => c.headline.includes('"M"')))
+  check('only the empty notice speaks of capsules — the others fit a reveal machine too',
+    all.filter((c) => /capsule/i.test(c.headline + c.detail)).map((c) => c.n).join() === 'empty')
+  check('a machine turned down is not told anything was sold or honoured', !/honoured/.test(all.find((c) => c.n === 'rejected')!.detail) && /nothing was sold/.test(all.find((c) => c.n === 'rejected')!.detail))
+  check('Kismet is told who submitted a machine for review', all.find((c) => c.n === 'review')!.detail.includes('0xabc…def'))
+  check('an unknown note still reads as a sentence', experienceStatusCopy(undefined, '"M"').headline === '"M" was updated')
 }
 
 console.log('\n5g. a reveal pull is uniform')

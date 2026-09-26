@@ -9,7 +9,7 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { acquireLock } from '@/lib/redisLock'
 import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
-import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
+import { MAX_UNITS_PER_CAPSULE, mayRunDry } from '@/lib/experience/draw'
 import { runDraw } from '@/lib/experience/runDraw'
 import { checkCapsulePurchase, checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize } from '@/lib/experience/delivery'
@@ -211,6 +211,7 @@ export async function POST(req: NextRequest) {
     claimant: account,
     txHash,
     unitIndex,
+    units: proof.units,
     state: 'claimed',
     createdAt: now,
   }
@@ -393,9 +394,12 @@ async function drawAndDeliver(params: {
       claim.state === 'delivered' ? recordPrize(claim).catch(() => {}) : Promise.resolve(),
     ])
     // Was that the last artwork this machine could give? Its creator is told
-    // once, so they close the capsule's sale.
-    await noticeIfEmpty(machineId).catch(() => {})
-    if (claim.state === 'delivered') {
+    // once, so they close the capsule's sale. Asked only when this play's own
+    // table says it could be: the check re-reads the pool and the chain.
+    if (mayRunDry(eligibleSnapshot)) await noticeIfEmpty(machineId).catch(() => {})
+    // One notice per purchase, not per capsule: a ten-pull the player just
+    // watched open is one bell row ("… and 9 more"), sent with unit 0.
+    if (claim.state === 'delivered' && unitIndex === 0) {
       // Hydrate the title and cover so the notification (and the Farcaster push
       // built from it) names the artwork rather than saying "an artwork". Best
       // effort by construction: fetchArtworkMeta returns null on any failure and
@@ -410,7 +414,7 @@ async function drawAndDeliver(params: {
         tokenId: prize.tokenId,
         tokenName: meta?.name ?? undefined,
         tokenImage: meta?.image ?? undefined,
-        amount: 1,
+        amount: units,
       }).catch(bestEffort('xp.notifyWin', { machineId, txHash }))
     }
   })

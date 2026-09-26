@@ -7,7 +7,7 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { runDraw } from '@/lib/experience/runDraw'
-import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
+import { MAX_UNITS_PER_CAPSULE, mayRunDry } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, readDeliveryOutcome } from '@/lib/experience/delivery'
 import {
@@ -423,7 +423,10 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
   after(async () => {
     await recordCollected(claimant, prize.collection, prize.tokenId).catch(() => {})
     await recordPrize(claim).catch(() => {})
-    await noticeIfEmpty(machineId).catch(() => {})
+    // As the play route: only when this claim's table says it could be empty.
+    if (!claim.snapshot || mayRunDry(claim.snapshot)) await noticeIfEmpty(machineId).catch(() => {})
+    // The purchase's one win notice rides on unit 0, whichever route lands it.
+    if (claim.unitIndex !== 0) return
     const meta = await fetchArtworkMeta(prize.collection, prize.tokenId)
     await writeNotification({
       type: 'experience_win',
@@ -433,7 +436,7 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
       tokenId: prize.tokenId,
       tokenName: meta?.name ?? undefined,
       tokenImage: meta?.image ?? undefined,
-      amount: 1,
+      amount: claim.units ?? 1,
     }).catch(bestEffort('xp.resumeNotify', { machineId, txHash: tx }))
   })
 }

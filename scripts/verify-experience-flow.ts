@@ -73,6 +73,8 @@ function exec(cmd: unknown[]): unknown {
   switch (name) {
     case 'get':
       return strings.get(k) ?? null
+    case 'mget':
+      return args.map((key) => strings.get(key) ?? null)
     case 'set': {
       const nx = args.some((a) => a.toLowerCase() === 'nx')
       if (nx && strings.has(k)) return null
@@ -127,10 +129,13 @@ function exec(cmd: unknown[]): unknown {
       return next
     }
     case 'sadd': {
+      // The count of members that were NEW — what Redis returns, and what a
+      // once-only notice (lib/experience/notices) is decided by.
       const st = sets.get(k) ?? new Set<string>()
-      for (const m of args.slice(1)) st.add(m)
+      let added = 0
+      for (const m of args.slice(1)) if (!st.has(m)) { st.add(m); added++ }
       sets.set(k, st)
-      return 1
+      return added
     }
     case 'srem': {
       const st = sets.get(k)
@@ -1283,6 +1288,21 @@ console.log('\n14. payout ledger')
   outcomes['0xop4'] = { kind: 'landed', txHash: '0xt4' }
   await payouts.reconcilePayouts(async (h: string) => outcomes[h])
   check('one that lands later is counted when it does', (await payouts.paidTo(C2)) === 9n)
+
+  // Each landed payout tells its curator, once; Kismet's own address is told nothing.
+  const referralNotes = (addr: string) => [...(zsets.get(`kismetart:notif:${addr.toLowerCase()}`)?.keys() ?? [])]
+    .map((m) => JSON.parse(m) as { type: string; note?: string; price?: string; currency?: string; priority?: boolean })
+    .filter((n) => n.type === 'payout' && n.note === 'referral')
+  const c1Notes = referralNotes(C1)
+  check('a curator is told of each payout that lands, with its amount',
+    c1Notes.length === 2 && c1Notes.map((n) => n.price).sort().join() === ['7', String(BIG)].sort().join() && c1Notes.every((n) => n.currency === 'eth'),
+    JSON.stringify(c1Notes))
+  check('as a money notice that always badges', c1Notes.every((n) => n.priority === true))
+  check('never for one that failed, nor twice for one counted later', referralNotes(C2).length === 1 && referralNotes(C2)[0].price === '9')
+  const { KISMET_REFERRAL } = await import(new URL('../lib/zoraMint.ts', import.meta.url).href)
+  await payouts.recordPayout({ address: KISMET_REFERRAL.toLowerCase(), amount: 13n, userOpHash: '0xopk' })
+  await payouts.reconcilePayouts(async () => ({ kind: 'landed', txHash: '0xtk' }))
+  check('Kismet\'s own referral address is counted but not notified', (await payouts.paidTo(KISMET_REFERRAL)) === 13n && referralNotes(KISMET_REFERRAL).length === 0)
 
   // A payout nobody can account for is dropped after the retention window.
   const realNow = Date.now

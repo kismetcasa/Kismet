@@ -175,7 +175,9 @@ function exec(cmd) {
     case 'lpush': { const l = strings.get('__list:' + k) ? JSON.parse(strings.get('__list:' + k)) : []; l.unshift(...args.slice(1)); strings.set('__list:' + k, JSON.stringify(l)); return l.length }
     case 'ltrim': { const l = strings.get('__list:' + k) ? JSON.parse(strings.get('__list:' + k)) : []; const [a, b] = rankRange(l.length, Number(args[1]), Number(args[2])); strings.set('__list:' + k, JSON.stringify(b < a ? [] : l.slice(a, b + 1))); return 'OK' }
     case 'lrange': { const l = strings.get('__list:' + k) ? JSON.parse(strings.get('__list:' + k)) : []; const [a, b] = rankRange(l.length, Number(args[1]), Number(args[2])); return b < a ? [] : l.slice(a, b + 1) }
-    case 'sadd': { const s = sets.get(k) ?? new Set(); for (const m of args.slice(1)) s.add(m); sets.set(k, s); return 1 }
+    // The count of members that were new, as Redis returns it — a once-only
+    // notice (lib/experience/notices) is decided by exactly this.
+    case 'sadd': { const s = sets.get(k) ?? new Set(); let n = 0; for (const m of args.slice(1)) if (!s.has(m)) { s.add(m); n++ } sets.set(k, s); return n }
     case 'srem': { const s = sets.get(k); let n = 0; for (const m of args.slice(1)) { if (s?.delete(m)) n++ } return n }
     case 'smembers': return [...(sets.get(k) ?? [])]
     case 'sismember': return sets.get(k)?.has(args[1]) ? 1 : 0
@@ -1140,8 +1142,11 @@ try {
   const claims = await call(`/api/experience/claims?machineId=spring-season&account=${PLAYER}`)
   check('the claims route lists the play, settled', claims.json?.claims?.length === 1 && claims.json.claims[0].unresolved === false)
   check('spark was credited', claims.json?.spark === 1)
-  const notif = zsets.get(`kismetart:notif:${PLAYER}`)
-  check('the win notification was written', !!notif && [...notif.keys()].some((raw) => raw.includes('experience_win')))
+  // One notice per purchase, sent with unit 0 and counting every capsule in it.
+  const winsFor = () => [...(zsets.get(`kismetart:notif:${PLAYER}`)?.keys() ?? [])].map((m) => JSON.parse(m)).filter((n) => n.type === 'experience_win')
+  const w0 = winsFor()
+  check('the win is told once for the purchase, counting both capsules', w0.length === 1 && w0[0].amount === 2 && w0[0].tokenId === p0.json.claim.prize.tokenId, JSON.stringify(w0))
+  check('and it always badges the bell', w0[0]?.priority === true)
 
   const disc = await call(`/api/experience/discover?machineId=spring-season&account=${PLAYER}`)
   check('discovery finds both capsule transactions on-chain', disc.status === 200 && disc.json.capsules.length === 2, JSON.stringify(disc.json))
@@ -1164,6 +1169,8 @@ try {
   check('resume retries a never-broadcast claim and delivers', r1.json?.claim?.state === 'delivered' && r1.json.resumed === true, JSON.stringify(r1.json))
   check('with exactly one new userOp', prepares() === n0 + 1)
   check('and does not draw a second prize', r1.json?.claim?.prize?.tokenId === p1.json.claim.prize.tokenId)
+  await sleep(400)
+  check('the purchase\'s second capsule adds no second win notice', winsFor().length === 1, String(winsFor().length))
 
   // ── the mint reverts: broadcast, failed, obligation still open ──
   cdp.script.push('fail')
@@ -1173,6 +1180,9 @@ try {
   check('and records the userOp it sent', /^0x[0-9a-f]{64}$/.test(claimOf('spring-season', TX_B, 0)?.userOpHash ?? ''))
   const rB = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_B, unitIndex: 0 } })
   check('resume asks CDP, learns it failed, tries once more — and delivers', rB.json?.claim?.state === 'delivered' && rB.json.resumed === true, JSON.stringify(rB.json))
+  await sleep(400)
+  check('a one-capsule purchase that resume delivers is told by resume, once',
+    winsFor().length === 2 && winsFor().filter((n) => n.tokenId === rB.json?.claim?.prize?.tokenId && n.amount === 1).length >= 1, JSON.stringify(winsFor().map((n) => [n.tokenId, n.amount])))
 
   // ── broadcast with no verdict: the case the receipt read exists for ──
   addMint({ tx: TX_HANG, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_040n })
@@ -2093,6 +2103,9 @@ try {
     const empties = () => notesFor(ADMIN).filter((n) => n.type === 'experience_status' && n.note === 'empty' && n.machineId === 'dry-season')
     check('and its creator is told the machine has nothing left, so they can close the capsule\'s sale', await eventually(() => empties().length === 1), JSON.stringify(notesFor(ADMIN).map((n) => n.type)))
     check('naming the machine', empties()[0]?.tokenName === 'Dry Season')
+    check('and it badges the bell, though it has no sender', empties()[0]?.priority === true && !empties()[0]?.actor)
+    check('remembered in the machine\'s one notice set, not a key per notice',
+      sets.get('kismetart:xp:dry-season:notices')?.has('empty') && ![...strings.keys()].some((k) => k.includes(':notice:')))
     v = await view()
     check('its page now shows nothing to win, on a table the chain confirmed', (v.odds ?? []).length === 0 && v.standingReadable === true && v.coverage?.prizesRemaining === 0, table(v))
 
@@ -2217,6 +2230,24 @@ try {
     check('a piece its artist turned off is listed in no reveal machine', (await listing(REVEAL, 1)).json.machines.length === 0)
     await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '1', available: true } })
     check('a malformed request is refused', (await call('/api/experience/piece?collection=0xnope&tokenId=1&public=1')).status === 400)
+
+    // Kismet, the only reviewer, hears of each machine waiting for it.
+    const statusFor = (addr, id) => notesFor(addr).filter((n) => n.type === 'experience_status' && n.machineId === id)
+    const queued = statusFor(ADMIN, 'fresh-ink').filter((n) => n.note === 'review')
+    check('Kismet is told when a machine is submitted for review, and by whom', queued.length === 1 && queued[0].actor === CURATOR.toLowerCase() && queued[0].tokenName === 'Fresh Ink' && queued[0].priority === true, JSON.stringify(queued))
+    check('for capsule machines too', statusFor(ADMIN, 'field-recordings').some((n) => n.note === 'review'))
+    check('but not about machines Kismet published itself', statusFor(ADMIN, 'kismet-picks').length === 0 && statusFor(ADMIN, 'spring-season').length === 0)
+    // Its curator hears each decision, in words that fit a reveal machine.
+    check('a curator hears their machine was delisted, then relisted', statusFor(CURATOR, 'new-voices').map((n) => n.note).join() === 'live,delisted,live', statusFor(CURATOR, 'new-voices').map((n) => n.note).join())
+    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'busy-picks', state: 'delisted' } })
+    check('a machine turned down before it ever went live is told it was not approved', statusFor(BUSY, 'busy-picks').map((n) => n.note).join() === 'rejected', statusFor(BUSY, 'busy-picks').map((n) => n.note).join())
+    // A payout that lands is told to its curator once, as a money notice.
+    const paidNotes = (addr) => notesFor(addr).filter((n) => n.type === 'payout' && n.note === 'referral')
+    check('a curator is told their referral rewards were paid, with the amount', paidNotes(CURATOR).length === 1 && paidNotes(CURATOR)[0].price === '200000000000000' && paidNotes(CURATOR)[0].priority === true, JSON.stringify(paidNotes(CURATOR)))
+    check('Kismet\'s own referral address is paid but told nothing', paidNotes(KISMET_REFERRAL).length === 0)
+    // Once-only notices: one set per machine, no key per artist.
+    const nvNotices = sets.get('kismetart:xp:new-voices:notices')
+    check('featured notices are remembered in one set per machine', nvNotices?.has(`featured:${ARTIST_B.toLowerCase()}`) && nvNotices.has(`featured:${CREATOR2.toLowerCase()}`) && ![...strings.keys()].some((k) => k.includes(':notice:')))
   }
 
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
@@ -2910,6 +2941,31 @@ try {
           check('the curator sees that collects earn them the referral, paid automatically, and what has been paid',
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
           await own.context().close()
+        }
+
+        // ── the bell: where each machine notice takes you ──
+        {
+          const bell = async (user, wallet) => {
+            const pg = await open('/', { user, wallet })
+            const btn = pg.getByRole('button', { name: /^Notifications/ })
+            await btn.first().waitFor()
+            await pg.waitForTimeout(1500)
+            const label = await btn.first().getAttribute('aria-label')
+            await btn.first().click()
+            return { pg, label }
+          }
+          const artist = await bell(ARTIST_B_TOKEN, ARTIST_B)
+          check('an artist with machine notices sees an unread badge', /\d+ unread/.test(artist.label ?? ''), artist.label)
+          const featured = artist.pg.locator('a', { hasText: /is in "new voices"/i }).first()
+          await featured.waitFor({ timeout: 10_000 }).catch(() => {})
+          check('"your work is featured" opens the artwork, where its machines and its switch are',
+            ((await featured.getAttribute('href').catch(() => null)) ?? '').startsWith(`/artwork/${REVEAL}/`), await featured.getAttribute('href').catch(() => 'none'))
+          await artist.pg.context().close()
+          const kismet = await bell(ADMIN_USER_TOKEN, ADMIN)
+          const review = kismet.pg.locator('a', { hasText: /is waiting for review/i }).first()
+          await review.waitFor({ timeout: 10_000 }).catch(() => {})
+          check('Kismet\'s review notice opens the review queue', (await review.getAttribute('href').catch(() => null)) === '/admin/experience')
+          await kismet.pg.context().close()
         }
 
         // ── where an artist's work is featured, on their profile ──

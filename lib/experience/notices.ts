@@ -1,6 +1,7 @@
 import 'server-only'
 import { redis } from '../redis'
 import { bestEffort } from '../bestEffort'
+import { ADMIN_ADDRESS } from '../config'
 import { getGateConfig } from '../gate'
 import { writeNotification } from '../notifications'
 import { fetchArtworkMeta } from './artwork'
@@ -10,13 +11,17 @@ import { buildSnapshot, getMachine, getPool, getRemaining, optedOutPieces } from
 import { isReveal, type PoolEntry } from './types'
 
 /**
- * The two things the people behind a machine are told that nothing else would
- * tell them. Each is sent at most once per machine (per artist), keyed in
- * Redis, so a retried play or a curator toggling a machine live twice does not
- * repeat it.
+ * What the people behind a machine are told that nothing else would tell
+ * them. Each is sent at most once per machine (per artist), so a retried play
+ * or a curator toggling a machine live twice does not repeat it.
+ *
+ * "Once" is one SET per machine, not a key per notice: SADD reports whether
+ * the member was new, which is exactly the once-only test, and a machine
+ * featuring fifty artists keeps one key rather than fifty that never expire.
  */
 
-const once = async (key: string) => (await redis.set(key, '1', { nx: true })) === 'OK'
+const once = async (machineId: string, what: string) =>
+  (await redis.sadd(`kismetart:xp:${machineId}:notices`, what)) === 1
 
 /**
  * A capsule machine whose table has nothing left it could deliver: tell its
@@ -34,7 +39,7 @@ export async function noticeIfEmpty(machineId: string): Promise<void> {
   const snapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
   const { table, live } = await drawableTable(snapshot, gate.passCollection?.toLowerCase() ?? null)
   if (!live || table.some(isDrawable)) return
-  if (!(await once(`kismetart:xp:${machineId}:notice:empty`))) return
+  if (!(await once(machineId, 'empty'))) return
   await writeNotification({
     type: 'experience_status',
     recipient: machine.creator,
@@ -42,6 +47,22 @@ export async function noticeIfEmpty(machineId: string): Promise<void> {
     note: 'empty',
     machineId,
   }).catch(bestEffort('xp.noticeEmpty', { machineId }))
+}
+
+/**
+ * A machine is waiting for review: tell Kismet, whose admin wallet is the
+ * only one that can approve it, so nothing sits in the queue unseen. Sent
+ * once, when it is submitted.
+ */
+export async function noticeReview(machine: { id: string; name: string; creator: string }): Promise<void> {
+  await writeNotification({
+    type: 'experience_status',
+    recipient: ADMIN_ADDRESS,
+    actor: machine.creator,
+    tokenName: machine.name,
+    note: 'review',
+    machineId: machine.id,
+  }).catch(bestEffort('xp.noticeReview', { machineId: machine.id }))
 }
 
 /**
@@ -67,7 +88,7 @@ export async function noticeFeaturedArtists(machineId: string, only?: PoolEntry[
   }
   await Promise.all(
     [...firstByArtist].map(async ([artist, piece]) => {
-      if (!(await once(`kismetart:xp:${machineId}:notice:featured:${artist}`))) return
+      if (!(await once(machineId, `featured:${artist}`))) return
       const meta = await fetchArtworkMeta(piece.collection, piece.tokenId)
       await writeNotification({
         type: 'experience_featured',

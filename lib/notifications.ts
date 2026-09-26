@@ -104,8 +104,11 @@ export interface Notification {
   listingId?: string
   comment?: string
   /** file_update: the artist's release note ("added music!") — shown on the
-   *  bell row and appended to the push body. experience_status: the machine's
-   *  new state. experience_featured: the machine's name. */
+   *  bell row and appended to the push body. experience_status: what happened
+   *  to the machine — its new state ('live' | 'ended' | 'delisted'),
+   *  'rejected' (delisted without ever going live), 'empty', or 'review' (to
+   *  Kismet: one is waiting). experience_featured: the machine's name.
+   *  payout: 'referral' for mint referral rewards paid to a curator. */
   note?: string
   /** experience_status / experience_featured: the machine the notice is about. */
   machineId?: string
@@ -237,6 +240,11 @@ async function isPriority(
   // that re-delivers what they bought, the badge should surface it.
   if (type === 'file_update') return true
   if (type === 'collect' && price && price !== '0') return true
+  // Machines: a prize the recipient paid for, a decision about their own
+  // machine (one of them — "it has run empty" — carries no actor at all, so
+  // the actor test below could never badge it), and their work put in front
+  // of collectors. Each is rare and about the recipient's own money or work.
+  if (type === 'experience_win' || type === 'experience_status' || type === 'experience_featured') return true
   // listing_created stays non-priority — active sellers shouldn't dominate
   // the priority bell. The "all" tab still surfaces it for engaged followers.
   if (!actor) return false

@@ -1,5 +1,7 @@
 import 'server-only'
 import { BaseError, ContractFunctionRevertedError, encodeFunctionData, parseAbi, type Address } from 'viem'
+import { bestEffort } from './bestEffort'
+import { writeNotification } from './notifications'
 import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { KISMET_REFERRAL } from './zoraMint'
@@ -157,6 +159,17 @@ export async function reconcilePayouts(
       await redis.hset(K_PAID, { [entry.address]: toStored(paid + BigInt(entry.amount)) })
       await redis.hset(K_OPS, { [hash]: JSON.stringify({ ...entry, status: 'landed', txHash: outcome.txHash }) })
       counts.landed++
+      // The curator hears of it once, here — the one place a payout turns
+      // from sent to landed. Kismet's own referral address is not a person.
+      if (entry.address !== KISMET_REFERRAL.toLowerCase()) {
+        await writeNotification({
+          type: 'payout',
+          recipient: entry.address,
+          price: entry.amount,
+          currency: 'eth',
+          note: 'referral',
+        }).catch(bestEffort('referralPayouts.notify', { address: entry.address }))
+      }
     } else if (outcome.kind === 'failed') {
       await redis.hset(K_OPS, { [hash]: JSON.stringify({ ...entry, status: 'failed' }) })
       counts.failed++

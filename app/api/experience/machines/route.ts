@@ -14,7 +14,7 @@ import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/exp
 import { experienceOperator } from '@/lib/experience/delivery'
 import { isDeliverableEntry } from '@/lib/experience/eligibility'
 import { readLineup } from '@/lib/experience/lineup'
-import { noticeFeaturedArtists } from '@/lib/experience/notices'
+import { noticeFeaturedArtists, noticeReview } from '@/lib/experience/notices'
 import { getMomentMetaBatch } from '@/lib/notifications'
 import { paidTo } from '@/lib/referralPayouts'
 import {
@@ -476,6 +476,7 @@ export async function POST(req: NextRequest) {
   await openEpochSeeds(id, epochFor(Date.now())).catch(() => null)
 
   const published = await setMachineState(id, finalState)
+  if (published?.state === 'review') await noticeReview(published)
 
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }
@@ -575,5 +576,6 @@ async function publishReveal(input: {
   if (!input.isAdmin) await addCurator(input.creator)
   const published = await setMachineState(input.id, input.isAdmin ? 'live' : 'review')
   if (published?.state === 'live') await noticeFeaturedArtists(input.id).catch(() => {})
+  if (published?.state === 'review') await noticeReview(published)
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }

@@ -10,6 +10,7 @@ import {
   type NotificationType,
 } from './notifications'
 import { SITE_URL } from './siteUrl'
+import { experienceStatusCopy } from './experience/format'
 import { isSafePublicHttpsUrl } from './safeUrl'
 
 // Farcaster native push notifications, layered on top of the in-app bell.
@@ -472,6 +473,15 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // amountLabel already carries the currency ("0.1 ETH" / "$5").
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const amountLabel = n.price ? formatPushPrice(n.price, n.currency) : 'a payout'
+      // A curator's mint referral rewards (lib/referralPayouts): not tied to
+      // one artwork, so it links the profile, where "paid so far" lives.
+      if (n.note === 'referral') {
+        return {
+          title: truncate('Referral rewards paid', TITLE_MAX),
+          body: truncate(`You received ${amountLabel} from collects through your reveal machines`, BODY_MAX),
+          targetUrl: `${SITE_URL}/profile/${n.recipient}`,
+        }
+      }
       return {
         title: truncate('Payout received', TITLE_MAX),
         body: truncate(`You received ${amountLabel} from ${subject}`, BODY_MAX),
@@ -560,25 +570,19 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       }
     }
     case 'experience_status': {
-      // A curator's decision on the recipient's own machine. Links the machine
-      // page, which serves every state a curator can move it to.
+      // What happened to the recipient's machine (or, for Kismet, one waiting
+      // for review). Same words and same destination as the bell row.
       const subject = tokenName ? `"${tokenName}"` : 'Your machine'
-      if (n.note === 'empty') {
-        return {
-          title: truncate('Your machine is empty', TITLE_MAX),
-          body: truncate(`${subject} has given out every artwork. End its season so no one buys a capsule it can't fill.`, BODY_MAX),
-          targetUrl: `${SITE_URL}/profile/${n.recipient}`,
-        }
-      }
-      const title = n.note === 'live' ? 'Your machine is live' : n.note === 'ended' ? 'Season ended' : 'Machine delisted'
-      const body =
-        n.note === 'live'
-          ? `${subject} was approved and is on sale`
-          : `${subject} was ${n.note === 'ended' ? 'ended' : 'delisted'} by a curator. Capsules already sold are still honoured.`
+      const { headline, detail, title } = experienceStatusCopy(n.note, subject, actorName)
       return {
         title: truncate(title, TITLE_MAX),
-        body: truncate(body, BODY_MAX),
-        targetUrl: n.machineId ? `${SITE_URL}/experience/${n.machineId}` : SITE_URL,
+        body: truncate(detail ? `${headline}. ${detail}` : headline, BODY_MAX),
+        targetUrl:
+          n.note === 'review'
+            ? `${SITE_URL}/admin/experience`
+            : n.note === 'empty' || !n.machineId
+              ? `${SITE_URL}/profile/${n.recipient}`
+              : `${SITE_URL}/experience/${n.machineId}`,
       }
     }
     case 'experience_featured': {
@@ -588,7 +592,9 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       return {
         title: truncate('Your work is featured', TITLE_MAX),
         body: truncate(`${subject} is in ${machine}${actorName ? `, curated by ${actorName}` : ''}`, BODY_MAX),
-        targetUrl: n.machineId ? `${SITE_URL}/experience/${n.machineId}` : SITE_URL,
+        // The artwork: its page lists the machines it is in and holds the
+        // switch that takes it out — the bell row links there too.
+        targetUrl: momentUrl,
       }
     }
     case 'experience_win': {
@@ -596,9 +602,10 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // the push exists to introduce the maker, and the artwork is already in
       // the wallet by the time this fires.
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      const more = (n.amount ?? 1) > 1 ? ` and ${(n.amount ?? 1) - 1} more` : ''
       return {
         title: truncate('You won an artwork', TITLE_MAX),
-        body: truncate(`${subject} is yours${actorName ? ` — by ${actorName}` : ''}`, BODY_MAX),
+        body: truncate(`${subject}${more} ${more ? 'are' : 'is'} yours${actorName ? ` — by ${actorName}` : ''}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }

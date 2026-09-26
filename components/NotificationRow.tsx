@@ -8,6 +8,7 @@ import { MomentImage } from './MomentImage'
 import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment } from '@/lib/inprocess'
 import { isPatronCollection } from '@/lib/patronCollection'
 import type { Notification } from '@/lib/notifications'
+import { experienceStatusCopy } from '@/lib/experience/format'
 
 interface NotificationRowProps {
   notification: Notification
@@ -38,17 +39,25 @@ function notificationHref(n: Notification): string {
     case 'airdrop':
     case 'gift':
     case 'payout':
+      // Referral rewards are paid per curator, not per artwork: the profile is
+      // where "paid so far" lives.
+      if (n.note === 'referral') return `/profile/${n.recipient}`
+      return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
     case 'raffle_win':
     case 'raffle_ended':
     case 'file_update':
     case 'experience_win':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
     case 'experience_status':
-      // An empty machine is closed from the creator's profile, where its end
-      // season control lives; every other decision links the machine itself.
+      // Kismet reviews from the queue; an empty machine is closed from the
+      // creator's profile, where its end-season control lives; every other
+      // decision links the machine itself.
+      if (n.note === 'review') return '/admin/experience'
       return n.note !== 'empty' && n.machineId ? `/experience/${n.machineId}` : `/profile/${n.recipient}`
     case 'experience_featured':
-      return n.machineId ? `/experience/${n.machineId}` : '/'
+      // The artwork, not the machine: its page lists every machine the piece
+      // is in and holds the switch that takes it out of them.
+      return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
   }
 }
 
@@ -173,6 +182,18 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         </>
       )
     case 'payout':
+      if (n.note === 'referral') {
+        return (
+          <>
+            <p className="text-xs font-mono text-ink truncate">
+              you received {n.price ? `${formatPrice(n.price, n.currency ?? 'eth')} ` : 'a payout '}in referral rewards
+            </p>
+            <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+              from collects through your reveal machines · {time}
+            </p>
+          </>
+        )
+      }
       return (
         <>
           <p className="text-xs font-mono text-ink truncate">
@@ -267,33 +288,23 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       return (
         <>
           <p className="text-xs font-mono text-accent truncate">
-            You won {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}!
+            You won {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'an artwork'}
+            {(n.amount ?? 1) > 1 ? ` and ${(n.amount ?? 1) - 1} more` : ''}!
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            {actorLabel ? `by ${actorLabel} · ` : ''}It&apos;s in your wallet. · {time}
+            {actorLabel ? `by ${actorLabel} · ` : ''}
+            {(n.amount ?? 1) > 1 ? `${n.amount} capsules opened.` : 'It\u2019s in your wallet.'} · {time}
           </p>
         </>
       )
     case 'experience_status': {
       const name = n.tokenName ? `"${n.tokenName}"` : 'Your machine'
+      const { headline, detail } = experienceStatusCopy(n.note, name, actorLabel)
       return (
         <>
-          <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>
-            {n.note === 'live'
-              ? `${name} is live`
-              : n.note === 'empty'
-                ? `${name} has given out every artwork`
-                : n.note === 'ended'
-                  ? `${name}'s season was ended by a curator`
-                  : `${name} was delisted by a curator`}
-          </p>
+          <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>{headline}</p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            {n.note === 'live'
-              ? 'Approved and on sale. · '
-              : n.note === 'empty'
-                ? 'End its season so no one buys a capsule it can’t fill. · '
-                : 'Capsules already sold are still honoured. · '}
-            {time}
+            {detail} · {time}
           </p>
         </>
       )
@@ -306,7 +317,7 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
             {n.note ? `"${n.note}"` : 'a reveal machine'}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            {actorLabel ? `curated by ${actorLabel} · ` : ''}Collectors pull it for free and buy it at your price. · {time}
+            {actorLabel ? `curated by ${actorLabel} · ` : ''}Sold at your price. Turn machines off from its page. · {time}
           </p>
         </>
       )

@@ -190,6 +190,25 @@ export function pickIndex(n: number): number {
 }
 
 /**
+ * Could handing out one more copy from this table leave nothing drawable?
+ * True only when at most one copy is left across every drawable piece. The
+ * "has this machine run empty?" check re-reads the whole pool and the chain,
+ * so it is asked only when a play's own frozen table says the answer could be
+ * yes — the play that takes the last copy, or one that found none. An open
+ * edition never runs out.
+ */
+export function mayRunDry(table: SnapshotEntry[]): boolean {
+  let left = 0
+  for (const e of table) {
+    if (!isDrawable(e)) continue
+    if (e.remaining === null) return false
+    left += e.remaining
+    if (left > 1) return false
+  }
+  return true
+}
+
+/**
  * A snapshot as the chain stands: pieces the delivery account may no longer
  * mint, or that have no copies left on-chain, are dropped, and each piece's
  * remaining count is clamped to the copies that actually exist. A piece with
