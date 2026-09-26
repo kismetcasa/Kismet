@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { listMachines } from '@/lib/experience/store'
+import { isReveal } from '@/lib/experience/types'
 import { shortAddress } from '@/lib/inprocess'
 
 // The Experience is a top-level destination, not a Discover sub-tab — the same
@@ -12,7 +13,7 @@ import { shortAddress } from '@/lib/inprocess'
 export const metadata: Metadata = {
   title: 'experience — Kismet',
   description:
-    'Play a capsule machine and receive an artwork from a Kismet artist. Published odds, every play returns a real artwork.',
+    'Play a capsule machine or pull a reveal machine and collect an artwork from a Kismet artist. Published odds, every play returns a real artwork.',
   alternates: { canonical: `${SITE_URL}/experience` },
   other: buildFarcasterEmbed({
     imageUrl:
@@ -33,7 +34,7 @@ export default async function ExperiencePage() {
         <div>
           <h1 className="text-lg font-mono tracking-wider text-ink">experience</h1>
           <p className="text-[11px] font-mono text-muted mt-1">
-            capsule machines · published odds · every play returns an artwork
+            capsule machines and reveal machines · published odds
           </p>
         </div>
         <Link
@@ -48,9 +49,9 @@ export default async function ExperiencePage() {
         <div className="border border-line p-8 sm:p-16 text-center">
           <p className="text-sm font-mono text-muted">no machines running yet</p>
           <p className="text-xs font-mono text-subtle mt-2">
-            any Pass holder can open one in the{' '}
+            any Pass holder can{' '}
             <Link href="/experience/new" className="text-dim hover:text-ink underline">
-              capsule studio
+              open one
             </Link>
           </p>
         </div>
@@ -63,6 +64,9 @@ export default async function ExperiencePage() {
               className="flex items-center gap-3 px-4 py-3.5 hover:bg-raised transition-colors"
             >
               <span className="flex-1 min-w-0 text-sm font-mono text-ink truncate">{m.name}</span>
+              <span className="text-[10px] font-mono text-subtle shrink-0">
+                {isReveal(m) ? 'reveal' : 'capsule'}
+              </span>
               <span className="text-[10px] font-mono text-subtle shrink-0">
                 {shortAddress(m.creator)}
               </span>

@@ -7,18 +7,24 @@ import { getGateConfig, holdsValidPass, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { ADMIN_ADDRESS } from '@/lib/config'
 import { MAX_POOL_ENTRIES } from '@/lib/experience/draw'
-import { checkSolvency } from '@/lib/experience/solvency'
+import { checkLineup, checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
 import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
 import { experienceOperator } from '@/lib/experience/delivery'
+import { isDeliverableEntry } from '@/lib/experience/eligibility'
+import { readLineup } from '@/lib/experience/lineup'
+import { getMomentMetaBatch } from '@/lib/notifications'
 import {
   createMachine,
   getMachine,
+  getPool,
   listMachines,
   listMachinesByCreator,
   openEpochSeeds,
+  optedOutPieces,
   playCount,
   pledgeSupply,
+  putLineup,
   releaseCapsule,
   reserveCapsule,
   putPoolEntry,
@@ -26,7 +32,8 @@ import {
 } from '@/lib/experience/store'
 import { serverBaseClient } from '@/lib/rpc'
 import { epochFor } from '@/lib/experience/fairness'
-import type { Machine, PoolEntry } from '@/lib/experience/types'
+import { isReveal } from '@/lib/experience/types'
+import type { CapsuleMachine, Machine, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
 
 /**
  * The Capsule Studio backend: list live machines, and create one.
@@ -55,10 +62,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     machines: machines.map((m) => ({
       id: m.id,
+      kind: isReveal(m) ? 'reveal' : 'capsule',
       name: m.name,
       state: m.state,
       creator: m.creator,
-      capsule: m.capsule,
+      ...(isReveal(m) ? {} : { capsule: m.capsule }),
       createdAt: m.createdAt,
     })),
   })
@@ -82,20 +90,21 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
   const machines = await Promise.all(
     visible.map(async (m) => {
+      const common = {
+        id: m.id,
+        name: m.name,
+        state: m.state,
+        createdAt: m.createdAt,
+        ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
+      }
+      if (isReveal(m)) {
+        return { ...common, kind: 'reveal' as const, pieces: (await getPool(m.id).catch(() => [])).length }
+      }
       const [capsules, plays] = await Promise.all([
         readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
         playCount(m.id).catch(() => 0),
       ])
-      return {
-        id: m.id,
-        name: m.name,
-        state: m.state,
-        capsule: m.capsule,
-        createdAt: m.createdAt,
-        plays,
-        capsules,
-        ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
-      }
+      return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules }
     }),
   )
   return NextResponse.json({ owner, machines })
@@ -130,6 +139,10 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as {
     id?: string
     name?: string
+    /** 'capsule' (the default) or 'reveal'. */
+    kind?: string
+    /** Capsule machines: 'manual' (the default) or 'supply'. */
+    rarity?: string
     capsule?: { collection?: string; tokenId?: string }
     entries?: PoolEntry[]
     /** Validate everything and write nothing. The Capsule Studio calls this on
@@ -143,18 +156,15 @@ export async function POST(req: NextRequest) {
 
   const id = typeof body.id === 'string' ? body.id.toLowerCase() : ''
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : ''
+  const kind = body.kind ?? 'capsule'
+  const rarity = body.rarity ?? 'manual'
   const capsuleCollection = body.capsule?.collection
   const rawCapsuleToken = body.capsule?.tokenId
 
   if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
   if (!name) return errorResponse(400, 'A machine needs a name')
-  if (!capsuleCollection || !isAddress(capsuleCollection)) return errorResponse(400, 'Invalid capsule collection')
-  if (!rawCapsuleToken || !/^\d+$/.test(String(rawCapsuleToken))) return errorResponse(400, 'Invalid capsule tokenId')
-  // Same canonicalisation the collect path applies, for the same reason: the
-  // literal string becomes part of Redis keys, so '01' and '1' must not be able
-  // to address different machines.
-  const capsuleTokenId = BigInt(rawCapsuleToken).toString()
-
+  if (kind !== 'capsule' && kind !== 'reveal') return errorResponse(400, 'Invalid kind')
+  if (rarity !== 'manual' && rarity !== 'supply') return errorResponse(400, 'Invalid rarity')
   const dryRun = body.dryRun === true
   // Separate budgets, because the two are different acts. A check is how a
   // creator iterates on a lineup — sharing one five-per-five-minutes budget
@@ -169,6 +179,26 @@ export async function POST(req: NextRequest) {
   }
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
+  const rawEntries = Array.isArray(body.entries) ? body.entries : []
+  if (rawEntries.length === 0) return errorResponse(400, 'A machine needs at least one artwork')
+  if (rawEntries.length > MAX_POOL_ENTRIES) return errorResponse(400, 'Too many artworks')
+  for (const e of rawEntries) {
+    if (!e || !isAddress(e.collection ?? '') || !/^\d+$/.test(String(e.tokenId ?? ''))) {
+      return errorResponse(400, 'Invalid pool entry')
+    }
+  }
+
+  if (kind === 'reveal') {
+    return publishReveal({ id, name, creator, isAdmin, dryRun, pieces: rawEntries, passCollection: gate.passCollection?.toLowerCase() ?? null })
+  }
+
+  if (!capsuleCollection || !isAddress(capsuleCollection)) return errorResponse(400, 'Invalid capsule collection')
+  if (!rawCapsuleToken || !/^\d+$/.test(String(rawCapsuleToken))) return errorResponse(400, 'Invalid capsule tokenId')
+  // Same canonicalisation the collect path applies, for the same reason: the
+  // literal string becomes part of Redis keys, so '01' and '1' must not be able
+  // to address different machines.
+  const capsuleTokenId = BigInt(rawCapsuleToken).toString()
+
   // One capsule token, one machine, FOR LIFE — delisted machines included.
   // Claims are keyed per (machineId, txHash, unit), so two machines sharing a
   // capsule would let every capsule buyer draw from BOTH pools on one payment,
@@ -181,6 +211,7 @@ export async function POST(req: NextRequest) {
   // artist a token is free that the reservation is about to refuse.
   const capsuleTaken = (await listMachines()).some(
     (m) =>
+      !isReveal(m) &&
       m.capsule.collection === capsuleCollection.toLowerCase() &&
       m.capsule.tokenId === capsuleTokenId,
   )
@@ -205,24 +236,23 @@ export async function POST(req: NextRequest) {
     return errorResponse(503, 'Capsule machines are unavailable right now — try again shortly')
   }
 
-  const rawEntries = Array.isArray(body.entries) ? body.entries : []
-  if (rawEntries.length === 0) return errorResponse(400, 'A machine needs at least one artwork')
-  if (rawEntries.length > MAX_POOL_ENTRIES) return errorResponse(400, 'Too many artworks')
-
-  const entries: PoolEntry[] = []
-  for (const e of rawEntries) {
-    if (!e || !isAddress(e.collection ?? '') || !/^\d+$/.test(String(e.tokenId ?? ''))) {
-      return errorResponse(400, 'Invalid pool entry')
-    }
-    if (!isAddress(e.artist ?? '')) return errorResponse(400, 'Invalid artist address')
-    entries.push({
+  // THE CREATOR'S OWN WORK, and nobody else's. A capsule's price pays only its
+  // split and a prize is minted without its own sale, so a capsule machine of
+  // someone else's work sells it at a price they never set. The artist is
+  // therefore not something a request can name: it is the creator, and the
+  // ownership read below holds them to it — a piece they do not hold admin on
+  // is refused. Curating other artists' work is what reveal machines are for.
+  // By supply, a piece's copies are its weight, so a typed weight is ignored.
+  const entries: PoolEntry[] = rawEntries.map((e) => {
+    const supply = Number(e.supply)
+    return {
       collection: e.collection.toLowerCase(),
       tokenId: BigInt(e.tokenId).toString(),
-      artist: e.artist.toLowerCase(),
-      weight: Number(e.weight),
-      supply: Number(e.supply),
-    })
-  }
+      artist: creator,
+      weight: rarity === 'supply' ? supply : Number(e.weight),
+      supply,
+    }
+  })
 
   // WHO THE CAPSULE ACTUALLY PAYS — resolved from what Kismet recorded when the
   // capsule was minted, never from this request. Taking it from the body made
@@ -306,6 +336,7 @@ export async function POST(req: NextRequest) {
     creator,
     passCollection: gate.passCollection?.toLowerCase() ?? null,
     ...poolState,
+    rarity,
   })
   if (problems.length > 0) {
     // Return ALL problems, not the first — a creator fixing a machine should
@@ -336,7 +367,7 @@ export async function POST(req: NextRequest) {
   // Admin-created machines go live directly (that is the v1 platform season);
   // everyone else queues for curator review.
   const finalState: Machine['state'] = isAdmin ? 'live' : 'review'
-  const machine: Machine = {
+  const machine: CapsuleMachine = {
     id,
     creator,
     name,
@@ -346,6 +377,7 @@ export async function POST(req: NextRequest) {
     createdBlock,
     splitRecipients,
     createdAt: Date.now(),
+    ...(rarity === 'supply' ? { rarity: 'supply' as Rarity } : {}),
   }
 
   // The capsule reservation is the AUTHORITATIVE one-machine-per-capsule guard;
@@ -401,5 +433,72 @@ export async function POST(req: NextRequest) {
 
   const published = await setMachineState(id, finalState)
 
+  return NextResponse.json({ ok: true, machine: published ?? machine })
+}
+
+/**
+ * Publish a reveal machine: a name and a lineup, nothing else. No capsule, no
+ * payees, no supply to reserve and no mint rights to check — a pull costs
+ * nothing, and a player buys what it reveals through that piece's own sale.
+ *
+ * Anyone's work may go in. Each piece's artist is who Kismet recorded minting
+ * it, and a piece whose artist turned reveal machines off is refused here and
+ * dropped from every machine it is already in (lib/experience/lineup).
+ */
+async function publishReveal(input: {
+  id: string
+  name: string
+  creator: string
+  isAdmin: boolean
+  dryRun: boolean
+  pieces: { collection: string; tokenId: string }[]
+  passCollection: string | null
+}): Promise<NextResponse> {
+  const pieces = input.pieces.map((e) => ({
+    collection: e.collection.toLowerCase(),
+    tokenId: BigInt(e.tokenId).toString(),
+  }))
+  const metas = await getMomentMetaBatch(pieces.map((e) => ({ address: e.collection, tokenId: e.tokenId })))
+  const entries: PoolEntry[] = pieces.map((e, i) => ({
+    ...e,
+    artist: metas[i]?.creator?.toLowerCase() ?? '',
+    weight: 1,
+    supply: 0,
+  }))
+  const artists: Record<string, string | null> = {}
+  entries.forEach((e) => { artists[`${e.collection}:${e.tokenId}`] = e.artist || null })
+
+  // Fail closed: an unreadable choice is not a yes.
+  const optedOut = await optedOutPieces(entries).catch(() => null)
+  if (!optedOut) return errorResponse(503, 'Could not check artists’ choices just now — try again')
+  const unavailable = new Set(optedOut)
+  await Promise.all(
+    entries.map(async (e) => {
+      if (e.artist && !(await isDeliverableEntry(e, input.passCollection))) unavailable.add(`${e.collection}:${e.tokenId}`)
+    }),
+  )
+
+  const problems = checkLineup({ entries, artists, unavailable })
+  if (problems.length > 0) return NextResponse.json({ ok: false, problems }, { status: 400 })
+
+  if (input.dryRun) {
+    // What each piece would show as today, so the studio can say which are on
+    // sale now and which will appear when their sale opens.
+    return NextResponse.json({ ok: true, dryRun: true, problems: [], lineup: await readLineup(entries, input.passCollection) })
+  }
+
+  const machine: RevealMachine = {
+    id: input.id,
+    kind: 'reveal',
+    creator: input.creator,
+    name: input.name,
+    state: 'draft',
+    createdAt: Date.now(),
+  }
+  // Reserved as a draft and filled before it takes its real state, as a
+  // capsule machine is: a half-written lineup is never public.
+  if (!(await createMachine(machine))) return errorResponse(409, 'That machine id is taken')
+  await putLineup(input.id, entries)
+  const published = await setMachineState(input.id, input.isAdmin ? 'live' : 'review')
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }

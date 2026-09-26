@@ -24,6 +24,8 @@ import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { fetchArtworkMeta, hydrateArtworkMeta, type ArtworkMeta } from '@/lib/experience/artwork'
 import { filterDeliverable } from '@/lib/experience/eligibility'
+import { readLineup } from '@/lib/experience/lineup'
+import { isReveal, type RevealMachine } from '@/lib/experience/types'
 
 /**
  * Everything a player must see BEFORE they can pay: the lineup, the derived
@@ -52,6 +54,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
+  if (isReveal(machine)) return revealPayload(machine, passCollection)
 
   const [pool, remaining, supply, plays, sale] = await Promise.all([
     getPool(id),
@@ -77,7 +80,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // three tests, which is what this was: it omitted the artist blacklist, so a
   // blacklisted artist's row stayed in the published table with a probability it
   // could never win, and inflated the denominator under every other row.
-  const snapshot = buildSnapshot(pool, remaining)
+  const snapshot = buildSnapshot(pool, remaining, machine.rarity)
   const visible = await filterDeliverable(snapshot, passCollection)
 
   const odds = deriveOdds(visible)
@@ -114,6 +117,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       name: machine.name,
       state: machine.state,
       creator: machine.creator,
+      rarity: machine.rarity ?? 'manual',
       capsule: machine.capsule,
       capsuleArt,
       // Who a play pays. Public because it is the answer to the question a
@@ -156,6 +160,32 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     // asserted: anyone can record it now and hold us to it tomorrow.
     fairness,
     recentPlays: plays,
+  })
+}
+
+/**
+ * A reveal machine's page: the pieces on sale right now, each with its price,
+ * and nothing else. Every one is equally likely — 1 in however many are on
+ * sale — and a pull picks from exactly this list, so the odds shown are the
+ * odds played. Pieces that are off sale, sold out or turned off by their artist
+ * are simply absent; they come back by themselves when that changes.
+ */
+async function revealPayload(machine: RevealMachine, passCollection: string | null): Promise<NextResponse> {
+  const lineup = await readLineup(await getPool(machine.id), passCollection)
+  const onSale = lineup.filter((p) => p.status === 'on-sale')
+  const art = await hydrateArtworkMeta(onSale).catch(() => ({}) as Record<string, ArtworkMeta>)
+  return NextResponse.json({
+    machine: {
+      id: machine.id,
+      kind: 'reveal',
+      name: machine.name,
+      state: machine.state,
+      creator: machine.creator,
+    },
+    lineup: onSale.map((p) => ({ ...p, name: art[p.key]?.name ?? null, image: art[p.key]?.image ?? null })),
+    // How many pieces are in the lineup but not collectable right now, so the
+    // page can say "more when their sales open" rather than look smaller.
+    waiting: lineup.length - onSale.length,
   })
 }
 

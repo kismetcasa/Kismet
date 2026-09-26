@@ -1,6 +1,6 @@
-// Shared shapes for the Experience (the capsule machine). Pure types only — no
-// imports — so both the client surfaces and the server core can pull from here
-// without dragging Redis, viem, or node:crypto into a bundle.
+// Shared shapes for the Experience (capsule and reveal machines). Types and one
+// type guard, no imports — so both the client surfaces and the server core can
+// pull from here without dragging Redis, viem, or node:crypto into a bundle.
 //
 // The whole subsystem is built on one rule: A CREATOR SETS WEIGHTS AND SUPPLIES,
 // NEVER ODDS. Every probability a player ever sees is DERIVED from these
@@ -160,6 +160,35 @@ export type SolvencyProblemCode =
   /** The capsule token is in the Pass collection, so paying to play would mint
    *  the platform credential itself. */
   | 'capsule-is-pass'
+  /** Reveal machines: Kismet has no record of who made the piece, so it could
+   *  be neither credited nor held to its artist's availability choice. */
+  | 'artist-unknown'
+  /** Reveal machines: its artist turned reveal machines off, or it cannot be
+   *  shown (hidden, a Pass, or its artist is not permitted). */
+  | 'piece-unavailable'
+
+/** A reveal machine piece's standing right now (lib/experience/lineup). */
+export type PieceStatus =
+  /** Collectable now: an open sale with copies left. */
+  | 'on-sale'
+  /** No sale, or its window has not opened or has closed. */
+  | 'not-on-sale'
+  | 'sold-out'
+  /** Its artist turned reveal machines off, it is hidden, its artist is
+   *  blacklisted, or it is a Pass. */
+  | 'unavailable'
+  /** The chain or the flag store could not answer. Treated as not on sale. */
+  | 'unreadable'
+
+export interface LineupPiece {
+  key: string
+  collection: string
+  tokenId: string
+  artist: string
+  status: PieceStatus
+  /** Present when on sale: base units, as every price surface formats them. */
+  sale?: { pricePerToken: string; currency: 'eth' | 'usdc'; saleEnd: number }
+}
 
 /** Machine visibility, and only visibility. `draft` is creator-only; `review` is
  *  queued for a curator; `live` is on the shelves; `ended` is off them by the
@@ -173,12 +202,36 @@ export type SolvencyProblemCode =
  *  player's money. */
 export type MachineState = 'draft' | 'review' | 'live' | 'ended' | 'delisted'
 
-export interface Machine {
+/** How a capsule machine's odds are set.
+ *
+ *  `manual` — the creator types a weight per piece.
+ *  `supply` — every copy is one capsule in the machine, the way a physical
+ *  gachapon box works: a piece's weight is the copies it has LEFT, so a piece
+ *  with twenty copies comes out twenty times as often as a one-of-one, and the
+ *  odds shift as copies go. Weights are derived in store.buildSnapshot from the
+ *  same counter the draw consumes, so the published table and the draw still
+ *  read one array. Every piece needs a finite supply. */
+export type Rarity = 'manual' | 'supply'
+
+interface MachineCommon {
   id: string
   /** Lowercased creator address — artist, or a host who owns no art. */
   creator: string
   name: string
   state: MachineState
+  createdAt: number
+  /** When the machine first went live. Set once and never cleared: a machine
+   *  that has ever been live may have sold capsules, and every one of them is
+   *  owed for life, so it can never be withdrawn — only ended or delisted. */
+  listedAt?: number
+}
+
+/** A machine that sells capsules: a player pays the capsule price once and a
+ *  drawn artwork is minted to them. Only the creator's own work, because the
+ *  capsule's split is the only thing that pays anyone. */
+export interface CapsuleMachine extends MachineCommon {
+  /** Absent on machines published before reveal machines existed. */
+  kind?: 'capsule'
   /** The capsule: a Zora 1155 the creator minted. Its artwork themes the page,
    *  its price is the coin slot, its sale window is the season, and its
    *  on-chain maxSupply is the solvency ceiling. */
@@ -202,9 +255,17 @@ export interface Machine {
    *  queued machine, and anyone auditing a live one, can answer "is this machine
    *  actually paying the people in it?". */
   splitRecipients: string[]
-  createdAt: number
-  /** When the machine first went live. Set once and never cleared: a machine
-   *  that has ever been live may have sold capsules, and every one of them is
-   *  owed for life, so it can never be withdrawn — only ended or delisted. */
-  listedAt?: number
+  /** Absent means `manual`. */
+  rarity?: Rarity
 }
+
+/** A machine with no capsule: a pull is free, reveals one artwork that is on
+ *  sale right now, and the player collects it through its own sale at its own
+ *  price. Anyone's work, unless its artist has turned availability off. */
+export interface RevealMachine extends MachineCommon {
+  kind: 'reveal'
+}
+
+export type Machine = CapsuleMachine | RevealMachine
+
+export const isReveal = (m: Machine): m is RevealMachine => m.kind === 'reveal'

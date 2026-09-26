@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import {
+  decodeAbiParameters,
   decodeFunctionData,
   encodeAbiParameters,
   encodeEventTopics,
@@ -78,12 +79,33 @@ const CAPSULE_R = '0xcccc00000000000000000000000000000000000b'
 const CAPSULE_W = '0xcccc00000000000000000000000000000000000c'
 /** CREATOR2's capsule for the machine they withdraw and publish again (section 6h). */
 const CAPSULE_V = '0xcccc00000000000000000000000000000000000d'
+/** A capsule ADMIN controls whose recorded split pays only ARTIST_B (6b). */
+const CAPSULE_P = '0xcccc00000000000000000000000000000000000e'
+/** ADMIN's capsule that can sell 10 — more than a 4-copy machine holds (6i). */
+const CAPSULE_O = '0xcccc000000000000000000000000000000000010'
+/** ADMIN's capsule capped at 4, for the machine whose rarity is by supply (6i). */
+const CAPSULE_S = '0xcccc00000000000000000000000000000000000f'
+/** A collection of other artists' pieces for reveal machines (6j):
+ *   1 ARTIST_B, open ETH sale · 2 CREATOR2, free, 1 of 5 minted · 3 ARTIST_B,
+ *   sale not open yet · 4 ARTIST_B, sold out · 5 no Kismet record of its maker
+ *   · 6 CREATOR2, open USDC sale. */
+const REVEAL = '0xeeee000000000000000000000000000000000001'
+/** Zora's protocol fee per mint, as the collection reports it. */
+const MINT_FEE = 111_000_000_000_000n
+/** lib/zoraMint.KISMET_REFERRAL — the rewards recipient every collect names. */
+const KISMET_REFERRAL = '0xc6021d9f09e145a6297f64551aa2eca6d66f8f75'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
  *  three-transaction evasion of a live permission read. */
 const EVADER = '0x5555000000000000000000000000000000000055'
 /** Zora's ERC20Minter on Base — lib/zoraMint.ZORA_ERC20_MINTER. */
 const ERC20_MINTER = '0xe27d9dc88dab82aca3ebc49895c663c6a0cfa014'
 const USER_TOKEN = 'e2e-user-session-token'
+/** ARTIST_B signed in — the maker of the reveal pieces they switch off (6j). */
+const ARTIST_B_TOKEN = 'e2e-artist-b-session-token'
+/** A Pass holder who curates reveal machines (6j, and the reveal studio in 9). */
+const CURATOR = '0x7777000000000000000000000000000000007777'
+const CURATOR_TOKEN = 'e2e-curator-session-token'
+const TX_BOX = '0x' + '2d'.repeat(32) // a play on the machine whose rarity is by supply
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
 const CRON_SECRET = 'e2e-cron-secret'
@@ -140,6 +162,7 @@ function exec(cmd) {
     case 'srem': { const s = sets.get(k); let n = 0; for (const m of args.slice(1)) { if (s?.delete(m)) n++ } return n }
     case 'smembers': return [...(sets.get(k) ?? [])]
     case 'sismember': return sets.get(k)?.has(args[1]) ? 1 : 0
+    case 'smismember': return args.slice(1).map((m) => (sets.get(k)?.has(m) ? 1 : 0))
     case 'scard': return sets.get(k)?.size ?? 0
     case 'zadd': { const m = zsets.get(k) ?? new Map(); const rest = args.slice(1).filter((a) => !['nx', 'xx', 'gt', 'lt', 'ch'].includes(a.toLowerCase())); for (let i = 0; i < rest.length; i += 2) m.set(rest[i + 1], Number(rest[i])); zsets.set(k, m); return 1 }
     case 'zrem': { const m = zsets.get(k); let n = 0; for (const mem of args.slice(1)) { if (m?.delete(mem)) n++ } return n }
@@ -210,11 +233,17 @@ const TRANSFER = parseAbi(['event TransferSingle(address indexed operator, addre
 const PURCHASED = parseAbi(['event Purchased(address indexed sender, address indexed minter, uint256 indexed tokenId, uint256 quantity, uint256 value)'])
 const FPSS_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient))'])
 const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
+const ERC20_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint256 pricePerToken, address fundsRecipient, address currency))'])
+const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+const MINT_FEE_ABI = parseAbi(['function mintFee() view returns (uint256)'])
+/** The collect a browser sends: Zora 1155 mint through the fixed-price strategy. */
+const MINT_1155 = parseAbi(['function mint(address minter, uint256 tokenId, uint256 quantity, address[] rewardsRecipients, bytes minterArguments) payable'])
 const SEL = {
   tokenInfo: toFunctionSelector('getTokenInfo(uint256)'),
   perms: toFunctionSelector('permissions(uint256,address)'),
   balance: toFunctionSelector('balanceOf(address,uint256)'),
   sale: toFunctionSelector('sale(address,uint256)'),
+  mintFee: toFunctionSelector('mintFee()'),
 }
 /** Multicall3 — the browser's wagmi client batches every read through it. */
 const MULTICALL3 = parseAbi(['function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable returns ((bool success, bytes returnData)[] returnData)'])
@@ -241,6 +270,9 @@ const chain = {
   archiveFrom: null,
   balances: new Map(), // `${collection}:${account}:${id}` -> n
   sales: new Map(),    // `${collection}:${id}` -> { saleStart, saleEnd, pricePerToken, fundsRecipient }
+  usdcSales: new Map(), // same, on Zora's ERC20Minter, priced in USDC
+  /** Every collect the browser's wallet sent, decoded. */
+  mints: [],
   receipts: new Map(), // txHash -> receipt
   logs: [],
   /** Every transaction the browser's wallet signed, in order. */
@@ -289,7 +321,32 @@ function walletSend(tx) {
   chain.walletTxs.push({ to: tx.to, data: tx.data })
   const hash = '0x' + 'e7'.repeat(28) + chain.walletTxs.length.toString(16).padStart(8, '0')
   let ok = true
+  const logs = []
   try {
+    if (tx.data.startsWith(toFunctionSelector('mint(address,uint256,uint256,address[],bytes)'))) {
+      // A collect: pays price + protocol fee per copy through the fixed-price
+      // strategy, as FixedPriceSaleStrategy enforces, and mints to the minter.
+      const { args } = decodeFunctionData({ abi: MINT_1155, data: tx.data })
+      const [, tokenId, quantity, rewardsRecipients, minterArguments] = args
+      const [mintTo] = decodeAbiParameters(parseAbiParameters('address, string'), minterArguments)
+      const sale = chain.sales.get(key(tx.to, tokenId))
+      const t = chain.tokens.get(key(tx.to, tokenId)) ?? { maxSupply: 0n, totalMinted: 0n }
+      const now = BigInt(Math.floor(Date.now() / 1000))
+      const value = BigInt(tx.value ?? 0)
+      if (!sale || sale.saleStart > now || sale.saleEnd < now) throw new Error('sale not active')
+      if (value !== (MINT_FEE + sale.pricePerToken) * quantity) throw new Error('WrongValueSent')
+      if (t.maxSupply !== 0n && t.maxSupply !== OPEN && t.totalMinted + quantity > t.maxSupply) throw new Error('sold out')
+      chain.tokens.set(key(tx.to, tokenId), { ...t, totalMinted: t.totalMinted + quantity })
+      const bk = key(tx.to, mintTo, tokenId)
+      chain.balances.set(bk, (chain.balances.get(bk) ?? 0n) + quantity)
+      chain.mints.push({ collection: String(tx.to).toLowerCase(), tokenId, quantity, value, mintTo: String(mintTo).toLowerCase(), rewardsRecipients: rewardsRecipients.map((a) => String(a).toLowerCase()), strategy: String(args[0]).toLowerCase() })
+      logs.push({
+        address: tx.to,
+        topics: encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: tx.from, from: ZERO, to: mintTo } }),
+        data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [tokenId, quantity]),
+        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false,
+      })
+    } else {
     const { functionName, args } = decodeFunctionData({ abi: WALLET_WRITES, data: tx.data })
     if (functionName === 'callSale') {
       if (String(args[1]).toLowerCase() !== FPSS.toLowerCase()) throw new Error('only the fixed-price strategy is modelled')
@@ -301,6 +358,7 @@ function walletSend(tx) {
       const cur = chain.perms.get(k) ?? 0n
       chain.perms.set(k, functionName === 'addPermission' ? cur | args[2] : cur & ~args[2])
     }
+    }
   } catch {
     ok = false
   }
@@ -308,7 +366,7 @@ function walletSend(tx) {
   chain.receipts.set(hash, {
     transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), blockNumber: blockHex,
     from: tx.from, to: tx.to, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
-    contractAddress: null, logs: [], logsBloom: '0x' + '0'.repeat(512), status: ok ? '0x1' : '0x0', type: '0x2',
+    contractAddress: null, logs: ok ? logs : [], logsBloom: '0x' + '0'.repeat(512), status: ok ? '0x1' : '0x0', type: '0x2',
   })
   return hash
 }
@@ -339,9 +397,20 @@ function rpc(method, params) {
         const at = pinned !== null ? chain.permsAt.get(`${k}@${pinned}`) : undefined
         return encodeFunctionResult({ abi: PERMS, functionName: 'permissions', result: at ?? chain.perms.get(k) ?? 0n })
       }
+      if (sel === SEL.mintFee) return encodeFunctionResult({ abi: MINT_FEE_ABI, functionName: 'mintFee', result: MINT_FEE })
+      if (sel === SEL.sale && String(to).toLowerCase() === ERC20_MINTER) {
+        const { args } = decodeFunctionData({ abi: ERC20_SALE, data })
+        const st = chain.usdcSales.get(key(args[0], args[1]))
+        return encodeFunctionResult({
+          abi: ERC20_SALE,
+          functionName: 'sale',
+          result: st
+            ? { saleStart: st.saleStart, saleEnd: st.saleEnd, maxTokensPerAddress: 0n, pricePerToken: st.pricePerToken, fundsRecipient: st.fundsRecipient, currency: USDC }
+            : { saleStart: 0n, saleEnd: 0n, maxTokensPerAddress: 0n, pricePerToken: 0n, fundsRecipient: ZERO, currency: ZERO },
+        })
+      }
       if (sel === SEL.sale) {
-        // Only the FixedPriceSaleStrategy is modelled; the ERC20 leg decodes as
-        // an unset row, which is what resolveOnchainSale treats as "no sale".
+        // The FixedPriceSaleStrategy's row; the ERC20Minter's is above.
         const { args } = decodeFunctionData({ abi: FPSS_SALE, data })
         const st = String(to).toLowerCase() === FPSS.toLowerCase()
           ? chain.sales.get(key(args[0], args[1]))
@@ -578,6 +647,9 @@ strings.set(`kismetart:session:${ADMIN_USER_TOKEN}`, ADMIN)
 strings.set(`kismetart:session:${USER_TOKEN}`, CREATOR2)
 strings.set(`kismetart:session:${NOPASS_TOKEN}`, NOPASS)
 strings.set(`kismetart:session:${BUSY_TOKEN}`, BUSY)
+strings.set(`kismetart:session:${ARTIST_B_TOKEN}`, ARTIST_B)
+strings.set(`kismetart:session:${CURATOR_TOKEN}`, CURATOR)
+strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${CURATOR}`, '1')
 // Kismet's own mint records, which name each piece's artist (lib/notifications
 // MomentMeta) — what the studio fills a pasted link's artist from.
 strings.set(`kismetart:moment-meta:${POOL}:8`, JSON.stringify({ creator: CREATOR2 }))
@@ -627,7 +699,7 @@ chain.perms.set(key(CAPSULE_A, 0, CREATOR2), 2n)
 chain.sales.set(key(CAPSULE_A, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: CREATOR2 })
 
 // Chain: capsules are capped editions; the pool has a creator floor (open)
-// and a capped piece by another artist; the operator holds MINTER (4) on both.
+// and a capped piece, both the creator's own; the operator holds MINTER (4) on both.
 chain.tokens.set(key(CAPSULE, 1), { maxSupply: 100n, totalMinted: 12n })
 chain.tokens.set(key(CAPSULE_2, 1), { maxSupply: 50n, totalMinted: 0n })
 chain.tokens.set(key(CAPSULE_3, 1), { maxSupply: 10n, totalMinted: 0n })
@@ -661,7 +733,7 @@ chain.perms.set(key(POOL, 15, ADMIN), 2n)
 // against. Token 99 gets its admin too; only its OPERATOR grant is withheld.
 chain.perms.set(key(POOL, 7, ADMIN), 2n)
 chain.perms.set(key(POOL, 99, ADMIN), 2n)
-chain.perms.set(key(POOL, 14, ARTIST_B), 2n)
+chain.perms.set(key(POOL, 14, ADMIN), 2n)
 chain.perms.set(key(POOL, 8, CREATOR2), 2n)
 // Zora's ERC20Minter holds MINTER on any collection it sells for — that is how
 // it mints after taking the USDC. Modelled so the purchase check's allowlist
@@ -673,6 +745,41 @@ for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9,
   chain.perms.set(key(c, 0, ADMIN), 2n)
 }
 chain.perms.set(key(CAPSULE_2, 0, CREATOR2), 2n)
+// CAPSULE_P: ADMIN controls it and it is priced, but its recorded split pays
+// only ARTIST_B — so a machine on it would not pay its own creator.
+chain.tokens.set(key(CAPSULE_P, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_P, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+chain.perms.set(key(CAPSULE_P, 0, ADMIN), 2n)
+strings.set(`kismetart:splits:${CAPSULE_P}:1`, JSON.stringify({ recipients: [{ address: ARTIST_B, percentAllocation: 100 }] }))
+chain.tokens.set(key(CAPSULE_O, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_O, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.perms.set(key(CAPSULE_O, 0, ADMIN), 2n)
+// CAPSULE_S: capped at 4, for rarity by supply.
+chain.tokens.set(key(CAPSULE_S, 1), { maxSupply: 4n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_S, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.perms.set(key(CAPSULE_S, 0, ADMIN), 2n)
+// The reveal collection: other artists' pieces in every standing a lineup can
+// hold. Kismet's mint record names the maker of all but piece 5.
+{
+  const FUTURE = BigInt(Math.floor(Date.now() / 1000)) + 86_400n * 30n
+  const artistOf = { 1: ARTIST_B, 2: CREATOR2, 3: ARTIST_B, 4: ARTIST_B, 6: CREATOR2 }
+  for (const [id, artist] of Object.entries(artistOf)) {
+    strings.set(`kismetart:moment-meta:${REVEAL}:${id}`, JSON.stringify({ creator: artist }))
+    chain.perms.set(key(REVEAL, id, artist), 2n)
+  }
+  chain.tokens.set(key(REVEAL, 1), { maxSupply: OPEN, totalMinted: 4n })
+  chain.sales.set(key(REVEAL, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 2_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+  chain.tokens.set(key(REVEAL, 2), { maxSupply: 5n, totalMinted: 1n })
+  chain.sales.set(key(REVEAL, 2), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 0n, fundsRecipient: CREATOR2 })
+  chain.tokens.set(key(REVEAL, 3), { maxSupply: OPEN, totalMinted: 0n })
+  chain.sales.set(key(REVEAL, 3), { saleStart: FUTURE, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+  chain.tokens.set(key(REVEAL, 4), { maxSupply: 2n, totalMinted: 2n })
+  chain.sales.set(key(REVEAL, 4), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+  chain.tokens.set(key(REVEAL, 5), { maxSupply: OPEN, totalMinted: 0n })
+  chain.sales.set(key(REVEAL, 5), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
+  chain.tokens.set(key(REVEAL, 6), { maxSupply: OPEN, totalMinted: 0n })
+  chain.usdcSales.set(key(REVEAL, 6), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000n, fundsRecipient: CREATOR2 })
+}
 // token 99 deliberately has NO grant — the no-grant machine's only piece.
 // A capsule minted BEFORE its machine existed — must never be playable.
 addMint({ tx: TX_STALE, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 4_999_900n })
@@ -785,9 +892,8 @@ try {
     capsule: { collection: CAPSULE, tokenId: '1' },
     entries: [
       { collection: POOL, tokenId: '7', artist: ADMIN, weight: 30, supply: 0 },
-      { collection: POOL, tokenId: '14', artist: ARTIST_B, weight: 70, supply: 3 },
+      { collection: POOL, tokenId: '14', artist: ADMIN, weight: 70, supply: 3 },
     ],
-    splitRecipients: [ADMIN, ARTIST_B],
   }
   const unauth = await call('/api/experience/machines', { method: 'POST', body: draft })
   check('publishing needs a session', unauth.status === 401)
@@ -1105,52 +1211,53 @@ try {
   // ═══ 6b. the money: who the capsule actually pays ══════════════════════════
   console.log('\n6b. payee enforcement — the capsule\'s real split, not a declared one')
 
-  // THE DEFECT THIS PINS. splitRecipients used to come from the request body,
-  // so a creator could name anyone — including artists the capsule never pays —
-  // and 'artist-not-in-split' passed by construction.
-  const lying = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
-    id: 'lying-split', name: 'Lying Split', capsule: { collection: CAPSULE_5, tokenId: '1' },
+  // A CAPSULE MACHINE HOLDS ITS CREATOR'S OWN WORK. The capsule's price pays
+  // only its split and a prize is minted without its own sale, so a capsule
+  // machine of someone else's work would sell it at a price they never set.
+  // The request cannot name the artist: it is the creator, held to it on chain.
+  const notMine = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'not-mine', name: 'Not Mine', capsule: { collection: CAPSULE_5, tokenId: '1' },
     entries: [
       { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
-      { collection: POOL, tokenId: '14', artist: ARTIST_B, weight: 1, supply: 3 },
+      // CREATOR2's piece — granted to the operator, so only ownership stops it.
+      { collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 },
     ],
-    // A creator asserting the artist is paid. CAPSULE_5 has no split at all.
-    splitRecipients: [ADMIN, ARTIST_B],
     dryRun: true,
   } })
-  check('a declared split cannot admit an artist the capsule does not pay',
-    lying.status === 400 && lying.json.problems.some((p) => p.code === 'artist-not-in-split'),
-    JSON.stringify(lying.json).slice(0, 240))
-  check('and the refusal names the unpaid artist',
-    (lying.json.problems ?? []).some((p) => (p.detail ?? '').toLowerCase().includes(ARTIST_B.toLowerCase())))
+  check('a piece the creator does not own is refused, whoever the request names as its artist',
+    notMine.status === 400 && notMine.json.problems.some((p) => p.code === 'artist-not-admin' && p.detail.includes(`${POOL}:8`) && p.detail.includes('your own work')),
+    JSON.stringify(notMine.json).slice(0, 240))
+  check('and it is the only problem — the named artist was never trusted',
+    notMine.json.problems.length === 1)
+  const renamed = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'not-mine', name: 'Not Mine', capsule: { collection: CAPSULE_5, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '8', artist: ADMIN, weight: 1, supply: 0 }],
+    dryRun: true,
+  } })
+  check('naming yourself as its artist changes nothing', renamed.status === 400 && renamed.json.problems.some((p) => p.code === 'artist-not-admin'))
 
-  // THE NAME ITSELF WAS NEVER CHECKED. Grants are to the platform's operator, so
-  // once ARTIST_B granted token 14 for any machine, a creator could pool it under
-  // their OWN name, be in their own capsule's split, and dispense it unpaid.
-  const impostor = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
-    id: 'impostor', name: 'Impostor', capsule: { collection: CAPSULE_5, tokenId: '1' },
+  // THE MONEY: the capsule must pay its creator, by its REAL split — never a
+  // list the request declares.
+  const paysOther = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'pays-other', name: 'Pays Other', capsule: { collection: CAPSULE_P, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
+    splitRecipients: [ADMIN],
+    dryRun: true,
+  } })
+  check('a capsule whose recorded split does not pay its creator is refused, whatever the request declares',
+    paysOther.status === 400 && paysOther.json.problems.some((p) => p.code === 'artist-not-in-split'),
+    JSON.stringify(paysOther.json).slice(0, 240))
+
+  // A split that includes the creator is fine, and is reported back as it is.
+  const honest = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'honest-split', name: 'Honest Split', capsule: { collection: CAPSULE_6, tokenId: '1' },
     entries: [
       { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
       { collection: POOL, tokenId: '14', artist: ADMIN, weight: 1, supply: 3 },
     ],
     dryRun: true,
   } })
-  check('a creator cannot name themselves as the artist of a piece they do not own',
-    impostor.status === 400 && impostor.json.problems.some((p) => p.code === 'artist-not-admin'),
-    JSON.stringify(impostor.json).slice(0, 240))
-  check('and the split check no longer passes on the strength of the false name',
-    !(impostor.json.problems ?? []).some((p) => p.code === 'artist-not-in-split'))
-
-  // The same pool IS allowed when the capsule's recorded split really pays them.
-  const honest = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
-    id: 'honest-split', name: 'Honest Split', capsule: { collection: CAPSULE_6, tokenId: '1' },
-    entries: [
-      { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
-      { collection: POOL, tokenId: '14', artist: ARTIST_B, weight: 1, supply: 3 },
-    ],
-    dryRun: true,
-  } })
-  check('a capsule whose split really pays the artist is accepted',
+  check('a capsule whose split includes its creator is accepted',
     honest.status === 200 && honest.json.problems.length === 0, JSON.stringify(honest.json).slice(0, 240))
   check('and the resolved payees are reported back to the creator',
     honest.json?.payees?.source === 'split' && honest.json.payees.recipients.length === 2,
@@ -1557,11 +1664,150 @@ try {
     JSON.stringify(reuse.json).slice(0, 200))
   await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
 
+  // ═══ 6i. rarity by supply: every copy is one capsule ══════════════════════
+  console.log('\n6i. rarity by supply')
+  {
+    const boxBody = (over = {}) => ({
+      id: 'box-season', name: 'Box Season', rarity: 'supply', capsule: { collection: CAPSULE_S, tokenId: '1' },
+      entries: [
+        { collection: POOL, tokenId: '7', weight: 1, supply: 3 },
+        // A typed weight means nothing by supply: its one copy is its weight.
+        { collection: POOL, tokenId: '14', weight: 999, supply: 1 },
+      ],
+      ...over,
+    })
+    const publish = (body) => call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body })
+    check('an unknown rarity is refused', (await publish(boxBody({ rarity: 'lottery', dryRun: true }))).status === 400)
+    const unlimited = await publish(boxBody({ entries: [{ collection: POOL, tokenId: '7', weight: 1, supply: 0 }], dryRun: true }))
+    check('by supply, an unlimited piece is refused — its copies are its odds',
+      unlimited.status === 400 && unlimited.json.problems.some((p) => p.code === 'bad-supply' && /copies are its odds/.test(p.detail)),
+      JSON.stringify(unlimited.json).slice(0, 240))
+    const oversold = await publish(boxBody({ capsule: { collection: CAPSULE_O, tokenId: '1' }, dryRun: true }))
+    check('a capsule that can sell more capsules than the copies inside is refused',
+      oversold.status === 400 && oversold.json.problems.some((p) => p.code === 'undercollateralised'),
+      JSON.stringify(oversold.json).slice(0, 240))
+    setHead(chain.head + 10n)
+    const box = await publish(boxBody())
+    check('a capsule capped at the copies inside goes live', box.status === 200 && box.json.machine.state === 'live' && box.json.machine.rarity === 'supply',
+      JSON.stringify(box.json).slice(0, 240))
+    const odds = async () => Object.fromEntries((await call('/api/experience/machines/box-season')).json.odds.map((o) => [o.tokenId, o.probability]))
+    const before = await odds()
+    check('the published odds are copies over copies, whatever weight was typed',
+      Math.abs(before['7'] - 0.75) < 1e-9 && Math.abs(before['14'] - 0.25) < 1e-9, JSON.stringify(before))
+    check('and the page is told how its odds are set', (await call('/api/experience/machines/box-season')).json.machine.rarity === 'supply')
+
+    setHead(chain.head + 5n)
+    addMint({ tx: TX_BOX, collection: CAPSULE_S, to: PLAYER, id: 1n, value: 1n, block: chain.head - 2n })
+    const played = await call('/api/experience/play', { method: 'POST', body: { machineId: 'box-season', txHash: TX_BOX, account: PLAYER, unitIndex: 0 } })
+    const claim = JSON.parse(strings.get(`kismetart:xp:box-season:claim:${TX_BOX}:0`) ?? 'null')
+    check('a play draws and delivers', played.json?.claim?.state === 'delivered', JSON.stringify(played.json).slice(0, 240))
+    check('from a frozen table whose weights are the copies that were left',
+      claim?.snapshot?.find((e) => e.tokenId === '7')?.weight === 3 && claim.snapshot.find((e) => e.tokenId === '14')?.weight === 1,
+      JSON.stringify(claim?.snapshot))
+    const won = played.json?.claim?.prize?.tokenId
+    const after = await odds()
+    check('and the odds shift by the copy it took',
+      won === '7' ? Math.abs(after['7'] - 2 / 3) < 1e-9 : after['14'] === 0 && after['7'] === 1, `${won} ${JSON.stringify(after)}`)
+  }
+
+  // ═══ 6j. reveal machines ══════════════════════════════════════════════════
+  console.log('\n6j. reveal machines — anyone curates, artists decide, the sale decides what shows')
+  {
+    const standing = (id) => call(`/api/experience/piece?collection=${REVEAL}&tokenId=${id}`)
+    const setAvailable = (user, id, available) =>
+      call('/api/experience/piece', { method: 'POST', user, body: { collection: REVEAL, tokenId: String(id), available } })
+    check('every piece starts available to reveal machines', (await standing(1)).json?.available === true)
+    check('turning one off needs a session', (await setAvailable(undefined, 1, false)).status === 401)
+    check('and admin on the piece, read from the chain', (await setAvailable(CURATOR_TOKEN, 1, false)).status === 403)
+    check('a choice must be a yes or a no',
+      (await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '1', available: 'no' } })).status === 400)
+    const off = await setAvailable(ARTIST_B_TOKEN, 1, false)
+    check('its artist turns it off', off.status === 200 && off.json.available === false)
+    check('which reads back', (await standing(1)).json?.available === false)
+
+    const lineup = (ids) => ids.map((id) => ({ collection: REVEAL, tokenId: String(id) }))
+    const body = (over = {}) => ({ kind: 'reveal', id: 'new-voices', name: 'New Voices', entries: lineup([1, 2, 3, 4, 6]), ...over })
+    const publish = (user, b) => call('/api/experience/machines', { method: 'POST', user, body: b })
+    check('a reveal machine needs a Pass like any other', (await publish(NOPASS_TOKEN, body({ dryRun: true }))).status === 403)
+    check('and an unknown kind is refused', (await publish(CURATOR_TOKEN, body({ kind: 'raffle', dryRun: true }))).status === 400)
+    const refused = await publish(CURATOR_TOKEN, body({ entries: lineup([1, 2, 5]), dryRun: true }))
+    const codes = (refused.json?.problems ?? []).map((p) => `${p.code}:${p.detail.match(/0x[0-9a-f]{40}:\d+/)?.[0]}`).sort()
+    check('a piece its artist turned off, and one Kismet has no maker for, are refused — and nothing else',
+      refused.status === 400 && codes.join(',') === `artist-unknown:${REVEAL}:5,piece-unavailable:${REVEAL}:1`, codes.join(','))
+    await setAvailable(ARTIST_B_TOKEN, 1, true)
+
+    const dry = await publish(CURATOR_TOKEN, body({ dryRun: true }))
+    check('a lineup of other artists\' work passes, with no capsule and no mint rights', dry.status === 200 && dry.json.problems.length === 0,
+      JSON.stringify(dry.json).slice(0, 240))
+    const st = Object.fromEntries((dry.json?.lineup ?? []).map((p) => [p.tokenId, p.status]))
+    check('and the check says what each piece would show as today',
+      st['1'] === 'on-sale' && st['2'] === 'on-sale' && st['3'] === 'not-on-sale' && st['4'] === 'sold-out' && st['6'] === 'on-sale', JSON.stringify(st))
+    check('a USDC sale reads as one', dry.json?.lineup?.find((p) => p.tokenId === '6')?.sale?.currency === 'usdc')
+    check('a check writes nothing', !strings.has('kismetart:xp:new-voices:meta'))
+
+    const queued = await publish(CURATOR_TOKEN, body())
+    check('a Pass holder\'s reveal machine queues for review', queued.status === 200 && queued.json.machine.state === 'review' && queued.json.machine.kind === 'reveal',
+      JSON.stringify(queued.json).slice(0, 200))
+    check('and is not public yet', (await call('/api/experience/machines/new-voices')).status === 404)
+    const row = (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.find((r) => r.machine.id === 'new-voices')
+    check('the curator sees its lineup as players would today, with no gate to fail',
+      !!row && row.problems.length === 0 && row.lineup?.length === 5 && row.lineup.filter((p) => p.status === 'on-sale').length === 3)
+    const approved = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'live' } })
+    check('and approves it', approved.status === 200 && approved.json.machine.state === 'live')
+
+    const shown = async () => ((await call('/api/experience/machines/new-voices')).json?.lineup ?? []).map((p) => p.tokenId).sort().join(',')
+    const page = await call('/api/experience/machines/new-voices')
+    check('players see only the pieces on sale right now', (await shown()) === '1,2,6', await shown())
+    check('each at its own price, in its own currency',
+      page.json.lineup.find((p) => p.tokenId === '1')?.sale?.pricePerToken === '2000000000000000' &&
+      page.json.lineup.find((p) => p.tokenId === '2')?.sale?.pricePerToken === '0' &&
+      page.json.lineup.find((p) => p.tokenId === '6')?.sale?.currency === 'usdc')
+    check('and are told how many are waiting for a sale', page.json.waiting === 2)
+
+    // Nobody touches anything: the sale decides.
+    const sale1 = chain.sales.get(key(REVEAL, 1))
+    chain.sales.set(key(REVEAL, 1), { ...sale1, saleEnd: 1n })
+    check('a piece whose sale ends leaves by itself', (await shown()) === '2,6', await shown())
+    chain.sales.set(key(REVEAL, 1), sale1)
+    chain.tokens.set(key(REVEAL, 2), { maxSupply: 5n, totalMinted: 5n })
+    check('as does one that sells out', (await shown()) === '1,6', await shown())
+    chain.tokens.set(key(REVEAL, 2), { maxSupply: 5n, totalMinted: 1n })
+    const sale3 = chain.sales.get(key(REVEAL, 3))
+    chain.sales.set(key(REVEAL, 3), { ...sale3, saleStart: 0n })
+    check('and one whose sale opens joins by itself', (await shown()) === '1,2,3,6', await shown())
+    chain.sales.set(key(REVEAL, 3), sale3)
+    await setAvailable(ARTIST_B_TOKEN, 1, false)
+    check('an artist turning a piece off takes it out of a live machine at once', (await shown()) === '2,6', await shown())
+    await setAvailable(ARTIST_B_TOKEN, 1, true)
+    check('and turning it back on returns it', (await shown()) === '1,2,6', await shown())
+
+    check('a reveal machine has no capsule to open',
+      (await call('/api/experience/play', { method: 'POST', body: { machineId: 'new-voices', txHash: TX_A, account: PLAYER, unitIndex: 0 } })).status === 400)
+    check('or to discover', (await call(`/api/experience/discover?machineId=new-voices&account=${PLAYER}`)).status === 400)
+    check('each piece names the reveal machine it is in', (await standing(2)).json?.machines?.some((m) => m.id === 'new-voices' && m.kind === 'reveal'))
+    const listed = (await call('/api/experience/machines')).json.machines.find((m) => m.id === 'new-voices')
+    check('the public list carries it as a reveal machine, with no capsule', listed?.kind === 'reveal' && listed.capsule === undefined)
+    const prof = await call(`/api/experience/machines?creator=${CURATOR}`)
+    check('and its curator\'s profile lists it with its lineup size', prof.json?.machines?.some((m) => m.id === 'new-voices' && m.kind === 'reveal' && m.pieces === 5))
+
+    const kismet = await publish(ADMIN_USER_TOKEN, body({ id: 'kismet-picks', name: 'Kismet Picks', entries: lineup([1, 2]) }))
+    check('Kismet curates any artist\'s work and goes live directly', kismet.status === 200 && kismet.json.machine.state === 'live')
+
+    await publish(CURATOR_TOKEN, body({ id: 'second-thoughts', name: 'Second Thoughts', entries: lineup([2]) }))
+    const withdrawn = await call('/api/experience/machines/second-thoughts', { method: 'POST', user: CURATOR_TOKEN, body: { action: 'withdraw' } })
+    check('a queued reveal machine can be withdrawn', withdrawn.status === 200 && withdrawn.json.withdrawn === true)
+    check('which takes it off its pieces', !(sets.get(`kismetart:xp:uses:${REVEAL}:2`) ?? new Set()).has('second-thoughts'))
+    check('and frees its id', (await publish(CURATOR_TOKEN, body({ id: 'second-thoughts', entries: lineup([2]), dryRun: true }))).status === 200)
+    const closed = await call('/api/experience/machines/kismet-picks', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'end' } })
+    check('its curator closes a live one', closed.status === 200 && closed.json.machine.state === 'ended')
+  }
+
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
   console.log('\n8. the daily commitment cron')
   check('the cron refuses without its secret', (await call('/api/cron/experience-seeds')).status === 401)
   const cron = await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
-  check('it commits for every live machine', cron.status === 200 && cron.json.committed === 5 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  check('it commits for every capsule machine that can still draw', cron.status === 200 && cron.json.committed === 6 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  check('and for no reveal machine, which never draws on the server', ![...strings.keys()].some((k) => /^kismetart:xp:(new-voices|kismet-picks):seed:/.test(k)))
   const tomorrow = dayShift(today, 1)
   check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor', 'redraw'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
   const before = strings.get(`kismetart:xp:spring-season:seed:${today}`)
@@ -1697,11 +1943,12 @@ try {
         {
           const page = await open('/experience')
           const body = await text(page)
-          check('the list page leads with its name and promise', /experience capsule machines · published odds · every play returns an artwork/.test(body), body.slice(0, 160))
+          check('the list page leads with its name and promise', /experience capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
           check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/experience/new')
           const rows = page.locator('a[href^="/experience/"]:not([href="/experience/new"])')
-          check('every live machine is a row', (await rows.count()) === 5, String(await rows.count()))
-          check('each renders a state badge', (await rows.allInnerTexts()).every((t) => /\b(live|closed)\b/i.test(t)))
+          const shelved = (await call('/api/experience/machines')).json.machines.length
+          check('every machine on the shelves is a row', (await rows.count()) === shelved, `${await rows.count()} vs ${shelved}`)
+          check('each renders its kind and a state badge', (await rows.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed)\b/i.test(t)))
           await page.context().close()
         }
 
@@ -1789,19 +2036,28 @@ try {
 
         // ── the studio, disconnected ──
         {
-          const page = await open('/experience/new')
+          const chooser = await open('/experience/new')
+          const kinds = await text(chooser)
+          check('the studio first asks which kind of machine',
+            kinds.includes('capsule machine your own work at one price') && kinds.includes('reveal machine any artist’s work'), kinds.slice(0, 300))
+          check('and each kind is a link to its studio',
+            (await chooser.getByRole('link', { name: /capsule machine/ }).getAttribute('href')) === '/experience/new?kind=capsule' &&
+            (await chooser.getByRole('link', { name: /reveal machine/ }).getAttribute('href')) === '/experience/new?kind=reveal')
+          await chooser.context().close()
+
+          const page = await open('/experience/new?kind=capsule')
           await page.getByText('capsule studio').first().waitFor()
+          check('a capsule machine has no artist to name — it is your own work', (await page.getByPlaceholder('artist 0x…').count()) === 0)
           await page.getByPlaceholder('spring-season').fill('browser-machine')
           await page.getByPlaceholder('Spring Season').fill('Browser Machine')
           await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
           await page.getByPlaceholder('1', { exact: true }).fill('1')
           await page.getByPlaceholder('collection 0x…').fill(POOL)
           await page.getByPlaceholder('token').fill('8')
-          await page.getByPlaceholder('artist 0x…').fill(CREATOR2)
           await page.locator('label:has-text("qty") input').fill('0')
           await page.getByText('what players will see').waitFor()
           const oneRow = await text(page)
-          check('the odds preview appears as the lineup is typed', /what players will see #8 by 0x[0-9a-f]{4}…[0-9a-f]{4} unlimited 100%/.test(oneRow), oneRow.match(/what players will see.{0,80}/)?.[0] ?? '')
+          check('the odds preview appears as the lineup is typed', /what players will see #8 0x[0-9a-f]{4}…[0-9a-f]{4} unlimited 100%/.test(oneRow), oneRow.match(/what players will see.{0,80}/)?.[0] ?? '')
           check('and asks for a check to learn the payees', oneRow.includes('run check to see who this capsule actually pays'))
           // Add a second, equally-weighted piece: two unlimited rows at weight 10
           // are a real 50/50, which is where the derived percentage and its
@@ -1810,11 +2066,20 @@ try {
           await page.getByRole('button', { name: 'add artwork' }).click()
           await page.getByPlaceholder('collection 0x…').nth(1).fill(POOL)
           await page.getByPlaceholder('token').nth(1).fill('7')
-          await page.getByPlaceholder('artist 0x…').nth(1).fill(ADMIN)
           await page.locator('label:has-text("qty") input').nth(1).fill('0')
           const twoRows = await text(page)
           check('an even two-piece lineup previews as 50.0% each', (twoRows.match(/50\.0%/g) ?? []).length === 2, twoRows.match(/what players will see.{0,120}/)?.[0] ?? '')
           check('and shows the 1-in-N ratio a fractional row carries', twoRows.includes('1 in 2'), twoRows.match(/1 in \d+/)?.[0] ?? 'none')
+          // Rarity by supply: the weights go, and each piece's copies are its odds.
+          await page.getByRole('radio', { name: 'by supply' }).click()
+          check('by supply, there are no weights to type', (await page.locator('label:has-text("wt")').count()) === 0)
+          await page.locator('label:has-text("qty") input').nth(0).fill('3')
+          await page.locator('label:has-text("qty") input').nth(1).fill('1')
+          const boxed = await text(page)
+          check('and the preview is copies over copies', boxed.includes('75.0%') && boxed.includes('25.0%'), boxed.match(/what players will see.{0,160}/)?.[0] ?? '')
+          check('with how far to cap the capsule', boxed.includes('4 copies in the machine — cap the capsule at 4 or fewer'))
+          await page.getByRole('radio', { name: 'set per piece' }).click()
+          check('switching back brings the weights back', (await page.locator('label:has-text("wt")').count()) === 2)
           await page.getByRole('button', { name: 'add artwork' }).click()
           await page.getByPlaceholder('collection 0x…').nth(2).fill(`${origin}/artwork/${POOL}/16`)
           const fixLink = page.getByRole('link', { name: "the piece's page" }).first()
@@ -1829,7 +2094,7 @@ try {
 
         // ── the studio, connected: check, then publish to review ──
         {
-          const page = await open('/experience/new', { user: USER_TOKEN, wallet: CREATOR2 })
+          const page = await open('/experience/new?kind=capsule', { user: USER_TOKEN, wallet: CREATOR2 })
           const dryRuns = []
           const consoleErrs = []
           const failedReqs = []
@@ -1851,7 +2116,7 @@ try {
           check('pasting an artwork link fills in its collection and token',
             (await page.getByPlaceholder('collection 0x…').inputValue()) === POOL && (await page.getByPlaceholder('token').inputValue()) === '8')
           const standing = await page.getByText('allowed for capsule machines', { exact: true }).waitFor({ timeout: 8000 }).then(() => true, () => false)
-          check('and the artist Kismet recorded, with the piece\'s standing', standing && (await page.getByPlaceholder('artist 0x…').inputValue()) === CREATOR2)
+          check('and the piece\'s standing is shown', standing)
           await page.locator('label:has-text("qty") input').fill('0')
           await page.getByRole('button', { name: 'check', exact: true }).click()
           // Wait for the result region either way, so a failing check reports the
@@ -1860,12 +2125,12 @@ try {
           const afterCheck = await text(page)
           check('check passes against the live gate', afterCheck.includes('every check passed against live on-chain state'),
             `dryRuns=${JSON.stringify(dryRuns).slice(0, 300)} | console=${JSON.stringify(consoleErrs).slice(0, 300)} | failed=${JSON.stringify(failedReqs).slice(0, 200)} | panel=${afterCheck.match(/(ready|fix before publishing).{0,160}/)?.[0] ?? ''}`)
-          check('and reports the on-chain capsule and who it pays', afterCheck.includes('on-chain: 20 max · 0 minted') && afterCheck.includes('every play pays you alone'), afterCheck.match(/on-chain.{0,40}/)?.[0] ?? '')
+          check('and reports the on-chain capsule and who it pays', afterCheck.includes('on-chain: 20 max · 0 minted') && afterCheck.includes('this capsule has no split, so every play pays you.'), afterCheck.match(/on-chain.{0,40}/)?.[0] ?? '')
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor()
           const afterPublish = await text(page)
           check('a non-admin publish lands on a confirmation, not a 404',
-            page.url() === `${origin}/experience/new` && afterPublish.includes('browser machine is queued for a curator'), page.url())
+            page.url() === `${origin}/experience/new?kind=capsule` && afterPublish.includes('browser machine is queued for a curator'), page.url())
           check('that says where it will live once approved', afterPublish.includes('once approved it will be live at /experience/browser-machine'))
           const queued = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
           check('and the machine really is in the review queue', queued.json?.machines?.some((m) => m.machine.id === 'browser-machine' && m.machine.state === 'review'))
@@ -1907,15 +2172,16 @@ try {
           // Absence is only evidence once the panel has had time to appear: an
           // immediate count passes even when it would render a moment later.
           await visitor.waitForTimeout(2500)
-          check('a visitor sees no allowance panel, and never asks for one',
-            visitorLookups === 0 && (await visitor.getByRole('button', { name: /capsule machines/i }).count()) === 0)
+          check('a visitor sees no machines panel, and never asks for one',
+            visitorLookups === 0 && (await visitor.getByRole('button', { name: /^machines/i }).count()) === 0)
           await visitor.context().close()
 
           const page = await open(`/artwork/${POOL}/99`, { wallet: ADMIN, onChain: true, moment })
-          const panel = page.getByRole('button', { name: /capsule machines/i })
+          const panel = page.getByRole('button', { name: /^machines/i })
           await panel.waitFor()
-          check('the artist sees it, reading not allowed', /not allowed/i.test(await panel.innerText()), await panel.innerText())
+          check('the artist sees it, open to reveal machines by default', /open/i.test(await panel.innerText()), await panel.innerText())
           await panel.click()
+          check('with the switch on', (await page.getByRole('switch', { name: 'on · turn off' }).count()) === 1)
           const body = await text(page)
           check('it names the machines that include the piece', body.includes('no grant') && body.includes('redraw'), body.match(/in \d machines?.{0,80}/)?.[0] ?? '')
           const signed = chain.walletTxs.length
@@ -1927,6 +2193,120 @@ try {
           await page.getByRole('button', { name: 'stop allowing' }).click()
           await page.getByRole('button', { name: 'allow capsule machines' }).waitFor()
           check('stopping revokes it', (chain.perms.get(key(POOL, 99, OPERATOR)) ?? 0n) === 0n)
+          await page.context().close()
+        }
+
+        // ── an artist turns reveal machines off for a piece, and back on ──
+        {
+          const moment = {
+            uri: 'ar://meta', owner: CREATOR2, momentAdmins: [CREATOR2], saleConfig: null,
+            metadata: { name: 'Piece Two', description: 'A reveal piece.', image: '' },
+          }
+          const page = await open(`/artwork/${REVEAL}/2`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true, moment })
+          const panel = page.getByRole('button', { name: /^machines/i })
+          await panel.waitFor()
+          await panel.click()
+          check('the panel lists the reveal machines the piece is in', /new voices · reveal · live/.test(await text(page)), (await text(page)).match(/in \d machines?.{0,120}/)?.[0] ?? '')
+          const signed = chain.walletTxs.length
+          await page.getByRole('switch', { name: 'on · turn off' }).click()
+          await page.getByRole('switch', { name: 'off · turn on' }).waitFor()
+          check('turning it off takes no signature', chain.walletTxs.length === signed)
+          const lineupNow = async () => ((await call('/api/experience/machines/new-voices')).json?.lineup ?? []).map((p) => p.tokenId).sort().join(',')
+          check('and takes the piece out of the live machine', (await lineupNow()) === '1,6', await lineupNow())
+          await page.getByRole('switch', { name: 'off · turn on' }).click()
+          await page.getByRole('switch', { name: 'on · turn off' }).waitFor()
+          check('turning it back on returns it', (await lineupNow()) === '1,2,6', await lineupNow())
+          await page.context().close()
+        }
+
+        // ── a reveal machine: pull for free, see a piece, collect it at its price ──
+        {
+          const page = await open('/experience/new-voices')
+          await page.getByText('free to pull').waitFor()
+          const body = await text(page)
+          check('the face says the pull is free', body.includes('free to pull') && body.includes('pull for free, collect what you reveal at its price'))
+          check('the odds are one in however many are on sale', body.includes("what's inside · each piece is 1 in 3"), body.match(/what's inside.{0,60}/)?.[0] ?? '')
+          const rows = page.locator('section', { hasText: "what's inside" }).locator('a')
+          const rowText = (await rows.allInnerTexts()).join(' | ').toLowerCase()
+          check('each piece on sale is listed with its own price', (await rows.count()) === 3 && rowText.includes('0.002 eth') && rowText.includes('free') && rowText.includes('$1'), rowText)
+          check('with a line on what comes and goes', body.includes('one that sells out or closes leaves by itself, and 2 more join when their sales open'))
+          await page.getByRole('button', { name: 'pull', exact: true }).click()
+          await page.getByText('you revealed').waitFor()
+          const revealed = await page.locator('a[href^="/artwork/"]').first().getAttribute('href')
+          check('a pull reveals one of the pieces on sale', [1, 2, 6].some((id) => revealed === `/artwork/${REVEAL}/${id}`), revealed)
+          check('and offers to collect it or pull again',
+            (await page.getByRole('button', { name: /^collect · / }).count()) === 1 && (await page.getByRole('button', { name: 'pull again' }).count()) === 1)
+          await page.context().close()
+
+          // One piece, so the reveal is known: the collect is the artwork's own,
+          // sent from the player's wallet with the right value and referral.
+          await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: { kind: 'reveal', id: 'solo-piece', name: 'Solo Piece', entries: [{ collection: REVEAL, tokenId: '1' }] } })
+          const solo = await open('/experience/solo-piece', { wallet: PLAYER, onChain: true })
+          await solo.getByText('free to pull').waitFor()
+          check('a one-piece lineup says so', (await text(solo)).includes("what's inside · one piece, always revealed"))
+          await solo.getByRole('button', { name: 'pull', exact: true }).click()
+          const collectBtn = solo.getByRole('button', { name: 'collect · 0.002 ETH' })
+          await collectBtn.waitFor()
+          const minted = chain.mints.length
+          const before = chain.tokens.get(key(REVEAL, 1)).totalMinted
+          await collectBtn.click()
+          await solo.getByText('collected', { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {})
+          const m = chain.mints.at(-1)
+          check('collecting sends one mint of the revealed piece from the player\'s wallet',
+            chain.mints.length === minted + 1 && m?.collection === REVEAL && m.tokenId === 1n && m.quantity === 1n && m.mintTo === PLAYER.toLowerCase(),
+            JSON.stringify(m, (_, v) => (typeof v === 'bigint' ? v.toString() : v)))
+          check('paying its own price plus the protocol fee, through its own sale',
+            m?.value === MINT_FEE + 2_000_000_000_000_000n && m.strategy === FPSS.toLowerCase())
+          check('naming Kismet as the mint referral', m?.rewardsRecipients?.length === 1 && m.rewardsRecipients[0] === KISMET_REFERRAL)
+          check('and the edition really grew by one', chain.tokens.get(key(REVEAL, 1)).totalMinted === before + 1n)
+          check('the page says it is collected', (await solo.getByText('collected', { exact: true }).count()) === 1)
+          await solo.context().close()
+        }
+
+        // ── the reveal studio ──
+        {
+          await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: false } })
+          const page = await open('/experience/new?kind=reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
+          await page.getByText('reveal studio').first().waitFor()
+          await page.getByPlaceholder('new-voices').fill('browser-picks')
+          await page.getByPlaceholder('New Voices').fill('Browser Picks')
+          const addRow = async (i, ref) => {
+            if (i > 0) await page.getByRole('button', { name: 'add artwork' }).click()
+            await page.getByPlaceholder('artwork link, or collection 0x…').nth(i).fill(ref)
+          }
+          await addRow(0, `${origin}/artwork/${REVEAL}/2`)
+          await addRow(1, `${origin}/artwork/${REVEAL}/5`)
+          await addRow(2, `${origin}/artwork/${REVEAL}/4`)
+          await addRow(3, `${origin}/artwork/${REVEAL}/3`)
+          await page.getByText('Kismet has no record of who made this').waitFor({ timeout: 8000 }).catch(() => {})
+          const rows = await text(page)
+          check('a pasted piece names its maker', /by 0x[0-9a-f]{4}…[0-9a-f]{4}/.test(rows))
+          check('one Kismet has no maker for is flagged as you build', rows.includes('kismet has no record of who made this — only artworks minted on kismet can go in'))
+          check('as is one its artist turned off', rows.includes('its artist has turned machines off for this piece'))
+          await page.getByRole('button', { name: 'check', exact: true }).click()
+          await page.locator('section', { hasText: /fix before publishing/i }).first().waitFor()
+          check('the check refuses both, by piece', /fix before publishing.*kismet has no record of who made .*:5.*isn't available for machines/.test(await text(page)), (await text(page)).match(/fix before publishing.{0,240}/)?.[0] ?? '')
+          await page.getByRole('button', { name: 'Remove artwork 3' }).click()
+          await page.getByRole('button', { name: 'Remove artwork 2' }).click()
+          await page.getByRole('button', { name: 'check', exact: true }).click()
+          await page.getByText('Every piece can go in').waitFor()
+          const ready = await text(page)
+          check('once they are gone it is ready, and says what each piece shows as today',
+            ready.includes('on sale now · free') && ready.includes('shows up when its sale opens'), ready.match(/the lineup.{0,300}/)?.[0] ?? '')
+          await page.getByRole('button', { name: 'publish' }).click()
+          await page.getByText('is queued for a curator').waitFor()
+          check('publishing queues it for a curator', (await text(page)).includes('browser picks is queued for a curator'))
+          check('as a reveal machine with the two pieces',
+            (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-picks' && r.machine.kind === 'reveal' && r.pool.length === 2))
+          await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: true } })
+          await page.context().close()
+        }
+
+        // ── a curator's reveal machines on their profile ──
+        {
+          const page = await open(`/profile/${CURATOR}`)
+          await page.getByText('New Voices').first().waitFor()
+          check('a visitor sees a curator\'s reveal machine with its lineup size', (await text(page)).includes('reveal machine · 5 artworks'))
           await page.context().close()
         }
 

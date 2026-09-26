@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { errorResponse } from '@/lib/apiResponse'
 import { epochFor } from '@/lib/experience/fairness'
 import { listMachines, openEpochSeeds } from '@/lib/experience/store'
+import { isReveal } from '@/lib/experience/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -44,8 +45,9 @@ export async function GET(req: NextRequest) {
   // delisted machine sells nothing, but a stalled claim on it is discharged by
   // a fresh draw through the resume path, and that draw needs a seed that was
   // committed before the resume was requested — the same property this cron
-  // exists to give live machines.
-  const machines = await listMachines(['live', 'ended', 'delisted'])
+  // exists to give live machines. A reveal machine never draws on the server,
+  // so it has nothing to commit to.
+  const machines = (await listMachines(['live', 'ended', 'delisted'])).filter((m) => !isReveal(m))
   const results = await Promise.all(
     machines.map((m) =>
       openEpochSeeds(m.id, epoch)

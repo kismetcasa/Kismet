@@ -24,7 +24,7 @@ import {
   totalWeight,
   withExcluded,
 } from '../lib/experience/draw.ts'
-import { checkSolvency, coverage, findFloorPiece } from '../lib/experience/solvency.ts'
+import { checkLineup, checkSolvency, coverage, findFloorPiece } from '../lib/experience/solvency.ts'
 import { runDraw } from '../lib/experience/runDraw.ts'
 import {
   canonicalSnapshot,
@@ -325,9 +325,18 @@ check(
     .includes('artist-not-admin'),
 )
 check(
-  'and the refusal names the impostor and the piece',
+  'a piece the creator does not own is refused as not their own work',
   checkSolvency({ ...baseInput, artistControl: { ...OWNED, [entryKey(entry())]: false } })
-    .some((p) => p.code === 'artist-not-admin' && p.detail.includes(CREATOR) && p.detail.includes(entryKey(entry()))),
+    .some((p) => p.code === 'artist-not-admin' && p.detail.includes('your own work') && p.detail.includes(entryKey(entry()))),
+)
+check(
+  'an entry naming someone else (a pool published before the own-work rule) names them',
+  checkSolvency({
+    ...baseInput,
+    entries: [entry({ artist: '0xstranger000000000000000000000000000001' })],
+    splitRecipients: [CREATOR, '0xstranger000000000000000000000000000001'],
+    artistControl: { ...OWNED, [entryKey(entry())]: false },
+  }).some((p) => p.code === 'artist-not-admin' && p.detail.includes('0xstranger000000000000000000000000000001')),
 )
 check(
   'an artist whose control could not be read is REFUSED, not skipped',
@@ -434,6 +443,55 @@ check('poolArtists dedupes case-insensitively', poolArtists([entry(), entry({ ar
   check(
     'unlimited prizes are always covered',
     coverage({ capsuleMaxSupply: null, capsuleMinted: 0, remainingPrizes: null }).covered,
+  )
+}
+
+console.log('\n5e. rarity by supply')
+{
+  const bySupply = { ...baseInput, rarity: 'supply' as const }
+  check('a typed weight means nothing by supply', checkSolvency({ ...bySupply, entries: [entry({ weight: 0 })] }).length === 0)
+  check(
+    'but every piece needs copies — an unlimited one is refused',
+    checkSolvency({ ...bySupply, capsuleMaxSupply: null, entries: [entry({ supply: 0 })] })
+      .some((p) => p.code === 'bad-supply' && p.detail.includes('its copies are its odds')),
+  )
+  check('as is a count past the weight bound', codes(checkSolvency({ ...bySupply, entries: [entry({ supply: MAX_WEIGHT + 1 })], headroom: { ...AMPLE } })).includes('bad-supply'))
+  check('manual rarity still checks the weight', codes(checkSolvency({ ...baseInput, entries: [entry({ weight: 0 })] })).includes('bad-weight'))
+  check(
+    'an open capsule is told to cap at the copies in the machine',
+    checkSolvency({ ...bySupply, capsuleMaxSupply: null, entries: [entry({ supply: 4 })] })
+      .some((p) => p.code === 'undercollateralised' && p.detail.includes('cap it at 4')),
+  )
+  check(
+    'a capsule capped within the copies passes',
+    checkSolvency({ ...bySupply, capsuleMaxSupply: 5, entries: [entry({ supply: 5 })] }).length === 0,
+  )
+}
+
+console.log('\n5f. reveal machine lineups')
+{
+  const A = { collection: '0xaaaa000000000000000000000000000000000001', tokenId: '1' }
+  const B = { collection: '0xaaaa000000000000000000000000000000000001', tokenId: '2' }
+  const artists = { [entryKey(A)]: '0xart0000000000000000000000000000000000001', [entryKey(B)]: '0xart0000000000000000000000000000000000002' }
+  const lineup = (entries: typeof A[], over: Partial<Parameters<typeof checkLineup>[0]> = {}) =>
+    checkLineup({ entries, artists, unavailable: new Set(), ...over })
+  check('any artists’ pieces pass', lineup([A, B]).length === 0)
+  check('an empty lineup is refused', codes(lineup([])).includes('empty-pool'))
+  check('a piece twice is refused', codes(lineup([A, A])).includes('duplicate-entry'))
+  check(
+    'a piece Kismet has no maker for is refused',
+    lineup([A], { artists: {} }).some((p) => p.code === 'artist-unknown' && p.detail.includes(entryKey(A))),
+  )
+  check(
+    'a piece its artist turned off is refused',
+    lineup([A, B], { unavailable: new Set([entryKey(B)]) }).some((p) => p.code === 'piece-unavailable' && p.detail.includes(entryKey(B))),
+  )
+  check('and only that piece', lineup([A, B], { unavailable: new Set([entryKey(B)]) }).length === 1)
+  check(
+    'too many pieces is refused',
+    codes(lineup(Array.from({ length: 201 }, (_, i) => ({ ...A, tokenId: String(i) })), {
+      artists: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`${A.collection}:${i}`, '0xart0000000000000000000000000000000000001'])),
+    })).includes('too-many-entries'),
   )
 }
 

@@ -26,6 +26,7 @@ import {
   seedForEpoch,
   settleDeliveredCopy,
 } from '@/lib/experience/store'
+import { isReveal } from '@/lib/experience/types'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
@@ -139,6 +140,8 @@ async function handle(
 
   const machine = await getMachine(machineId)
   if (!machine) return errorResponse(404, 'Machine not found')
+  // A reveal machine sells nothing, so it has no capsule to open.
+  if (isReveal(machine)) return errorResponse(400, 'This machine has no capsules to open')
 
   // ── Case 1: a prize was already drawn. The copy is spent, so deliver THAT
   //    piece or nothing. Re-drawing would consume a second copy for one payment.
@@ -306,7 +309,7 @@ async function handle(
   //    bought nothing those checks do not already cover.
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
-  const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
+  const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId), machine.rarity)
   const eligible: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
 
   const epoch = epochFor(Date.now())

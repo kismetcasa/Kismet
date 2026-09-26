@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
-import { shortAddress } from '@/lib/inprocess'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { formatOddsRatio, formatProbability } from '@/lib/experience/format'
-import type { Machine, PoolEntry, SolvencyProblemCode } from '@/lib/experience/types'
+import { isReveal } from '@/lib/experience/types'
+import type { LineupPiece, Machine, PoolEntry, SolvencyProblemCode } from '@/lib/experience/types'
 
 /**
  * The curator's review queue.
@@ -26,9 +27,20 @@ import type { Machine, PoolEntry, SolvencyProblemCode } from '@/lib/experience/t
 interface Row {
   machine: Machine
   pool: PoolEntry[]
-  odds: { key: string; collection: string; tokenId: string; artist: string; probability: number; remaining: number | null }[]
-  capsule: { maxSupply: number | null; minted: number } | null
+  /** Capsule machines: the odds as players would see them. */
+  odds?: { key: string; collection: string; tokenId: string; artist: string; probability: number; remaining: number | null }[]
+  capsule?: { maxSupply: number | null; minted: number } | null
+  /** Reveal machines: each piece's standing today. */
+  lineup?: LineupPiece[]
   problems: { code: SolvencyProblemCode; detail: string }[]
+}
+
+const LINEUP_STATUS: Record<LineupPiece['status'], string> = {
+  'on-sale': 'on sale',
+  'not-on-sale': 'not on sale yet',
+  'sold-out': 'sold out',
+  unavailable: 'unavailable',
+  unreadable: 'unreadable',
 }
 
 const STATE_FILTERS = ['review', 'live', 'ended', 'delisted', 'draft'] as const
@@ -119,7 +131,11 @@ export function ExperienceReviewQueue() {
                   <p className="text-[10px] font-mono text-subtle truncate">
                     {m.id} · by {shortAddress(m.creator)} · {row.pool.length} artwork
                     {row.pool.length === 1 ? '' : 's'} ·{' '}
-                    {row.capsule?.maxSupply === null ? 'open capsule' : `${row.capsule?.maxSupply ?? '?'} capsules`}
+                    {isReveal(m)
+                      ? 'reveal machine'
+                      : row.capsule?.maxSupply === null
+                        ? 'open capsule'
+                        : `${row.capsule?.maxSupply ?? '?'} capsules`}
                   </p>
                 </button>
                 {blocked && (
@@ -145,7 +161,21 @@ export function ExperienceReviewQueue() {
                   )}
 
                   <div className="border border-line divide-y divide-line mb-4">
-                    {row.odds.map((o) => (
+                    {row.lineup?.map((p) => (
+                      <div key={p.key} className="flex items-center gap-3 px-3 py-2">
+                        <Link
+                          href={`/artwork/${p.collection}/${p.tokenId}`}
+                          className="flex-1 min-w-0 text-[11px] font-mono text-dim hover:text-ink truncate"
+                        >
+                          #{p.tokenId} <span className="text-subtle">by {shortAddress(p.artist)}</span>
+                        </Link>
+                        <span className="text-[10px] font-mono text-subtle shrink-0">{LINEUP_STATUS[p.status]}</span>
+                        <span className="text-xs font-mono tabular-nums text-ink shrink-0 w-24 text-right">
+                          {p.sale ? formatPrice(p.sale.pricePerToken, p.sale.currency) : ''}
+                        </span>
+                      </div>
+                    ))}
+                    {row.odds?.map((o) => (
                       <div key={o.key} className="flex items-center gap-3 px-3 py-2">
                         <Link
                           href={`/artwork/${o.collection}/${o.tokenId}`}
@@ -180,7 +210,7 @@ export function ExperienceReviewQueue() {
                       disabled={busy === m.id || m.state === 'ended'}
                       className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40"
                     >
-                      end season
+                      {isReveal(m) ? 'close' : 'end season'}
                     </button>
                     <button
                       onClick={() => setState(m.id, 'delisted')}

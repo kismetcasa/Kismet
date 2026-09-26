@@ -5,34 +5,41 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import { useGrantPermission } from '@/hooks/useGrantPermission'
 import { useMomentAdminPermission } from '@/hooks/useMomentEditPermission'
+import { useUploadSession } from '@/hooks/useUploadSession'
 import { toastError } from '@/lib/toast'
 
 /**
- * The artist's consent to capsule machines, one piece at a time.
+ * The artist's say over machines, one piece at a time. Two separate choices,
+ * because the two kinds of machine use a piece differently:
  *
- * A machine delivers a prize by minting it from Kismet's delivery account, and
- * that account can only mint a piece its artist has granted it MINTER on. So
- * the grant IS the consent: allowing a piece is one signature from the
- * artist's own wallet, and stopping is one more. Nothing else in the app could
- * give it — the publish gate refuses any piece without it — so without this
- * panel no artist's work could ever enter a machine.
+ *   • REVEAL MACHINES show the piece and the player collects it through this
+ *     sale, at this price. Anyone may curate it — on by default — and turning
+ *     it off takes it out of every reveal machine at once. A setting on
+ *     Kismet, so no signature.
+ *   • YOUR OWN CAPSULE MACHINES mint the piece as a prize without this sale,
+ *     from Kismet's delivery account, which can only do that once the artist
+ *     grants it MINTER. So that grant is one signature, and stopping is one
+ *     more. Only the artist's own capsule machines can use it.
  *
- * Shown only to a wallet holding ADMIN on the piece, the right Zora's
- * addPermission and removePermission require: the button can never outrun the
- * write it makes. The address to grant comes from the server, which reads it
- * off the delivery account rather than from configuration.
+ * Shown only to a wallet holding ADMIN on the piece — the right Zora's
+ * addPermission and removePermission require, and the one the availability
+ * route checks on chain. The address to grant comes from the server, which
+ * reads it off the delivery account rather than from configuration.
  */
 
 interface PieceStanding {
+  available: boolean | null
   operator: string | null
   allowed: boolean | null
   scope: 'piece' | 'collection' | null
-  machines: { id: string; name: string; state: string }[]
+  machines: { id: string; name: string; state: string; kind: 'capsule' | 'reveal' }[]
 }
 
 export function ExperienceAllowance({ collection, tokenId }: { collection: string; tokenId: string }) {
   const canManage = useMomentAdminPermission(collection, tokenId)
   const { grant, revoke, reset, busy, hash, receipt } = useGrantPermission()
+  const { ensureSession } = useUploadSession()
+  const [switching, setSwitching] = useState(false)
   const [standing, setStanding] = useState<PieceStanding | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [lastChange, setLastChange] = useState<'allow' | 'stop' | null>(null)
@@ -61,7 +68,37 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
     load()
   }, [receipt, lastChange, reset, load])
 
-  if (!canManage || !standing?.operator) return null
+  if (!canManage || !standing) return null
+
+  const setAvailable = async (available: boolean) => {
+    setSwitching(true)
+    try {
+      const send = () =>
+        fetch('/api/experience/piece', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ collection, tokenId, available }),
+        })
+      await ensureSession()
+      let r = await send()
+      // The session cache can believe in a cookie the server no longer does.
+      if (r.status === 401) {
+        await ensureSession({ revalidate: true })
+        r = await send()
+      }
+      const body = await r.json().catch(() => null)
+      if (!r.ok) {
+        toast.error(body?.error ?? 'Could not change this')
+        return
+      }
+      toast.success(available ? 'Curators can add this piece to reveal machines' : 'Removed from every reveal machine')
+      load()
+    } catch (err) {
+      toastError('Reveal machines', err)
+    } finally {
+      setSwitching(false)
+    }
+  }
 
   const pending = busy || !!hash
   const change = async (allow: boolean) => {
@@ -79,8 +116,7 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
     }
   }
 
-  const summary =
-    standing.allowed === null ? 'unknown' : standing.allowed ? 'allowed' : 'not allowed'
+  const summary = standing.available === null ? 'unknown' : standing.available ? 'open' : 'off'
 
   return (
     <div className="mt-4 border border-line">
@@ -89,34 +125,58 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
         aria-expanded={expanded}
         className="w-full flex items-center justify-between px-4 py-3 text-[10px] font-mono uppercase tracking-widest text-dim hover:text-ink transition-colors"
       >
-        <span>Capsule machines</span>
+        <span>Machines</span>
         <span className="text-muted">{summary} {expanded ? '–' : '+'}</span>
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 flex flex-col gap-3 border-t border-line pt-3">
-          <p className="text-xs font-mono text-muted leading-relaxed">
-            Let capsule machines on Kismet mint this piece as a prize. A machine can only include it if its
-            capsule pays you, and every machine is reviewed before it goes live. You can stop at any time;
-            anyone who already drew it waits until you allow it again.
+          <p className="text-[10px] font-mono uppercase tracking-widest text-muted">reveal machines</p>
+          <p className="text-xs font-mono text-muted leading-relaxed -mt-1.5">
+            Curators can add this piece to reveal machines. Players pull for free and collect it through this
+            sale, at your price. Turning it off takes it out of every reveal machine.
           </p>
-
-          {standing.allowed === null ? (
-            <p className="text-xs font-mono text-[#ffcf70]">Could not read this from the chain — try again shortly.</p>
-          ) : standing.scope === 'collection' ? (
-            <p className="text-xs font-mono text-dim">
-              Allowed for every piece in this collection. Change it from the collection&apos;s permissions.
-            </p>
+          {standing.available === null ? (
+            <p className="text-xs font-mono text-[#ffcf70]">Could not read this just now — try again shortly.</p>
           ) : (
             <button
-              onClick={() => void change(!standing.allowed)}
-              disabled={pending}
+              onClick={() => void setAvailable(!standing.available)}
+              disabled={switching}
+              role="switch"
+              aria-checked={standing.available}
               className={`self-start px-4 py-2 text-[10px] font-mono uppercase tracking-wider disabled:opacity-40 ${
-                standing.allowed ? 'border border-line text-dim hover:text-ink' : 'btn-accent'
+                standing.available ? 'border border-line text-dim hover:text-ink' : 'btn-accent'
               }`}
             >
-              {pending ? 'confirming…' : standing.allowed ? 'stop allowing' : 'allow capsule machines'}
+              {switching ? 'saving…' : standing.available ? 'on · turn off' : 'off · turn on'}
             </button>
+          )}
+
+          {standing.operator && (
+            <div className="flex flex-col gap-3 mt-2">
+              <p className="text-[10px] font-mono uppercase tracking-widest text-muted">your capsule machines</p>
+              <p className="text-xs font-mono text-muted leading-relaxed -mt-1.5">
+                Let your own capsule machines mint this piece as a prize, paid for by your capsule. You can stop
+                at any time; anyone who already drew it waits until you allow it again.
+              </p>
+              {standing.allowed === null ? (
+                <p className="text-xs font-mono text-[#ffcf70]">Could not read this from the chain — try again shortly.</p>
+              ) : standing.scope === 'collection' ? (
+                <p className="text-xs font-mono text-dim">
+                  Allowed for every piece in this collection. Change it from the collection&apos;s permissions.
+                </p>
+              ) : (
+                <button
+                  onClick={() => void change(!standing.allowed)}
+                  disabled={pending}
+                  className={`self-start px-4 py-2 text-[10px] font-mono uppercase tracking-wider disabled:opacity-40 ${
+                    standing.allowed ? 'border border-line text-dim hover:text-ink' : 'btn-accent'
+                  }`}
+                >
+                  {pending ? 'confirming…' : standing.allowed ? 'stop allowing' : 'allow capsule machines'}
+                </button>
+              )}
+            </div>
           )}
 
           {standing.machines.length > 0 && (
@@ -130,7 +190,7 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
                     <Link href={`/experience/${m.id}`} className="text-dim hover:text-ink underline">
                       {m.name}
                     </Link>{' '}
-                    <span className="text-subtle">· {m.state}</span>
+                    <span className="text-subtle">· {m.kind} · {m.state}</span>
                   </li>
                 ))}
               </ul>

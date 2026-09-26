@@ -11,6 +11,7 @@ import { checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
 import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
 import { getGateConfig } from '@/lib/gate'
+import { readLineup } from '@/lib/experience/lineup'
 import {
   buildSnapshot,
   getMachine,
@@ -20,6 +21,7 @@ import {
   machineStateLockKey,
   setMachineState,
 } from '@/lib/experience/store'
+import { isReveal } from '@/lib/experience/types'
 import type { MachineState } from '@/lib/experience/types'
 
 /**
@@ -63,6 +65,12 @@ export async function GET(req: NextRequest) {
 
   const detailed = await Promise.all(
     machines.slice(0, 50).map(async (m) => {
+      if (isReveal(m)) {
+        // A reveal machine promises nothing, so there is no gate to re-run:
+        // the curator judges the lineup, shown as players would see it today.
+        const pool = await getPool(m.id)
+        return { machine: m, pool, lineup: await readLineup(pool, gate.passCollection?.toLowerCase() ?? null), problems: [] }
+      }
       const [pool, remaining, capsule, payees] = await Promise.all([
         getPool(m.id),
         getRemaining(m.id),
@@ -91,12 +99,13 @@ export async function GET(req: NextRequest) {
         creator: m.creator,
         passCollection: gate.passCollection?.toLowerCase() ?? null,
         ...poolState,
+        rarity: m.rarity,
       })
 
       return {
         machine: m,
         pool,
-        odds: deriveOdds(buildSnapshot(pool, remaining)).map((o) => ({ ...o, key: entryKey(o) })),
+        odds: deriveOdds(buildSnapshot(pool, remaining, m.rarity)).map((o) => ({ ...o, key: entryKey(o) })),
         capsule,
         problems,
       }
@@ -141,8 +150,9 @@ async function transition(id: string, state: MachineState, signer: string): Prom
   // Promoting to `live` re-runs the publish gate. A reviewer approving a
   // machine that has gone insolvent while queued would put a machine on sale
   // that cannot honour its own capsules — the one thing the solvency model
-  // exists to prevent, and the moment it is easiest to let through.
-  if (state === 'live') {
+  // exists to prevent, and the moment it is easiest to let through. A reveal
+  // machine promises nothing, so it has no gate to re-run.
+  if (state === 'live' && !isReveal(machine)) {
     const [pool, capsule, gate, payees] = await Promise.all([
       getPool(id),
       readCapsuleSupply(machine.capsule.collection, machine.capsule.tokenId),
@@ -179,6 +189,7 @@ async function transition(id: string, state: MachineState, signer: string): Prom
       creator: machine.creator,
       passCollection: gate.passCollection?.toLowerCase() ?? null,
       ...poolState,
+      rarity: machine.rarity,
     })
     if (problems.length > 0) {
       return NextResponse.json({ ok: false, problems }, { status: 400 })

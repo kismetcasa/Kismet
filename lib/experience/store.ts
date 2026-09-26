@@ -3,7 +3,8 @@ import { redis } from '../redis'
 import { randomHex } from '../random'
 import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
-import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, SnapshotEntry } from './types'
+import { isReveal } from './types'
+import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, Rarity, SnapshotEntry } from './types'
 
 /**
  * Redis persistence for the Experience. Redis is the platform's only datastore,
@@ -46,6 +47,14 @@ const kCommit = (collection: string, tokenId: string) =>
  *  mint would draw from two pools. A reservation cannot age out of view. */
 const kCapsule = (collection: string, tokenId: string) =>
   `${P}:capsule:${collection.toLowerCase()}:${tokenId}`
+/** Reveal machines that list a piece. Capsule machines are indexed by the
+ *  pledge ledger above; a reveal machine pledges nothing, so it has its own. */
+const kUses = (collection: string, tokenId: string) =>
+  `${P}:uses:${collection.toLowerCase()}:${tokenId}`
+/** Pieces whose artist has turned reveal machines off, as `collection:tokenId`.
+ *  Membership is the exception: every piece is available until its artist says
+ *  otherwise. */
+const K_OPTOUT = `${P}:optout`
 
 /** Directory of machines, score = createdAt. Write-trimmed like every other
  *  index in the codebase (cf. MAX_FEATURED, RAFFLE_ENABLED_KEY). */
@@ -158,6 +167,7 @@ export async function reserveCapsule(
   const owner = await getMachine(holder).catch(() => null)
   const live =
     owner !== null &&
+    !isReveal(owner) &&
     owner.capsule.collection === collection.toLowerCase() &&
     owner.capsule.tokenId === tokenId
   if (live) return false
@@ -231,6 +241,10 @@ export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refuse
     .zrem(K_INDEX, id)
     .zrem(kCreator(m.creator), id)
     .exec()
+  if (isReveal(m)) {
+    await Promise.all(pool.map((e) => redis.srem(kUses(e.collection, e.tokenId), id).catch(() => 0)))
+    return 'withdrawn'
+  }
   await releaseCapsule(m.capsule.collection, m.capsule.tokenId, id)
   await Promise.all(pool.map((e) => redis.hdel(kCommit(e.collection, e.tokenId), id).catch(() => 0)))
   return 'withdrawn'
@@ -268,6 +282,17 @@ export async function putPoolEntry(id: string, e: PoolEntry): Promise<void> {
   // Seed the remaining counter. `-1` is the sentinel for unlimited so the hash
   // holds a number in every slot and HINCRBY never has to special-case a type.
   await redis.hset(kRemaining(id), { [key]: e.supply === 0 ? -1 : e.supply })
+}
+
+/** A reveal machine's lineup, written whole. No remaining counters — a reveal
+ *  machine hands out nothing; each piece's own sale is its supply — and an
+ *  entry in each piece's index so its artist can see where it is listed. */
+export async function putLineup(id: string, entries: PoolEntry[]): Promise<void> {
+  if (entries.length === 0) return
+  const fields: Record<string, string> = {}
+  for (const e of entries) fields[entryKey(e)] = JSON.stringify(e)
+  await redis.hset(kPool(id), fields)
+  await Promise.all(entries.map((e) => redis.sadd(kUses(e.collection, e.tokenId), id)))
 }
 
 /** Remaining counts by entry key. `null` = unlimited. Upstash round-trips
@@ -545,12 +570,35 @@ export async function settleDeliveredCopy(
   if (after < 0) await redis.hincrby(key, machineId, 1).catch(() => {})
 }
 
-/** Every machine that has this piece in its pool. The pledge ledger doubles as
- *  the index: publish writes a field for every entry, unlimited ones included
- *  (as 0), and a delivery only ever decrements a field, never removes it. */
+/** Every machine that has this piece in its pool: capsule machines from the
+ *  pledge ledger (publish writes a field for every entry, unlimited ones as 0,
+ *  and a delivery only decrements), reveal machines from their own index. */
 export async function machinesUsingPiece(collection: string, tokenId: string): Promise<string[]> {
-  const raw = (await redis.hgetall<Record<string, unknown>>(kCommit(collection, tokenId))) ?? {}
-  return Object.keys(raw)
+  const [pledged, listed] = await Promise.all([
+    redis.hgetall<Record<string, unknown>>(kCommit(collection, tokenId)),
+    redis.smembers(kUses(collection, tokenId)),
+  ])
+  return [...new Set([...Object.keys(pledged ?? {}), ...(listed ?? [])])]
+}
+
+// ─── availability ────────────────────────────────────────────────────────────
+
+/** Turn reveal machines on or off for a piece. The caller has proved the
+ *  signed-in wallet holds admin on it. */
+export async function setPieceAvailable(collection: string, tokenId: string, available: boolean): Promise<void> {
+  const member = entryKey({ collection, tokenId })
+  if (available) await redis.srem(K_OPTOUT, member)
+  else await redis.sadd(K_OPTOUT, member)
+}
+
+/** Which of these pieces their artists have turned off, as entry keys. One
+ *  round trip for a whole lineup. Throws on a failed read so the caller can
+ *  fail closed. */
+export async function optedOutPieces(pieces: { collection: string; tokenId: string }[]): Promise<Set<string>> {
+  if (pieces.length === 0) return new Set()
+  const keys = pieces.map(entryKey)
+  const flags = await redis.smismember(K_OPTOUT, keys)
+  return new Set(keys.filter((_, i) => Number(flags[i]) === 1))
 }
 
 /** Supply pledged for an edition by machines OTHER than `exceptMachineId`. */
@@ -602,10 +650,17 @@ export async function getSpark(machineId: string, player: string): Promise<numbe
 export function buildSnapshot(
   pool: PoolEntry[],
   remaining: Record<string, number | null>,
+  rarity: Rarity = 'manual',
 ): SnapshotEntry[] {
   return pool.map((e) => {
     const key = entryKey(e)
     const has = Object.prototype.hasOwnProperty.call(remaining, key)
-    return { ...e, remaining: has ? remaining[key] : 0 }
+    const left = has ? remaining[key] : 0
+    // By supply, a piece weighs what it has left: each copy is one capsule in
+    // the machine. An unlimited count cannot be weighed, so it weighs 0 and is
+    // never drawn — publish refuses one in this mode, and failing closed keeps a
+    // corrupt row from swamping the table.
+    if (rarity === 'supply') return { ...e, weight: left ?? 0, remaining: left }
+    return { ...e, remaining: left }
   })
 }

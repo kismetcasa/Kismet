@@ -5,6 +5,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { discoverCapsuleMints } from '@/lib/experience/discovery'
 import { getClaim, getMachine } from '@/lib/experience/store'
+import { isReveal } from '@/lib/experience/types'
 
 /**
  * Every capsule this player holds for this machine that still owes them a
@@ -41,6 +42,8 @@ export async function GET(req: NextRequest) {
 
   const machine = await getMachine(machineId)
   if (!machine) return errorResponse(404, 'Machine not found')
+  // A reveal machine sells nothing, so it has no capsule to open.
+  if (isReveal(machine)) return errorResponse(400, 'This machine has no capsules to open')
   if (machine.state === 'draft' || machine.state === 'review') {
     return errorResponse(404, 'Machine not found')
   }

@@ -32,7 +32,8 @@ import {
   seedForEpoch,
   settleDeliveredCopy,
 } from '@/lib/experience/store'
-import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
+import { isReveal } from '@/lib/experience/types'
+import type { ClaimRecord, Rarity, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
@@ -103,6 +104,8 @@ export async function POST(req: NextRequest) {
 
   const machine = await getMachine(machineId)
   if (!machine) return errorResponse(404, 'Machine not found')
+  // A reveal machine sells nothing, so it has no capsule to open.
+  if (isReveal(machine)) return errorResponse(400, 'This machine has no capsules to open')
   // THE STATE GATE DECIDES WHO GETS PAID, SO IT IS ABOUT MONEY, NOT LISTING.
   //
   // Reaching this line means the capsule has ALREADY been minted and paid for —
@@ -233,7 +236,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(fresh) })
   }
   try {
-    return await drawAndDeliver({ machineId, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
+    return await drawAndDeliver({ machineId, rarity: machine.rarity, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
   } finally {
     await flight.release()
   }
@@ -242,6 +245,8 @@ export async function POST(req: NextRequest) {
 /** Steps 4–9 for a claim this request just created, run under its lock. */
 async function drawAndDeliver(params: {
   machineId: string
+  /** How the machine's odds are set; by supply, weights come from copies left. */
+  rarity: Rarity | undefined
   txHash: string
   unitIndex: number
   account: string
@@ -250,7 +255,7 @@ async function drawAndDeliver(params: {
   claim: ClaimRecord
   now: number
 }): Promise<NextResponse> {
-  const { machineId, txHash, unitIndex, account, units, now } = params
+  const { machineId, rarity, txHash, unitIndex, account, units, now } = params
   let claim = params.claim
 
   // Index the play NOW, not after delivery. The play feed is what the claims
@@ -266,7 +271,7 @@ async function drawAndDeliver(params: {
   const gate = await getGateConfig()
   const pool = await getPool(machineId)
   const remaining = await getRemaining(machineId)
-  const rawSnapshot = buildSnapshot(pool, remaining)
+  const rawSnapshot = buildSnapshot(pool, remaining, rarity)
 
   // Freeze-time exclusions, all fail-closed:
   //  - the Pass collection can NEVER be a prize. lib/pass-validity credits

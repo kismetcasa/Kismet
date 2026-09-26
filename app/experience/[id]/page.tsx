@@ -4,6 +4,8 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { getMachine } from '@/lib/experience/store'
 import { ExperienceMachine } from '@/components/ExperienceMachine'
+import { RevealMachine } from '@/components/RevealMachine'
+import { isReveal } from '@/lib/experience/types'
 
 interface Props {
   params: Promise<{ id: string }>
@@ -17,14 +19,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params
   const machine = await getMachine(id).catch(() => null)
   const name = machine?.name ?? 'Capsule machine'
+  const reveal = machine ? isReveal(machine) : false
   return {
     title: `${name} — Kismet`,
-    description: `Play ${name} on Kismet. Published odds; every play returns a real artwork.`,
+    description: reveal
+      ? `Pull ${name} on Kismet for free and collect the artwork you reveal.`
+      : `Play ${name} on Kismet. Published odds; every play returns a real artwork.`,
     alternates: { canonical: `${SITE_URL}/experience/${id}` },
     other: buildFarcasterEmbed({
       imageUrl:
         process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
-      buttonTitle: 'See the odds',
+      buttonTitle: reveal ? 'Pull' : 'See the odds',
       action: { url: `${SITE_URL}/experience/${id}` },
     }),
   }
@@ -42,7 +47,7 @@ export default async function MachinePage({ params }: Props) {
 
   return (
     <div className="px-4 py-8">
-      <ExperienceMachine id={id} />
+      {isReveal(machine) ? <RevealMachine id={id} /> : <ExperienceMachine id={id} />}
     </div>
   )
 }

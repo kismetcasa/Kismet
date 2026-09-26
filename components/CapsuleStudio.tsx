@@ -9,13 +9,14 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePassGate } from '@/hooks/usePassGate'
 import { isAddress } from '@/lib/address'
-import { deriveOdds, poolArtists, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
+import { deriveOdds, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
 import { formatOddsRatio, formatProbability, parseArtworkRef } from '@/lib/experience/format'
-import type { PoolEntry, SolvencyProblemCode } from '@/lib/experience/types'
+import type { PoolEntry, Rarity, SolvencyProblemCode } from '@/lib/experience/types'
 import { shortAddress } from '@/lib/inprocess'
 
 /**
- * The Capsule Studio: build a machine, see exactly what players will see, publish.
+ * The Capsule Studio: build a capsule machine from your own work, see exactly
+ * what players will see, publish.
  *
  * ── The one idea this form is organised around ──
  *
@@ -39,7 +40,6 @@ import { shortAddress } from '@/lib/inprocess'
 interface Row {
   collection: string
   tokenId: string
-  artist: string
   weight: string
   supply: string
 }
@@ -49,21 +49,23 @@ interface Problem {
   detail: string
 }
 
-const BLANK: Row = { collection: '', tokenId: '', artist: '', weight: '10', supply: '1' }
+const BLANK: Row = { collection: '', tokenId: '', weight: '10', supply: '1' }
 
 /** Rows complete enough to price. A half-typed row must not silently reshape
- *  the preview distribution, so it is excluded until it is whole. */
-function toEntries(rows: Row[]): PoolEntry[] {
+ *  the preview distribution, so it is excluded until it is whole. Every piece
+ *  is the creator's own, and by supply its copies are its weight — the same
+ *  two rules the publish route applies. */
+function toEntries(rows: Row[], creator: string, rarity: Rarity): PoolEntry[] {
   const out: PoolEntry[] = []
   for (const r of rows) {
-    if (!isAddress(r.collection) || !/^\d+$/.test(r.tokenId) || !isAddress(r.artist)) continue
-    const weight = Number(r.weight)
+    if (!isAddress(r.collection) || !/^\d+$/.test(r.tokenId)) continue
     const supply = Number(r.supply)
+    const weight = rarity === 'supply' ? supply : Number(r.weight)
     if (!Number.isFinite(weight) || !Number.isFinite(supply)) continue
     out.push({
       collection: r.collection.toLowerCase(),
       tokenId: r.tokenId,
-      artist: r.artist.toLowerCase(),
+      artist: creator,
       weight,
       supply,
     })
@@ -83,6 +85,7 @@ export function CapsuleStudio() {
   const [capsuleCollection, setCapsuleCollection] = useState('')
   const [capsuleTokenId, setCapsuleTokenId] = useState('')
   const [rows, setRows] = useState<Row[]>([{ ...BLANK }])
+  const [rarity, setRarity] = useState<Rarity>('manual')
   const [problems, setProblems] = useState<Problem[] | null>(null)
   const [capsuleInfo, setCapsuleInfo] = useState<{ maxSupply: number | null; minted: number } | null>(null)
   const [payees, setPayees] = useState<{ recipients: string[]; source: 'split' | 'creator' } | null>(null)
@@ -95,12 +98,12 @@ export function CapsuleStudio() {
    *  "Submitted for review" toast faded. */
   const [submitted, setSubmitted] = useState<{ id: string; name: string } | null>(null)
 
-  const entries = useMemo(() => toEntries(rows), [rows])
-  /** What each complete row's piece reports about itself: whether its artist
-   *  has allowed capsule machines, and who Kismet recorded minting it — so a
-   *  pasted link fills in its artist and an unallowed piece is flagged while
-   *  the creator is still building, not only when they run a check. */
-  const [pieces, setPieces] = useState<Record<string, { allowed: boolean | null; artist: string | null } | 'loading'>>({})
+  const creator = address?.toLowerCase() ?? ''
+  const entries = useMemo(() => toEntries(rows, creator, rarity), [rows, creator, rarity])
+  /** Whether each complete row's piece allows capsule machines, so an
+   *  unallowed piece is flagged while the creator is still building, not only
+   *  when they run a check. */
+  const [pieces, setPieces] = useState<Record<string, { allowed: boolean | null } | 'loading'>>({})
   useEffect(() => {
     for (const r of rows) {
       if (!isAddress(r.collection) || !/^\d+$/.test(r.tokenId)) continue
@@ -109,12 +112,10 @@ export function CapsuleStudio() {
       setPieces((p) => ({ ...p, [key]: 'loading' }))
       fetch(`/api/experience/piece?collection=${r.collection}&tokenId=${r.tokenId}`)
         .then((res) => (res.ok ? res.json() : null))
-        .then((d: { allowed: boolean | null; artist: string | null } | null) => {
-          setPieces((p) => ({ ...p, [key]: { allowed: d?.allowed ?? null, artist: d?.artist ?? null } }))
-          const artist = d?.artist
-          if (artist) setRows((rs) => rs.map((x) => (pieceKey(x) === key && !x.artist ? { ...x, artist } : x)))
+        .then((d: { allowed: boolean | null } | null) => {
+          setPieces((p) => ({ ...p, [key]: { allowed: d?.allowed ?? null } }))
         })
-        .catch(() => setPieces((p) => ({ ...p, [key]: { allowed: null, artist: null } })))
+        .catch(() => setPieces((p) => ({ ...p, [key]: { allowed: null } })))
     }
   }, [rows, pieces])
   // The real published table, computed by the production function over a
@@ -124,10 +125,8 @@ export function CapsuleStudio() {
     () => deriveOdds(entries.map((e) => ({ ...e, remaining: e.supply === 0 ? null : e.supply }))),
     [entries],
   )
-  const artists = useMemo(() => poolArtists(entries), [entries])
-  const creator = address?.toLowerCase() ?? ''
-  const foreignArtists = artists.filter((a) => a !== creator)
-  const hasFloor = entries.some((e) => e.supply === 0 && e.artist.toLowerCase() === creator)
+  const hasFloor = entries.some((e) => e.supply === 0)
+  const totalCopies = entries.reduce((sum, e) => sum + (e.supply > 0 ? e.supply : 0), 0)
 
   const setRow = (i: number, patch: Partial<Row>) =>
     setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
@@ -136,6 +135,7 @@ export function CapsuleStudio() {
     (dryRun: boolean) => ({
       id: id.trim().toLowerCase(),
       name: name.trim(),
+      rarity,
       capsule: { collection: capsuleCollection.trim(), tokenId: capsuleTokenId.trim() },
       entries,
       // No splitRecipients. The server resolves who the capsule actually pays
@@ -144,7 +144,7 @@ export function CapsuleStudio() {
       // person supplied both the pool and the list it was checked against.
       dryRun,
     }),
-    [capsuleCollection, capsuleTokenId, entries, id, name],
+    [capsuleCollection, capsuleTokenId, entries, id, name, rarity],
   )
 
   const submit = useCallback(
@@ -198,43 +198,21 @@ export function CapsuleStudio() {
     [authRequired, ensureSession, payload, router],
   )
 
-  if (submitted) {
-    return (
-      <div className="max-w-3xl mx-auto">
-        <header className="mb-6">
-          <h1 className="text-lg font-mono tracking-wider text-ink">capsule studio</h1>
-        </header>
-        <section className="border border-line p-6">
-          <p className="text-xs font-mono uppercase tracking-widest text-ink">submitted for review</p>
-          <p className="text-[11px] font-mono text-muted mt-2 max-w-lg leading-relaxed">
-            <span className="text-dim">{submitted.name}</span> is queued for a curator. It isn&apos;t public
-            yet; once approved it will be live at{' '}
-            <span className="text-dim">/experience/{submitted.id}</span>, and you&apos;ll be notified either
-            way.
-          </p>
-          <div className="flex flex-wrap gap-4 mt-4">
-            {address && (
-              <Link href={`/profile/${address}`} className="text-[11px] font-mono text-dim hover:text-ink underline">
-                see it on your profile →
-              </Link>
-            )}
-            <Link href="/experience" className="text-[11px] font-mono text-dim hover:text-ink underline">
-              back to experience →
-            </Link>
-          </div>
-        </section>
-      </div>
-    )
-  }
+  if (submitted) return <StudioSubmitted title="capsule studio" machine={submitted} address={address} />
 
   return (
     <div className="max-w-3xl mx-auto">
       <header className="mb-6">
         <h1 className="text-lg font-mono tracking-wider text-ink">capsule studio</h1>
         <p className="text-[11px] font-mono text-muted mt-1 max-w-xl leading-relaxed">
-          Build a machine. You set weights and supplies; the odds are derived from them and published
-          automatically — there is no percentage to type, and no way for the table players see to differ from
-          the one the draw uses.
+          A machine of your own work: players pay your capsule price once and get one of your pieces. You
+          set the rarity; the odds are derived from it and published automatically — there is no percentage
+          to type, and no way for the table players see to differ from the one the draw uses. To curate other
+          artists&apos; work, open a{' '}
+          <Link href="/experience/new?kind=reveal" className="text-dim hover:text-ink underline">
+            reveal machine
+          </Link>{' '}
+          instead.
         </p>
       </header>
 
@@ -253,13 +231,11 @@ export function CapsuleStudio() {
 
       <Section title="before you start">
         <ol className="flex flex-col gap-1.5 text-[11px] font-mono text-muted leading-relaxed list-decimal list-inside max-w-xl">
+          <li>Mint the capsule on Kismet: a priced edition that pays you.</li>
+          <li>Allow capsule machines on each piece you&apos;ll put in, from that piece&apos;s page.</li>
           <li>
-            Mint the capsule on Kismet: a priced edition whose split names every artist you plan to include.
-            The split is how each of them is paid.
-          </li>
-          <li>Ask each artist to allow capsule machines on their piece, from that piece&apos;s page.</li>
-          <li>
-            Add an unlimited piece of your own as a floor, so every capsule sold can always be honoured.
+            Add an unlimited piece as a floor, or cap the capsule at the number of copies you put in, so every
+            capsule sold can always be honoured.
           </li>
         </ol>
       </Section>
@@ -309,8 +285,37 @@ export function CapsuleStudio() {
       </Section>
 
       <Section
+        title="rarity"
+        note={
+          rarity === 'supply'
+            ? 'Every copy is one capsule, like a real gachapon box: a piece with 20 copies comes out 20 times as often as a one-of-one, and the odds shift as copies go.'
+            : 'You give each piece a weight. A piece with twice the weight comes out twice as often.'
+        }
+      >
+        <div className="flex gap-1" role="radiogroup" aria-label="Rarity">
+          {(['manual', 'supply'] as const).map((r) => (
+            <button
+              key={r}
+              role="radio"
+              aria-checked={rarity === r}
+              onClick={() => setRarity(r)}
+              className={`px-3 py-1.5 text-[10px] font-mono tracking-wider uppercase border transition-colors ${
+                rarity === r ? 'border-ink text-ink' : 'border-line text-subtle hover:text-dim'
+              }`}
+            >
+              {r === 'manual' ? 'set per piece' : 'by supply'}
+            </button>
+          ))}
+        </div>
+      </Section>
+
+      <Section
         title="the lineup"
-        note="Each artist must have granted this platform mint rights on the piece, and can revoke at any time. Supply 0 means unlimited."
+        note={
+          rarity === 'supply'
+            ? 'Your own pieces. Give each one a number of copies.'
+            : 'Your own pieces. Qty 0 means unlimited.'
+        }
       >
         <div className="flex flex-col gap-2">
           {rows.map((r, i) => (
@@ -329,15 +334,16 @@ export function CapsuleStudio() {
                 />
                 <input value={r.tokenId} onChange={(e) => setRow(i, { tokenId: e.target.value.replace(/\D/g, '') })} placeholder="token" inputMode="numeric" className={`${inputClass} w-20`} />
               </div>
-              <div className="flex gap-2">
-                <input value={r.artist} onChange={(e) => setRow(i, { artist: e.target.value.trim() })} placeholder="artist 0x…" spellCheck={false} className={`${inputClass} flex-1`} />
-                <label className="flex items-center gap-1">
-                  <span className="text-[10px] font-mono text-subtle uppercase">wt</span>
-                  <input value={r.weight} onChange={(e) => setRow(i, { weight: e.target.value.replace(/\D/g, '') })} inputMode="numeric" className={`${inputClass} w-16`} />
-                </label>
+              <div className="flex gap-2 justify-end">
+                {rarity === 'manual' && (
+                  <label className="flex items-center gap-1">
+                    <span className="text-[10px] font-mono text-subtle uppercase">wt</span>
+                    <input value={r.weight} onChange={(e) => setRow(i, { weight: e.target.value.replace(/\D/g, '') })} inputMode="numeric" aria-label={`Artwork ${i + 1} weight`} className={`${inputClass} w-16`} />
+                  </label>
+                )}
                 <label className="flex items-center gap-1">
                   <span className="text-[10px] font-mono text-subtle uppercase">qty</span>
-                  <input value={r.supply} onChange={(e) => setRow(i, { supply: e.target.value.replace(/\D/g, '') })} inputMode="numeric" className={`${inputClass} w-16`} />
+                  <input value={r.supply} onChange={(e) => setRow(i, { supply: e.target.value.replace(/\D/g, '') })} inputMode="numeric" aria-label={`Artwork ${i + 1} copies`} className={`${inputClass} w-16`} />
                 </label>
                 <button
                   onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
@@ -368,7 +374,7 @@ export function CapsuleStudio() {
               return (
                 <div key={`${o.collection}:${o.tokenId}`} className="flex items-center gap-3 px-3 py-2">
                   <span className="flex-1 min-w-0 text-[11px] font-mono text-dim truncate">
-                    #{o.tokenId} <span className="text-subtle">by {shortAddress(o.artist)}</span>
+                    #{o.tokenId} <span className="text-subtle">{shortAddress(o.collection)}</span>
                   </span>
                   <span className="text-[10px] font-mono text-subtle shrink-0">
                     {o.remaining === null ? 'unlimited' : `${o.remaining}`}
@@ -388,16 +394,12 @@ export function CapsuleStudio() {
           {payees ? (
             <p className="text-[11px] font-mono text-muted mt-2">
               {payees.source === 'creator' ? (
-                <>
-                  This capsule has no split, so every play pays you alone. Only your own artworks can
-                  go in the pool.
-                </>
+                <>This capsule has no split, so every play pays you.</>
               ) : (
                 <>
                   This capsule pays {payees.recipients.length} recipient
                   {payees.recipients.length === 1 ? '' : 's'}:{' '}
-                  {payees.recipients.map((a) => shortAddress(a)).join(', ')}. Every pool artist must be
-                  one of them.
+                  {payees.recipients.map((a) => shortAddress(a)).join(', ')}. You must be one of them.
                 </>
               )}
             </p>
@@ -406,18 +408,18 @@ export function CapsuleStudio() {
               Run <span className="text-dim">check</span> to see who this capsule actually pays.
             </p>
           )}
-          {foreignArtists.length > 0 && payees?.source === 'creator' && (
-            <p className="text-[11px] font-mono text-[#ff7c80] mt-1">
-              {foreignArtists.length} artwork{foreignArtists.length === 1 ? '' : 's'} in this pool
-              belong{foreignArtists.length === 1 ? 's' : ''} to someone this capsule does not pay.
+          {rarity === 'supply' ? (
+            <p className="text-[11px] font-mono text-muted mt-1">
+              {totalCopies} {totalCopies === 1 ? 'copy' : 'copies'} in the machine — cap the capsule at{' '}
+              {totalCopies} or fewer.
             </p>
-          )}
-          {!hasFloor && (
-            <p className="text-[11px] font-mono text-[#ffcf70] mt-1">
-              No floor piece yet. An unlimited artwork of your own guarantees every capsule can be honoured
-              even if every other artist withdraws — without one, you can only sell as many capsules as you
-              have capped copies.
-            </p>
+          ) : (
+            !hasFloor && (
+              <p className="text-[11px] font-mono text-[#ffcf70] mt-1">
+                No floor piece yet. An unlimited piece guarantees every capsule can be honoured — without one,
+                you can only sell as many capsules as you have capped copies.
+              </p>
+            )
           )}
         </Section>
       )}
@@ -481,10 +483,49 @@ export function CapsuleStudio() {
   )
 }
 
-const inputClass =
+/** Where a machine sent for review lands: it is not public yet, so the page
+ *  says where it will be and where the creator can watch it meanwhile. */
+export function StudioSubmitted({
+  title,
+  machine,
+  address,
+}: {
+  title: string
+  machine: { id: string; name: string }
+  address: string | undefined
+}) {
+  return (
+    <div className="max-w-3xl mx-auto">
+      <header className="mb-6">
+        <h1 className="text-lg font-mono tracking-wider text-ink">{title}</h1>
+      </header>
+      <section className="border border-line p-6">
+        <p className="text-xs font-mono uppercase tracking-widest text-ink">submitted for review</p>
+        <p className="text-[11px] font-mono text-muted mt-2 max-w-lg leading-relaxed">
+          <span className="text-dim">{machine.name}</span> is queued for a curator. It isn&apos;t public
+          yet; once approved it will be live at{' '}
+          <span className="text-dim">/experience/{machine.id}</span>, and you&apos;ll be notified either
+          way.
+        </p>
+        <div className="flex flex-wrap gap-4 mt-4">
+          {address && (
+            <Link href={`/profile/${address}`} className="text-[11px] font-mono text-dim hover:text-ink underline">
+              see it on your profile →
+            </Link>
+          )}
+          <Link href="/experience" className="text-[11px] font-mono text-dim hover:text-ink underline">
+            back to experience →
+          </Link>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+export const inputClass =
   'bg-transparent border border-line px-3 py-2 text-xs font-mono text-ink placeholder:text-subtle focus:outline-none focus:border-dim min-w-0'
 
-function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
+export function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
   return (
     <section className="mb-8">
       <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">{title}</h2>
@@ -494,7 +535,7 @@ function Section({ title, note, children }: { title: string; note?: string; chil
   )
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
       <span className="text-[10px] font-mono uppercase tracking-wider text-subtle">{label}</span>
@@ -504,7 +545,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
-const pieceKey = (r: { collection: string; tokenId: string }) =>
+export const pieceKey = (r: { collection: string; tokenId: string }) =>
   `${r.collection.toLowerCase()}:${/^\d+$/.test(r.tokenId) ? BigInt(r.tokenId).toString() : r.tokenId}`
 
 /** One lineup row's standing with capsule machines, while the creator builds. */
@@ -513,7 +554,7 @@ function PieceStatus({
   standing,
 }: {
   row: Row
-  standing: { allowed: boolean | null; artist: string | null } | 'loading' | undefined
+  standing: { allowed: boolean | null } | 'loading' | undefined
 }) {
   if (!standing || standing === 'loading' || standing.allowed === null) return null
   const href = `/artwork/${row.collection.toLowerCase()}/${row.tokenId}`
@@ -521,7 +562,7 @@ function PieceStatus({
     <p className="text-[10px] font-mono text-subtle">allowed for capsule machines</p>
   ) : (
     <p className="text-[10px] font-mono text-[#ffcf70]">
-      Its artist hasn&apos;t allowed capsule machines yet — they can from{' '}
+      Not allowed for capsule machines yet — allow it from{' '}
       <Link href={href} className="underline hover:text-ink">
         the piece&apos;s page
       </Link>
@@ -531,7 +572,7 @@ function PieceStatus({
 }
 
 /** A problem's detail with any artwork path in it made a link. */
-function DetailWithLinks({ text }: { text: string }) {
+export function DetailWithLinks({ text }: { text: string }) {
   const parts = text.split(/(\/artwork\/0x[0-9a-fA-F]{40}\/\d+)/)
   return (
     <>

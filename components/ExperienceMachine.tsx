@@ -68,6 +68,7 @@ interface MachinePayload {
     name: string
     state: string
     creator: string
+    rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
     splitRecipients: string[]
@@ -670,6 +671,11 @@ export function ExperienceMachine({ id }: { id: string }) {
         <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-3">
           what&apos;s inside · published odds
         </h2>
+        {data.machine.rarity === 'supply' && (
+          <p className="text-[11px] font-mono text-subtle -mt-1.5 mb-3">
+            Every copy is one capsule, so a piece&apos;s odds are its copies left — they shift as copies go.
+          </p>
+        )}
         <div className="border border-line divide-y divide-line">
           {data.odds.map((o) => {
             const ratio = formatOddsRatio(o.probability)

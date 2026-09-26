@@ -16,7 +16,7 @@ import {
   entryKey,
   poolArtists,
 } from './draw'
-import type { PoolEntry, SolvencyProblemCode } from './types'
+import type { PoolEntry, Rarity, SolvencyProblemCode } from './types'
 
 export interface SolvencyInput {
   /** Immutable on-chain ceiling on how many capsules can ever exist. null =
@@ -52,6 +52,10 @@ export interface SolvencyInput {
    *  on-chain (lib/experience/authority.readOperatorGrant). Absent means the
    *  chain could not answer, and fails closed like unreadable headroom. */
   operatorGrant: Record<string, boolean>
+  /** How the odds are set. By supply, weights are derived from copies left, so
+   *  a typed weight means nothing and every piece needs a finite supply. Absent
+   *  means `manual`. */
+  rarity?: Rarity
 }
 
 /** A problem and the sentence a creator reads about it. The code union lives in
@@ -80,6 +84,7 @@ export function findFloorPiece(
 export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
   const problems: SolvencyProblem[] = []
   const { entries, creator, passCollection } = input
+  const bySupply = input.rarity === 'supply'
 
   if (entries.length === 0) {
     problems.push({ code: 'empty-pool', detail: 'a machine needs at least one artwork' })
@@ -114,11 +119,22 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
     }
     seen.add(key)
 
-    if (!Number.isInteger(e.weight) || e.weight <= 0 || e.weight > MAX_WEIGHT) {
-      problems.push({ code: 'bad-weight', detail: `${key} has weight ${e.weight}` })
-    }
-    if (!Number.isInteger(e.supply) || e.supply < 0) {
-      problems.push({ code: 'bad-supply', detail: `${key} has supply ${e.supply}` })
+    if (bySupply) {
+      // Its copies ARE its weight, so an unlimited piece would have no weight
+      // at all, and a count past MAX_WEIGHT would break the draw's bound.
+      if (!Number.isInteger(e.supply) || e.supply <= 0 || e.supply > MAX_WEIGHT) {
+        problems.push({
+          code: 'bad-supply',
+          detail: `${key} needs a number of copies between 1 and ${MAX_WEIGHT} — with rarity by supply, its copies are its odds`,
+        })
+      }
+    } else {
+      if (!Number.isInteger(e.weight) || e.weight <= 0 || e.weight > MAX_WEIGHT) {
+        problems.push({ code: 'bad-weight', detail: `${key} has weight ${e.weight}` })
+      }
+      if (!Number.isInteger(e.supply) || e.supply < 0) {
+        problems.push({ code: 'bad-supply', detail: `${key} has supply ${e.supply}` })
+      }
     }
 
     if (!splits.has(e.artist.toLowerCase())) {
@@ -147,7 +163,10 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
     } else if (!control) {
       problems.push({
         code: 'artist-not-admin',
-        detail: `${e.artist} is named as the artist of ${key} but does not hold admin on it`,
+        detail:
+          e.artist.toLowerCase() === creator.toLowerCase()
+            ? `you don't hold admin on ${key} — a capsule machine holds only your own work`
+            : `${e.artist} is named as the artist of ${key} but does not hold admin on it`,
       })
     }
 
@@ -253,7 +272,9 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
         code: 'undercollateralised',
         detail:
           outstanding === null
-            ? 'an open-edition capsule needs an unlimited artwork by the creator to back it'
+            ? bySupply
+              ? `with rarity by supply every piece is capped, so the capsule must be too — cap it at ${cappedPledged} or fewer`
+              : 'an open-edition capsule needs an unlimited artwork by the creator to back it'
             : `${outstanding} capsules can be sold but only ${cappedPledged} artworks are guaranteed`,
       })
       if (foreignOpen) {
@@ -294,4 +315,56 @@ export function coverage(input: {
     prizesRemaining: input.remainingPrizes,
     covered: input.remainingPrizes >= outstanding,
   }
+}
+
+/**
+ * The publish gate for a reveal machine. Far smaller than the capsule gate,
+ * because a reveal machine promises nothing: a pull costs nothing, and the
+ * player buys what it reveals through that piece's own sale, which pays its
+ * own split. What is left to check is whose work it is and whether they have
+ * said no.
+ *
+ * Whether each piece is on sale is NOT checked. A piece off sale simply is not
+ * shown until it is, so a lineup can be built ahead of a drop.
+ */
+export function checkLineup(input: {
+  entries: { collection: string; tokenId: string }[]
+  /** Per entry key: who Kismet recorded minting it, or null for no record. */
+  artists: Record<string, string | null>
+  /** Entry keys whose artist turned reveal machines off, or that cannot be
+   *  shown at all (lib/experience/eligibility). */
+  unavailable: Set<string>
+}): SolvencyProblem[] {
+  const problems: SolvencyProblem[] = []
+  if (input.entries.length === 0) {
+    problems.push({ code: 'empty-pool', detail: 'a machine needs at least one artwork' })
+    return problems
+  }
+  if (input.entries.length > MAX_POOL_ENTRIES) {
+    problems.push({
+      code: 'too-many-entries',
+      detail: `${input.entries.length} artworks exceeds the ${MAX_POOL_ENTRIES} limit`,
+    })
+  }
+  const seen = new Set<string>()
+  for (const e of input.entries) {
+    const key = entryKey(e)
+    if (seen.has(key)) {
+      problems.push({ code: 'duplicate-entry', detail: `${key} appears twice` })
+      continue
+    }
+    seen.add(key)
+    if (!input.artists[key]) {
+      problems.push({
+        code: 'artist-unknown',
+        detail: `Kismet has no record of who made ${key} — only artworks minted on Kismet can go in a reveal machine`,
+      })
+    } else if (input.unavailable.has(key)) {
+      problems.push({
+        code: 'piece-unavailable',
+        detail: `${key} isn't available for machines — its artist has turned them off, or it can't be shown`,
+      })
+    }
+  }
+  return problems
 }
