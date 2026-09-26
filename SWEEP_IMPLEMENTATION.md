@@ -91,7 +91,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 1. **Header**: `sweep` · subtitle `one of each of the cheapest ETH mints`.
    A size toggle `10 | 20`.
 2. **Rows** (one per candidate, in rank order): thumbnail (`MomentImage`,
-   thumbhash placeholder), artwork name, artist name/avatar (enriched the
+   thumbhash placeholder), artwork name, artist name (enriched the
    same way feed cards are), price `Ξ 0.0010` + small `+ fee` hint, a remove
    `×`. A row the verification step dropped shows greyed with its reason
    (`sold out`, `sale ended`, `already yours`) and is not counted.
@@ -118,7 +118,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 | Simulation drops rows | Refill from the ranked reserve and re-simulate (≤ 2 rounds); dropped rows stay visible, greyed, with reason |
 | Bundle reverts on-chain (a 1/1 minted by someone else between simulation and mining) | Error toast `Sweep reverted on-chain — nothing was charged`; the button reads `retry`, which re-verifies and drops the culprit |
 | User rejects in wallet | Existing `isUserRejection` handling via `useWalletRecovery` (`sweep` toast id) |
-| Record POSTs fail | Bounded retry (3, backoff, `keepalive`) then `reportClientError('sweep.record_failed')`; success toast still shows because the mint landed |
+| Record POSTs fail | Bounded retry (5, backoff ≈ 6 s in all, `keepalive`) then `reportClientError('sweep.record_failed')`; success toast still shows because the mint landed |
 | Wants more than 20 | `sweep the next N` rounds; the cap stays `MAX_COLLECT_ALL_BATCH` (wallet-preview readability) |
 
 ### 1.4 Copy rules
@@ -226,18 +226,11 @@ as a pure function:
 ```ts
 // lib/sweepRank.ts (pure, no I/O — verifier target); the string-wei adapter,
 // the admission rule and the pool cut live in lib/sweepIndexCore.ts
-export interface RankOptions {
-  /** Optional per-artist ceiling; undefined = no cap (v1 default). */
-  perArtist?: number
-  /** Optional minimum outlay in wei; undefined = no floor (v1 default). */
-  floorWei?: bigint
-}
-export function rankSweepCandidates(items: SweepIndexItem[], opts?: RankOptions): SweepIndexItem[]
+export function rankSweepCandidates<T extends RankableSweepItem>(items: readonly T[]): T[]
 ```
 
-The two options exist so a cap or a floor becomes a one-line change later
-(§8), and so the verifier can pin their semantics now. **v1 ships with both
-undefined.**
+No cap and no floor: both were weighed and not built (§8). Either would be a
+few lines in this function if the data ever calls for it.
 
 ### 2.4 Record shape and persistence
 
@@ -249,15 +242,11 @@ export interface SweepIndexItem {
   priceWei: string       // FPSS pricePerToken
   feeWei: string         // that collection's mintFee()
   outlayWei: string      // price + fee (the sort key)
-  maxPerAddress: string  // "0" = unlimited
-  remaining: string | null // null = open edition
-  saleEnd: string        // unix seconds, or the open-ended sentinel
   creator: string | null // resolved + folded
   createdAt: string | null
   // Moment-shaped preview fields so /api/sweep can run the feed's identity
-  // enrichment (enrichMomentsWithKismetMeta) unchanged. ✏️ No collectionName:
-  // enrichment already stitches the curated-collection chip (kismetCollection)
-  // at serve time, exactly as the feeds get it.
+  // enrichment (enrichMomentsWithKismetMeta) unchanged; the sheet reads only
+  // the username from that overlay.
   name?: string
   image?: string
   thumbhash?: string
@@ -305,10 +294,11 @@ GET /api/sweep?n=10            n ∈ [1, 20], default 10
     eligible: 37,
     maxN: 20, n: 10,
     items: (SweepIndexItem & {   // top max(3n, 30) after serve-time filters
-      creatorProfile: { username, avatarUrl },      // from enrichment
-      collection: { name, image } | null,           // curated-collection chip
+      creatorProfile: { username },                 // from enrichment
     })[]
   }
+→ 200 { enabled: true, updatedAt, eligible: 0, items: [] }  // no build yet, or a pool
+                                 // older than SWEEP_INDEX_MAX_AGE_MS (24 h): the button hides
 → 200 { enabled: false }         // flag off (cached 30 s) — or, uncached, on a flag-read failure
 → 503 { error }                  // hide sets unreadable: fail CLOSED, never serve unfiltered
 Cache-Control: public, s-maxage=30, stale-while-revalidate=120
@@ -330,7 +320,7 @@ Route rules (`app/api/sweep/route.ts`):
   `getHiddenCollectionsSet`, `getHiddenUsersSet` (memoized, 15 min) so a piece
   hidden after the hourly build disappears within 15 minutes, not 60.
 - **Enrichment**: run `enrichMomentsWithKismetMeta` over the returned rows
-  (mapped to the `Moment` shape) for artist username/avatar, exactly like
+  (mapped to the `Moment` shape) for the artist username, exactly like
   `app/api/featured/collections-hydrated`. Hidden-identity scrubbing rides
   along.
 - **No account parameter.** The response is viewer-independent so it caches;
@@ -526,7 +516,7 @@ N records instead of N fetches of the same receipt.
 
 Four layers, three of them in `npm run check`:
 
-- **`verify:sweep`** (`scripts/verify-sweep.ts`, 171 assertions) — the pure rules
+- **`verify:sweep`** (`scripts/verify-sweep.ts`, 157 assertions) — the pure rules
   (window, supply, admission, ranking incl. the artist-interleave and a property
   sweep, pool cut, serve selection, `clampSweepN`, the Moment projection, the
   bundle builders decoded back to `mint(FPSS, id, 1, [KISMET_REFERRAL], (mintTo,
@@ -540,7 +530,7 @@ Four layers, three of them in `npm run check`:
   the balance-trim boundary to the wei, simulation drop + refill, the
   simulation cap, insufficient-funds shedding, the gas refinement, an RPC
   failure at each step, a malformed node answer — plus the pool staleness rule.
-- **`verify:sweep-index`** (`scripts/verify-sweep-index.ts`, 27 assertions) —
+- **`verify:sweep-index`** (`scripts/verify-sweep-index.ts`, 25 assertions) —
   `rebuildSweepIndex` on the real modules against the fake chain over HTTP and
   the mock Upstash: every candidate rule, both chain passes, the chunking (200 /
   100 / one fee read) and the pool cut, the persisted blob's round trip,
@@ -585,8 +575,8 @@ for the ETH-only, cheapest-N design, with the reasons:
 
 | Item | Needed for v1? | Assessment |
 |---|---|---|
-| **Price floor** (min outlay) | **No** | "Excluding free" already floors at 1 wei. A dust-priced piece (say 0.00001 ETH) would rank first, but it still pays the full protocol fee, minting is Pass-gated, the pool is small and curated, and the hide-moment lever removes an abuser in one click. The sheet shows every row before signing, so nobody sweeps blind. Keep `floorWei` as a ranker option, off |
-| **Per-artist cap** | **No** | Its purpose (variety) is mostly served by the zero-cost tie-break: within a price tier, artists interleave, so a wallet with twenty pieces at one price cannot fill a sweep from that tier. Across tiers a cheaper artist legitimately wins; that is what "cheapest" means. Keep `perArtist` as a ranker option, off |
+| **Price floor** (min outlay) | **No** | "Excluding free" already floors at 1 wei. A dust-priced piece (say 0.00001 ETH) would rank first, but it still pays the full protocol fee, minting is Pass-gated, the pool is small and curated, and the hide-moment lever removes an abuser in one click. The sheet shows every row before signing, so nobody sweeps blind. Not built; a floor would be a few lines in `rankSweepCandidates` |
+| **Per-artist cap** | **No** | Its purpose (variety) is mostly served by the zero-cost tie-break: within a price tier, artists interleave, so a wallet with twenty pieces at one price cannot fill a sweep from that tier. Across tiers a cheaper artist legitimately wins; that is what "cheapest" means. Not built; a cap would be a few lines in `rankSweepCandidates` |
 | **Per-item max price** | **No** | Cheapest-first bounds it by construction: the priciest item in a sweep is the N-th cheapest live mint. The sheet shows it |
 | **Spend cap** | **No** | The total is displayed to the wei and the wallet balance trims the basket; a separate cap adds a knob without adding protection |
 | **Size cap (20)** | **Yes, keep** | Wallet-preview readability, and `/api/collect`'s per-IP budget is sized for it. Larger sweeps are rounds |
@@ -643,7 +633,7 @@ written; ✏️ = corrected (the body above already carries the correction);
 | Adding funnel events needs a server allowlist change too | ✅ (no extra work) | `app/api/funnel/route.ts` builds its allowlist from `FUNNEL_EVENTS`, so extending the array updates both |
 | `FilterPill` can be reused by the pill | ✏️ moot | The pill was withdrawn with the one-button decision (§1.1); `SweepButton` carries its own classes |
 | `formatEthChip` is reusable | ✏️ moot | Module-local to `components/CollectAllAction.tsx`; the sheet formats through `formatPrice` instead, nothing moved |
-| `enrichMomentsWithKismetMeta` supplies username/avatar and the curated-collection chip from a `Moment[]` | ✅ | `lib/momentEnrichment.ts`; `collectionName` was therefore dropped from the index |
+| `enrichMomentsWithKismetMeta` supplies the creator username from a `Moment[]` | ✅ | `lib/momentEnrichment.ts`; the sheet reads nothing else from the overlay, so the response carries nothing else |
 | Flag as `kismetart:flags:sweep`, plain `'1'/'0'` | ✏️ | Renamed `kismetart:sweep-enabled` to match the existing flags, read via `isFlagSet` (Upstash returns the number `1` for a stored `'1'`) |
 | `MAX_REASONABLE_MINT_FEE_WEI` is importable | ✏️ | It was module-private; exported now |
 | `MomentMeta.createdAt` is the pinned first-seen instant | ✅ | `lib/notifications.ts` |

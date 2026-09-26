@@ -12,7 +12,7 @@ import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { trackFunnel } from '@/lib/funnel'
 import { DiscoverPillBar } from './DiscoverFilters'
-import { SweepButton } from './SweepButton'
+import { SweepButton, useSweepAvailable } from './SweepButton'
 import {
   clearedFilters,
   discoverUrl,
@@ -724,6 +724,7 @@ export function DiscoverMarketView({
   // catalog-census figures, which EXCLUDE the Patron/pass collection — so no
   // membership activity leaks into the art glance). Secondary: total live
   // listings. Each falls back to the ordering hint until its total lands.
+  const sweepAvailable = useSweepAvailable()
   const statLine =
     market === 'primary'
       ? stats == null
@@ -770,7 +771,7 @@ export function DiscoverMarketView({
       style={{ top: 'calc(3.5rem + var(--safe-top))' }}
     >
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className={sweepAvailable ? 'flex flex-wrap items-center gap-x-4 gap-y-2' : 'flex items-center justify-between gap-4'}>
           {/* overflow-hidden: the active pill is its own rounded-full — at
               fractional device-pixel ratios its corner arc can poke past the
               container's inner curve and sit on the border. Clipping to the
@@ -791,12 +792,13 @@ export function DiscoverMarketView({
             ))}
           </div>
           {/* The one sweep entry point (SWEEP_IMPLEMENTATION.md §1.1): renders
-              nothing until /api/sweep reports an enabled, non-empty pool. The
-              row wraps so a narrow phone drops the stats block under the
-              toggle + button (ml-auto keeps it right-aligned) instead of
-              squeezing all three. */}
+              nothing until /api/sweep reports an enabled, non-empty pool.
+              Only while it renders does the row wrap (and the stats block take
+              ml-auto), so a narrow phone drops the stats block under the
+              toggle + button instead of squeezing all three; without the
+              button the row keeps its original two-child layout unchanged. */}
           <SweepButton />
-          <div className="ml-auto text-right leading-tight">
+          <div className={sweepAvailable ? 'ml-auto text-right leading-tight' : 'text-right leading-tight'}>
             <div className="font-mono text-[11px] uppercase tracking-widest text-subtle">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
             {/* The glance line above stays; this opens the full-figure dialog. */}

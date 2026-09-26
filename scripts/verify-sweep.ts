@@ -14,7 +14,6 @@
 //     price tier (one wallet with many equal-priced pieces can never fill a
 //     tier while another artist is there), newest-first within an artist,
 //     unattributed items never grouped, deterministic for any input order;
-//     the DORMANT options (perArtist, floorWei) behave as documented;
 //   - the pool cut, the serve prefix (3n floored at 30), the ?n= clamp, the
 //     serve-time hide filters, and the Moment projection /api/sweep enriches;
 //   - the client half (lib/sweepBatch.ts): every signed sub-call decodes to
@@ -58,7 +57,6 @@ import {
   buildSweepCalls,
   sweepBundle,
   sweepSimulationArgs,
-  sweepTotalValue,
   trimToBudget,
   type SweepBasketItem,
 } from '../lib/sweepBatch.ts'
@@ -119,9 +117,6 @@ function idx(over: Partial<SweepIndexItem> & { tokenId: string }): SweepIndexIte
     priceWei: '1000',
     feeWei: FEE.toString(),
     outlayWei: (1000n + FEE).toString(),
-    maxPerAddress: '0',
-    remaining: null,
-    saleEnd: OPEN.toString(),
     creator: ART_1,
     artist: ART_1,
     createdAt: '2026-09-01T00:00:00Z',
@@ -188,13 +183,9 @@ check('unset row (all zeros) is excluded', !isLivePaidSale(sale(0n, { end: 0n })
   check('admitted: address lowercased', open?.address === COL_A.toLowerCase())
   check('admitted: tokenId carried', open?.tokenId === '7')
   check('admitted: priceWei / feeWei / outlayWei = price + fee', open?.priceWei === '1000' && open?.feeWei === FEE.toString() && open?.outlayWei === (1000n + FEE).toString())
-  check('admitted: maxPerAddress carried as a string', open?.maxPerAddress === '2')
-  check('admitted: unreadable supply → remaining null', open?.remaining === null)
-  check('admitted: saleEnd preserves the sentinel', open?.saleEnd === OPEN.toString())
   check('admitted: creator / artist / createdAt pass through', open?.creator === ART_1 && open?.artist === ART_1 && open?.createdAt === '2026-09-02T00:00:00Z')
   check('admitted: preview fields carried', open?.name === 'Dawn' && open?.image === 'ar://img' && open?.thumbhash === 'th')
-  const capped = buildSweepItem(cand('8', ART_2), sale(5n), { maxSupply: 10n, totalMinted: 7n }, FEE, NOW)
-  check('capped edition → remaining "3"', capped?.remaining === '3')
+  check('capped edition with room → admitted', buildSweepItem(cand('8', ART_2), sale(5n), { maxSupply: 10n, totalMinted: 7n }, FEE, NOW) !== null)
   const bare = buildSweepItem(cand('9', null, null), sale(5n), { maxSupply: 0n, totalMinted: 1n }, FEE, NOW)
   check('no preview fields → keys absent, not undefined-valued', !!bare && !('name' in bare) && !('image' in bare) && !('thumbhash' in bare))
   check('unattributed candidate → creator/artist null, createdAt null', bare?.creator === null && bare?.artist === null && bare?.createdAt === null)
@@ -232,22 +223,6 @@ console.log('rankSweepCandidates')
   check('unknown dates sort after known ones, then by key', r.map((i) => i.tokenId).join() === 'y,x,z')
 }
 {
-  const items = [rk('a', 100n, ART_1, 3), rk('b', 100n, ART_1, 2), rk('c', 100n, ART_1, 1), rk('d', 100n, ART_2, 2), rk('e', 100n, ART_2, 1), rk('f', 200n, ART_1, 9), rk('g', 50n, null, 1), rk('h', 50n, null, 2)]
-  const capped = rankSweepCandidates(items, { perArtist: 1 })
-  const perArtist = new Map<string, number>()
-  for (const i of capped) if (i.artist) perArtist.set(i.artist, (perArtist.get(i.artist) ?? 0) + 1)
-  check('perArtist=1: at most one item per artist', [...perArtist.values()].every((n) => n === 1), JSON.stringify([...perArtist]))
-  check('perArtist: unattributed items are never capped', capped.filter((i) => i.artist === null).length === 2)
-  check('perArtist keeps the cheapest of each artist (rank order preserved)', capped.map((i) => i.tokenId).join() === 'h,g,a,d')
-  const all = rankSweepCandidates(items)
-  for (const bad of [0, -1, 1.5, Number.NaN]) {
-    check(`invalid perArtist ${bad} is ignored (no cap)`, rankSweepCandidates(items, { perArtist: bad }).length === all.length)
-  }
-  const floored = rankSweepCandidates(items, { floorWei: 100n })
-  check('floorWei drops everything below the floor', floored.every((i) => i.outlayWei >= 100n) && floored.length === all.length - 2)
-  check('no options → nothing dropped', all.length === items.length)
-}
-{
   // Property sweep over random baskets.
   const artists = [ART_1, ART_2, ART_3, null]
   const items: RankableSweepItem[] = []
@@ -274,10 +249,6 @@ console.log('rankSweepCandidates')
     i = j
   }
   check('property: no artist takes the first two slots of a shared tier', farmingSafe)
-  const capped = rankSweepCandidates(items, { perArtist: 2 })
-  const counts = new Map<string, number>()
-  for (const i of capped) if (i.artist) counts.set(i.artist, (counts.get(i.artist) ?? 0) + 1)
-  check('property: perArtist=2 never exceeded', [...counts.values()].every((n) => n <= 2))
 }
 
 // ── 5. pool cut + serve prefix ──────────────────────────────────────────────
@@ -354,19 +325,18 @@ console.log('buildSweepCalls / sweepBundle / sweepSimulationArgs')
   const custom = buildSweepCalls(items.slice(0, 1), MINT_TO, 'hello')
   const [, commentC] = decodeAbiParameters(parseAbiParameters('address, string'), decodeFunctionData({ abi: MINT_1155_ABI, data: custom[0].data }).args[4])
   check('a custom comment passes through', commentC === 'hello')
-  check('sweepTotalValue sums every sub-call value', sweepTotalValue(calls) === 1_000n + FEE + 5_000_000_000_000_000n + FEE)
 
   const strict = sweepBundle(calls)
   check('signed bundle: aggregate3Value', strict.functionName === 'aggregate3Value')
   check('signed bundle: allowFailure is FALSE on every sub-call (never loosen — stranding hazard)', strict.args[0].every((c) => c.allowFailure === false))
   check('signed bundle: targets / calldata / values align with the calls', strict.args[0].every((c, i) => c.target === calls[i].to && c.callData === calls[i].data && c.value === calls[i].value))
-  check('signed bundle: msg.value is the sum', strict.value === sweepTotalValue(calls))
+  check('signed bundle: msg.value is the sum of the sub-call values', strict.value === 1_000n + FEE + 5_000_000_000_000_000n + FEE)
 
   const sim = sweepSimulationArgs(calls)
   check('simulation args: allowFailure is TRUE on every sub-call', sim.args[0].every((c) => c.allowFailure === true))
   check('simulation args: same targets / calldata / values as the signed bundle', sim.args[0].every((c, i) => c.target === strict.args[0][i].target && c.callData === strict.args[0][i].callData && c.value === strict.args[0][i].value))
   check('simulation args: same msg.value and function', sim.value === strict.value && sim.functionName === strict.functionName)
-  check('empty basket → no calls, zero value', buildSweepCalls([], MINT_TO).length === 0 && sweepTotalValue([]) === 0n)
+  check('empty basket → no calls, zero value', buildSweepCalls([], MINT_TO).length === 0 && sweepBundle([]).value === 0n)
 }
 
 console.log('trimToBudget / applySimulation / headroom')
@@ -530,14 +500,10 @@ async function main() {
     priceWei: '1',
     feeWei: '1',
     outlayWei: '2',
-    maxPerAddress: '0',
-    remaining: null,
-    saleEnd: '0',
     creator: artist,
     artist,
     createdAt: new Date(1_700_000_000_000 + id * 1000).toISOString(),
-    creatorProfile: { username: null, avatarUrl: null },
-    collection: null,
+    creatorProfile: { username: null },
   })
   const rowsOf = (rows: SweepRow[], state: SweepRow['state']) => rows.filter((r) => r.state === state)
   const ids = (rows: SweepRow[]) => rows.map((r) => r.item.tokenId).join()

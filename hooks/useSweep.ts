@@ -62,10 +62,6 @@ export interface UseSweepReturn {
   totalWei: bigint
   /** Rows trimmed because the wallet cannot cover them. */
   unaffordable: number
-  /** Estimated gas cost of the strict bundle (wei), when an estimate was available. */
-  gasCostWei: bigint | null
-  /** When the pool was last rebuilt (from /api/sweep). */
-  updatedAt: number | null
   result: { hash: Hash; minted: number } | null
   open: (n?: number) => Promise<void>
   remove: (key: string) => void
@@ -126,8 +122,6 @@ export function useSweep(): UseSweepReturn {
   const [status, setStatus] = useState<SweepStatus>('idle')
   const [rows, setRowsState] = useState<SweepRow[]>([])
   const [n, setN] = useState<number>(SWEEP_DEFAULT_N)
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
-  const [gasCostWei, setGasCostWei] = useState<bigint | null>(null)
   const [result, setResult] = useState<{ hash: Hash; minted: number } | null>(null)
 
   // confirm() reads the latest rows through a ref so a user removal between
@@ -156,7 +150,6 @@ export function useSweep(): UseSweepReturn {
       nRef.current = size
       verifiedForRef.current = null
       setResult(null)
-      setGasCostWei(null)
       setRows([])
       setStatus('loading')
 
@@ -188,7 +181,6 @@ export function useSweep(): UseSweepReturn {
         setStatus('empty')
         return
       }
-      setUpdatedAt(data.updatedAt)
       const pending = data.items.filter(validPoolRow).map(pendingRow)
       setRows(pending)
       setStatus('verifying')
@@ -213,7 +205,6 @@ export function useSweep(): UseSweepReturn {
       }
       verifiedForRef.current = account
       setRows(verified.rows)
-      setGasCostWei(verified.gasCostWei)
       setStatus(verified.rows.some((r) => r.state === 'basket') ? 'ready' : 'empty')
     },
     [ensureBase, ensureConnected, publicClient, setRows, showError],
@@ -334,8 +325,6 @@ export function useSweep(): UseSweepReturn {
     n,
     totalWei: sumOutlay(basketRows),
     unaffordable: rows.filter((r) => r.state === 'unaffordable').length,
-    gasCostWei,
-    updatedAt,
     result,
     open,
     remove,

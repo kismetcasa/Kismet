@@ -610,9 +610,6 @@ async function main() {
       priceWei: (outlay - MINT_FEE).toString(),
       feeWei: MINT_FEE.toString(),
       outlayWei: outlay.toString(),
-      maxPerAddress: '0',
-      remaining: null,
-      saleEnd: '18446744073709551615',
       creator: ARTIST.toLowerCase(),
       artist: ARTIST.toLowerCase(),
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -624,8 +621,8 @@ async function main() {
     const served = await json('/api/sweep?n=99')
     const servedIds = ((served.body?.items as { tokenId: string }[] | undefined) ?? []).map((i) => i.tokenId).join()
     ok(served.body?.n === 20 && servedIds === '1,3', 'n clamps to the cap; the moment hidden after the build is filtered at serve time', `${served.body?.n} ${servedIds}`)
-    const first = ((served.body?.items as { creatorProfile?: { username: unknown }; collection: unknown; priceWei: string }[] | undefined) ?? [])[0]
-    ok(first !== undefined && first.creatorProfile !== undefined && 'username' in first.creatorProfile && first.collection === null && first.priceWei === PRICE.toString(), 'rows carry the identity overlay shape and the string-wei fields', first)
+    const first = ((served.body?.items as { creatorProfile?: { username: unknown }; priceWei: string }[] | undefined) ?? [])[0]
+    ok(first !== undefined && first.creatorProfile !== undefined && 'username' in first.creatorProfile && first.priceWei === PRICE.toString(), 'rows carry the identity overlay shape and the string-wei fields', first)
     const garbageN = await json('/api/sweep?n=abc')
     ok(garbageN.body?.n === 10, 'a garbage n falls back to the default', garbageN.body?.n)
     upstash.store.set('kismetart:sweep-index', { v: JSON.stringify({ ...pool, updatedAt: Date.now() - 25 * 60 * 60 * 1000 }) })

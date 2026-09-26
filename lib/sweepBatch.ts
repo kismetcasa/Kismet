@@ -56,10 +56,6 @@ export function buildSweepCalls(
   })
 }
 
-export function sweepTotalValue(calls: readonly SweepCall[]): bigint {
-  return calls.reduce((sum, c) => sum + c.value, 0n)
-}
-
 /**
  * The bundle the user SIGNS: Multicall3 aggregate3Value with allowFailure=false
  * on every sub-call, so one revert undoes the whole batch and nobody is

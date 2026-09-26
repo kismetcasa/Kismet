@@ -93,9 +93,6 @@ const poolRow = (id: number) => ({
   priceWei: '1',
   feeWei: '1',
   outlayWei: '2',
-  maxPerAddress: '0',
-  remaining: null,
-  saleEnd: '18446744073709551615',
   creator: id % 2 ? ARTIST_X : ARTIST_Y,
   artist: id % 2 ? ARTIST_X : ARTIST_Y,
   createdAt: new Date(1_700_000_000_000 + id * 60_000).toISOString(),
@@ -301,6 +298,7 @@ async function main() {
     }
     const m375 = await rowMetrics()
     ok(m375.scrollWidth <= m375.clientWidth, 'at 375 px the header row does not overflow', m375)
+    ok((await toggle.evaluate((el) => el.parentElement!.parentElement!.className)).includes('flex-wrap'), 'with the button present the row is allowed to wrap')
     ok(m375.stats.y >= m375.toggle.y + m375.toggle.height - 1, 'at 375 px the stats block wraps under the toggle and the button', m375)
     ok(Math.abs(m375.button.y - m375.toggle.y) < m375.toggle.height, 'at 375 px the button sits on the toggle\'s row', m375)
     await page.screenshot({ path: `${SHOTS}/sweep-header-375.png` })
@@ -404,6 +402,10 @@ async function main() {
     await statsBtn.waitFor({ state: 'visible', timeout: 60_000 })
     await sleep(3_000)
     ok((await sweepBtn.count()) === 0, 'with the flag off the header renders no sweep button')
+    const hiddenRowClass = await toggle.evaluate((el) => el.parentElement!.parentElement!.className)
+    ok(hiddenRowClass === 'flex items-center justify-between gap-4', "with the button hidden the header row keeps main's exact two-child layout classes", hiddenRowClass)
+    const hiddenStatsClass = await statsBtn.evaluate((el) => el.parentElement!.className)
+    ok(hiddenStatsClass === 'text-right leading-tight', 'and the stats block keeps its original classes', hiddenStatsClass)
 
     // ── 8. a single eligible item takes the direct mint ──
     console.log('single item')

@@ -1,7 +1,7 @@
 import type { Moment } from './inprocess'
 import { MAX_COLLECT_ALL_BATCH } from './zoraMint'
 import { classifyOnchainSaleWindow, classifyTokenSupply } from './saleConfig'
-import { rankSweepCandidates, type RankOptions, type RankableSweepItem } from './sweepRank'
+import { rankSweepCandidates, type RankableSweepItem } from './sweepRank'
 
 // Sweep index — the pure half (no Redis, no RPC). lib/sweepIndex.ts does the
 // chain reads and persistence; this module owns the record shape, the
@@ -39,14 +39,8 @@ export interface SweepIndexItem {
   priceWei: string
   /** The collection's mintFee(), wei — read at build time, within the sanity bound. */
   feeWei: string
-  /** priceWei + feeWei — the sort key and the per-sub-call `value`. */
+  /** priceWei + feeWei — the sort key the pool was ranked on. */
   outlayWei: string
-  /** maxTokensPerAddress; "0" = unlimited. */
-  maxPerAddress: string
-  /** Editions left (capped editions) or null (open edition / unreadable). */
-  remaining: string | null
-  /** On-chain saleEnd, unix seconds (the open-ended sentinel is preserved). */
-  saleEnd: string
   /** Resolved creator (KV override over the feed), lowercased — the DISPLAY identity. */
   creator: string | null
   /** `creator` folded to the owning EOA — the DIVERSITY identity. */
@@ -54,7 +48,7 @@ export interface SweepIndexItem {
   /** First-seen mint instant (KV pin over the feed's created_at), ISO-8601. */
   createdAt: string | null
   // Preview fields, carried so the sheet needs no per-row fetch. Identity
-  // (username / avatar / collection chip) is stitched at serve time by
+  // (the username) is stitched at serve time by
   // enrichMomentsWithKismetMeta, exactly as the feeds do it.
   name?: string
   image?: string
@@ -123,17 +117,13 @@ export function buildSweepItem(
 ): SweepIndexItem | null {
   if (!isLivePaidSale(sale, now)) return null
   if (fee === undefined) return null
-  const s = classifyTokenSupply(supply)
-  if (s.soldOut) return null
+  if (classifyTokenSupply(supply).soldOut) return null
   return {
     address: c.address.toLowerCase(),
     tokenId: c.tokenId,
     priceWei: sale.pricePerToken.toString(),
     feeWei: fee.toString(),
     outlayWei: (sale.pricePerToken + fee).toString(),
-    maxPerAddress: sale.maxTokensPerAddress.toString(),
-    remaining: s.remaining === undefined ? null : s.remaining.toString(),
-    saleEnd: sale.saleEnd.toString(),
     creator: c.creator,
     artist: c.artist,
     createdAt: c.createdAt,
@@ -156,17 +146,13 @@ function toRankable(it: SweepIndexItem): RankableSweepItem & { item: SweepIndexI
 }
 
 /** Rank persisted items (string wei → bigint adapter over lib/sweepRank). */
-export function rankIndexItems(items: readonly SweepIndexItem[], opts?: RankOptions): SweepIndexItem[] {
-  return rankSweepCandidates(items.map(toRankable), opts).map((r) => r.item)
+export function rankIndexItems(items: readonly SweepIndexItem[]): SweepIndexItem[] {
+  return rankSweepCandidates(items.map(toRankable)).map((r) => r.item)
 }
 
 /** Rank + pool cut. `eligible` counts everything that ranked (before the cut). */
-export function finalizeSweepIndex(
-  items: readonly SweepIndexItem[],
-  updatedAt: number,
-  opts?: RankOptions,
-): SweepIndex {
-  const ranked = rankIndexItems(items, opts)
+export function finalizeSweepIndex(items: readonly SweepIndexItem[], updatedAt: number): SweepIndex {
+  const ranked = rankIndexItems(items)
   return { updatedAt, eligible: ranked.length, items: ranked.slice(0, SWEEP_POOL_SIZE) }
 }
 
@@ -225,7 +211,7 @@ export function selectSweepItems(
 /**
  * Project an item onto the Moment shape so /api/sweep can run the feeds' own
  * identity enrichment (enrichMomentsWithKismetMeta) unchanged — creator
- * username/avatar, the curated-collection chip, and the hidden-identity scrub
+ * the username and the hidden-identity scrub
  * all come from that one choke point. `uri`/`admins` are required by the type
  * and unused by enrichment.
  */
@@ -250,8 +236,7 @@ export function sweepItemToMoment(it: SweepIndexItem): Moment {
  * overlay (enrichMomentsWithKismetMeta), so the sheet needs no per-row fetch.
  */
 export interface SweepResponseItem extends SweepIndexItem {
-  creatorProfile: { username: string | null; avatarUrl: string | null }
-  collection: { name: string | null; image: string | null } | null
+  creatorProfile: { username: string | null }
 }
 
 /**

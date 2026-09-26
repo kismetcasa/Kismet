@@ -140,10 +140,7 @@ async function main() {
     check('the pool holds exactly the live, paid, unsold rows of collections with a readable fee — cheapest outlay first', order.join() === [tokenKey(COL_C, 1n), tokenKey(COL_A, 1n), tokenKey(COL_A, 6n), tokenKey(COL_A, 12n)].join(), order.join())
     check('eligible counts the ranked rows', built.eligible === 4)
     const a6 = built.items.find((i) => i.tokenId === '6')!
-    const c1 = built.items.find((i) => i.address === COL_C)!
     check('string-wei fields: price, fee and outlay = price + fee', a6.priceWei === '2000' && a6.feeWei === FEE.toString() && a6.outlayWei === (2_000n + FEE).toString())
-    check('remaining is carried for capped rows and null for unreadable supply', a6.remaining === '6' && c1.remaining === null)
-    check('the open-ended saleEnd sentinel is preserved as a string', a6.saleEnd === '18446744073709551615')
     check('preview fields survive into the blob', a6.name === 'Piece 6' && a6.image === 'ar://img')
     check('chain traffic: 1 sale chunk, 1 supply chunk, 1 fee read', chain.ethCalls === 3, chain.ethCalls)
     const stored = upstash.store.get(SWEEP_INDEX_KEY)?.v

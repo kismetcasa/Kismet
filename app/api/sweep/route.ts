@@ -83,8 +83,8 @@ export async function GET(req: NextRequest) {
   }
   const selected = selectSweepItems(index, { n, hiddenMoments, hiddenCollections, hiddenUsers })
 
-  // Identity overlay through the feeds' single choke point (username, avatar,
-  // curated-collection chip, hidden-identity scrub). Display-only: on a
+  // Identity overlay through the feeds' single choke point (username,
+  // hidden-identity scrub). Display-only: on a
   // failure the rows ship with bare addresses, which leaks nothing (the index
   // stores no names) and the client's shortAddress fallback renders them.
   let enriched: Moment[] | null = null
@@ -97,13 +97,7 @@ export async function GET(req: NextRequest) {
     const m = enriched?.[i]
     return {
       ...it,
-      creatorProfile: {
-        username: m?.creator?.username ?? null,
-        avatarUrl: m?.creator?.avatarUrl ?? null,
-      },
-      collection: m?.kismetCollection
-        ? { name: m.kismetCollection.name, image: m.kismetCollection.image }
-        : null,
+      creatorProfile: { username: m?.creator?.username ?? null },
     }
   })
 

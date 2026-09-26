@@ -7,10 +7,8 @@
  * price alone mis-orders sub-dollar mints. Within one price tier (equal outlay)
  * ARTISTS INTERLEAVE — no single wallet can fill the basket from a tier while
  * another artist is available at the same price — then newest first, then a
- * stable key. That interleave is the only diversity rule v1 ships. `perArtist`
- * and `floorWei` exist so a cap or a floor becomes a one-line policy change
- * later, and so scripts/verify-sweep.ts pins their semantics now
- * (SWEEP_IMPLEMENTATION.md §2.3, §8). Both are undefined in production.
+ * stable key. That interleave is the only diversity rule; a per-artist cap and
+ * a price floor were weighed and not built (SWEEP_IMPLEMENTATION.md §8).
  *
  * Zero imports on purpose: a pure function of its inputs, unit-verifiable under
  * --experimental-strip-types. Paid-ness (price > 0) is NOT decided here — the
@@ -26,14 +24,6 @@ export interface RankableSweepItem {
   artist: string | null
   /** First-seen mint instant, epoch ms; null when unknown. */
   createdAtMs: number | null
-}
-
-export interface RankOptions {
-  /** Ceiling on items per artist (integer >= 1). Undefined or invalid = no cap.
-   *  Unattributed items (artist null) are never capped. */
-  perArtist?: number
-  /** Minimum outlay (wei) to be eligible. Undefined = no floor. */
-  floorWei?: bigint
 }
 
 const keyOf = (it: RankableSweepItem): string => `${it.address.toLowerCase()}:${it.tokenId}`
@@ -83,14 +73,10 @@ function interleaveTier<T extends RankableSweepItem>(tier: readonly T[]): T[] {
 /**
  * Order sweep candidates cheapest-first. Returns EVERY eligible item in rank
  * order (callers slice N) so the same call serves the pool cut and the serve
- * prefix. See the module header for the tie-break and the dormant options.
+ * prefix. See the module header for the tie-break.
  */
-export function rankSweepCandidates<T extends RankableSweepItem>(
-  items: readonly T[],
-  opts: RankOptions = {},
-): T[] {
-  const floor = opts.floorWei
-  const eligible: T[] = floor === undefined ? [...items] : items.filter((it) => it.outlayWei >= floor)
+export function rankSweepCandidates<T extends RankableSweepItem>(items: readonly T[]): T[] {
+  const eligible: T[] = [...items]
   eligible.sort(compareBase)
 
   const ordered: T[] = []
@@ -100,16 +86,5 @@ export function rankSweepCandidates<T extends RankableSweepItem>(
     ordered.push(...interleaveTier(eligible.slice(i, j)))
     i = j
   }
-
-  const cap = opts.perArtist
-  if (cap === undefined || !Number.isInteger(cap) || cap < 1) return ordered
-  const taken = new Map<string, number>()
-  return ordered.filter((it) => {
-    if (it.artist === null) return true
-    const a = it.artist.toLowerCase()
-    const n = taken.get(a) ?? 0
-    if (n >= cap) return false
-    taken.set(a, n + 1)
-    return true
-  })
+  return ordered
 }
