@@ -8,6 +8,12 @@ is feasible on the current stack, enumerates every viable way to build it, price
 each, and recommends a phased path. Nothing here is implemented; it is the
 decision record for choosing the implementation._
 
+> **Decision (2026-09-26) — ETH-only.** The sweep will cover **ETH-priced
+> (FixedPriceSaleStrategy) mints on Base only**. USDC and mixed baskets (§3,
+> §4.3 E2/E3, §5 Phases 2–3) are out of scope. The implementation design for
+> the chosen variant is in **`SWEEP_IMPLEMENTATION.md`**; this document stays
+> as the record of the option space and why the ETH-only path was the safe one.
+
 > **How to read this.** §0 is the verdict. §1 pins down what the words in the
 > request mean on-chain. §2 is what already exists (the sweep is mostly a
 > recombination of shipped pieces) and where the real bottlenecks are. §3–4 are
