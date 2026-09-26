@@ -60,7 +60,8 @@ function Row({
 }) {
   const it = row.item
   const name = it.name?.trim() || `#${it.tokenId}`
-  const artist = it.creatorProfile.username || (it.creator ? shortAddress(it.creator) : 'unknown artist')
+  const username = it.creatorProfile.username
+  const artist = username || (it.creator ? shortAddress(it.creator) : 'unknown artist')
   const dimmed = row.state === 'dropped' || row.state === 'unaffordable' || row.state === 'removed' || row.state === 'pending'
   return (
     <li className={`flex items-center gap-3 ${dimmed ? 'opacity-50' : ''}`}>
@@ -71,7 +72,8 @@ function Row({
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate font-mono text-xs text-ink">{name}</div>
-        <div className="truncate font-mono text-[10px] uppercase tracking-wider text-muted">{artist}</div>
+        {/* Usernames are set in the feeds' uppercase style; an address fallback keeps its case ("0x…", not "0X…"). */}
+        <div className={`truncate font-mono text-[10px] tracking-wider text-muted ${username ? 'uppercase' : ''}`}>{artist}</div>
       </div>
       <div className="shrink-0 text-right font-mono text-xs tabular-nums text-dim">
         {row.state === 'pending' ? (

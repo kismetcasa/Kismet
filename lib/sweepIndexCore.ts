@@ -20,6 +20,15 @@ export const SWEEP_DEFAULT_N = 10
 export const SWEEP_POOL_SIZE = 120
 /** /api/sweep returns max(3n, this) rows so the client has a reserve. */
 export const SWEEP_SERVE_MIN = 30
+/**
+ * A pool older than this is not served (the button hides). Click-time
+ * verification keeps a stale pool SAFE; this cutoff keeps it HONEST: a day of
+ * missed hourly builds means the cron is broken, and "the cheapest ETH mints"
+ * would then omit everything minted since. The ops threshold
+ * (lib/statsHealth STATS_STALE_MS, 3 h) pages long before this trips; this one
+ * only decides what the public sees.
+ */
+export const SWEEP_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 export interface SweepIndexItem {
   /** Collection, lowercased. */
@@ -159,6 +168,14 @@ export function finalizeSweepIndex(
 ): SweepIndex {
   const ranked = rankIndexItems(items, opts)
   return { updatedAt, eligible: ranked.length, items: ranked.slice(0, SWEEP_POOL_SIZE) }
+}
+
+/** True when the pool is too old to serve (see SWEEP_INDEX_MAX_AGE_MS). A
+ *  non-numeric or non-finite `updatedAt` is stale; a timestamp slightly in the
+ *  future (clock skew between builder and server) is fresh. */
+export function isSweepIndexStale(index: Pick<SweepIndex, 'updatedAt'>, now: number = Date.now()): boolean {
+  if (typeof index.updatedAt !== 'number' || !Number.isFinite(index.updatedAt)) return true
+  return now - index.updatedAt > SWEEP_INDEX_MAX_AGE_MS
 }
 
 /** Parse `?n=` — default SWEEP_DEFAULT_N, clamped to [1, SWEEP_MAX_N]. */

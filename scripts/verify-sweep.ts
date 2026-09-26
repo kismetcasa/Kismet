@@ -22,7 +22,15 @@
 //     = price + fee; the signed bundle is STRICT (allowFailure false on every
 //     call); the simulated bundle is the same calls with allowFailure true;
 //     the budget trim is a cheapest-first prefix; simulation results map by
-//     position and fail closed on a length mismatch.
+//     position and fail closed on a length mismatch;
+//   - on a fake chain behind a REAL viem client (scripts/_sweep-fake-chain.ts):
+//     fetchEligibleTokensMulti's per-row rules and its single-eth_call claim,
+//     readMintFeesWithBound's fail-closed map, simulateSweep's per-slot flags
+//     and viem's real insufficient-funds mapping, estimateSweepGasCost, and
+//     verifyBasket end to end (live values over index values, every drop
+//     reason, the balance trim boundary, simulation drop + refill, the
+//     simulation cap, insufficient-funds shedding, the gas refinement, RPC
+//     failure at each step, the malformed-node case); the pool staleness rule.
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-sweep.ts
 
 import { classifyOnchainSaleWindow, classifyTokenSupply } from '../lib/saleConfig.ts'
@@ -55,6 +63,11 @@ import {
   type SweepBasketItem,
 } from '../lib/sweepBatch.ts'
 import { DEFAULT_COLLECT_COMMENT } from '../lib/inprocess.ts'
+import { SWEEP_INDEX_MAX_AGE_MS, isSweepIndexStale, type SweepResponseItem } from '../lib/sweepIndexCore.ts'
+import { fetchEligibleTokensMulti, readMintFeesWithBound } from '../lib/saleConfig.ts'
+import { estimateSweepGasCost, simulateSweep } from '../lib/sweepSimulate.ts'
+import { MAX_SIMULATIONS, pendingRow, verifyBasket, type SweepRow } from '../lib/sweepVerify.ts'
+import { createFakeChain, fakeClient, liveSale, tokenKey } from './_sweep-fake-chain.ts'
 import { FPSS, MINT_1155_ABI, REFERRAL } from './_agent-verify-helpers.ts'
 import { decodeAbiParameters, decodeFunctionData, getAddress, parseAbiParameters, parseEther } from 'viem'
 
@@ -377,5 +390,326 @@ console.log('trimToBudget / applySimulation / headroom')
   check('gas headroom is 0.0005 ETH', SWEEP_GAS_HEADROOM_WEI === parseEther('0.0005'))
 }
 
-console.log(failures === 0 ? '\nverify-sweep: ALL PASS' : `\nverify-sweep: ${failures} FAILED`)
-process.exit(failures === 0 ? 0 : 1)
+// ── 8. fake chain: fetchEligibleTokensMulti ────────────────────────────────
+// A real viem client (multicall batching on, like lib/wagmi.ts) over
+// scripts/_sweep-fake-chain.ts. Every per-row rule of the sibling reader, the
+// trailing balance slot, and the "one eth_call" claim, measured.
+const USER = getAddress('0x71Dc000000000000000000000000000000007244')
+const COL_A_HEX = COL_A.toLowerCase() as `0x${string}`
+const COL_B_HEX = COL_B.toLowerCase() as `0x${string}`
+const COL_C = '0xcccccccccccccccccccccccccccccccccccccccc' as `0x${string}`
+const ETH = 10n ** 18n
+const ended = (price: bigint) => ({ ...liveSale(price), saleEnd: NOW - 1n })
+const scheduled = (price: bigint) => ({ ...liveSale(price), saleStart: NOW + 1n })
+
+async function main() {
+  console.log('fetchEligibleTokensMulti (fake chain)')
+  {
+    const chain = createFakeChain({ now: NOW, ethBalance: 3n * ETH })
+    chain.fees.set(COL_A_HEX, FEE)
+    chain.fees.set(COL_B_HEX, FEE)
+    const put = (col: `0x${string}`, id: bigint, t: Parameters<typeof chain.tokens.set>[1]) => chain.tokens.set(tokenKey(col, id), t)
+    put(COL_A_HEX, 1n, { sale: liveSale(1_000n) })
+    put(COL_A_HEX, 2n, { sale: { saleStart: 0n, saleEnd: 0n, maxTokensPerAddress: 0n, pricePerToken: 0n } }) // unset
+    put(COL_A_HEX, 3n, { sale: ended(1_000n) })
+    put(COL_A_HEX, 4n, { sale: scheduled(1_000n) })
+    put(COL_A_HEX, 5n, { sale: liveSale(1_000n), info: { maxSupply: 5n, totalMinted: 5n } }) // sold out
+    put(COL_A_HEX, 6n, { sale: liveSale(2_000n), info: { maxSupply: 10n, totalMinted: 4n } }) // capped, room
+    put(COL_A_HEX, 7n, { sale: liveSale(1_000n), balance: 1n }) // already owned
+    put(COL_A_HEX, 8n, { sale: liveSale(1_000n, 2n), balance: 2n }) // per-address cap reached
+    put(COL_A_HEX, 9n, { sale: 'garbage' })
+    put(COL_A_HEX, 10n, { sale: 'revert' })
+    put(COL_B_HEX, 1n, { sale: liveSale(3_000n), info: 'revert' }) // non-Zora getTokenInfo → unreadable → allowed
+    put(COL_B_HEX, 2n, { sale: liveSale(1_000n), balance: 'revert' }) // balance read failed → dropped
+    put(COL_B_HEX, 3n, { sale: liveSale(0n) }) // free: the reader returns it, the sweep drops it later
+    const refs = [
+      ...[1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n].map((tokenId) => ({ collection: COL_A_HEX, tokenId })),
+      ...[1n, 2n, 3n].map((tokenId) => ({ collection: COL_B_HEX, tokenId })),
+      { collection: COL_C, tokenId: 1n }, // never configured: sale() answers zeros → unset
+    ]
+    const client = fakeClient(chain)
+    const res = await fetchEligibleTokensMulti(client, refs, USER, 1n)
+    const keys = res.items.map((i) => tokenKey(i.collection, i.tokenId)).sort()
+    check('exactly the live, unsold, unowned rows survive', keys.join() === [tokenKey(COL_A_HEX, 1n), tokenKey(COL_A_HEX, 6n), tokenKey(COL_B_HEX, 1n), tokenKey(COL_B_HEX, 3n)].sort().join(), keys.join())
+    check('the trailing slot carries the wallet balance', res.ethBalance === 3n * ETH)
+    check('ONE eth_call for 14 refs (viem never re-batches an aggregate3)', chain.ethCalls === 1, String(chain.ethCalls))
+    const a1 = res.items.find((i) => i.tokenId === 1n && i.collection === COL_A_HEX)!
+    const a6 = res.items.find((i) => i.tokenId === 6n)!
+    check('live price and per-address cap are the strategy\'s', a1.pricePerToken === 1_000n && a1.maxPerAddress === 0n && a1.ownedBalance === 0n)
+    check('remaining supply is carried for capped rows only', a6.remainingSupply === 6n && a1.remainingSupply === undefined)
+    check('a free live row is returned with price 0 (the sweep decides)', res.items.some((i) => i.tokenId === 3n && i.collection === COL_B_HEX && i.pricePerToken === 0n))
+    const none = await fetchEligibleTokensMulti(client, [], USER)
+    check('empty refs → no items, null balance, no RPC', none.items.length === 0 && none.ethBalance === null && chain.ethCalls === 1)
+    chain.failing = true
+    const down = await fetchEligibleTokensMulti(client, refs, USER)
+    check('RPC failure → no items AND null balance (distinguishable from empty)', down.items.length === 0 && down.ethBalance === null)
+    chain.failing = false
+    const owned2 = await fetchEligibleTokensMulti(client, [{ collection: COL_A_HEX, tokenId: 7n }], USER, 2n)
+    check('excludeOwnedAtOrAbove is a threshold (owning 1 of 2 is allowed)', owned2.items.length === 1)
+  }
+
+  // ── 9. fake chain: readMintFeesWithBound ────────────────────────────────
+  console.log('readMintFeesWithBound (fake chain)')
+  {
+    const chain = createFakeChain()
+    const COL_D = '0xdddddddddddddddddddddddddddddddddddddddd' as `0x${string}`
+    const COL_E = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' as `0x${string}`
+    chain.fees.set(COL_A_HEX, FEE)
+    chain.fees.set(COL_B_HEX, parseEther('0.02')) // over the 0.01 ETH bound
+    chain.fees.set(COL_C, 'revert')
+    chain.fees.set(COL_D, 'garbage')
+    // COL_E: absent — no such contract
+    const client = fakeClient(chain)
+    const fees = await readMintFeesWithBound(client, [COL_A as `0x${string}`, COL_A_HEX, COL_B_HEX, COL_C, COL_D, COL_E])
+    check('in-bound fee is returned under the lowercased address', fees.get(COL_A_HEX) === FEE && fees.size === 1)
+    check('over-bound / reverting / garbage / absent collections are ABSENT (fail-closed)', !fees.has(COL_B_HEX) && !fees.has(COL_C) && !fees.has(COL_D) && !fees.has(COL_E))
+    check('mixed-case duplicates collapse into one read', chain.ethCalls === 1)
+    await readMintFeesWithBound(client, [])
+    check('empty input makes no RPC call', chain.ethCalls === 1)
+    chain.failing = true
+    let threw = false
+    try {
+      await readMintFeesWithBound(client, [COL_A_HEX])
+    } catch {
+      threw = true
+    }
+    check('an RPC-level failure THROWS (never an empty map that would drop every collection)', threw)
+  }
+
+  // ── 10. fake chain: simulateSweep / estimateSweepGasCost ─────────────────
+  console.log('simulateSweep / estimateSweepGasCost (fake chain)')
+  {
+    const chain = createFakeChain()
+    chain.fees.set(COL_A_HEX, FEE)
+    chain.tokens.set(tokenKey(COL_A_HEX, 1n), { sale: liveSale(1_000n) })
+    chain.tokens.set(tokenKey(COL_A_HEX, 6n), { sale: liveSale(2_000n) })
+    const items: SweepBasketItem[] = [
+      { address: COL_A_HEX, tokenId: 1n, priceWei: 1_000n, feeWei: FEE },
+      { address: COL_A_HEX, tokenId: 6n, priceWei: 2_000n, feeWei: FEE },
+    ]
+    const client = fakeClient(chain)
+    const calls = buildSweepCalls(items, USER)
+    const sim1 = await simulateSweep(client, USER, calls)
+    check('every sub-call succeeds → per-slot true', 'ok' in sim1 && sim1.ok.join() === 'true,true', JSON.stringify(sim1))
+    chain.tokens.get(tokenKey(COL_A_HEX, 6n))!.mintOk = false
+    const sim2 = await simulateSweep(client, USER, calls)
+    check('a would-revert sub-call reports false in ITS slot only', 'ok' in sim2 && sim2.ok.join() === 'true,false')
+    chain.tokens.get(tokenKey(COL_A_HEX, 6n))!.mintOk = true
+    const tampered = calls.map((c, i) => (i === 0 ? { ...c, value: c.value + 1n } : c))
+    const sim3 = await simulateSweep(client, USER, tampered)
+    check('a value that is not price + fee fails that slot (FPSS strict equality)', 'ok' in sim3 && sim3.ok.join() === 'false,true')
+    chain.nodeBalance = 0n
+    const sim4 = await simulateSweep(client, USER, calls)
+    check("the node's insufficient-funds refusal is classified through viem's real error chain", 'error' in sim4 && sim4.error === 'insufficient-funds', JSON.stringify(sim4))
+    chain.nodeBalance = null
+    chain.failing = true
+    const sim5 = await simulateSweep(client, USER, calls)
+    check('any other RPC failure is "rpc"', 'error' in sim5 && sim5.error === 'rpc')
+    chain.failing = false
+    const before = chain.ethCalls
+    const sim6 = await simulateSweep(client, USER, [])
+    check('an empty basket simulates nothing', 'ok' in sim6 && sim6.ok.length === 0 && chain.ethCalls === before)
+    check('five simulations attempted; the refused and the failed ones never ran', chain.simAttempts === 5 && chain.simulations === 3, `${chain.simAttempts}/${chain.simulations}`)
+    check('no simulation ever carried allowFailure=false (the node never sees a strict bundle)', chain.strictSimulations === 0)
+
+    const fees = await client.estimateFeesPerGas()
+    const cost = await estimateSweepGasCost(client, USER, calls)
+    check('gas cost = estimateGas × maxFeePerGas (EIP-1559 cap, not the base fee)', cost === 3_000_000n * fees.maxFeePerGas && cost !== null && cost > 0n, String(cost))
+    chain.gas = 'error'
+    check('an unavailable estimate is null (the caller keeps the headroom)', (await estimateSweepGasCost(client, USER, calls)) === null)
+    chain.gas = 3_000_000n
+    check('an empty basket costs 0', (await estimateSweepGasCost(client, USER, [])) === 0n)
+  }
+
+  // ── 11. fake chain: verifyBasket end to end ──────────────────────────────
+  console.log('verifyBasket (fake chain)')
+  const poolItem = (col: `0x${string}`, id: number, artist: string | null = ART_1): SweepResponseItem => ({
+    address: col,
+    tokenId: String(id),
+    // Index numbers are deliberately WRONG: the verification must never use them.
+    priceWei: '1',
+    feeWei: '1',
+    outlayWei: '2',
+    maxPerAddress: '0',
+    remaining: null,
+    saleEnd: '0',
+    creator: artist,
+    artist,
+    createdAt: new Date(1_700_000_000_000 + id * 1000).toISOString(),
+    creatorProfile: { username: null, avatarUrl: null },
+    collection: null,
+  })
+  const rowsOf = (rows: SweepRow[], state: SweepRow['state']) => rows.filter((r) => r.state === state)
+  const ids = (rows: SweepRow[]) => rows.map((r) => r.item.tokenId).join()
+  const HEADROOM = parseEther('0.0005')
+
+  /** n live tokens on COL_A priced 100·id wei, fee FEE, each by its own artist. */
+  function stage(count: number, over: Partial<ReturnType<typeof createFakeChain>> = {}) {
+    const chain = createFakeChain({ now: NOW, ...over })
+    chain.fees.set(COL_A_HEX, FEE)
+    const pending: SweepRow[] = []
+    for (let id = 1; id <= count; id++) {
+      chain.tokens.set(tokenKey(COL_A_HEX, BigInt(id)), { sale: liveSale(100n * BigInt(id)) })
+      pending.push(pendingRow(poolItem(COL_A_HEX, id, `0x${String(id).padStart(40, '0')}`)))
+    }
+    return { chain, pending, client: fakeClient(chain) }
+  }
+  const outlay = (id: number) => 100n * BigInt(id) + FEE
+
+  {
+    // S1 — happy path
+    const { chain, pending, client } = stage(12)
+    const v = await verifyBasket(client, USER, pending, 10)
+    check('S1 ok', v.ok)
+    if (v.ok) {
+      const basket = rowsOf(v.rows, 'basket')
+      check('S1 basket = the 10 cheapest by LIVE outlay, ascending', ids(basket) === '1,2,3,4,5,6,7,8,9,10', ids(basket))
+      check('S1 live price and fee replace the index numbers', basket.every((r) => r.priceWei === 100n * BigInt(r.item.tokenId) && r.feeWei === FEE && r.outlayWei === r.priceWei + r.feeWei))
+      check('S1 the two beyond n are reserve', ids(rowsOf(v.rows, 'reserve')) === '11,12')
+      check('S1 gas estimate recorded', typeof v.gasCostWei === 'bigint' && v.gasCostWei > 0n)
+      check('S1 chain traffic: 3 eth_calls (multi read, fees, ONE simulation) + 1 estimate', chain.ethCalls === 3 && chain.simulations === 1 && chain.log.filter((l) => l.method === 'eth_estimateGas').length === 1, `${chain.ethCalls}/${chain.simulations}`)
+    }
+  }
+  {
+    // S2 — every drop reason
+    const { chain, pending, client } = stage(4)
+    chain.tokens.set(tokenKey(COL_A_HEX, 2n), { sale: ended(200n) })
+    chain.tokens.set(tokenKey(COL_A_HEX, 3n), { sale: liveSale(300n), balance: 1n })
+    chain.tokens.set(tokenKey(COL_A_HEX, 4n), { sale: liveSale(0n) })
+    chain.fees.set(COL_B_HEX, parseEther('0.5')) // over bound → unreadable
+    chain.tokens.set(tokenKey(COL_B_HEX, 1n), { sale: liveSale(50n) })
+    pending.push(pendingRow(poolItem(COL_B_HEX, 1)))
+    const v = await verifyBasket(client, USER, pending, 10)
+    check('S2 ok', v.ok)
+    if (v.ok) {
+      const reason = (id: string, col = COL_A_HEX) => v.rows.find((r) => r.item.tokenId === id && r.item.address === col)?.reason
+      check('S2 ended → "sold out, ended, or already yours"', reason('2') === 'sold out, ended, or already yours')
+      check('S2 owned → the same reason', reason('3') === 'sold out, ended, or already yours')
+      check('S2 price 0 → "now a free mint"', reason('4') === 'now a free mint')
+      check('S2 fee over bound → "mint fee unreadable"', reason('1', COL_B_HEX) === 'mint fee unreadable')
+      check('S2 the one live row is the basket', ids(rowsOf(v.rows, 'basket')) === '1')
+    }
+  }
+  {
+    // S3 — the balance trim boundary
+    const three = outlay(1) + outlay(2) + outlay(3)
+    const exact = stage(5, { ethBalance: HEADROOM + three })
+    const v1 = await verifyBasket(exact.client, USER, exact.pending, 5)
+    check('S3 balance = headroom + 3 cheapest → exactly 3 in the basket', v1.ok && ids(rowsOf(v1.rows, 'basket')) === '1,2,3')
+    check('S3 the rest are unaffordable with the reason', v1.ok && rowsOf(v1.rows, 'unaffordable').every((r) => r.reason === 'needs more ETH') && ids(rowsOf(v1.rows, 'unaffordable')) === '4,5')
+    const less = stage(5, { ethBalance: HEADROOM + three - 1n })
+    const v2 = await verifyBasket(less.client, USER, less.pending, 5)
+    check('S3 one wei less → 2', v2.ok && ids(rowsOf(v2.rows, 'basket')) === '1,2')
+    const broke = stage(3, { ethBalance: 0n })
+    const v3 = await verifyBasket(broke.client, USER, broke.pending, 3)
+    check('S3 zero balance → empty basket, all unaffordable, nothing simulated', v3.ok && rowsOf(v3.rows, 'basket').length === 0 && rowsOf(v3.rows, 'unaffordable').length === 3 && broke.chain.simulations === 0)
+  }
+  {
+    // S4 — a simulation drop refills from the reserve and re-simulates
+    const { chain, pending, client } = stage(5)
+    chain.tokens.get(tokenKey(COL_A_HEX, 2n))!.mintOk = false
+    const v = await verifyBasket(client, USER, pending, 3)
+    check('S4 basket = 1,3 + the refilled 4', v.ok && ids(rowsOf(v.rows, 'basket')) === '1,3,4', v.ok ? ids(rowsOf(v.rows, 'basket')) : 'rpc')
+    check('S4 the failed row is dropped as "not mintable right now"', v.ok && rowsOf(v.rows, 'dropped').length === 1 && rowsOf(v.rows, 'dropped')[0].reason === 'not mintable right now')
+    check('S4 exactly two simulations', chain.simulations === 2)
+    check('S4 the untouched reserve row stays reserve', v.ok && ids(rowsOf(v.rows, 'reserve')) === '5')
+  }
+  {
+    // S5 — the simulation cap: a new failure every round
+    const { chain, pending, client } = stage(6)
+    chain.simPolicy = (sim, key) => !(key.endsWith(`:${2 + sim}`)) // round 1 fails #3, round 2 fails #4, round 3 fails #5
+    const v = await verifyBasket(client, USER, pending, 3)
+    check('S5 at most MAX_SIMULATIONS rounds', chain.simulations === MAX_SIMULATIONS)
+    check('S5 after the last round only rows that PASSED it remain', v.ok && ids(rowsOf(v.rows, 'basket')) === '1,2', v.ok ? ids(rowsOf(v.rows, 'basket')) : 'rpc')
+    check('S5 every failed row is dropped, the never-simulated one stays reserve', v.ok && ids(rowsOf(v.rows, 'dropped')) === '3,4,5' && ids(rowsOf(v.rows, 'reserve')) === '6')
+  }
+  {
+    // S6 — the node refuses the value (balance moved between the read and the simulation)
+    const mild = stage(3)
+    mild.chain.nodeBalance = outlay(1) + outlay(2) // covers two, not three
+    const v1 = await verifyBasket(mild.client, USER, mild.pending, 3)
+    check('S6 insufficient funds sheds the priciest and re-simulates', v1.ok && ids(rowsOf(v1.rows, 'basket')) === '1,2' && ids(rowsOf(v1.rows, 'unaffordable')) === '3', v1.ok ? ids(rowsOf(v1.rows, 'basket')) : 'rpc')
+    check('S6 two attempts: the refused one, then the one that ran', mild.chain.simAttempts === 2 && mild.chain.simulations === 1, `${mild.chain.simAttempts}/${mild.chain.simulations}`)
+    const hard = stage(4)
+    hard.chain.nodeBalance = 0n
+    const v2 = await verifyBasket(hard.client, USER, hard.pending, 4)
+    check('S6 persistent refusal → nothing reaches the wallet unverified', v2.ok && rowsOf(v2.rows, 'basket').length === 0 && rowsOf(v2.rows, 'unaffordable').length === 4)
+    check('S6 bounded by MAX_SIMULATIONS attempts', hard.chain.simAttempts === MAX_SIMULATIONS && hard.chain.simulations === 0)
+  }
+  {
+    // S7 — the gas refinement
+    const three = outlay(1) + outlay(2) + outlay(3)
+    const spike = stage(3, { ethBalance: HEADROOM + three, gas: 100_000_000n }) // ≈ 0.0012 ETH at 0.01 gwei × 1.2
+    const v1 = await verifyBasket(spike.client, USER, spike.pending, 3)
+    const fees = await spike.client.estimateFeesPerGas()
+    const gasCost = 100_000_000n * fees.maxFeePerGas
+    check('S7 a real estimate above the headroom sheds rows until outlay + gas fits', v1.ok && v1.gasCostWei === gasCost && rowsOf(v1.rows, 'basket').length < 3 && (rowsOf(v1.rows, 'basket').length === 0 || spike.chain.ethBalance >= rowsOf(v1.rows, 'basket').reduce((s, r) => s + r.outlayWei, 0n) + gasCost))
+    const noEst = stage(3, { ethBalance: HEADROOM + three, gas: 'error' })
+    const v2 = await verifyBasket(noEst.client, USER, noEst.pending, 3)
+    check('S7 no estimate → the constant headroom stands in (trim already satisfied it)', v2.ok && v2.gasCostWei === null && ids(rowsOf(v2.rows, 'basket')) === '1,2,3')
+  }
+  {
+    // S8 — an RPC failure at each step is "could not verify", never an empty basket
+    const a = stage(3, { failing: true })
+    check('S8 aggregate read fails → rpc', !(await verifyBasket(a.client, USER, a.pending, 3)).ok)
+    const b = stage(3)
+    b.chain.failCalls.add(1) // the fee read
+    check('S8 fee read fails → rpc', !(await verifyBasket(b.client, USER, b.pending, 3)).ok)
+    const c = stage(3)
+    c.chain.failCalls.add(2) // the simulation
+    check('S8 simulation RPC failure → rpc', !(await verifyBasket(c.client, USER, c.pending, 3)).ok)
+    const d = stage(0)
+    const v = await verifyBasket(d.client, USER, d.pending, 3)
+    check('S8 nothing pending → ok with no rows and no RPC', v.ok && v.rows.length === 0 && d.chain.ethCalls === 0)
+  }
+  {
+    // S9 — a malformed node answer (one Result short) can never seat a row
+    const { chain, pending, client } = stage(3)
+    chain.simTruncate = true
+    const v = await verifyBasket(client, USER, pending, 3)
+    check('S9 length mismatch → no basket row, everything dropped or reserve', v.ok && rowsOf(v.rows, 'basket').length === 0)
+  }
+  {
+    // S10 — a refill that does not fit the remaining budget is not taken
+    const two = outlay(1) + outlay(2)
+    const { chain, pending, client } = stage(3, { ethBalance: HEADROOM + two })
+    chain.tokens.get(tokenKey(COL_A_HEX, 2n))!.mintOk = false
+    const v = await verifyBasket(client, USER, pending, 2)
+    check('S10 the reserve row costs more than the room → basket stays [1]', v.ok && ids(rowsOf(v.rows, 'basket')) === '1' && ids(rowsOf(v.rows, 'reserve')) === '3')
+  }
+  {
+    // S11 — artist interleave on LIVE ties (the index's rule, applied at click time)
+    const chain = createFakeChain({ now: NOW })
+    chain.fees.set(COL_A_HEX, FEE)
+    const pending: SweepRow[] = []
+    const artistX = `0x${'ab'.repeat(20)}`
+    const artistY = `0x${'cd'.repeat(20)}`
+    for (const [id, artist] of [[1, artistX], [2, artistX], [3, artistX], [4, artistY]] as const) {
+      chain.tokens.set(tokenKey(COL_A_HEX, BigInt(id)), { sale: liveSale(100n) }) // one price tier
+      pending.push(pendingRow(poolItem(COL_A_HEX, id, artist)))
+    }
+    const v = await verifyBasket(fakeClient(chain), USER, pending, 2)
+    // The ranker orders artists by their newest item (Y's #4 is newest), then
+    // interleaves — so the two slots go to two DIFFERENT artists, never X twice.
+    const basket = v.ok ? rowsOf(v.rows, 'basket') : []
+    check('S11 within one price tier a two-slot basket takes one row from each artist', v.ok && basket.length === 2 && new Set(basket.map((r) => r.item.artist)).size === 2, ids(basket))
+  }
+
+  // ── 12. pool staleness ──────────────────────────────────────────────────
+  console.log('isSweepIndexStale')
+  const T = 1_800_000_000_000
+  check('fresh at build time', !isSweepIndexStale({ updatedAt: T }, T))
+  check('fresh one ms inside the cutoff', !isSweepIndexStale({ updatedAt: T - SWEEP_INDEX_MAX_AGE_MS + 1 }, T))
+  check('stale one ms past the cutoff', isSweepIndexStale({ updatedAt: T - SWEEP_INDEX_MAX_AGE_MS - 1 }, T))
+  check('a slightly future timestamp (clock skew) is fresh', !isSweepIndexStale({ updatedAt: T + 60_000 }, T))
+  check('a non-finite timestamp is stale', isSweepIndexStale({ updatedAt: Number.NaN }, T))
+  check('the cutoff is a day (the ops threshold pages at 3 h)', SWEEP_INDEX_MAX_AGE_MS === 24 * 60 * 60 * 1000)
+
+  console.log(failures === 0 ? '\nverify-sweep: ALL PASS' : `\nverify-sweep: ${failures} FAILED`)
+  process.exit(failures === 0 ? 0 : 1)
+}
+
+main().catch((e) => {
+  console.error('verify-sweep crashed:', e)
+  process.exit(1)
+})

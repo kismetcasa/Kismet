@@ -4,6 +4,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 import { recordAdminAction } from '@/lib/adminAudit'
 import { getSweepIndex, isSweepEnabled, setSweepEnabled } from '@/lib/sweepIndex'
+import { isSweepIndexStale } from '@/lib/sweepIndexCore'
 
 export const runtime = 'nodejs'
 
@@ -36,8 +37,10 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(
     {
       enabled,
+      // `stale` mirrors /api/sweep's serve rule: a stale pool answers empty
+      // there, so an operator sees why the button is hidden.
       index: index
-        ? { updatedAt: index.updatedAt, eligible: index.eligible, pool: index.items.length }
+        ? { updatedAt: index.updatedAt, eligible: index.eligible, pool: index.items.length, stale: isSweepIndexStale(index) }
         : null,
     },
     { headers: { 'Cache-Control': 'private, no-store' } },

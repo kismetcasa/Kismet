@@ -10,6 +10,7 @@ import { getSweepIndex, isSweepEnabled } from '@/lib/sweepIndex'
 import {
   SWEEP_MAX_N,
   clampSweepN,
+  isSweepIndexStale,
   selectSweepItems,
   sweepItemToMoment,
   type SweepResponseItem,
@@ -54,9 +55,11 @@ export async function GET(req: NextRequest) {
   }
 
   const index = await getSweepIndex()
-  if (!index) {
+  // No build yet, or a pool the cron stopped refreshing (isSweepIndexStale):
+  // an honest empty pool, same shape, cacheable — the button hides.
+  if (!index || isSweepIndexStale(index)) {
     return NextResponse.json(
-      { enabled: true, updatedAt: null, eligible: 0, maxN: SWEEP_MAX_N, n, items: [] },
+      { enabled: true, updatedAt: index?.updatedAt ?? null, eligible: 0, maxN: SWEEP_MAX_N, n, items: [] },
       { headers: { 'Cache-Control': PUBLIC_CACHE } },
     )
   }

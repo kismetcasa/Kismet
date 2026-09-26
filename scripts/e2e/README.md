@@ -183,3 +183,61 @@ the browser path. Exit code is non-zero on any failed check.
   unresolved keeps its upstream username; the retry asked exactly for the
   unresolved senders.
 - **Exactly once** — no further `/api/profiles` requests after the retry.
+
+# Browser end-to-end check — the sweep
+
+`sweep.ts` drives a real Chromium against the real built app with every
+dependency faked in-process: the server's Redis is `_mock-upstash.ts`, the
+server's Base RPC is the fake chain of `_sweep-fake-chain.ts` over HTTP, the
+browser's RPC traffic to viem's default Base endpoint is intercepted and
+answered by the same fake chain, and an EIP-1193 wallet shim is injected into
+the page (the Coinbase WebView user agent makes the app auto-connect its
+injected provider, so no picker is involved).
+
+## Why this is separate from `verify:sweep`
+
+`verify:sweep` runs the same verification code on the same fake chain, but the
+button's placement in the discover header, the sheet's painted states, the
+transaction wagmi hands the wallet (with the builder suffix), the receipt
+polling and the funnel beacons only exist in a browser.
+
+## Running it
+
+```sh
+npm run build
+npm i --no-save playwright@1.56.0        # not a repo dependency
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
+  --import ./scripts/register-ts-alias.mjs scripts/e2e/sweep.ts
+```
+
+Screenshots land in `.e2e/shots/sweep-*.png`. `E2E_CHROMIUM` overrides the
+browser binary.
+
+## What it asserts (43)
+
+- **Header** — the button renders once `/api/sweep` answers with a pool; at
+  375 px the row does not overflow and the stats block wraps under the toggle
+  and the button; at 1280 px the stats block sits on the same row, to the
+  right.
+- **Sheet** — "sweep 10 for <Σ live price + fee>" (the pool carries deliberately
+  wrong numbers, so a leak of index values would show); ten rows with a remove
+  control, the two reserve rows hidden; a row's live price with the fee
+  suffix; remove re-totals to nine; undo is offered.
+- **Wallet prompt** — exactly one transaction: to Multicall3, value = Σ of the
+  nine, the ERC-8021 suffix appended, and the calldata decodes to
+  `aggregate3Value` of nine strict `mint` sub-calls (ids 2–10, quantity 1,
+  mintTo = the user, the treasury referral, each value = live price + fee, each
+  to its own collection).
+- **Done** — "swept 9 artworks" from the receipt, the Basescan link carries the
+  hash, "sweep the next 10", nine rows marked swept, undo inert; nine
+  `/api/collect` records verified on-chain by the server; `sweep_open`,
+  `sweep_attempt`, `sweep_success` each counted once in Redis.
+- **Next round** — only the three the wallet does not own (the removed one and
+  the two reserve rows); re-opening is not a new `sweep_open`.
+- **Needs more ETH** — an empty wallet reads "add ETH, then re-check", the
+  footnote counts the rows, the button stays enabled; Escape closes.
+- **Flag off** — after the admin POST the header renders no button.
+- **Single item** — a lone row is a direct `1155.mint` to the collection with
+  the suffix, decodes to `mint(FPSS, 1, 1, [referral], (user, comment))`,
+  reaches "swept 1 artwork" and is recorded.
+- No uncaught page errors during the run.

@@ -524,27 +524,57 @@ N records instead of N fetches of the same receipt.
 
 ## 7. Verification, CI, rollout
 
-- **`scripts/verify-sweep.ts`** (add to `package.json` `check`), pure-function
-  oracles in the repo's pattern: `classifySaleRow` (window / paid / sold-out /
-  cap / owned rules, incl. `saleEnd === 0` unset rows and the open-ended
-  sentinel), `rankSweepCandidates` (outlay ordering, artist-interleave
-  tie-break, newest tie-break, `perArtist` and `floorWei` when set),
-  `applySimulation` mapping, `buildSweepCalls` decoding (FPSS address,
-  `KISMET_REFERRAL`, `mintTo`, `value = price + fee` per call), and
-  `sweepBundle` (every entry `allowFailure === false`, `value === Σ`), index
-  bounds (`POOL_SIZE`, JSON size), and an artist-farming property test (one
-  artist with many dust items never occupies every slot within a price tier).
-- **Existing checks** cover the rest: `typecheck`, `lint`, `verify:a11y`
-  (the sheet's text), `check:bundle` (the hook is small; the sheet lazy-loads
-  behind the button).
-- **Rollout**: ship with `kismetart:sweep-enabled` absent (off); run the cron
-  once (`/api/cron/sync-stats?secret=…`) to materialize the index; check
-  `/api/admin/stats-health` (`sweepIndex`, `sweepHealthy`) or
-  `GET /api/admin/sweep`; enable with `POST /api/admin/sweep {"enabled":true}`; watch
-  `sweep_open → sweep_attempt → sweep_success` in the funnel and the
-  simulation drop rate (log `[sweep] simulation dropped {n}` client-side via
-  `reportClientError` at a sampled rate) — a high drop rate means the pool
-  refresh (§2.5) is worth turning on.
+Four layers, three of them in `npm run check`:
+
+- **`verify:sweep`** (`scripts/verify-sweep.ts`, 171 assertions) — the pure rules
+  (window, supply, admission, ranking incl. the artist-interleave and a property
+  sweep, pool cut, serve selection, `clampSweepN`, the Moment projection, the
+  bundle builders decoded back to `mint(FPSS, id, 1, [KISMET_REFERRAL], (mintTo,
+  comment))`, strict vs simulated bundles, the budget trim, the simulation
+  mapping) **and the network half on a fake chain behind a real viem client**
+  (`scripts/_sweep-fake-chain.ts`, multicall batching on like `lib/wagmi.ts`):
+  `fetchEligibleTokensMulti`'s per-row rules and its single-`eth_call` claim,
+  `readMintFeesWithBound`'s fail-closed map, `simulateSweep`'s per-slot flags
+  and viem's real insufficient-funds mapping, `estimateSweepGasCost`, and
+  `verifyBasket` end to end — live values over index values, every drop reason,
+  the balance-trim boundary to the wei, simulation drop + refill, the
+  simulation cap, insufficient-funds shedding, the gas refinement, an RPC
+  failure at each step, a malformed node answer — plus the pool staleness rule.
+- **`verify:sweep-index`** (`scripts/verify-sweep-index.ts`, 27 assertions) —
+  `rebuildSweepIndex` on the real modules against the fake chain over HTTP and
+  the mock Upstash: every candidate rule, both chain passes, the chunking (200 /
+  100 / one fee read) and the pool cut, the persisted blob's round trip,
+  abort-don't-overwrite, corrupt or unreadable blobs, and the flag's `'1'` →
+  number-`1` round trip with a Redis failure propagating on a cache miss.
+- **`verify:agent:routes`** (section 5 of `scripts/verify-agent-routes.ts`) —
+  the REAL built server: `/api/sweep` off (cache header without SWR) → the admin
+  front door (401 / 403 / 400 / 200, the audit write) → on with no build → a
+  seeded pool with `n` clamping and the serve-time hide filter → a pool older
+  than a day serving empty (`stale: true` on the admin read) → off again with
+  the memo invalidated by the write.
+- **`scripts/e2e/sweep.ts`** (43 assertions; a built app, a server and Chromium,
+  so outside `check` — see `scripts/e2e/README.md`) — the button in the
+  discover header at 375 px (no overflow, the stats block wraps under) and
+  1280 px, the sheet's painted states, the exact transaction the wallet is asked
+  to sign (Multicall3, Σ value, every sub-call strict, mintTo = user, the
+  ERC-8021 suffix appended), the receipt-driven finish, nine `/api/collect`
+  records verified server-side against the same fake chain, the three funnel
+  beacons counted once each in Redis, ownership exclusion on the next round,
+  "add ETH, then re-check", the hidden button with the flag off, and the
+  direct-mint path for a single item.
+
+Existing checks cover the rest: `typecheck`, `lint`, `verify:a11y` (the
+sheet's text), `check:bundle` (the sheet lazy-loads behind the button).
+
+**Rollout**: ship with `kismetart:sweep-enabled` absent (off); run the cron
+once (`/api/cron/sync-stats?secret=…`) to materialize the index; check
+`GET /api/admin/sweep` (`index.pool > 0`, `stale: false`) or
+`/api/admin/stats-health` (`sweepIndex`, `sweepHealthy`); enable with
+`POST /api/admin/sweep {"enabled":true}`; watch
+`sweep_open → sweep_attempt → sweep_success` in the funnel. A pool the cron
+stops refreshing serves empty after a day (`SWEEP_INDEX_MAX_AGE_MS`), so a dead
+cron hides the button rather than serving a dead pool; the health route flags
+it at three hours.
 
 ---
 
