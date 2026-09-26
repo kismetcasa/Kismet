@@ -1678,6 +1678,13 @@ try {
         const page = await context.newPage()
         page.on('pageerror', (e) => pageErrors.push(`${path}: ${e.message}`))
         await page.goto(`${origin}${path}`, { waitUntil: 'domcontentloaded' })
+        // Interact only once React owns the page. Text typed into the
+        // server-rendered inputs before hydration is reset to the component's
+        // initial state when React attaches, which empties a form silently —
+        // an intermittent studio failure traced to exactly this. Next creates
+        // its route announcer in an effect at the app root, so the element
+        // exists only once the tree has hydrated.
+        await page.waitForFunction(() => document.getElementsByTagName('next-route-announcer').length > 0, null, { timeout: 20_000 }).catch(() => {})
         return page
       }
       // innerText returns text AS RENDERED, so a `text-transform: uppercase`
