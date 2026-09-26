@@ -163,19 +163,24 @@ export async function verifyMintOnChain(
     return { ok: true, from: '', units: 1, blockNumber: null, purchasedEvent: null, operators: null, mintedAtMs: null }
   }
   if (cachedStr?.startsWith('1:')) {
-    const [, payer = '', units = '1', block = '', purchased, ops, mintedAt = ''] = cachedStr.split(':')
-    const b = parseInt(block, 10)
+    const [, payer = '', units = '1', third = '', purchased, ops, mintedAt = ''] = cachedStr.split(':')
+    // `1:<payer>:<units>[:<mintedAtMs>]` is what /api/collect cached under this
+    // same key before the proof moved here — its third field is a time, not a
+    // block. Ours always carries the purchase flag after the block.
+    const ours = purchased !== undefined
+    const b = parseInt(third, 10)
+    const at = ours ? mintedAt : third
     return {
       ok: true,
       from: payer,
       units: Math.max(1, parseInt(units, 10) || 1),
-      blockNumber: Number.isFinite(b) && b > 0 ? b : null,
+      blockNumber: ours && Number.isFinite(b) && b > 0 ? b : null,
       // A verdict written before these fields existed carries neither, and a
       // caller that needs them fails closed (retry after the TTL) rather than
       // assuming either answer.
       purchasedEvent: purchased === undefined ? null : purchased === '1',
       operators: ops === undefined ? null : ops ? ops.split(',') : [],
-      mintedAtMs: /^\d+$/.test(mintedAt) ? Number(mintedAt) : null,
+      mintedAtMs: /^\d+$/.test(at) ? Number(at) : null,
     }
   }
 

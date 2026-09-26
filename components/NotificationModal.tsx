@@ -47,7 +47,7 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   raffle_ended: 'Raffle results',
   file_update: 'Downloads you own get updated',
   experience_win: 'Artworks you win from a machine',
-  experience_status: 'Your machines: approvals, closings, running empty',
+  experience_status: 'Your machines: curator decisions, running empty',
   experience_featured: 'Your work featured in a machine',
 }
 

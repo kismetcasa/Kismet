@@ -1320,6 +1320,34 @@ console.log('\n14. payout ledger')
   check('pruning never touches the paid totals', (await payouts.paidTo(C2)) === 9n && (await payouts.paidTo(C1)) === BIG + 7n)
 }
 
+// ═══ 15. the shared mint proof reads every shape its cache holds ═══════════
+// /api/collect cached `1:<payer>:<units>[:<mintedAtMs>]` under this key before
+// the proof moved to lib/verifyMint; the proof's own entries carry the block
+// third. For the cache's five minutes either side of a deploy, both are read.
+console.log('\n15. the mint proof\'s cache')
+{
+  const { verifyMintOnChain } = await import(new URL('../lib/verifyMint.ts', import.meta.url).href)
+  const COLL15 = '0xcccc0000000000000000000000000000000000aa'
+  const ACCT = '0xacc0000000000000000000000000000000000acc'
+  const proofOf = async (tx: string, cached: string) => {
+    strings.set(`verify:collect:${tx}:${COLL15}:1:${ACCT}`, cached)
+    return verifyMintOnChain(tx, COLL15, '1', ACCT)
+  }
+  const oldShape = await proofOf('0x01', '1:0xpayer:2:1760000000000')
+  check('the collect route\'s old shape keeps its mint time, and is not read as a block',
+    oldShape.ok && oldShape.units === 2 && oldShape.mintedAtMs === 1760000000000 && oldShape.blockNumber === null && oldShape.purchasedEvent === null,
+    JSON.stringify(oldShape))
+  const oldShort = await proofOf('0x02', '1:0xpayer:3')
+  check('its shorter form reads as unknown time', oldShort.ok && oldShort.units === 3 && oldShort.mintedAtMs === null && oldShort.blockNumber === null)
+  const ours = await proofOf('0x03', '1:0xpayer:1:5000040:1:0xbuyer:1760000000000')
+  check('the proof\'s own shape reads every field',
+    ours.ok && ours.blockNumber === 5000040 && ours.purchasedEvent === true && ours.operators?.join() === '0xbuyer' && ours.mintedAtMs === 1760000000000,
+    JSON.stringify(ours))
+  const oursNoTime = await proofOf('0x04', '1:0xpayer:1:5000040:0:')
+  check('without a readable time it says so', oursNoTime.ok && oursNoTime.blockNumber === 5000040 && oursNoTime.purchasedEvent === false && oursNoTime.operators?.length === 0 && oursNoTime.mintedAtMs === null)
+  check('a cached refusal is still a refusal', (await proofOf('0x05', '0')).ok === false)
+}
+
 server.close()
 console.log(failures > 0 ? `\n${failures} FAILURE(S)\n` : '\nAll experience flow invariants hold.\n')
 if (failures > 0) process.exit(1)

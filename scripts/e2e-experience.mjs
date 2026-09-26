@@ -2262,8 +2262,11 @@ try {
     check('but not about machines Kismet published itself', statusFor(ADMIN, 'kismet-picks').length === 0 && statusFor(ADMIN, 'spring-season').length === 0)
     // Its curator hears each decision, in words that fit a reveal machine.
     check('a curator hears their machine was delisted, then relisted', statusFor(CURATOR, 'new-voices').map((n) => n.note).join() === 'live,delisted,live', statusFor(CURATOR, 'new-voices').map((n) => n.note).join())
+    // Ended or delisted, a machine taken off before it ever went live was
+    // turned down — not closed with "anything already bought is honoured".
+    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'busy-picks', state: 'ended' } })
     await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'busy-picks', state: 'delisted' } })
-    check('a machine turned down before it ever went live is told it was not approved', statusFor(BUSY, 'busy-picks').map((n) => n.note).join() === 'rejected', statusFor(BUSY, 'busy-picks').map((n) => n.note).join())
+    check('a machine turned down before it ever went live is told it was not approved', statusFor(BUSY, 'busy-picks').map((n) => n.note).join() === 'rejected,rejected', statusFor(BUSY, 'busy-picks').map((n) => n.note).join())
     // A payout that lands is told to its curator once, as a money notice.
     const paidNotes = (addr) => notesFor(addr).filter((n) => n.type === 'payout' && n.note === 'referral')
     check('a curator is told their referral rewards were paid, with the amount', paidNotes(CURATOR).length === 1 && paidNotes(CURATOR)[0].price === '200000000000000' && paidNotes(CURATOR)[0].priority === true, JSON.stringify(paidNotes(CURATOR)))

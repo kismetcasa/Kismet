@@ -226,9 +226,9 @@ async function transition(id: string, state: MachineState, signer: string): Prom
       recipient: machine.creator,
       actor: signer,
       tokenName: machine.name,
-      // Delisting a machine that never went live is turning it down, and is
-      // told as that: nothing was ever on sale.
-      note: state === 'delisted' && !machine.listedAt ? 'rejected' : state,
+      // Taking a machine off before it ever went live — delisted or ended —
+      // is turning it down, and is told as that: nothing was ever on sale.
+      note: state !== 'live' && !machine.listedAt ? 'rejected' : state,
       machineId: id,
     }).catch(bestEffort('xp.statusNotify', { id, state }))
   }
