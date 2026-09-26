@@ -126,7 +126,7 @@ export function getAgentManifest(origin: string): AgentManifest {
           url: 'artwork URL, alternative to collection+tokenId',
           account: 'Base Account address (recipient + payer)',
           amount: 'integer 1–50 (optional, default 1; larger values are clamped to 50)',
-          comment: 'optional mint comment',
+          comment: 'optional mint comment; blank → "collected on kismet" (the platform default every Kismet mint carries on-chain, so the collector is listed in the artwork\'s activity)',
         },
       },
       {
@@ -140,7 +140,7 @@ export function getAgentManifest(origin: string): AgentManifest {
           items: 'array of { collection, tokenId } or { url } (max 20)',
           account: 'Base Account address',
           recipient: 'optional, defaults to account — set when the collector differs from the paying account',
-          comment: 'optional mint comment',
+          comment: 'optional mint comment; blank → "collected on kismet" (the platform default every Kismet mint carries on-chain, so the collector is listed in the artwork\'s activity)',
         },
       },
       {
