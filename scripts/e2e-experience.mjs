@@ -279,6 +279,8 @@ const chain = {
   rewards: new Map(),
   /** Owners whose withdrawal reverts (a contract that refuses ETH). */
   rejectsEth: new Set(),
+  /** Owners whose withdrawal simulation fails for a reason that is not a revert. */
+  checkFails: new Set(),
   /** Every collect the browser's wallet sent, decoded. */
   mints: [],
   receipts: new Map(), // txHash -> receipt
@@ -402,7 +404,12 @@ function rpc(method, params) {
         const { functionName, args } = decodeFunctionData({ abi: REWARDS_ABI, data })
         const owner = String(args[0]).toLowerCase()
         if (functionName === 'balanceOf') return encodeFunctionResult({ abi: REWARDS_ABI, functionName: 'balanceOf', result: chain.rewards.get(owner) ?? 0n })
-        if (chain.rejectsEth.has(owner)) throw new Error('execution reverted: ETH transfer failed')
+        // A revert as a node reports one: code 3 and the error's selector, here
+        // ProtocolRewards' TRANSFER_FAILED() — the ETH send to the owner failed.
+        if (chain.checkFails.has(owner)) throw new Error('upstream request timed out')
+        if (chain.rejectsEth.has(owner)) {
+          throw Object.assign(new Error('execution reverted'), { rpc: { code: 3, message: 'execution reverted', data: toFunctionSelector('TRANSFER_FAILED()') } })
+        }
         return '0x'
       }
       if (sel === SEL.tokenInfo) {
@@ -507,7 +514,7 @@ const rpcServer = createServer((req, res) => {
           // (and code -32000, which viem surfaces without retrying), rather
           // than failing the whole HTTP exchange.
           if (DEBUG) console.error(`[rpc] ${r.method} -> error ${err?.message ?? err}`)
-          return { jsonrpc: '2.0', id: r.id, error: { code: -32000, message: String(err?.message ?? err) } }
+          return { jsonrpc: '2.0', id: r.id, error: err?.rpc ?? { code: -32000, message: String(err?.message ?? err) } }
         }
         if (DEBUG) console.error(`[rpc] ${r.method} ${JSON.stringify(r.params ?? [], (_, v) => (typeof v === 'bigint' ? v.toString() : v)).slice(0, 220)} -> ${Array.isArray(result) ? `${result.length} logs` : String(result).slice(0, 60)}`)
         return { jsonrpc: '2.0', id: r.id, result }
@@ -1879,6 +1886,14 @@ try {
     check('and the paid balances are now in their owners\' wallets, not the escrow',
       chain.rewards.get(KISMET_REFERRAL) === 0n && chain.rewards.get(CURATOR.toLowerCase()) === 0n)
     check('a second run finds nothing left to pay', (await run()).json?.paid?.length === 0 && cdp.ops.size === before + 2)
+    chain.rejectsEth.delete(BUSY.toLowerCase())
+    chain.checkFails.add(BUSY.toLowerCase())
+    const blind = await run()
+    check('a check that cannot run is reported as such, not blamed on the wallet, and nothing is sent',
+      blind.json?.skipped?.some((x) => x.address === BUSY.toLowerCase() && x.reason === 'could not check the withdrawal') && cdp.ops.size === before + 2,
+      JSON.stringify(blind.json?.skipped))
+    chain.checkFails.clear()
+    chain.rejectsEth.add(BUSY.toLowerCase())
     chain.rewards.set(CURATOR.toLowerCase(), 40_000_000_000_000n)
     check('a balance too small to be worth the gas waits for the next run', (await run()).json?.paid?.length === 0)
     chain.rewards.set(CURATOR.toLowerCase(), 100_000_000_000_000n)

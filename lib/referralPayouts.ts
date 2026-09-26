@@ -1,5 +1,5 @@
 import 'server-only'
-import { encodeFunctionData, parseAbi, type Address } from 'viem'
+import { BaseError, ContractFunctionRevertedError, encodeFunctionData, parseAbi, type Address } from 'viem'
 import { serverBaseClient } from './rpc'
 import { KISMET_REFERRAL } from './zoraMint'
 
@@ -71,8 +71,10 @@ export async function readRewardBalances(addresses: string[]): Promise<{ address
 
 /** Would `withdrawFor(owner, 0)` go through? It reverts when the owner is a
  *  contract that refuses ETH, and a reverted userOp still spends sponsored gas,
- *  so each payout is simulated from the sending account first. */
-export async function payoutWouldSucceed(owner: string, from: string): Promise<boolean> {
+ *  so each payout is simulated from the sending account first. A simulation
+ *  that could not run at all is `unreadable`, not a revert: both are skipped,
+ *  but only one says something about the owner's wallet. */
+export async function checkPayout(owner: string, from: string): Promise<'ok' | 'reverts' | 'unreadable'> {
   try {
     await serverBaseClient().simulateContract({
       account: from as Address,
@@ -81,9 +83,9 @@ export async function payoutWouldSucceed(owner: string, from: string): Promise<b
       functionName: 'withdrawFor',
       args: [owner as Address, 0n],
     })
-    return true
-  } catch {
-    return false
+    return 'ok'
+  } catch (err) {
+    return err instanceof BaseError && err.walk((e) => e instanceof ContractFunctionRevertedError) ? 'reverts' : 'unreadable'
   }
 }
 

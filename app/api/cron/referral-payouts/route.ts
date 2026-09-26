@@ -7,14 +7,18 @@ import { experienceOperator, sendOperatorCall } from '@/lib/experience/delivery'
 import { listMachines } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
 import {
+  checkPayout,
   payoutAddresses,
-  payoutWouldSucceed,
   planPayouts,
   readRewardBalances,
   withdrawForCall,
 } from '@/lib/referralPayouts'
 
 export const dynamic = 'force-dynamic'
+// Up to MAX_PAYOUTS_PER_RUN sequential simulate-and-broadcast rounds, each a
+// few CDP round trips — far past a default function timeout. Same ceiling the
+// stats cron takes.
+export const maxDuration = 300
 
 /**
  * Daily: push escrowed referral rewards to their owners, so nobody claims.
@@ -43,8 +47,9 @@ export async function GET(req: NextRequest) {
     const paid: { address: string; amount: string; userOpHash: string }[] = []
     const skipped: { address: string; reason: string }[] = []
     for (const p of planPayouts(balances)) {
-      if (!(await payoutWouldSucceed(p.address, operator))) {
-        skipped.push({ address: p.address, reason: 'withdrawal would revert' })
+      const check = await checkPayout(p.address, operator)
+      if (check !== 'ok') {
+        skipped.push({ address: p.address, reason: check === 'reverts' ? 'withdrawal would revert' : 'could not check the withdrawal' })
         continue
       }
       const sent = await sendOperatorCall(withdrawForCall(p.address))
