@@ -154,7 +154,10 @@ reads; move list-shaped truth off Redis).
 - **`kismetart:trending`** capped at 10k on every collect via
   `ZREMRANGEBYRANK(TRENDING_KEY, 0, -10001)` in the collect MULTI
   (`app/api/collect/route.ts:256`); feed reads a bounded `ZRANGE 0 9999`.
-- **`kismetart:trending-latest`** rides the same collect MULTI with the same 10k trim.
+- **`kismetart:trending-latest`** rides the same collect MULTI with the same 10k trim
+  (scored by the mint's block time under ZADD GT, so a late record can't re-rank an old sale).
+- **`kismetart:collects:moment:*`** (per-artwork collect log, `lib/collected.ts`) trimmed to
+  the newest 500 on every write; read bounded to page 0 of the activity list.
 - **`kismetart:sale-ends`** written through via `after()` (`lib/saleEnds.ts`):
   per-pod seen-cache, throttled sweeps, bounded `ZRANGE BYSCORE now→+inf LIMIT 0 10000`.
   Holds only ACTIVE window sales (real close date AND started) for the Ending-Soon feed.

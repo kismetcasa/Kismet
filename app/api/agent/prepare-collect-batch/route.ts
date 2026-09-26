@@ -6,7 +6,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
-import { formatPrice } from '@/lib/inprocess'
+import { defaultCollectComment, formatPrice } from '@/lib/inprocess'
 import { getDisplayName } from '@/lib/ensCache'
 import { batchCollectSummary } from '@/lib/agent/summary'
 import { parseMomentRef } from '@/lib/agent/refs'
@@ -59,8 +59,10 @@ export async function POST(req: NextRequest) {
   }
   const recipient = typeof body.recipient === 'string' && isAddress(body.recipient) ? body.recipient : account
   // Truncate (don't silently drop) an over-long comment, so a long note degrades to
-  // a trimmed comment rather than no comment at all.
-  const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
+  // a trimmed comment rather than no comment at all. A blank one takes the platform
+  // default (see prepare-collect: an empty comment emits no MintComment event, so
+  // In Process never lists the collector).
+  const comment = defaultCollectComment(typeof body.comment === 'string' ? body.comment.slice(0, 1000) : '')
 
   // Resolve refs first; reject the whole batch on a malformed one. Then dedupe by
   // on-chain identity (see dedupeMomentRefs): a moment repeated in the basket would

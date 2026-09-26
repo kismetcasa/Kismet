@@ -52,6 +52,22 @@ export function inprocessUrl(
 // them on notifications. Defined here so frontend and backend share one source.
 export const DEFAULT_COLLECT_COMMENT = 'collected on kismet'
 
+/**
+ * The comment a Kismet-issued mint carries on-chain: the collector's own
+ * (trimmed) when they wrote one, else DEFAULT_COLLECT_COMMENT — never empty.
+ * Non-empty is load-bearing, not cosmetic: Zora's sale strategies emit the
+ * MintComment event only when the comment has bytes, and In Process builds
+ * the artwork's collect feed (the activity list's "who collected" rows) from
+ * that event. A mint sent with '' is a real sale that never lists its
+ * collector anywhere. The web client always sent the default; the agent and
+ * scout paths sent '' until 2026-09 — every mint builder's caller goes
+ * through this now.
+ */
+export function defaultCollectComment(comment: string | null | undefined): string {
+  const c = comment?.trim() ?? ''
+  return c || DEFAULT_COLLECT_COMMENT
+}
+
 // Labels for airdrop rows folded into the moment activity feed. An airdrop is
 // a gift, not a purchase, so the copy differs from a collector's "collected on
 // kismet". The comments route picks one per moment by collection and stamps it
@@ -229,9 +245,15 @@ export interface MomentComment {
   timestamp: number // may be ms or seconds — normalize before use
   // 'airdrop' marks a synthetic activity row the comments route folds in from
   // a Kismet airdrop record: `sender` is the RECIPIENT (the invited artist)
-  // and the UI renders it as "invited to kismet". Absent/'collect' = an
-  // on-chain collect comment from the inprocess feed.
-  kind?: 'collect' | 'airdrop'
+  // and the UI renders it as "invited to kismet". 'kismet-collect' marks a
+  // collect Kismet itself verified and recorded (/api/collect's per-artwork
+  // log — lib/collected.ts) that the upstream feed has no row for: a mint
+  // whose on-chain comment was empty emits no MintComment event, so In
+  // Process never indexes it, and the agent / scout paths minted that way
+  // until 2026-09. `sender` is the collector and it renders exactly like an
+  // upstream collect row. Absent/'collect' = an on-chain collect comment from
+  // the inprocess feed.
+  kind?: 'collect' | 'airdrop' | 'kismet-collect'
   // In Process's own username for the sender, shipped on upstream rows since
   // their 2026-07 comments-contract migration. Display-only LAST-RESORT
   // fallback for senders with no Kismet/FC/ENS identity — a human-chosen
@@ -287,10 +309,14 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
           : NaN
     if (!Number.isFinite(timestamp)) continue
     // `kind` is Kismet's OWN synthetic marker (the comments route stamps
-    // 'airdrop' on its folded rows; upstream rows carry no kind at all), so a
-    // value outside the declared union can only be junk — normalized to
-    // absent rather than carried through typed as something it is not.
-    const kind = r.kind === 'collect' || r.kind === 'airdrop' ? r.kind : undefined
+    // 'airdrop' / 'kismet-collect' on its folded rows; upstream rows carry no
+    // kind at all), so a value outside the declared union can only be junk —
+    // normalized to absent rather than carried through typed as something it
+    // is not.
+    const kind =
+      r.kind === 'collect' || r.kind === 'airdrop' || r.kind === 'kismet-collect'
+        ? r.kind
+        : undefined
     // Upstream username: untrusted display text, so keep only a short,
     // trimmed, non-address-shaped string and drop everything else (a raw
     // 0x… here would just re-render the address the fallback exists to
@@ -311,6 +337,19 @@ export function normalizeMomentComments(rows: unknown): MomentComment[] {
     } as MomentComment)
   }
   return out
+}
+
+/**
+ * True for the rows the comments route FOLDS onto page 0 from Kismet's own
+ * records — airdrops and Kismet-recorded collects — as opposed to rows that
+ * came from In Process's paginated comment feed. The activity panel's offset
+ * cursor and its "more pages" signal must count only upstream rows (folded
+ * rows live outside inprocess's offset space), and its append path re-sorts
+ * only when a folded row is present. One predicate so a new folded kind can't
+ * be counted as an upstream row in one place and not another.
+ */
+export function isFoldedActivityRow(c: Pick<MomentComment, 'kind'>): boolean {
+  return c.kind === 'airdrop' || c.kind === 'kismet-collect'
 }
 
 /**

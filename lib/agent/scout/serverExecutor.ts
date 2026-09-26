@@ -24,6 +24,7 @@ import { getPermissionStatus, prepareSpendCallData } from '@base-org/account/spe
 import type { Address, Hex } from 'viem'
 import { redis } from '@/lib/redis'
 import { readMintFeeWithBound, USDC_BASE, NATIVE_ETH_SENTINEL } from '@/lib/zoraMint'
+import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { serverBaseClient, sdkRpcOptions } from '@/lib/rpc'
 import { buildCollectBatchPlan, type BatchCollectItem } from '@/lib/agent/collectBatch'
@@ -262,7 +263,9 @@ export function createSpendPermissionExecutor(cfg: {
         currency: candidate.currency,
         pricePerToken: token.pricePerToken,
         mintFee,
-        comment: '',
+        // The platform default, never '': an empty comment emits no MintComment
+        // event, so In Process would never list the agent's owner as a collector.
+        comment: DEFAULT_COLLECT_COMMENT,
       }
       // Pass the edition target so collectViaSpendPermission re-clamps against an
       // in-lock balance read (the `editions`/quantity above were sized from a

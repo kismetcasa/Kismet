@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { AIRDROP_INVITE_COMMENT, AIRDROP_GENERIC_COMMENT, INPROCESS_COMMENTS_PAGE_SIZE, inprocessUrl, normalizeMomentComments, normalizeTimestampMs, redactHiddenIdentityUsernames, type MomentComment } from '@/lib/inprocess'
 import { getAirdropsByMoment } from '@/lib/airdrops'
+import { getMomentCollects } from '@/lib/collected'
+import { foldKismetCollects } from '@/lib/activityFold'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { getHiddenUsersSet } from '@/lib/hidden-users'
 import { getHiddenIdentityClosure } from '@/lib/addressUnion'
@@ -53,6 +55,14 @@ export async function GET(req: NextRequest) {
   // supply count includes them but the activity list doesn't. Merge them in
   // as "invited to kismet" rows on the FIRST page only (the UI fetches offset
   // 0 and scrolls); paginating gifts alongside comments isn't worth it.
+  //
+  // Kismet-recorded COLLECTS get the same fold (lib/activityFold): the
+  // upstream feed is built from the MintComment event, which the sale
+  // strategies emit only for a non-empty comment, so a mint that left its
+  // comment blank (the agent / scout paths did, until 2026-09) is a real
+  // sale — verified by /api/collect, ranked in latest sales, counted in
+  // supply — with no activity row anywhere. Folded rows are deduped against
+  // the upstream page so a mint In Process DID index is never shown twice.
   const isFirstPage = offset === '0'
 
   // try/caught so an upstream timeout (the 8s signal) or network failure
@@ -61,8 +71,9 @@ export async function GET(req: NextRequest) {
   let hiddenUsers: Set<string>
   let hiddenIdentities: Set<string>
   let airdrops: Awaited<ReturnType<typeof getAirdropsByMoment>>
+  let collects: Awaited<ReturnType<typeof getMomentCollects>>
   try {
-    ;[res, hiddenUsers, hiddenIdentities, airdrops] = await Promise.all([
+    ;[res, hiddenUsers, hiddenIdentities, airdrops, collects] = await Promise.all([
       fetch(url, {
         headers: { Accept: 'application/json' },
         next: { revalidate: 30 },
@@ -80,6 +91,9 @@ export async function GET(req: NextRequest) {
       // getAirdropsByMoment swallows its own errors (returns []), so this
       // can't reject the Promise.all and mask a real upstream failure.
       isFirstPage ? getAirdropsByMoment(collectionAddress, tokenId) : Promise.resolve([]),
+      // Same contract (returns [] on error); same-tick, so it rides the one
+      // auto-pipelined Redis round trip with the reads above.
+      isFirstPage ? getMomentCollects(collectionAddress, tokenId) : Promise.resolve([]),
     ])
   } catch {
     return errorResponse(502, 'upstream unreachable')
@@ -146,11 +160,19 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Fold airdrop rows (labeled below) into the first page and re-sort the
-  // whole page newest-first so gifts land in the right temporal spot next to
-  // collects. Only touch a well-formed 2xx body; an upstream error passes
-  // through untouched (so its status/shape is preserved for the client).
-  if (isFirstPage && airdrops.length > 0 && res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+  // Fold airdrop rows (labeled below) and Kismet-recorded collect rows into
+  // the first page and re-sort the whole page newest-first so they land in
+  // the right temporal spot next to the upstream collects. Only touch a
+  // well-formed 2xx body; an upstream error passes through untouched (so its
+  // status/shape is preserved for the client).
+  if (
+    isFirstPage &&
+    (airdrops.length > 0 || collects.length > 0) &&
+    res.ok &&
+    data &&
+    typeof data === 'object' &&
+    !Array.isArray(data)
+  ) {
     const obj = data as Record<string, unknown>
     const existing = Array.isArray(obj.comments) ? (obj.comments as MomentComment[]) : []
     // The patron collection acts as the mint pass, so an airdrop of it is an
@@ -170,11 +192,18 @@ export async function GET(req: NextRequest) {
         timestamp: a.timestamp,
         kind: 'airdrop' as const,
       }))
-    if (airdropRows.length > 0) {
+    // Only the recorded collects the upstream page has no row for; hidden
+    // collectors are dropped inside, mirroring the filter above. pageFull
+    // (the raw-page-length signal) bounds the fold to what page 0 can vouch
+    // for — see foldKismetCollects.
+    const collectRows = foldKismetCollects(existing, collects, hiddenUsers, {
+      pageFull: upstreamHasMore === true,
+    })
+    if (airdropRows.length > 0 || collectRows.length > 0) {
       // `|| 0` guards a missing/NaN upstream timestamp from scrambling the
       // sort (NaN comparisons are undefined) — such a row just sinks to the
       // bottom instead of randomizing the whole page.
-      obj.comments = [...existing, ...airdropRows].sort(
+      obj.comments = [...existing, ...airdropRows, ...collectRows].sort(
         (x, y) => (normalizeTimestampMs(y.timestamp) || 0) - (normalizeTimestampMs(x.timestamp) || 0),
       )
     }
