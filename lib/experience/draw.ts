@@ -149,6 +149,35 @@ export function withExcluded(
   )
 }
 
+/**
+ * What a draw picks at `attempt`, and which pieces the attempts before it set
+ * aside — recomputed from the frozen snapshot and the per-attempt hashes alone.
+ *
+ * The draw loop (runDraw) only moves past an attempt by REFUSING its pick — a
+ * lost race for the last copy, or a failed live authority check — and it drops
+ * exactly that pick before drawing again. So the table attempt N draws from is
+ * the snapshot minus the picks of attempts 0..N-1, all of which are public.
+ * runDraw selects through this function and the verifier replays through it,
+ * so the two cannot disagree about which rows a redraw left out. A verifier
+ * that recomputed the final attempt over the whole snapshot instead reported
+ * MISMATCH for most honest redraws.
+ */
+export function drawAtAttempt(
+  snapshot: SnapshotEntry[],
+  hashAt: (attempt: number) => string,
+  attempt: number,
+): { pick: SnapshotEntry | null; setAside: SnapshotEntry[] } {
+  let working = snapshot
+  const setAside: SnapshotEntry[] = []
+  for (let k = 0; k < attempt; k++) {
+    const refused = selectByHash(working, hashAt(k))
+    if (!refused) return { pick: null, setAside }
+    setAside.push(refused)
+    working = withExcluded(working, refused)
+  }
+  return { pick: selectByHash(working, hashAt(attempt)), setAside }
+}
+
 /** Canonical key for a pool entry — the member form used by every Redis hash
  *  and the cross-machine commitment ledger. */
 export function entryKey(e: { collection: string; tokenId: string }): string {

@@ -9,10 +9,12 @@
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-experience.ts
 
+import { createHash } from 'node:crypto'
 import {
   MAX_POOL_ARTISTS,
   MAX_WEIGHT,
   deriveOdds,
+  drawAtAttempt,
   eligible,
   entryKey,
   isDrawable,
@@ -23,6 +25,7 @@ import {
   withExcluded,
 } from '../lib/experience/draw.ts'
 import { checkSolvency, coverage, findFloorPiece } from '../lib/experience/solvency.ts'
+import { runDraw } from '../lib/experience/runDraw.ts'
 import {
   canonicalSnapshot,
   commitmentFor,
@@ -41,6 +44,9 @@ import {
 import type { PoolEntry, SnapshotEntry } from '../lib/experience/types.ts'
 
 let failures = 0
+/** Deterministic 64-hex strings, so the randomised checks replay identically in CI. */
+const createHashHex = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')
+
 const check = (name: string, cond: boolean, detail = ''): void => {
   if (cond) console.log(`  PASS  ${name}`)
   else {
@@ -195,6 +201,9 @@ const OWNED: Record<string, boolean> = Object.fromEntries(
     true,
   ]),
 )
+/** The delivery account may mint every one of those pieces. Absent fails
+ *  closed the same way. */
+const GRANTED: Record<string, boolean> = Object.fromEntries(Object.keys(OWNED).map((k) => [k, true]))
 const baseInput = {
   capsuleMaxSupply: 5,
   capsuleMinted: 0,
@@ -205,6 +214,7 @@ const baseInput = {
   headroom: { ...AMPLE } as Record<string, number | null>,
   otherPledges: {} as Record<string, number>,
   artistControl: { ...OWNED } as Record<string, boolean>,
+  operatorGrant: { ...GRANTED } as Record<string, boolean>,
 }
 const codes = (p: ReturnType<typeof checkSolvency>) => p.map((x) => x.code)
 
@@ -332,6 +342,24 @@ check(
     })
     return p.some((x) => x.code === 'artist-not-in-split') && p.some((x) => x.code === 'artist-not-admin')
   })(),
+)
+
+// The artist's consent, as the chain records it. A piece the delivery account
+// cannot mint pends every play that draws it, so a machine leaning on it sells
+// capsules it cannot honour. Found at publish, before anyone pays.
+check(
+  'a piece the delivery account may not mint is refused',
+  codes(checkSolvency({ ...baseInput, operatorGrant: { ...GRANTED, [entryKey(entry())]: false } }))
+    .includes('piece-not-allowed'),
+)
+check(
+  'and the refusal tells the creator where the artist allows it',
+  checkSolvency({ ...baseInput, operatorGrant: { ...GRANTED, [entryKey(entry())]: false } })
+    .some((p) => p.code === 'piece-not-allowed' && p.detail.includes(`/artwork/${entry().collection}/${entry().tokenId}`)),
+)
+check(
+  'a grant that could not be read is REFUSED, not skipped',
+  codes(checkSolvency({ ...baseInput, operatorGrant: {} })).includes('allowance-unreadable'),
 )
 
 // THE hazard this whole subsystem must never permit. Prize delivery is an
@@ -528,6 +556,52 @@ console.log('\n7. end-to-end reproducibility')
   check('a redraw still returns something', !!second)
 }
 
+// ─── 7a. A redraw is verifiable from public material ────────────────────────
+console.log('\n7a. the verifier replays the draw loop, redraws included')
+{
+  // The property that makes a redraw checkable: whatever the draw loop
+  // delivered at attempt N, replaying attempts 0..N from the snapshot and the
+  // seed alone lands on the same piece and names the same set-aside pieces.
+  // Randomised over seeds and refusal patterns, because the defect it pins
+  // (recomputing the last attempt over the WHOLE table) passed every attempt-0
+  // case and failed most redraws.
+  const pool = [
+    snap({ tokenId: '1', weight: 50 }),
+    snap({ tokenId: '2', weight: 30 }),
+    snap({ tokenId: '3', weight: 15 }),
+    snap({ tokenId: '4', weight: 5 }),
+  ]
+  let plays = 0
+  let agreed = 0
+  let wholeTableAgreed = 0
+  for (let i = 0; i < 400; i++) {
+    const seed = createHashHex(`seed-${i}`)
+    const tx = '0x' + createHashHex(`tx-${i}`)
+    const refusals = i % 4
+    let seen = 0
+    const hashAt = (a: number) => drawHash({ serverSeed: seed, txHash: tx, unitIndex: 0, attempt: a })
+    const res = await runDraw(pool, {
+      consume: async () => null,
+      release: async () => {},
+      authority: async () => seen++ >= refusals,
+      hash: hashAt,
+    })
+    if (res.kind !== 'drawn') continue
+    plays++
+    const replay = drawAtAttempt(pool, hashAt, res.attempt)
+    if (
+      replay.pick?.tokenId === res.prize.tokenId &&
+      replay.setAside.length === res.attempt &&
+      !replay.setAside.some((e) => e.tokenId === res.prize.tokenId)
+    ) agreed++
+    if (selectByHash(pool, hashAt(res.attempt))?.tokenId === res.prize.tokenId) wholeTableAgreed++
+  }
+  check('every drawn play replays to the delivered piece', plays === 400 && agreed === plays, `${agreed}/${plays}`)
+  check('recomputing only the last attempt over the whole table does not (the pinned defect)', wholeTableAgreed < plays)
+  const none = drawAtAttempt([], (a) => drawHash({ serverSeed: 's', txHash: '0x1', unitIndex: 0, attempt: a }), 2)
+  check('an empty table replays to nothing', none.pick === null && none.setAside.length === 0)
+}
+
 // ─── 7b. Liability is what can still be SOLD ────────────────────────────────
 console.log('\n7b. outstanding nets off already-minted capsules')
 {
@@ -541,6 +615,7 @@ console.log('\n7b. outstanding nets off already-minted capsules')
     headroom: { ...AMPLE },
     otherPledges: {},
     artistControl: { ...OWNED },
+    operatorGrant: { ...GRANTED },
   }
   // 100-cap capsule with 70 already minted: only 30 can still be sold, so 40
   // pledged copies cover it. The gate used to demand coverage for all 100 while

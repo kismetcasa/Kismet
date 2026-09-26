@@ -47,7 +47,12 @@ const CAPSULE_9 = '0xcccc000000000000000000000000000000000009'
 const PASS_COLLECTION = '0xbbbb000000000000000000000000000000000001'
 const NOPASS = '0x1111000000000000000000000000000000001111'
 const NOPASS_TOKEN = 'e2e-nopass-session-token'
+/** A Pass holder whose only job is to spend the check budget (section 6f). */
+const BUSY = '0x2222000000000000000000000000000000002222'
+const BUSY_TOKEN = 'e2e-busy-session-token'
 const POOL = '0xdddd000000000000000000000000000000000002'
+/** A collection whose artist granted the operator MINTER collection-wide. */
+const POOL_WIDE = '0xdddd000000000000000000000000000000000003'
 const TX_A = '0x' + 'a1'.repeat(32) // player mints 2 capsules of machine 1
 const TX_B = '0x' + 'b2'.repeat(32) // player mints 1 capsule "on zora.co" — never seen by our UI
 const TX_N = '0x' + 'c3'.repeat(32) // player mints 1 capsule of the no-grant machine
@@ -62,8 +67,15 @@ const TX_REVOKED = '0x' + '5b'.repeat(32) // adminMinted by a wallet whose grant
 const TX_OLD_NODE = '0x' + '6c'.repeat(32) // an honest buy whose block the node can no longer look back to
 const TX_HANG = '0x' + '7d'.repeat(32) // its mint is broadcast and gets no verdict
 const TX_CAP = '0x' + '8e'.repeat(32) // its mint reverts every time it is tried
+const TX_REDRAW = '0x' + '9f'.repeat(32) // its first draw is refused, so attempt 1 delivers
+const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refused and resume lands it
+const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 /** A fresh capsule for the machine the browser publishes in section 9. */
 const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
+/** The capsule of the machine whose play needs a redraw (section 5b). */
+const CAPSULE_R = '0xcccc00000000000000000000000000000000000b'
+/** An unused capsule for the collection-wide grant dry run (section 6f). */
+const CAPSULE_W = '0xcccc00000000000000000000000000000000000c'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
  *  three-transaction evasion of a live permission read. */
 const EVADER = '0x5555000000000000000000000000000000000055'
@@ -370,7 +382,8 @@ const cdp = {
    *  'refuse' = the paymaster declines (nothing broadcast); 'fail' = broadcast
    *  then reverted; 'hang' = broadcast, and the send's own status wait fails,
    *  after which every later read reports it still in flight until a test
-   *  flips `op.outcome`. */
+   *  flips `op.outcome`; 'slow' = completes, but the prepare answers only after
+   *  a pause, holding the play between its draw and its broadcast. */
   script: [],
   /** Every op ever prepared: userOpHash → { calls, outcome, polls, transactionHash }. */
   ops: new Map(),
@@ -395,11 +408,12 @@ function cdpHandle(method, path, body) {
     const userOpHash = '0x' + (++cdp.seq).toString(16).padStart(64, '0')
     cdp.ops.set(userOpHash, {
       calls: body?.calls ?? [],
-      outcome,
+      outcome: outcome === 'slow' ? 'complete' : outcome,
       polls: 0,
       transactionHash: '0x' + 'dd'.repeat(30) + cdp.seq.toString(16).padStart(4, '0'),
     })
-    return [200, { userOpHash, status: 'pending', network: 'base', calls: body?.calls ?? [] }]
+    const reply = [200, { userOpHash, status: 'pending', network: 'base', calls: body?.calls ?? [] }]
+    return outcome === 'slow' ? sleep(2500).then(() => reply) : reply
   }
   if (method === 'POST' && (m = p.match(/^\/v2\/evm\/smart-accounts\/[^/]+\/user-operations\/(0x[0-9a-f]+)\/send$/))) {
     const op = cdp.ops.get(m[1])
@@ -432,9 +446,10 @@ const cdpServer = createServer((req, res) => {
   req.on('end', () => {
     let parsed = null
     try { parsed = body ? JSON.parse(body) : null } catch { /* not json */ }
-    const [status, json] = cdpHandle(req.method, new URL(req.url, 'http://x').pathname, parsed)
-    res.writeHead(status, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(json))
+    Promise.resolve(cdpHandle(req.method, new URL(req.url, 'http://x').pathname, parsed)).then(([status, json]) => {
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(json))
+    })
   })
 })
 
@@ -492,6 +507,8 @@ const cdpPort = cdpServer.address().port
 strings.set(`kismetart:session:${ADMIN_USER_TOKEN}`, ADMIN)
 strings.set(`kismetart:session:${USER_TOKEN}`, CREATOR2)
 strings.set(`kismetart:session:${NOPASS_TOKEN}`, NOPASS)
+strings.set(`kismetart:session:${BUSY_TOKEN}`, BUSY)
+strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${BUSY}`, '1')
 // The gate, enabled exactly as production runs it.
 strings.set('kismetart:gate:enabled', '1')
 strings.set('kismetart:gate:pass-collection', PASS_COLLECTION)
@@ -530,6 +547,8 @@ chain.tokens.set(key('0xcccc000000000000000000000000000000000008', 1), { maxSupp
 chain.sales.set(key('0xcccc000000000000000000000000000000000008', 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ARTIST_B })
 chain.sales.set(key(CAPSULE_3, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
 chain.tokens.set(key(CAPSULE_A, 1), { maxSupply: 20n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_R, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_R, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
 chain.perms.set(key(CAPSULE_A, 0, CREATOR2), 2n)
 chain.sales.set(key(CAPSULE_A, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: CREATOR2 })
 
@@ -549,6 +568,14 @@ chain.tokens.set(key(POOL, 8), { maxSupply: OPEN, totalMinted: 1n })
 chain.perms.set(key(POOL, 7, OPERATOR), 4n)
 chain.perms.set(key(POOL, 14, OPERATOR), 4n)
 chain.perms.set(key(POOL, 8, OPERATOR), 4n)
+chain.tokens.set(key(POOL, 15), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(POOL_WIDE, 1), { maxSupply: OPEN, totalMinted: 0n })
+chain.perms.set(key(POOL_WIDE, 1, ADMIN), 2n)
+chain.perms.set(key(POOL_WIDE, 0, OPERATOR), 4n)
+chain.tokens.set(key(CAPSULE_W, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_W, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.perms.set(key(POOL, 15, OPERATOR), 4n)
+chain.perms.set(key(POOL, 15, ADMIN), 2n)
 // Each pool artist is the ADMIN of the piece they are named on — the ordinary
 // state for a token you minted, and now what the publish gate checks the name
 // against. Token 99 gets its admin too; only its OPERATOR grant is withheld.
@@ -562,7 +589,7 @@ chain.perms.set(key(POOL, 8, CREATOR2), 2n)
 chain.perms.set(key(CAPSULE, 0, ERC20_MINTER), 4n)
 // Collection-wide ADMIN for each capsule's creator — the ordinary state for a
 // token you minted, and now a precondition for building a machine on it.
-for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, '0xcccc000000000000000000000000000000000007']) {
+for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, CAPSULE_R, CAPSULE_W, '0xcccc000000000000000000000000000000000007']) {
   chain.perms.set(key(c, 0, ADMIN), 2n)
 }
 chain.perms.set(key(CAPSULE_2, 0, CREATOR2), 2n)
@@ -636,7 +663,6 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     UPSTASH_REDIS_REST_TOKEN: 'e2e',
     BASE_RPC_URL: `http://127.0.0.1:${rpcPort}`,
     ADMIN_ADDRESS: ADMIN,
-    EXPERIENCE_OPERATOR_ADDRESSES: OPERATOR,
     CRON_SECRET,
     NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
     CDP_API_KEY_ID: 'e2e-key',
@@ -846,6 +872,25 @@ try {
     rD.json?.claim?.state === 'pending' && /failed repeatedly/.test(rD.json.claim.pendingReason ?? ''), JSON.stringify(rD.json?.claim))
   check('and a fourth is never sent', prepares() === nD + 3, `${prepares() - nD}`)
 
+  // A resume that arrives while the play that created the claim is still
+  // delivering: a player who reloaded mid-reveal and pressed open. The claim
+  // has its prize and no broadcast yet — the window in which a resume used to
+  // deliver on its own. The play holds the claim's lock, so the resume must be
+  // turned away and change nothing.
+  cdp.script.push('slow')
+  addMint({ tx: TX_SLOW, collection: CAPSULE, to: PLAYER, id: 1n, value: 1n, block: 5_000_042n })
+  const nS = prepares()
+  const slowPlay = call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_SLOW, account: PLAYER, unitIndex: 0 } })
+  for (let i = 0; i < 100 && !claimOf('spring-season', TX_SLOW, 0)?.prize; i++) await sleep(50)
+  const drawnMid = claimOf('spring-season', TX_SLOW, 0)
+  check('the resume arrives after the draw and before the broadcast', !!drawnMid?.prize && !drawnMid.userOpHash)
+  const rS = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_SLOW, unitIndex: 0 } })
+  const afterResume = claimOf('spring-season', TX_SLOW, 0)
+  check('a resume during a live play is turned away', rS.json?.resumed === false && /already being opened/.test(rS.json.reason ?? ''), JSON.stringify(rS.json).slice(0, 200))
+  check('and touches nothing on the claim', afterResume?.deliveryAttempts === 1 && !afterResume.pendingReason, JSON.stringify(afterResume))
+  const pS = await slowPlay
+  check('the play then delivers, with exactly one mint', pS.json?.claim?.state === 'delivered' && prepares() === nS + 1, `${pS.json?.claim?.state} ${prepares() - nS}`)
+
   await sleep(400)
   const claims2 = await call(`/api/experience/claims?machineId=spring-season&account=${PLAYER}`)
   check('the claims route shows the settled units resolved and the exhausted one still owed',
@@ -884,17 +929,77 @@ try {
   const vBad = await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_A}&unitIndex=0`)
   check('a claim served under a different commitment FAILS to verify', vBad.json?.verifiable === true && vBad.json.ok === false)
 
+  // ═══ 5b. a redraw verifies, and a delivered copy leaves the ledger ═════════
+  // Attempt 0 draws a piece whose grant was revoked after publish; the loop
+  // sets it aside and attempt 1 delivers the other — a capped edition, so the
+  // same play proves its pledge shrinks by the copy that reached the chain.
+  // Weighted a million to one so attempt 0 lands on the refused piece — and so
+  // recomputing attempt 1 over the WHOLE table, the defect this pins, lands
+  // there too and reads MISMATCH.
+  console.log('\n5b. a play that needed a redraw still verifies')
+  chain.perms.set(key(POOL, 99, OPERATOR), 4n)
+  const redrawMachine = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'redraw', name: 'Redraw', capsule: { collection: CAPSULE_R, tokenId: '1' },
+    entries: [
+      { collection: POOL, tokenId: '99', artist: ADMIN, weight: 1_000_000, supply: 0 },
+      { collection: POOL, tokenId: '15', artist: ADMIN, weight: 1, supply: 2 },
+    ],
+  } })
+  check('the machine publishes while both pieces are granted', redrawMachine.status === 200 && redrawMachine.json.machine.state === 'live', JSON.stringify(redrawMachine.json).slice(0, 200))
+  chain.perms.delete(key(POOL, 99, OPERATOR)) // the artist revokes after publish
+  setHead(5_000_075n)
+  addMint({ tx: TX_REDRAW, collection: CAPSULE_R, to: PLAYER, id: 1n, value: 1n, block: 5_000_072n })
+  const pR = await call('/api/experience/play', { method: 'POST', body: { machineId: 'redraw', txHash: TX_REDRAW, account: PLAYER, unitIndex: 0 } })
+  check('attempt 0 is refused and attempt 1 delivers the other piece',
+    pR.json?.claim?.state === 'delivered' && pR.json.claim.attempt === 1 && pR.json.claim.prize?.tokenId === '15',
+    JSON.stringify(pR.json).slice(0, 300))
+  check('the delivered copy leaves the machine\'s pledge on that edition',
+    hashes.get(`kismetart:xp:commit:${POOL}:15`)?.get('redraw') === '1', `ledger=${hashes.get(`kismetart:xp:commit:${POOL}:15`)?.get('redraw')}`)
+  {
+    const rKey = `kismetart:xp:redraw:claim:${TX_REDRAW}:0`
+    const rStored = JSON.parse(strings.get(rKey))
+    const rSeed = strings.get(`kismetart:xp:redraw:seed:${today}`)
+    strings.set(`kismetart:xp:redraw:seed:${yesterday}`, rSeed)
+    strings.set(rKey, JSON.stringify({ ...rStored, epoch: yesterday, commitment: sha256(rSeed) }))
+    const vR = await call(`/api/experience/verify?machineId=redraw&txHash=${TX_REDRAW}&unitIndex=0`)
+    check('the redraw verifies from public material', vR.json?.verifiable === true && vR.json.ok === true, JSON.stringify(vR.json).slice(0, 300))
+    check('and names the piece attempt 0 set aside', vR.json?.setAside?.length === 1 && vR.json.setAside[0].tokenId === '99')
+  }
+  // The same release on the resume path: the next play's sponsorship is
+  // refused, so the drawn copy stays pledged until the resume that lands it.
+  const ledger15 = () => hashes.get(`kismetart:xp:commit:${POOL}:15`)?.get('redraw')
+  cdp.script.push('refuse')
+  addMint({ tx: TX_REDRAW_2, collection: CAPSULE_R, to: PLAYER, id: 1n, value: 1n, block: 5_000_073n })
+  const pR2 = await call('/api/experience/play', { method: 'POST', body: { machineId: 'redraw', txHash: TX_REDRAW_2, account: PLAYER, unitIndex: 0 } })
+  check('a drawn copy whose mint never landed stays pledged',
+    pR2.json?.claim?.state === 'pending' && pR2.json.claim.prize?.tokenId === '15' && ledger15() === '1', `${JSON.stringify(pR2.json?.claim).slice(0, 160)} ledger=${ledger15()}`)
+  const rR2 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'redraw', txHash: TX_REDRAW_2, unitIndex: 0 } })
+  check('and the resume that delivers it releases it', rR2.json?.claim?.state === 'delivered' && ledger15() === '0', `${rR2.json?.claim?.state} ledger=${ledger15()}`)
+
   // ═══ 6. a pool that cannot deliver ═════════════════════════════════════════
   console.log('\n6. a pool whose only artist has not granted mint rights')
-  const noGrant = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+  const noGrantBody = {
     id: 'no-grant', name: 'No Grant', capsule: { collection: CAPSULE_3, tokenId: '1' },
-    entries: [{ collection: POOL, tokenId: '99', artist: ADMIN, weight: 1, supply: 0 }], splitRecipients: [ADMIN],
-  } })
-  check('it publishes (grants are checked live at play, not at publish)', noGrant.status === 200 && noGrant.json.machine.state === 'live')
+    entries: [{ collection: POOL, tokenId: '99', artist: ADMIN, weight: 1, supply: 0 }],
+  }
+  const refusedNoGrant = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: noGrantBody })
+  check('a piece the delivery account cannot mint is refused at publish, before anyone can pay',
+    refusedNoGrant.status === 400 && refusedNoGrant.json?.problems?.some((p) => p.code === 'piece-not-allowed' && p.detail.includes(`/artwork/${POOL}/99`)),
+    JSON.stringify(refusedNoGrant.json).slice(0, 240))
+  check('and nothing was written', (await call('/api/experience/machines/no-grant')).status === 404)
+  // The artist grants, the machine publishes, and then they revoke — the case
+  // the publish gate cannot see coming, which the play path must still handle.
+  chain.perms.set(key(POOL, 99, OPERATOR), 4n)
+  const noGrant = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: noGrantBody })
+  check('once granted it publishes', noGrant.status === 200 && noGrant.json.machine.state === 'live', JSON.stringify(noGrant.json).slice(0, 200))
+  chain.perms.delete(key(POOL, 99, OPERATOR))
   setHead(5_000_120n)
   addMint({ tx: TX_N, collection: CAPSULE_3, to: PLAYER, id: 1n, value: 1n, block: 5_000_110n })
   const pN = await call('/api/experience/play', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, account: PLAYER, unitIndex: 0 } })
   check('the play pends with NO prize rather than minting without authority', pN.json?.pending === true && pN.json.claim.prize === null, JSON.stringify(pN.json))
+  const vN = await call(`/api/experience/verify?machineId=no-grant&txHash=${TX_N}&unitIndex=0`)
+  check('the verifier says a play that drew nothing is still owed, not MISMATCH',
+    vN.json?.verifiable === false && /still owed/.test(vN.json.reason ?? ''), JSON.stringify(vN.json).slice(0, 200))
   await sleep(400)
   const claimsN = await call(`/api/experience/claims?machineId=no-grant&account=${PLAYER}`)
   check('the stalled claim is indexed even though delivery never ran', claimsN.json?.claims?.length === 1 && claimsN.json.claims[0].unresolved === true)
@@ -908,11 +1013,14 @@ try {
   check('a fresh draw is still owed on a delisted machine, not refused',
     rDelisted.status === 200 && rDelisted.json?.claim?.state === 'pending' && !rDelisted.json?.claim?.prize,
     `${rDelisted.status} ${JSON.stringify(rDelisted.json).slice(0, 200)}`)
-  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'live' } })
+  const relist = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'live' } })
+  check('relisting is refused while its only piece is not allowed', relist.status === 400 && relist.json?.problems?.some((p) => p.code === 'piece-not-allowed'))
 
   chain.perms.set(key(POOL, 99, OPERATOR), 4n)
   const rN = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, unitIndex: 0 } })
   check('after the artist grants, resume draws the owed artwork', !!rN.json?.claim?.prize && rN.json.claim.prize.tokenId === '99', JSON.stringify(rN.json))
+  const relisted = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'live' } })
+  check('and the machine can be relisted', relisted.status === 200 && relisted.json.machine.state === 'live')
 
   // ═══ 6b. the money: who the capsule actually pays ══════════════════════════
   console.log('\n6b. payee enforcement — the capsule\'s real split, not a declared one')
@@ -1193,13 +1301,48 @@ try {
   check('the review API needs the admin cookie', (await call('/api/admin/experience?state=review')).status === 401)
   const queue = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
   check('the queue shows it with a live solvency verdict', queue.status === 200 && queue.json.machines.length === 1 && queue.json.machines[0].problems.length === 0, JSON.stringify(queue.json).slice(0, 300))
+  // The artist revokes while the machine waits. The queue must show it, and
+  // approval must refuse, rather than put on sale a pool nothing can deliver.
+  chain.perms.delete(key(POOL, 8, OPERATOR))
+  const queueRevoked = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
+  check('a grant revoked in review shows in the queue', queueRevoked.json?.machines?.[0]?.problems?.some((p) => p.code === 'piece-not-allowed'),
+    JSON.stringify(queueRevoked.json?.machines?.[0]?.problems))
+  const blocked = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
+  check('and approval refuses it', blocked.status === 400 && blocked.json?.problems?.some((p) => p.code === 'piece-not-allowed'))
+  chain.perms.set(key(POOL, 8, OPERATOR), 4n)
   const promote = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
   check('the curator promotes it', promote.status === 200 && promote.json.machine.state === 'live')
   check('and it is public now', (await call('/api/experience/machines/field-recordings')).status === 200)
   const list = await call('/api/experience/machines')
   check('the public list carries every live machine',
-    list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,spring-season',
+    list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,redraw,spring-season',
     list.json.machines.map((m) => m.id).sort().join(','))
+
+  // The queue's draft tab filtered on the transition list, which has no draft,
+  // and so returned every machine instead.
+  const drafts = await call('/api/admin/experience?state=draft', { admin: ADMIN_TOKEN })
+  check('the draft filter returns drafts only', drafts.status === 200 && drafts.json.machines.every((r) => r.machine.state === 'draft'),
+    drafts.json?.machines?.map((r) => r.machine.state).join(','))
+
+  // ═══ 6f. checks and publishes have separate budgets ═══════════════════════
+  console.log('\n6f. a creator iterating on checks is not locked out of publishing')
+  const busyBody = (dryRun) => ({ id: 'busy-machine', name: 'Busy', capsule: { collection: '0xcccc000000000000000000000000000000000008', tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }], dryRun })
+  const busyChecks = []
+  for (let i = 0; i < 21; i++) busyChecks.push((await call('/api/experience/machines', { method: 'POST', user: BUSY_TOKEN, body: busyBody(true) })).status)
+  check('twenty checks run', busyChecks.slice(0, 20).every((st) => st !== 429), busyChecks.join(','))
+  check('the twenty-first is told to wait', busyChecks[20] === 429)
+  const busyPublish = await call('/api/experience/machines', { method: 'POST', user: BUSY_TOKEN, body: busyBody(false) })
+  check('and publishing still has its own budget', busyPublish.status !== 429 && busyPublish.status === 400, String(busyPublish.status))
+
+  // adminMint accepts a grant on the collection-wide row as well as the
+  // piece's own, so the publish gate must too — reading only the piece's row
+  // refused an artist who had allowed every piece at once.
+  const wide = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'wide-grant', name: 'Wide Grant', capsule: { collection: CAPSULE_W, tokenId: '1' },
+    entries: [{ collection: POOL_WIDE, tokenId: '1', artist: ADMIN, weight: 1, supply: 0 }], dryRun: true,
+  } })
+  check('a collection-wide grant allows the piece', wide.status === 200 && wide.json?.problems?.length === 0, JSON.stringify(wide.json).slice(0, 240))
 
   // ═══ 6e. the credential gate, and the credential as a coin slot ═══════════
   console.log('\n6e. the Pass gate actually gates')
@@ -1287,9 +1430,9 @@ try {
   console.log('\n8. the daily commitment cron')
   check('the cron refuses without its secret', (await call('/api/cron/experience-seeds')).status === 401)
   const cron = await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
-  check('it commits for every live machine', cron.status === 200 && cron.json.committed === 4 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  check('it commits for every live machine', cron.status === 200 && cron.json.committed === 5 && cron.json.failed.length === 0, JSON.stringify(cron.json))
   const tomorrow = dayShift(today, 1)
-  check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
+  check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor', 'redraw'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
   const before = strings.get(`kismetart:xp:spring-season:seed:${today}`)
   await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
   check('running it again rotates nothing', strings.get(`kismetart:xp:spring-season:seed:${today}`) === before)
@@ -1392,7 +1535,7 @@ try {
           check('the list page leads with its name and promise', /experience capsule machines · published odds · every play returns an artwork/.test(body), body.slice(0, 160))
           check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/experience/new')
           const rows = page.locator('a[href^="/experience/"]:not([href="/experience/new"])')
-          check('every live machine is a row', (await rows.count()) === 4, String(await rows.count()))
+          check('every live machine is a row', (await rows.count()) === 5, String(await rows.count()))
           check('each renders a state badge', (await rows.allInnerTexts()).every((t) => /\b(live|closed)\b/i.test(t)))
           await page.context().close()
         }
@@ -1565,6 +1708,7 @@ try {
           const body = await text(page)
           check('the queue shows the submitted machine with its lineup and odds', /browser-machine · by 0x[0-9a-f]{4}…[0-9a-f]{4} · 1 artwork · 20 capsules/.test(body) && /#8 by/.test(body) && body.includes('100%'), body.match(/browser-machine.{0,80}/)?.[0] ?? '')
           check('approve is enabled because nothing is wrong', await page.getByRole('button', { name: 'approve · live' }).isEnabled())
+          check('a queued machine offers no view link to a page that would 404', (await page.getByRole('link', { name: 'view', exact: true }).count()) === 0)
           check('and the footer tells the curator what the buttons really do', body.includes('stop new listings only') && body.includes('keeps its capsule token'))
           await page.getByRole('button', { name: 'approve · live' }).click()
           await page.getByText('browser-machine \u2192 live').waitFor()

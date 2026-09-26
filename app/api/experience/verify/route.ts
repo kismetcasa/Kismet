@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { epochFor, verifyDraw } from '@/lib/experience/fairness'
-import { MAX_UNITS_PER_CAPSULE, selectByHash } from '@/lib/experience/draw'
+import { drawHash, epochFor, verifyDraw } from '@/lib/experience/fairness'
+import { MAX_UNITS_PER_CAPSULE, drawAtAttempt } from '@/lib/experience/draw'
 import { commitmentForEpoch, getClaim, revealSeed } from '@/lib/experience/store'
 
 /**
@@ -47,6 +47,17 @@ export async function GET(req: NextRequest) {
   if (!claim.snapshot || !claim.snapshotHash || !claim.epoch) {
     return errorResponse(409, 'This play has not been drawn yet')
   }
+  // Frozen but nothing drawn: every attempt was refused, or the pool had
+  // nothing deliverable. There is no outcome to check yet, and the play is
+  // still owed one — comparing a recomputation against an absent prize would
+  // report MISMATCH on a machine that has done nothing wrong.
+  if (!claim.prize) {
+    return NextResponse.json({
+      verifiable: false,
+      reason: 'no artwork has been drawn for this play yet — it is still owed one, and can be verified once it is',
+      epoch: claim.epoch,
+    })
+  }
 
   const currentEpoch = epochFor(Date.now())
   const seed = await revealSeed(machineId, claim.epoch, currentEpoch)
@@ -82,6 +93,7 @@ export async function GET(req: NextRequest) {
     })
   }
 
+  const attempt = claim.attempt ?? 0
   const result = verifyDraw({
     serverSeed: seed,
     commitment,
@@ -89,7 +101,7 @@ export async function GET(req: NextRequest) {
     snapshotHash: claim.snapshotHash,
     txHash: claim.txHash,
     unitIndex: claim.unitIndex,
-    attempt: claim.attempt ?? 0,
+    attempt,
   })
   if (!result.ok || !result.hash) {
     return NextResponse.json({ verifiable: true, ok: false, reason: result.reason })
@@ -98,10 +110,17 @@ export async function GET(req: NextRequest) {
   // Recompute the selection from the revealed material and compare it to what
   // was actually delivered. A mismatch would be the single most serious defect
   // this system could have, so it is surfaced plainly rather than smoothed over.
-  const recomputed = selectByHash(claim.snapshot, result.hash)
+  //
+  // Replayed through drawAtAttempt, the function the draw itself selects with:
+  // a redraw at attempt N drew from the snapshot minus the picks attempts
+  // 0..N-1 refused, and those picks are recomputable from the same seed.
+  const { pick: recomputed, setAside } = drawAtAttempt(
+    claim.snapshot,
+    (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a }),
+    attempt,
+  )
   const matches =
     !!recomputed &&
-    !!claim.prize &&
     recomputed.collection === claim.prize.collection &&
     recomputed.tokenId === claim.prize.tokenId
 
@@ -115,9 +134,11 @@ export async function GET(req: NextRequest) {
     snapshot: claim.snapshot,
     txHash: claim.txHash,
     unitIndex: claim.unitIndex,
-    attempt: claim.attempt ?? 0,
+    attempt,
     drawHash: result.hash,
+    // The pieces earlier attempts drew and could not deliver, in order.
+    setAside: setAside.map((e) => ({ collection: e.collection, tokenId: e.tokenId })),
     recomputed: recomputed ? { collection: recomputed.collection, tokenId: recomputed.tokenId } : null,
-    delivered: claim.prize ?? null,
+    delivered: claim.prize,
   })
 }

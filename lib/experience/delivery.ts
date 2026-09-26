@@ -86,20 +86,17 @@ export type DeliveryReceipt =
    *  it). Callers keep the claim pending — never deliver or re-mint on this. */
   | { kind: 'unknown' }
 
-/** The one signing identity: the named CDP smart account, resolved by name so
- *  its address survives restarts. Shared by the send and the receipt read so
- *  the two can never look at different accounts. Throws on any failure; both
- *  callers map that to their own fail-closed outcome. */
-async function resolveSigner() {
-  const apiKeyId = process.env.CDP_API_KEY_ID
-  const apiKeySecret = process.env.CDP_API_KEY_SECRET
-  const walletSecret = process.env.CDP_WALLET_SECRET
-  if (!apiKeyId || !apiKeySecret || !walletSecret) throw new Error('CDP credentials not configured')
+function cdpConfigured(): boolean {
+  return !!(process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET && process.env.CDP_WALLET_SECRET)
+}
+
+async function loadSigner() {
+  if (!cdpConfigured()) throw new Error('CDP credentials not configured')
   const { CdpClient } = await import('@coinbase/cdp-sdk')
   const cdp = new CdpClient({
-    apiKeyId,
-    apiKeySecret,
-    walletSecret,
+    apiKeyId: process.env.CDP_API_KEY_ID!,
+    apiKeySecret: process.env.CDP_API_KEY_SECRET!,
+    walletSecret: process.env.CDP_WALLET_SECRET!,
     // Pointable at a stand-in for the end-to-end harness, exactly as the RPC
     // and Redis URLs are. Unset in production, so the SDK's own default holds.
     ...(process.env.CDP_API_BASE_PATH ? { basePath: process.env.CDP_API_BASE_PATH } : {}),
@@ -113,6 +110,44 @@ async function resolveSigner() {
   })
 }
 
+let signer: ReturnType<typeof loadSigner> | null = null
+
+/** The one signing identity: the named CDP smart account, resolved by name so
+ *  its address survives restarts, and resolved ONCE per process — every
+ *  authority check needs its address, and two CDP round trips per check would
+ *  sit inside a live reveal. A failed resolution is not cached, so the next
+ *  call retries. Throws on any failure; callers map that to their own
+ *  fail-closed outcome. */
+function resolveSigner(): ReturnType<typeof loadSigner> {
+  if (!signer) {
+    signer = loadSigner().catch((err) => {
+      signer = null
+      throw err
+    })
+  }
+  return signer
+}
+
+/**
+ * The address artists grant mint rights to: the delivery account itself.
+ *
+ * DERIVED, never configured. A configured operator address is a second source
+ * of truth that can disagree with the account that actually signs — and when
+ * it did (the default fell back to the platform's In Process wallet, which
+ * this code cannot sign for), every grant check passed on one address, every
+ * delivery was refused for signing as another, and every paid play pended.
+ * Reading the address off the signer makes that disagreement impossible.
+ * `null` when CDP is unconfigured or unreachable; callers fail closed.
+ */
+export async function experienceOperator(): Promise<string | null> {
+  if (!cdpConfigured()) return null
+  try {
+    return (await resolveSigner()).address.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
 /**
  * What became of a userOp this module broadcast. The only honest answer to
  * "did our mint land?" after an indeterminate send — asked of the operation
@@ -121,6 +156,7 @@ async function resolveSigner() {
  * leave the claim pending on it rather than assume either direction.
  */
 export async function readDeliveryOutcome(params: { userOpHash: string }): Promise<DeliveryReceipt> {
+  if (!cdpConfigured()) return { kind: 'unknown' }
   try {
     const smartAccount = await resolveSigner()
     const op = await smartAccount.getUserOperation({ userOpHash: params.userOpHash as Hex })
@@ -162,22 +198,11 @@ export async function deliverPrize(params: {
   collection: string
   tokenId: string
   player: string
-  /** The operator address `checkPrizeAuthority` actually found the grant on.
-   *
-   *  WHY THIS IS PASSED IN. `operatorAddresses()` is an ORDERED SET so that
-   *  re-keying is a gradual migration instead of invalidating every artist grant
-   *  at once — the check passes if ANY configured operator holds the grant. But
-   *  this module has exactly one signing identity (the named CDP smart account),
-   *  so during a rotation the check can pass on an operator that is not the one
-   *  about to sign, and the mint reverts on a play the player already paid for.
-   *  Comparing here turns that into a clean pend with a stated reason, and
-   *  nothing is broadcast. */
-  operator?: string
   /** Called with the userOpHash the instant it exists — BEFORE the wait — so
    *  the caller can persist `sending` and make a timeout recoverable. */
   onBroadcast?: (userOpHash: string) => Promise<void>
 }): Promise<DeliveryOutcome> {
-  if (!process.env.CDP_API_KEY_ID || !process.env.CDP_API_KEY_SECRET || !process.env.CDP_WALLET_SECRET) {
+  if (!cdpConfigured()) {
     return { kind: 'unavailable', error: 'CDP credentials not configured' }
   }
 
@@ -189,19 +214,6 @@ export async function deliverPrize(params: {
 
   try {
     const smartAccount = await resolveSigner()
-
-    if (
-      params.operator &&
-      smartAccount.address.toLowerCase() !== params.operator.toLowerCase()
-    ) {
-      // Checked BEFORE anything is broadcast, so this costs the player a pend
-      // rather than a reverted mint. Loud, because it means a grant exists on an
-      // operator we can no longer sign as — an ops problem, not a player problem.
-      return {
-        kind: 'unavailable',
-        error: `grant is held by ${params.operator} but delivery signs as ${smartAccount.address}`,
-      }
-    }
 
     const { data } = buildAdminMintCall(params.player, params.tokenId)
 

@@ -11,8 +11,10 @@ import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, readDeliveryOutcome } from '@/lib/experience/delivery'
 import {
+  CLAIM_LOCK_TTL_SECONDS,
   advanceClaim,
   buildSnapshot,
+  claimLockKey,
   consumeOne,
   getClaim,
   getMachine,
@@ -22,6 +24,7 @@ import {
   publicClaim,
   releaseOne,
   seedForEpoch,
+  settleDeliveredCopy,
 } from '@/lib/experience/store'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
@@ -91,27 +94,13 @@ export async function POST(req: NextRequest) {
 
   // ── Single-flight per claim, and this is load-bearing ──
   //
-  // /api/experience/play is protected by its own `createClaim` NX: exactly one
-  // request ever draws for a given unit. Resume has no such guard, and Case 2
-  // below DRAWS. Two concurrent resumes on an undrawn claim would each select a
-  // prize, each consume a copy, and each deliver — two artworks for one payment,
-  // and the two deliveries would not even collide on delivery.ts's own lock
-  // because they are different tokens. The lock has to be on the CLAIM.
-  //
-  // The TTL has to outlast the SLOWEST legitimate body, not the typical one.
-  // A lock that expires mid-flight is worse than no lock: it admits a second
-  // resume while the first is still between its consume and its delivery, which
-  // is exactly the double-issue this guard exists to stop. The worst case here
-  // is Case 2 — a freeze over the pool, up to MAX_ATTEMPTS draw attempts each
-  // paying for a checkPrizeAuthority round trip, a balance read, and then a
-  // delivery whose userOp wait alone is bounded at 60s. 180s clears that with
-  // room; the only cost of an over-long TTL is that a crashed resume's claim
-  // waits longer before another can adopt it, and STALE_CLAIM_MS already makes
-  // the player wait that long anyway.
-  const gate = await acquireLock(
-    `kismetart:xp:resume:${machineId}:${txHash.toLowerCase()}:${unitIndex}`,
-    180,
-  ).catch(() => ({ acquired: false, release: async () => {} }))
+  // Case 2 below DRAWS and both cases deliver, so two requests on one claim —
+  // two resumes, or a resume and the play that created it — could each consume
+  // a copy and each mint, two artworks for one payment. The play route holds
+  // this same lock from the moment it creates the claim until it responds, so
+  // nothing here can overlap it. See store.claimLockKey for the TTL.
+  const gate = await acquireLock(claimLockKey(machineId, txHash, unitIndex), CLAIM_LOCK_TTL_SECONDS)
+    .catch(() => ({ acquired: false, release: async () => {} }))
   if (!gate.acquired) {
     return NextResponse.json({
       ok: true,
@@ -246,7 +235,6 @@ async function handle(
       collection: prize.collection,
       tokenId: prize.tokenId,
       player,
-      operator: auth.operator,
       onBroadcast: async (userOpHash) => {
         claim = await advanceClaim(claim, { state: 'sending', userOpHash })
       },
@@ -263,20 +251,13 @@ async function handle(
   // ── Case 2: nothing was ever drawn (the pool had nothing deliverable).
   //
   //    `pending` is the ONLY state that means the draw finished and found
-  //    nothing. `claimed` and `frozen` mean a /api/experience/play request is
-  //    still working — its freeze walks up to MAX_POOL_ENTRIES hidden and
-  //    blacklist checks before it persists a prize, and resuming inside that
-  //    window would run a SECOND draw against the same claim, consume a second
-  //    copy of some artist's edition, and deliver a second artwork for one
-  //    capsule. The per-claim lock above excludes concurrent resumes; it does
-  //    not exclude the play route, which never takes it.
-  //    'claimed' and 'frozen' normally mean a play is mid-flight — but they are
-  //    also where a play that DIED mid-freeze comes to rest, and the claim is
-  //    the obligation. Refusing them outright would make an interrupted play a
-  //    permanent loss of a paid capsule. So they are recoverable, but only once
-  //    they are older than any live request could plausibly be: the freeze walks
-  //    up to MAX_POOL_ENTRIES sequential Redis and RPC round trips, and the
-  //    delivery wait alone is bounded at 60s.
+  //    nothing. `claimed` and `frozen` mean a play created the claim and has
+  //    not finished drawing. Holding the claim lock means no live play holds
+  //    it too, but a play that outran the lock's TTL could still be working, so
+  //    those states are adopted only once they are older than any live request
+  //    could plausibly be. They are also where a play that DIED mid-freeze comes
+  //    to rest, and the claim is the obligation: refusing them outright would
+  //    make an interrupted play a permanent loss of a paid capsule.
   if (claim.state !== 'pending') {
     const age = Date.now() - claim.createdAt
     const abandoned =
@@ -339,17 +320,12 @@ async function handle(
     commitment,
   })
 
-  let grantedOperator: string | undefined
   const result = await runDraw(
     eligible,
     {
       consume: (key) => consumeOne(machineId, key),
       release: (key) => releaseOne(machineId, key),
-      authority: async (e) => {
-        const r = await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })
-        if (r.ok) grantedOperator = r.operator
-        return r.ok
-      },
+      authority: async (e) => (await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })).ok,
       hash: (attempt) => drawHash({ serverSeed: seed, txHash, unitIndex, attempt }),
     },
     MAX_ATTEMPTS,
@@ -381,7 +357,6 @@ async function handle(
     collection: prize.collection,
     tokenId: prize.tokenId,
     player,
-    operator: grantedOperator,
     onBroadcast: async (userOpHash) => {
       claim = await advanceClaim(claim, { state: 'sending', userOpHash })
     },
@@ -424,12 +399,13 @@ async function applyOutcome(
   })
 }
 
-/** The non-critical bookkeeping a delivery owes. Deferred, and every leg
- *  swallows its own failure — none of it is the artwork, which is already
- *  on-chain by the time this runs. */
+/** What a delivery owes besides the artwork. The pledge release runs inline
+ *  (see store.settleDeliveredCopy); the rest is deferred. Every leg swallows its
+ *  own failure — none of it is the artwork, which is already on-chain. */
 async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
   const prize = claim.prize
   if (!prize) return
+  await settleDeliveredCopy(machineId, prize).catch(() => {})
   const claimant = claim.claimant
   const tx = claim.txHash
   after(async () => {

@@ -48,6 +48,10 @@ export interface SolvencyInput {
    *  Without this the artist field was a free-text claim that the split check
    *  then trusted — see 'artist-not-admin' below. */
   artistControl: Record<string, boolean>
+  /** Per entry key: may the delivery account mint this piece? Read live
+   *  on-chain (lib/experience/authority.readOperatorGrant). Absent means the
+   *  chain could not answer, and fails closed like unreadable headroom. */
+  operatorGrant: Record<string, boolean>
 }
 
 /** A problem and the sentence a creator reads about it. The code union lives in
@@ -144,6 +148,24 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
       problems.push({
         code: 'artist-not-admin',
         detail: `${e.artist} is named as the artist of ${key} but does not hold admin on it`,
+      })
+    }
+
+    // The artist's consent, as the chain records it. A piece the delivery
+    // account cannot mint is not in the pool in any sense a player can use:
+    // every draw of it pends, and a machine leaning on it sells capsules it
+    // cannot honour. Checked here, not only at play, so that is found before
+    // anyone pays rather than after.
+    const granted = input.operatorGrant[key]
+    if (granted === undefined) {
+      problems.push({
+        code: 'allowance-unreadable',
+        detail: `${key}: could not confirm on-chain that capsule machines may mint it — try again`,
+      })
+    } else if (!granted) {
+      problems.push({
+        code: 'piece-not-allowed',
+        detail: `${e.artist} has not allowed capsule machines to mint ${key} yet — they can from /artwork/${e.collection}/${e.tokenId}`,
       })
     }
 

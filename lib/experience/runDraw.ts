@@ -10,7 +10,7 @@
 // Everything here is synchronous logic over injected async effects; there is no
 // I/O of its own and no imports beyond the pure draw core.
 
-import { entryKey, selectByHash, withExcluded } from './draw'
+import { drawAtAttempt, entryKey } from './draw'
 import type { SnapshotEntry } from './types'
 
 export interface DrawEffects {
@@ -66,11 +66,14 @@ export async function runDraw(
   effects: DrawEffects,
   maxAttempts = 6,
 ): Promise<DrawResult> {
-  let working = snapshot
   let attempt = 0
 
   while (attempt < maxAttempts) {
-    const pick = selectByHash(working, effects.hash(attempt))
+    // Through drawAtAttempt, not an incrementally trimmed copy of the table:
+    // it is the same replay the verifier runs, so a redraw is checkable by
+    // construction. Every earlier pick was refused below, which is exactly the
+    // set it removes.
+    const { pick } = drawAtAttempt(snapshot, effects.hash, attempt)
     if (!pick) return { kind: 'exhausted', attempt }
 
     const key = entryKey(pick)
@@ -78,14 +81,12 @@ export async function runDraw(
 
     if (after !== null && after < 0) {
       // Deliberately no release — see the contract on `consume` above.
-      working = withExcluded(working, pick)
       attempt++
       continue
     }
 
     if (!(await effects.authority(pick))) {
       await effects.release(key)
-      working = withExcluded(working, pick)
       attempt++
       continue
     }

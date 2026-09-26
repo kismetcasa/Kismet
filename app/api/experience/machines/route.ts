@@ -6,16 +6,16 @@ import { getSessionAddress } from '@/lib/session'
 import { getGateConfig, holdsValidPass, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { ADMIN_ADDRESS } from '@/lib/config'
-import { MAX_POOL_ENTRIES, entryKey } from '@/lib/experience/draw'
+import { MAX_POOL_ENTRIES } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
-import { checkCapsuleControl, readArtistControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
+import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
+import { experienceOperator } from '@/lib/experience/delivery'
 import {
   createMachine,
   getMachine,
   listMachines,
   openEpochSeeds,
-  otherPledges,
   pledgeSupply,
   releaseCapsule,
   reserveCapsule,
@@ -61,8 +61,10 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  // A flood guard per IP, before anything is authenticated. The real budgets
+  // are per wallet, below, once the request says whether it is a check.
   const ip = getClientIp(req)
-  if (!(await checkRateLimit(`xp-create:${ip}`, 5, 300))) {
+  if (!(await checkRateLimit(`xp-create:${ip}`, 30, 300))) {
     return errorResponse(429, 'Too many requests')
   }
 
@@ -113,6 +115,17 @@ export async function POST(req: NextRequest) {
   const capsuleTokenId = BigInt(rawCapsuleToken).toString()
 
   const dryRun = body.dryRun === true
+  // Separate budgets, because the two are different acts. A check is how a
+  // creator iterates on a lineup — sharing one five-per-five-minutes budget
+  // with publishing locked them out a few edits in. A publish writes a machine.
+  // Both are per wallet, not per IP, so a creator behind a shared address is
+  // not throttled by strangers; the platform admin seeding a season is exempt.
+  if (!isAdmin) {
+    const [bucket, limit] = dryRun ? ['xp-check', 20] as const : ['xp-publish', 5] as const
+    if (!(await checkRateLimit(`${bucket}:${creator}`, limit, 300))) {
+      return errorResponse(429, dryRun ? 'Too many checks — wait a few minutes' : 'Too many publishes — wait a few minutes')
+    }
+  }
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
   // One capsule token, one machine, FOR LIFE — delisted machines included.
@@ -143,6 +156,12 @@ export async function POST(req: NextRequest) {
       },
       { status: 400 },
     )
+  }
+
+  // Nothing about a pool can be judged without the account that delivers it:
+  // every grant check reads it. Refused whole rather than reported per entry.
+  if (!(await experienceOperator())) {
+    return errorResponse(503, 'Capsule machines are unavailable right now — try again shortly')
   }
 
   const rawEntries = Array.isArray(body.entries) ? body.entries : []
@@ -230,26 +249,13 @@ export async function POST(req: NextRequest) {
   // machine every historical holder of the capsule token can play.
   if (!createdBlock) return errorResponse(503, 'Could not read the chain head — try publishing again')
 
-  // Live headroom per entry, plus what OTHER machines have already pledged
-  // against the same edition. Without the second half, two machines can each
-  // promise the same last copy and only one can be honoured.
-  // And whether each declared artist actually owns their piece — the split
-  // check is only as honest as the name it is checking (see checkSolvency).
-  const headroom: Record<string, number | null> = {}
-  const pledges: Record<string, number> = {}
-  const artistControl: Record<string, boolean> = {}
-  await Promise.all(
-    entries.map(async (e) => {
-      const key = entryKey(e)
-      const [h, owns] = await Promise.all([
-        readHeadroom(e.collection, e.tokenId),
-        readArtistControl(e.collection, e.tokenId, e.artist),
-      ])
-      if (h !== undefined) headroom[key] = h
-      if (owns !== undefined) artistControl[key] = owns
-      pledges[key] = await otherPledges(e.collection, e.tokenId, id).catch(() => 0)
-    }),
-  )
+  // Live headroom per entry net of what OTHER machines have already pledged
+  // against the same edition, whether each declared artist owns their piece,
+  // and whether the delivery account may mint it. Without the pledges two
+  // machines can each promise the same last copy; without the ownership read
+  // the split check is only as honest as the name it checks; without the grant
+  // a machine can sell capsules for pieces nothing can deliver.
+  const poolState = await readPoolState(entries, id)
 
   const problems = checkSolvency({
     capsuleMaxSupply: capsuleSupply.maxSupply,
@@ -258,9 +264,7 @@ export async function POST(req: NextRequest) {
     splitRecipients,
     creator,
     passCollection: gate.passCollection?.toLowerCase() ?? null,
-    headroom,
-    otherPledges: pledges,
-    artistControl,
+    ...poolState,
   })
   if (problems.length > 0) {
     // Return ALL problems, not the first — a creator fixing a machine should

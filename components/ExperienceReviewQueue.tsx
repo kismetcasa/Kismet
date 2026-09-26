@@ -189,12 +189,16 @@ export function ExperienceReviewQueue() {
                     >
                       reject · delist
                     </button>
-                    <Link
-                      href={`/experience/${m.id}`}
-                      className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-subtle hover:text-dim"
-                    >
-                      view
-                    </Link>
+                    {/* Only machines the public page shows: a queued or draft
+                        machine 404s there, and its lineup is right above. */}
+                    {m.state !== 'review' && m.state !== 'draft' && (
+                      <Link
+                        href={`/experience/${m.id}`}
+                        className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-subtle hover:text-dim"
+                      >
+                        view
+                      </Link>
+                    )}
                   </div>
                   <p className="text-[10px] font-mono text-subtle mt-2">
                     Ending a season and delisting both stop new listings only. Every capsule already sold stays

@@ -6,6 +6,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyMintOnChain } from '@/lib/verifyMint'
 import { getGateConfig, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
+import { acquireLock } from '@/lib/redisLock'
 import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
@@ -15,7 +16,9 @@ import { deliverPrize } from '@/lib/experience/delivery'
 import {
   addSpark,
   advanceClaim,
+  CLAIM_LOCK_TTL_SECONDS,
   buildSnapshot,
+  claimLockKey,
   consumeOne,
   createClaim,
   getClaim,
@@ -27,6 +30,7 @@ import {
   recordPlay,
   releaseOne,
   seedForEpoch,
+  settleDeliveredCopy,
 } from '@/lib/experience/store'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
@@ -212,7 +216,42 @@ export async function POST(req: NextRequest) {
     return errorResponse(409, 'Claim in progress')
   }
 
-  let claim = fresh
+  // 3b. Hold the claim's single-flight lock for the rest of this request — the
+  //     SAME lock /api/experience/resume takes. A player who reloads mid-reveal
+  //     sees this capsule under "still opening" and can press open while this
+  //     request is still drawing or delivering; without the lock that resume
+  //     read the claim before this request broadcast, delivered on its own, and
+  //     could mint a second artwork for one capsule. With it, the resume answers
+  //     "already being opened" and touches nothing.
+  const flight = await acquireLock(claimLockKey(machineId, txHash, unitIndex), CLAIM_LOCK_TTL_SECONDS)
+    .catch(() => ({ acquired: false, release: async () => {} }))
+  if (!flight.acquired) {
+    // Reached only when a resume for this hash took the lock an instant before
+    // the claim existed (it finds nothing and lets go). The claim is recorded
+    // and owed; resume adopts it once it is stale, exactly as it would a play
+    // that died here.
+    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(fresh) })
+  }
+  try {
+    return await drawAndDeliver({ machineId, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
+  } finally {
+    await flight.release()
+  }
+}
+
+/** Steps 4–9 for a claim this request just created, run under its lock. */
+async function drawAndDeliver(params: {
+  machineId: string
+  txHash: string
+  unitIndex: number
+  account: string
+  /** The on-chain quantity proved for the whole transaction. */
+  units: number
+  claim: ClaimRecord
+  now: number
+}): Promise<NextResponse> {
+  const { machineId, txHash, unitIndex, account, units, now } = params
+  let claim = params.claim
 
   // Index the play NOW, not after delivery. The play feed is what the claims
   // route reads to find a player's owed capsules, and the claims most in need
@@ -262,18 +301,10 @@ export async function POST(req: NextRequest) {
   //      losing a race for the last copy, a grant revoked mid-play, an exhausted
   //      pool — is reachable by scripts/verify-experience-flow.ts instead of
   //      only in production.
-  // Which operator address the grant was actually found on. runDraw returns the
-  // instant an authority check passes, so the last value written here belongs to
-  // the drawn prize — and delivery must sign as THAT operator or not at all.
-  let grantedOperator: string | undefined
   const result = await runDraw(eligibleSnapshot, {
     consume: (key) => consumeOne(machineId, key),
     release: (key) => releaseOne(machineId, key),
-    authority: async (e) => {
-      const r = await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })
-      if (r.ok) grantedOperator = r.operator
-      return r.ok
-    },
+    authority: async (e) => (await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })).ok,
     hash: (attempt) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex, attempt }),
   }, MAX_ATTEMPTS)
 
@@ -291,7 +322,7 @@ export async function POST(req: NextRequest) {
       pendingReason: 'no eligible artwork available',
     })
     console.error('[xp] pool failure', { machineId, txHash, unitIndex, attempt })
-    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(claim) })
+    return NextResponse.json({ ok: true, pending: true, units: units, claim: publicClaim(claim) })
   }
 
   claim = await advanceClaim(claim, {
@@ -310,7 +341,6 @@ export async function POST(req: NextRequest) {
     collection: chosen.collection,
     tokenId: chosen.tokenId,
     player: account,
-    operator: grantedOperator,
     onBroadcast: async (userOpHash) => {
       claim = await advanceClaim(claim, { state: 'sending', userOpHash })
     },
@@ -318,6 +348,7 @@ export async function POST(req: NextRequest) {
 
   if (outcome.kind === 'delivered') {
     claim = await advanceClaim(claim, { state: 'delivered', txDelivered: outcome.txHash })
+    await settleDeliveredCopy(machineId, chosen).catch(() => {})
   } else if (outcome.kind === 'indeterminate') {
     // NEVER retry here, and nothing to learn by re-asking this instant — the
     // wait just polled the same status for a minute. Pend; resume resolves it
@@ -371,5 +402,5 @@ export async function POST(req: NextRequest) {
   // `units` is the proved on-chain quantity for the WHOLE transaction — the
   // client uses it to open the remaining units of a capsule it did not mint
   // itself (a pasted or discovered hash arrives with no local unit count).
-  return NextResponse.json({ ok: true, units: proof.units, claim: publicClaim(claim) })
+  return NextResponse.json({ ok: true, units: units, claim: publicClaim(claim) })
 }

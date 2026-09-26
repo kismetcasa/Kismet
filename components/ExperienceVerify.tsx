@@ -34,6 +34,8 @@ interface VerifyResponse {
   unitIndex?: number
   attempt?: number
   drawHash?: string
+  /** Pieces earlier attempts drew and could not deliver, in attempt order. */
+  setAside?: { collection: string; tokenId: string }[]
   recomputed?: { collection: string; tokenId: string } | null
   delivered?: { collection: string; tokenId: string; artist: string } | null
 }
@@ -189,22 +191,41 @@ export function ExperienceVerify({ machineId, initialTx }: { machineId: string; 
                 the exact lineup this play drew from
               </h2>
               <div className="border border-line divide-y divide-line">
-                {result.snapshot.map((e) => (
-                  <div key={`${e.collection}:${e.tokenId}`} className="flex items-center gap-3 px-3 py-2">
-                    <span className="flex-1 min-w-0 text-[11px] font-mono text-dim truncate">
-                      #{e.tokenId} <span className="text-subtle">by {shortAddress(e.artist)}</span>
-                    </span>
-                    <span className="text-[10px] font-mono text-subtle tabular-nums shrink-0">
-                      weight {e.weight} · {e.remaining === null ? 'unlimited' : `${e.remaining} left`}
-                    </span>
-                  </div>
-                ))}
+                {result.snapshot.map((e) => {
+                  const setAsideAt = (result.setAside ?? []).findIndex(
+                    (x) => x.collection === e.collection && x.tokenId === e.tokenId,
+                  )
+                  return (
+                    <div key={`${e.collection}:${e.tokenId}`} className="flex items-center gap-3 px-3 py-2">
+                      <span
+                        className={`flex-1 min-w-0 text-[11px] font-mono truncate ${
+                          setAsideAt >= 0 ? 'text-subtle line-through' : 'text-dim'
+                        }`}
+                      >
+                        #{e.tokenId} <span className="text-subtle">by {shortAddress(e.artist)}</span>
+                      </span>
+                      <span className="text-[10px] font-mono text-subtle tabular-nums shrink-0">
+                        {setAsideAt >= 0
+                          ? `set aside by attempt ${setAsideAt}`
+                          : `weight ${e.weight} · ${e.remaining === null ? 'unlimited' : `${e.remaining} left`}`}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
               <p className="text-[10px] font-mono text-subtle mt-2 max-w-lg leading-relaxed">
                 Recompute it yourself: HMAC-SHA256 the seed over{' '}
                 <span className="text-dim">txHash:unitIndex:attempt</span> (lowercased hash), take the first 128
                 bits as an integer, and reduce modulo the total weight above. Walking the rows in this order
                 until the cumulative weight passes that number gives the winner.
+                {(result.setAside?.length ?? 0) > 0 && (
+                  <>
+                    {' '}This play needed a redraw: each earlier attempt drew a piece that could no longer be
+                    delivered. Repeat the draw for attempt 0, 1, … in turn, removing each attempt&apos;s winner
+                    before the next — the rows struck through above — and the final attempt lands on the
+                    artwork delivered.
+                  </>
+                )}
               </p>
             </div>
           )}

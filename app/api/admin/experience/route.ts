@@ -6,7 +6,7 @@ import { recordAdminAction } from '@/lib/adminAudit'
 import { deriveOdds, entryKey } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
-import { checkCapsuleControl, readArtistControl, readCapsuleSupply, readHeadroom } from '@/lib/experience/authority'
+import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
 import { getGateConfig } from '@/lib/gate'
 import {
   buildSnapshot,
@@ -14,7 +14,6 @@ import {
   getPool,
   getRemaining,
   listMachines,
-  otherPledges,
   setMachineState,
 } from '@/lib/experience/store'
 import type { MachineState } from '@/lib/experience/types'
@@ -37,6 +36,10 @@ import type { MachineState } from '@/lib/experience/types'
  */
 
 const TRANSITIONS: MachineState[] = ['live', 'ended', 'delisted', 'review']
+/** What the queue can be FILTERED by — every state, drafts included, even
+ *  though a curator can never move a machine INTO draft. Filtering on the
+ *  transition list silently turned the queue's draft tab into "everything". */
+const FILTERS: MachineState[] = ['review', 'live', 'ended', 'delisted', 'draft']
 
 export async function GET(req: NextRequest) {
   const ip = getClientIp(req)
@@ -48,10 +51,8 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url)
   const wanted = url.searchParams.get('state')
-  const states: MachineState[] | undefined =
-    wanted && TRANSITIONS.includes(wanted as MachineState)
-      ? [wanted as MachineState]
-      : (['review', 'live', 'ended', 'delisted', 'draft'] as MachineState[])
+  const states: MachineState[] =
+    wanted && FILTERS.includes(wanted as MachineState) ? [wanted as MachineState] : FILTERS
 
   const machines = await listMachines(states)
   const gate = await getGateConfig()
@@ -69,23 +70,9 @@ export async function GET(req: NextRequest) {
         }),
       ])
 
-      // Live re-check, not the verdict stored at creation: headroom and rival
-      // pledges both move, so a machine can go insolvent while it waits.
-      const headroom: Record<string, number | null> = {}
-      const pledges: Record<string, number> = {}
-      const artistControl: Record<string, boolean> = {}
-      await Promise.all(
-        pool.map(async (e) => {
-          const key = entryKey(e)
-          const [h, owns] = await Promise.all([
-            readHeadroom(e.collection, e.tokenId),
-            readArtistControl(e.collection, e.tokenId, e.artist),
-          ])
-          if (h !== undefined) headroom[key] = h
-          if (owns !== undefined) artistControl[key] = owns
-          pledges[key] = await otherPledges(e.collection, e.tokenId, m.id).catch(() => 0)
-        }),
-      )
+      // Live re-check, not the verdict stored at creation: headroom, rival
+      // pledges and artists' grants all move while a machine waits.
+      const poolState = await readPoolState(pool, m.id)
 
       const problems = checkSolvency({
         capsuleMaxSupply: capsule?.maxSupply ?? m.capsuleMaxSupply,
@@ -99,9 +86,7 @@ export async function GET(req: NextRequest) {
         splitRecipients: payees.ok ? payees.recipients : [],
         creator: m.creator,
         passCollection: gate.passCollection?.toLowerCase() ?? null,
-        headroom,
-        otherPledges: pledges,
-        artistControl,
+        ...poolState,
       })
 
       return {
@@ -168,21 +153,7 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       )
     }
-    const headroom: Record<string, number | null> = {}
-    const pledges: Record<string, number> = {}
-    const artistControl: Record<string, boolean> = {}
-    await Promise.all(
-      pool.map(async (e) => {
-        const key = entryKey(e)
-        const [h, owns] = await Promise.all([
-          readHeadroom(e.collection, e.tokenId),
-          readArtistControl(e.collection, e.tokenId, e.artist),
-        ])
-        if (h !== undefined) headroom[key] = h
-        if (owns !== undefined) artistControl[key] = owns
-        pledges[key] = await otherPledges(e.collection, e.tokenId, id).catch(() => 0)
-      }),
-    )
+    const poolState = await readPoolState(pool, id)
     const problems = checkSolvency({
       capsuleMaxSupply: capsule?.maxSupply ?? machine.capsuleMaxSupply,
       capsuleMinted: capsule?.minted ?? 0,
@@ -190,9 +161,7 @@ export async function POST(req: NextRequest) {
       splitRecipients: payees.recipients,
       creator: machine.creator,
       passCollection: gate.passCollection?.toLowerCase() ?? null,
-      headroom,
-      otherPledges: pledges,
-      artistControl,
+      ...poolState,
     })
     if (problems.length > 0) {
       return NextResponse.json({ ok: false, problems }, { status: 400 })

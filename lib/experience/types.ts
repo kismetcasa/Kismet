@@ -149,6 +149,14 @@ export type SolvencyProblemCode =
   /** The artist's on-chain control of an entry could not be read. Refused
    *  rather than skipped, like headroom. */
   | 'artist-unreadable'
+  /** The artist has not allowed capsule machines to mint this piece: the
+   *  delivery account holds no mint rights on it. Every play that drew it
+   *  would pend, so a machine leaning on it could sell capsules it cannot
+   *  honour. The artist grants it from the artwork's page. */
+  | 'piece-not-allowed'
+  /** Whether the delivery account may mint an entry could not be read.
+   *  Refused rather than skipped, like headroom. */
+  | 'allowance-unreadable'
   /** The capsule token is in the Pass collection, so paying to play would mint
    *  the platform credential itself. */
   | 'capsule-is-pass'

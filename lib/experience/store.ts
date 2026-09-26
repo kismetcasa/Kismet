@@ -275,6 +275,19 @@ export async function releaseOne(id: string, key: string): Promise<void> {
 
 // ─── claims ──────────────────────────────────────────────────────────────────
 
+/**
+ * The single-flight lock for ONE claim, held by whichever request is working on
+ * it — the play that created it, or a resume finishing it. Both routes draw and
+ * deliver, so either overlapping the other can consume two copies or mint twice
+ * for one capsule. The TTL outlasts the slowest legitimate body (a freeze over a
+ * full pool, every redraw's authority reads, and a delivery whose wait alone is
+ * bounded at 60s); a lock that expired mid-flight would admit exactly the
+ * overlap it exists to stop.
+ */
+export const CLAIM_LOCK_TTL_SECONDS = 180
+export const claimLockKey = (machineId: string, txHash: string, unitIndex: number): string =>
+  `${P}:lock:${machineId}:${txHash.toLowerCase()}:${unitIndex}`
+
 /** Take the claim for one unit of one capsule mint. Returns null when another
  *  request already holds it — the caller then READS that claim and returns its
  *  recorded outcome, so a retry is idempotent rather than a second draw.
@@ -448,6 +461,31 @@ export async function pledgeSupply(
 // than leave an exported mutator whose one safe use does not exist yet, the
 // ledger is append-and-hold. If draft cleanup is ever built it can reintroduce
 // this with the guard that use requires: a machine with no outstanding claims.
+
+/**
+ * Release ONE copy of a machine's pledge on a piece, once that copy is minted.
+ *
+ * The ledger holds what each machine may still hand out of an edition. Live
+ * headroom (maxSupply − totalMinted) already drops with every delivered copy,
+ * so a pledge that never shrank counted each delivered copy twice: a machine
+ * that had pledged 5 and delivered all 5 still blocked 5 more, and a creator's
+ * next season on the same capped edition was refused for supply that was free.
+ *
+ * At DELIVERY, not at draw: a drawn copy whose mint has not landed is still
+ * owed and still absent from totalMinted, so it must stay reserved. Floored at
+ * zero the same way consumeOne is, which also leaves an unlimited entry's 0
+ * untouched. Not a general un-pledge — it moves only by copies that exist on
+ * chain — and a failed call leaves the pledge high, which over-reserves: the
+ * safe direction.
+ */
+export async function settleDeliveredCopy(
+  machineId: string,
+  piece: { collection: string; tokenId: string },
+): Promise<void> {
+  const key = kCommit(piece.collection, piece.tokenId)
+  const after = await redis.hincrby(key, machineId, -1)
+  if (after < 0) await redis.hincrby(key, machineId, 1).catch(() => {})
+}
 
 /** Supply pledged for an edition by machines OTHER than `exceptMachineId`. */
 export async function otherPledges(

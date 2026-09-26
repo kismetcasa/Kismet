@@ -723,6 +723,25 @@ console.log('\n8. two machines cannot promise the same copy')
     (await store.otherPledges(COLL, 'x1', 'machine-one')) === 1)
   check('an unpledged edition is clear', (await store.otherPledges(COLL, 'x9', 'machine-one')) === 0)
   check('the ledger has no un-pledge to call', store.releasePledge === undefined)
+
+  // Delivered copies leave the ledger as they reach the chain. Live headroom
+  // already drops by every minted copy, so a pledge that never shrank counted
+  // each one twice and refused a second season supply that was free.
+  const pledged = () => hashes.get(`kismetart:xp:commit:${COLL}:x2`)?.get('season-one')
+  await store.pledgeSupply(COLL, 'x2', 'season-one', 3)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('a delivered copy releases exactly one unit of its pledge',
+    (await store.otherPledges(COLL, 'x2', 'season-two')) === 2)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('a machine that delivered its whole pledge blocks nothing',
+    (await store.otherPledges(COLL, 'x2', 'season-two')) === 0)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('and a stray release never drives a pledge negative', pledged() === '0', `ledger=${pledged()}`)
+  await store.pledgeSupply(COLL, 'x3', 'open-floor', 0)
+  await store.settleDeliveredCopy('open-floor', { collection: COLL, tokenId: 'x3' })
+  check('an unlimited entry pledges nothing before or after a delivery',
+    hashes.get(`kismetart:xp:commit:${COLL}:x3`)?.get('open-floor') === '0')
 }
 
 // ═══ 8b. seeds committed a day AHEAD, not lazily on first play ══════════════
@@ -927,24 +946,6 @@ console.log('\n8e. the eligibility filter')
 console.log('\n9. operator identity')
 {
   const authority = await import(new URL('../lib/experience/authority.ts', import.meta.url).href)
-  const saved = process.env.EXPERIENCE_OPERATOR_ADDRESSES
-
-  process.env.EXPERIENCE_OPERATOR_ADDRESSES = ''
-  check('no configured operator means no authority at all',
-    (await authority.checkPrizeAuthority({ collection: COLL, tokenId: '1' })).ok === false)
-
-  const opA = '0x' + 'a'.repeat(40)
-  const opB = '0x' + 'b'.repeat(40)
-  process.env.EXPERIENCE_OPERATOR_ADDRESSES = ` ${opA.toUpperCase()} , ${opB} , not-an-address ,`
-  const parsed = authority.operatorAddresses() as string[]
-  check('the operator list is order-preserving', parsed[0] === opA && parsed[1] === opB)
-  check('lowercased', parsed.every((a) => a === a.toLowerCase()))
-  check('and junk entries are dropped rather than coerced', parsed.length === 2)
-
-  process.env.EXPERIENCE_OPERATOR_ADDRESSES = saved ?? ''
-
-  // Delivery fails CLOSED on missing credentials — before the Redis lock and
-  // before anything is broadcast — and so does the receipt read.
   const delivery = await import(new URL('../lib/experience/delivery.ts', import.meta.url).href)
   const creds = {
     id: process.env.CDP_API_KEY_ID,
@@ -954,13 +955,26 @@ console.log('\n9. operator identity')
   delete process.env.CDP_API_KEY_ID
   delete process.env.CDP_API_KEY_SECRET
   delete process.env.CDP_WALLET_SECRET
+
+  // The operator is READ OFF the delivery account, never configured, so there
+  // is no second address that could disagree with the signer. Without the
+  // account there is no operator — and no authority at all.
+  check('the operator is derived from the delivery account', authority.readOperatorGrant !== undefined &&
+    (await delivery.experienceOperator()) === null)
+  check('no delivery account means no grant can be confirmed',
+    (await authority.readOperatorGrant(COLL, '1')) === undefined)
+  check('and no authority to mint',
+    (await authority.checkPrizeAuthority({ collection: COLL, tokenId: '1' })).ok === false)
+  check('the old configured operator list is gone', authority.operatorAddresses === undefined)
+
+  // Delivery fails CLOSED on missing credentials — before the Redis lock and
+  // before anything is broadcast — and so does the receipt read.
   let broadcast = false
   const out = await delivery.deliverPrize({
     claimKey: 'oracle:0xabc:0',
     collection: COLL,
     tokenId: '1',
     player: '0x' + '3'.repeat(40),
-    operator: opA,
     onBroadcast: async () => { broadcast = true },
   })
   check('unconfigured delivery is unavailable, not an exception', out.kind === 'unavailable')

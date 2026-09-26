@@ -4,6 +4,11 @@ import { serverBaseClient } from '../rpc'
 import { PERMISSION_BIT_SALES, hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
 import { resolveOnchainSale } from '../saleConfig'
 import { ZORA_1155_TOKEN_INFO_ABI, ZORA_ERC20_MINTER, isOpenEdition } from '../zoraMint'
+import { experienceOperator } from './delivery'
+import { entryKey } from './draw'
+import { otherPledges } from './store'
+import type { SolvencyInput } from './solvency'
+import type { PoolEntry } from './types'
 
 /**
  * The live on-chain authority check for a single drawn prize.
@@ -32,39 +37,44 @@ export type AuthorityFailure =
 export interface AuthorityResult {
   ok: boolean
   reason?: AuthorityFailure
-  /** Which configured operator address holds the grant, so delivery signs with
-   *  the one that actually works (see OPERATOR_ADDRESSES below). */
-  operator?: string
 }
 
 /**
- * Operator addresses, in preference order.
+ * Does the delivery account hold mint rights on this piece?
  *
- * A single address is a rotation hazard: every artist grant names one specific
- * operator, so re-keying would silently invalidate the entire catalogue of
- * grants at once. Supporting an ordered set turns rotation into a gradual,
- * non-breaking migration — the check passes if ANY configured operator holds
- * the grant, delivery signs with that one, and artists re-grant to the new
- * address at their own pace.
- *
- * The baseline is stable regardless: the CDP smart account is resolved BY NAME
- * (`getOrCreateSmartAccount({ name })`), so its address survives restarts and
- * rotation is a deliberate act rather than an accident.
+ * The grant is the artist's consent: they give the experience operator MINTER
+ * on a piece, and revoke it to withdraw. Either row authorises `adminMint`,
+ * which ORs the piece's own row with the collection-wide one (tokenId 0), so
+ * both are read — the piece's first, because that is the grant the artwork
+ * page writes. `undefined` when the chain or the operator could not be read;
+ * every caller fails closed on it.
  */
-export function operatorAddresses(): string[] {
-  const raw = process.env.EXPERIENCE_OPERATOR_ADDRESSES ?? process.env.NEXT_PUBLIC_OPERATOR_SMART_WALLET ?? ''
-  return raw
-    .split(',')
-    .map((a) => a.trim().toLowerCase())
-    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
+export async function readOperatorGrant(
+  collection: string,
+  tokenId: string,
+  options: { retries?: number } = {},
+): Promise<boolean | undefined> {
+  const operator = await experienceOperator()
+  if (!operator) return undefined
+  const client = serverBaseClient()
+  const retries = options.retries ?? 2
+  try {
+    const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
+    const onToken = await readPermissions(client, collection as Address, BigInt(tokenId), operator as Address, { retries })
+    if (grants(onToken)) return true
+    const onCollection = await readPermissions(client, collection as Address, 0n, operator as Address, { retries })
+    return grants(onCollection)
+  } catch {
+    return undefined
+  }
 }
 
 /**
  * Can we mint this exact piece to a winner, right now?
  *
  * Checks both halves, because either alone is insufficient:
- *   1. an operator must still hold MINTER (or ADMIN — Zora's `adminMint` ORs
- *      the tokenId-0 row, so a collection-wide ADMIN also authorises it);
+ *   1. the delivery account must still hold MINTER or ADMIN on the piece,
+ *      on its own row or collection-wide (see readOperatorGrant);
  *   2. the edition must not be minted out — and the cap comparison uses
  *      `totalMinted`, NOT `totalSupply`, because Zora's own `mint()` compares
  *      against the former and `totalSupply` DECREASES on burn, so a burned
@@ -77,20 +87,13 @@ export async function checkPrizeAuthority(params: {
   collection: string
   tokenId: string
 }): Promise<AuthorityResult> {
-  const operators = operatorAddresses()
-  if (operators.length === 0) return { ok: false, reason: 'no-grant' }
-
-  const client = serverBaseClient()
-  const collection = params.collection as Address
-  const tokenId = BigInt(params.tokenId)
-
   // 1. supply headroom
   try {
-    const info = (await client.readContract({
-      address: collection,
+    const info = (await serverBaseClient().readContract({
+      address: params.collection as Address,
       abi: ZORA_1155_TOKEN_INFO_ABI,
       functionName: 'getTokenInfo',
-      args: [tokenId],
+      args: [BigInt(params.tokenId)],
     })) as { maxSupply: bigint; totalMinted: bigint }
     if (!isOpenEdition(info.maxSupply) && info.totalMinted >= info.maxSupply) {
       return { ok: false, reason: 'minted-out' }
@@ -99,20 +102,13 @@ export async function checkPrizeAuthority(params: {
     return { ok: false, reason: 'unreadable' }
   }
 
-  // 2. grant — first operator that holds it wins, and is returned so the
-  //    delivery signs with an address that will actually pass adminMint's gate.
-  for (const op of operators) {
-    try {
-      // retries:1 — this sits inside a live reveal, and readPermissions' default
-      // four attempts with linear backoff would add seconds. A transient miss
-      // costs a redraw, which is cheap; a slow reveal is the thing we cannot pay.
-      const perms = await readPermissions(client, collection, tokenId, op as Address, { retries: 1 })
-      if (hasMinterBit(perms) || hasAdminBit(perms)) return { ok: true, operator: op }
-    } catch {
-      continue
-    }
-  }
-  return { ok: false, reason: 'no-grant' }
+  // 2. grant. retries:1 — this sits inside a live reveal, and readPermissions'
+  //    default four attempts with linear backoff would add seconds. A transient
+  //    miss costs a redraw, which is cheap; a slow reveal is the thing we
+  //    cannot pay.
+  const granted = await readOperatorGrant(params.collection, params.tokenId, { retries: 1 })
+  if (granted === undefined) return { ok: false, reason: 'unreadable' }
+  return granted ? { ok: true } : { ok: false, reason: 'no-grant' }
 }
 
 /**
@@ -354,6 +350,44 @@ export async function readCapsuleSupply(
  *  is validated against at publish. null = unlimited. */
 export async function readHeadroom(collection: string, tokenId: string): Promise<number | null | undefined> {
   const s = await readCapsuleSupply(collection, tokenId)
-  if (!s) return undefined // unreadable: caller skips the check rather than blocking a publish on a blip
+  if (!s) return undefined // unreadable: the gate refuses the entry and the creator retries
   return s.maxSupply === null ? null : Math.max(0, s.maxSupply - s.minted)
+}
+
+/**
+ * Everything the publish gate reads per pool entry, in one pass: live
+ * headroom, what other machines have pledged against the same edition, whether
+ * the named artist owns the piece, and whether the delivery account may mint
+ * it. Shared by publish, the review queue and approval, so the three verdicts
+ * are the same verdict.
+ *
+ * Every read fails CLOSED by leaving its key out, which checkSolvency reports
+ * as unreadable. That includes the pledge ledger: headroom net of rival
+ * pledges is the number the gate needs, so a ledger that cannot be read leaves
+ * headroom unknown rather than assuming nobody else has pledged.
+ */
+export async function readPoolState(
+  entries: PoolEntry[],
+  machineId: string,
+): Promise<Pick<SolvencyInput, 'headroom' | 'otherPledges' | 'artistControl' | 'operatorGrant'>> {
+  const headroom: Record<string, number | null> = {}
+  const pledges: Record<string, number> = {}
+  const artistControl: Record<string, boolean> = {}
+  const operatorGrant: Record<string, boolean> = {}
+  await Promise.all(
+    entries.map(async (e) => {
+      const key = entryKey(e)
+      const [h, pledged, owns, granted] = await Promise.all([
+        readHeadroom(e.collection, e.tokenId),
+        otherPledges(e.collection, e.tokenId, machineId).catch(() => undefined),
+        readArtistControl(e.collection, e.tokenId, e.artist),
+        readOperatorGrant(e.collection, e.tokenId),
+      ])
+      if (h !== undefined && pledged !== undefined) headroom[key] = h
+      pledges[key] = pledged ?? 0
+      if (owns !== undefined) artistControl[key] = owns
+      if (granted !== undefined) operatorGrant[key] = granted
+    }),
+  )
+  return { headroom, otherPledges: pledges, artistControl, operatorGrant }
 }
