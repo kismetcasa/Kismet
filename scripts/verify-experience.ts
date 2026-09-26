@@ -19,6 +19,7 @@ import {
   entryKey,
   isDrawable,
   oddsAreCoherent,
+  pickIndex,
   poolArtists,
   selectByHash,
   totalWeight,
@@ -493,6 +494,23 @@ console.log('\n5f. reveal machine lineups')
       artists: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`${A.collection}:${i}`, '0xart0000000000000000000000000000000000001'])),
     })).includes('too-many-entries'),
   )
+}
+
+console.log('\n5g. a reveal pull is uniform')
+{
+  const n = 3
+  const counts = [0, 0, 0]
+  let inRange = true
+  for (let i = 0; i < 30_000; i++) {
+    const k = pickIndex(n)
+    if (!Number.isInteger(k) || k < 0 || k >= n) inRange = false
+    else counts[k]++
+  }
+  check('every pull lands on a piece in the lineup', inRange)
+  // Each share within 3 points of a third: over ten standard deviations for a
+  // fair pick, which essentially never fails it; a biased or constant one does.
+  check('and each piece comes up about 1 in 3', counts.every((c) => Math.abs(c / 30_000 - 1 / 3) < 0.03), counts.join(','))
+  check('a one-piece lineup always reveals it', Array.from({ length: 50 }, () => pickIndex(1)).every((k) => k === 0))
 }
 
 // ─── 6. Fairness: commit–reveal, and the weight-table commitment ────────────

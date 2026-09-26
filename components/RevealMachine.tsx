@@ -6,6 +6,7 @@ import type { Address } from 'viem'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
 
@@ -38,12 +39,6 @@ interface Payload {
 
 /** Long enough to read as a capsule opening, short enough not to be a wait. */
 const REVEAL_MS = 700
-
-/** A uniform index in [0, n). Modulo of a 32-bit value: the bias is n / 2^32,
- *  under one in twenty million for the largest lineup. */
-function pickIndex(n: number): number {
-  return crypto.getRandomValues(new Uint32Array(1))[0] % n
-}
 
 export function RevealMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()

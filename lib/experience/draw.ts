@@ -178,6 +178,17 @@ export function drawAtAttempt(
   return { pick: selectByHash(working, hashAt(attempt)), setAside }
 }
 
+/**
+ * A reveal machine's pull: a uniform index in [0, n), from the platform's
+ * cryptographic randomness. Modulo of a 32-bit value, so the bias is n / 2^32 —
+ * under one in twenty million for the largest lineup. A pull is free and sells
+ * nothing, so it needs no commitment; it needs only to be fair, which is what
+ * the published 1-in-N says it is.
+ */
+export function pickIndex(n: number): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] % n
+}
+
 /** Canonical key for a pool entry — the member form used by every Redis hash
  *  and the cross-machine commitment ledger. */
 export function entryKey(e: { collection: string; tokenId: string }): string {

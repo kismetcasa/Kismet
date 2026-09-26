@@ -2236,6 +2236,15 @@ try {
           check('a pull reveals one of the pieces on sale', [1, 2, 6].some((id) => revealed === `/artwork/${REVEAL}/${id}`), revealed)
           check('and offers to collect it or pull again',
             (await page.getByRole('button', { name: /^collect · / }).count()) === 1 && (await page.getByRole('button', { name: 'pull again' }).count()) === 1)
+          // Thirteen fair pulls over three pieces all land on the first one's
+          // piece about 1 time in 500,000; a fixed pull does every time.
+          const seen = new Set([revealed])
+          for (let i = 0; i < 12; i++) {
+            await page.getByRole('button', { name: 'pull again' }).click()
+            await page.getByText('you revealed').waitFor()
+            seen.add(await page.locator('a[href^="/artwork/"]').first().getAttribute('href'))
+          }
+          check('pulls land on different pieces', seen.size >= 2, [...seen].join(' '))
           await page.context().close()
 
           // One piece, so the reveal is known: the collect is the artwork's own,
