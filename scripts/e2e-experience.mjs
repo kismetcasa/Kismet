@@ -578,6 +578,10 @@ strings.set(`kismetart:session:${ADMIN_USER_TOKEN}`, ADMIN)
 strings.set(`kismetart:session:${USER_TOKEN}`, CREATOR2)
 strings.set(`kismetart:session:${NOPASS_TOKEN}`, NOPASS)
 strings.set(`kismetart:session:${BUSY_TOKEN}`, BUSY)
+// Kismet's own mint records, which name each piece's artist (lib/notifications
+// MomentMeta) — what the studio fills a pasted link's artist from.
+strings.set(`kismetart:moment-meta:${POOL}:8`, JSON.stringify({ creator: CREATOR2 }))
+strings.set(`kismetart:moment-meta:${POOL}:16`, JSON.stringify({ creator: CREATOR2 }))
 strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${BUSY}`, '1')
 // The gate, enabled exactly as production runs it.
 strings.set('kismetart:gate:enabled', '1')
@@ -640,6 +644,9 @@ chain.perms.set(key(POOL, 14, OPERATOR), 4n)
 chain.perms.set(key(POOL, 8, OPERATOR), 4n)
 chain.tokens.set(key(POOL, 15), { maxSupply: 10n, totalMinted: 0n })
 chain.tokens.set(key(POOL_WIDE, 1), { maxSupply: OPEN, totalMinted: 0n })
+// Piece 16: CREATOR2's, never allowed for capsule machines — the studio flags it.
+chain.tokens.set(key(POOL, 16), { maxSupply: OPEN, totalMinted: 0n })
+chain.perms.set(key(POOL, 16, CREATOR2), 2n)
 chain.perms.set(key(POOL_WIDE, 1, ADMIN), 2n)
 chain.perms.set(key(POOL_WIDE, 0, OPERATOR), 4n)
 chain.tokens.set(key(CAPSULE_W, 1), { maxSupply: 10n, totalMinted: 0n })
@@ -1442,6 +1449,8 @@ try {
   const pWide = await call(`/api/experience/piece?collection=${POOL_WIDE}&tokenId=1`)
   check('a collection-wide grant reads as such', pWide.json?.allowed === true && pWide.json.scope === 'collection')
   check('a malformed piece is refused', (await call(`/api/experience/piece?collection=nope&tokenId=1`)).status === 400)
+  check('a piece names the artist Kismet recorded minting it',
+    (await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.artist === CREATOR2)
 
   // ═══ 6h. a creator takes back a machine, and ends a season ════════════════
   console.log('\n6h. withdraw and end season')
@@ -1799,6 +1808,11 @@ try {
           const twoRows = await text(page)
           check('an even two-piece lineup previews as 50.0% each', (twoRows.match(/50\.0%/g) ?? []).length === 2, twoRows.match(/what players will see.{0,120}/)?.[0] ?? '')
           check('and shows the 1-in-N ratio a fractional row carries', twoRows.includes('1 in 2'), twoRows.match(/1 in \d+/)?.[0] ?? 'none')
+          await page.getByRole('button', { name: 'add artwork' }).click()
+          await page.getByPlaceholder('collection 0x…').nth(2).fill(`${origin}/artwork/${POOL}/16`)
+          await page.getByText('hasn\u2019t allowed capsule machines yet').or(page.getByText("hasn't allowed capsule machines yet")).first().waitFor()
+          check('a piece its artist has not allowed is flagged while the lineup is built, with where to fix it',
+            (await page.getByRole('link', { name: 'the piece\u2019s page' }).or(page.getByRole('link', { name: "the piece's page" })).first().getAttribute('href')) === `/artwork/${POOL}/16`)
           check('a disconnected visitor is offered connect wallet, not a check that can only fail',
             (await page.getByRole('button', { name: 'connect wallet' }).count()) === 1 &&
             (await page.getByRole('button', { name: 'check', exact: true }).count()) === 0)
@@ -1825,9 +1839,11 @@ try {
           await page.getByPlaceholder('Spring Season').fill('Browser Machine')
           await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
           await page.getByPlaceholder('1', { exact: true }).fill('1')
-          await page.getByPlaceholder('collection 0x…').fill(POOL)
-          await page.getByPlaceholder('token').fill('8')
-          await page.getByPlaceholder('artist 0x…').fill(CREATOR2)
+          await page.getByPlaceholder('collection 0x…').fill(`${origin}/artwork/${POOL}/8`)
+          check('pasting an artwork link fills in its collection and token',
+            (await page.getByPlaceholder('collection 0x…').inputValue()) === POOL && (await page.getByPlaceholder('token').inputValue()) === '8')
+          await page.getByText('allowed for capsule machines', { exact: true }).waitFor()
+          check('and the artist Kismet recorded, with the piece\'s standing', (await page.getByPlaceholder('artist 0x…').inputValue()) === CREATOR2)
           await page.locator('label:has-text("qty") input').fill('0')
           await page.getByRole('button', { name: 'check', exact: true }).click()
           // Wait for the result region either way, so a failing check reports the

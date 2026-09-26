@@ -40,6 +40,7 @@ import {
   formatOddsRatio,
   formatProbability,
   formatRemaining,
+  parseArtworkRef,
 } from '../lib/experience/format.ts'
 import type { PoolEntry, SnapshotEntry } from '../lib/experience/types.ts'
 
@@ -702,6 +703,20 @@ console.log('\n9. epoch arithmetic')
     nextEpoch(epochFor(Date.UTC(2026, 5, 30, 23, 59, 59))) === '2026-07-01')
   check('epochs sort lexicographically, which revealSeed relies on',
     '2026-01-31' < nextEpoch('2026-01-31') && nextEpoch('2025-12-31') > '2025-12-31')
+}
+
+// ─── the studio reads a lineup from pasted links ─────────────────────────────
+console.log('\nstudio: artwork references')
+{
+  const C = '0xAbCdEf0000000000000000000000000000000001'
+  const want = (r: ReturnType<typeof parseArtworkRef>) => r?.collection === C.toLowerCase() && r.tokenId === '12'
+  check('a full artwork link', want(parseArtworkRef(`https://kismet.art/artwork/${C}/12`)))
+  check('with a query or fragment after it', want(parseArtworkRef(`https://kismet.art/artwork/${C}/12?ref=feed#top`)))
+  check('its path alone', want(parseArtworkRef(`/artwork/${C}/12`)))
+  check('an address and id with a slash or a colon', want(parseArtworkRef(`${C}/12`)) && want(parseArtworkRef(`${C}:12`)))
+  check('the token id is canonical, as every key is', parseArtworkRef(`${C}/012`)?.tokenId === '12')
+  check('a bare address is not a piece', parseArtworkRef(C) === null)
+  check('nor is anything else', parseArtworkRef('https://kismet.art/experience') === null && parseArtworkRef('') === null)
 }
 
 console.log(

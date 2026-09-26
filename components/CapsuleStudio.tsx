@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAccount } from 'wagmi'
@@ -10,7 +10,7 @@ import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePassGate } from '@/hooks/usePassGate'
 import { isAddress } from '@/lib/address'
 import { deriveOdds, poolArtists, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
-import { formatOddsRatio, formatProbability } from '@/lib/experience/format'
+import { formatOddsRatio, formatProbability, parseArtworkRef } from '@/lib/experience/format'
 import type { PoolEntry, SolvencyProblemCode } from '@/lib/experience/types'
 import { shortAddress } from '@/lib/inprocess'
 
@@ -96,6 +96,27 @@ export function CapsuleStudio() {
   const [submitted, setSubmitted] = useState<{ id: string; name: string } | null>(null)
 
   const entries = useMemo(() => toEntries(rows), [rows])
+  /** What each complete row's piece reports about itself: whether its artist
+   *  has allowed capsule machines, and who Kismet recorded minting it — so a
+   *  pasted link fills in its artist and an unallowed piece is flagged while
+   *  the creator is still building, not only when they run a check. */
+  const [pieces, setPieces] = useState<Record<string, { allowed: boolean | null; artist: string | null } | 'loading'>>({})
+  useEffect(() => {
+    for (const r of rows) {
+      if (!isAddress(r.collection) || !/^\d+$/.test(r.tokenId)) continue
+      const key = pieceKey(r)
+      if (pieces[key] !== undefined) continue
+      setPieces((p) => ({ ...p, [key]: 'loading' }))
+      fetch(`/api/experience/piece?collection=${r.collection}&tokenId=${r.tokenId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((d: { allowed: boolean | null; artist: string | null } | null) => {
+          setPieces((p) => ({ ...p, [key]: { allowed: d?.allowed ?? null, artist: d?.artist ?? null } }))
+          const artist = d?.artist
+          if (artist) setRows((rs) => rs.map((x) => (pieceKey(x) === key && !x.artist ? { ...x, artist } : x)))
+        })
+        .catch(() => setPieces((p) => ({ ...p, [key]: { allowed: null, artist: null } })))
+    }
+  }, [rows, pieces])
   // The real published table, computed by the production function over a
   // snapshot where every entry is fully stocked — which is what a machine looks
   // like on its opening day.
@@ -188,14 +209,19 @@ export function CapsuleStudio() {
           <p className="text-[11px] font-mono text-muted mt-2 max-w-lg leading-relaxed">
             <span className="text-dim">{submitted.name}</span> is queued for a curator. It isn&apos;t public
             yet; once approved it will be live at{' '}
-            <span className="text-dim">/experience/{submitted.id}</span>.
+            <span className="text-dim">/experience/{submitted.id}</span>, and you&apos;ll be notified either
+            way.
           </p>
-          <Link
-            href="/experience"
-            className="inline-block mt-4 text-[11px] font-mono text-dim hover:text-ink underline"
-          >
-            back to experience →
-          </Link>
+          <div className="flex flex-wrap gap-4 mt-4">
+            {address && (
+              <Link href={`/profile/${address}`} className="text-[11px] font-mono text-dim hover:text-ink underline">
+                see it on your profile →
+              </Link>
+            )}
+            <Link href="/experience" className="text-[11px] font-mono text-dim hover:text-ink underline">
+              back to experience →
+            </Link>
+          </div>
         </section>
       </div>
     )
@@ -224,6 +250,19 @@ export function CapsuleStudio() {
           </Link>
         </div>
       )}
+
+      <Section title="before you start">
+        <ol className="flex flex-col gap-1.5 text-[11px] font-mono text-muted leading-relaxed list-decimal list-inside max-w-xl">
+          <li>
+            Mint the capsule on Kismet: a priced edition whose split names every artist you plan to include.
+            The split is how each of them is paid.
+          </li>
+          <li>Ask each artist to allow capsule machines on their piece, from that piece&apos;s page.</li>
+          <li>
+            Add an unlimited piece of your own as a floor, so every capsule sold can always be honoured.
+          </li>
+        </ol>
+      </Section>
 
       <Section title="the machine">
         <Field label="id" hint="lowercase letters, numbers and dashes — this becomes the URL">
@@ -277,7 +316,17 @@ export function CapsuleStudio() {
           {rows.map((r, i) => (
             <div key={i} className="border border-line p-3 flex flex-col gap-2">
               <div className="flex gap-2">
-                <input value={r.collection} onChange={(e) => setRow(i, { collection: e.target.value.trim() })} placeholder="collection 0x…" spellCheck={false} className={`${inputClass} flex-1`} />
+                <input
+                  value={r.collection}
+                  onChange={(e) => {
+                    const ref = parseArtworkRef(e.target.value)
+                    setRow(i, ref ? { collection: ref.collection, tokenId: ref.tokenId } : { collection: e.target.value.trim() })
+                  }}
+                  placeholder="artwork link, or collection 0x…"
+                  spellCheck={false}
+                  aria-label={`Artwork ${i + 1}: link or collection address`}
+                  className={`${inputClass} flex-1`}
+                />
                 <input value={r.tokenId} onChange={(e) => setRow(i, { tokenId: e.target.value.replace(/\D/g, '') })} placeholder="token" inputMode="numeric" className={`${inputClass} w-20`} />
               </div>
               <div className="flex gap-2">
@@ -298,6 +347,7 @@ export function CapsuleStudio() {
                   remove
                 </button>
               </div>
+              <PieceStatus row={r} standing={pieces[pieceKey(r)]} />
             </div>
           ))}
         </div>
@@ -382,7 +432,7 @@ export function CapsuleStudio() {
             <ul className="flex flex-col gap-1.5">
               {problems.map((p, i) => (
                 <li key={i} className="text-[11px] font-mono text-[#ff7c80]">
-                  <span className="text-subtle uppercase tracking-wider">{p.code}</span> — {p.detail}
+                  <span className="text-subtle uppercase tracking-wider">{p.code}</span> — <DetailWithLinks text={p.detail} />
                 </li>
               ))}
             </ul>
@@ -451,5 +501,49 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint && <span className="text-[10px] font-mono text-subtle">{hint}</span>}
     </label>
+  )
+}
+
+const pieceKey = (r: { collection: string; tokenId: string }) =>
+  `${r.collection.toLowerCase()}:${/^\d+$/.test(r.tokenId) ? BigInt(r.tokenId).toString() : r.tokenId}`
+
+/** One lineup row's standing with capsule machines, while the creator builds. */
+function PieceStatus({
+  row,
+  standing,
+}: {
+  row: Row
+  standing: { allowed: boolean | null; artist: string | null } | 'loading' | undefined
+}) {
+  if (!standing || standing === 'loading' || standing.allowed === null) return null
+  const href = `/artwork/${row.collection.toLowerCase()}/${row.tokenId}`
+  return standing.allowed ? (
+    <p className="text-[10px] font-mono text-subtle">allowed for capsule machines</p>
+  ) : (
+    <p className="text-[10px] font-mono text-[#ffcf70]">
+      Its artist hasn&apos;t allowed capsule machines yet — they can from{' '}
+      <Link href={href} className="underline hover:text-ink">
+        the piece&apos;s page
+      </Link>
+      .
+    </p>
+  )
+}
+
+/** A problem's detail with any artwork path in it made a link. */
+function DetailWithLinks({ text }: { text: string }) {
+  const parts = text.split(/(\/artwork\/0x[0-9a-fA-F]{40}\/\d+)/)
+  return (
+    <>
+      {parts.map((part, i) =>
+        /^\/artwork\//.test(part) ? (
+          <Link key={i} href={part} className="underline hover:text-ink">
+            {part}
+          </Link>
+        ) : (
+          part
+        ),
+      )}
+    </>
   )
 }

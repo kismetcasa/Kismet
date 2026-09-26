@@ -58,3 +58,16 @@ export function artworkTitle(name: string | null | undefined, tokenId: string): 
   const trimmed = name?.trim()
   return trimmed ? trimmed : `#${tokenId}`
 }
+
+/**
+ * An artwork reference read out of whatever a creator pastes: a Kismet artwork
+ * link (https://…/artwork/0x…/12), its path, or `0x…/12` / `0x…:12`. The
+ * studio builds a lineup from these, so a creator copies the link of the page
+ * they are already looking at instead of transcribing a 42-character address.
+ * `null` unless a collection address is followed by a token id.
+ */
+export function parseArtworkRef(input: string): { collection: string; tokenId: string } | null {
+  const m = input.match(/(0x[0-9a-fA-F]{40})[/:](\d+)/)
+  if (!m) return null
+  return { collection: m[1].toLowerCase(), tokenId: BigInt(m[2]).toString() }
+}

@@ -5,11 +5,14 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { readOperatorGrantScope } from '@/lib/experience/authority'
 import { experienceOperator } from '@/lib/experience/delivery'
 import { getMachine, machinesUsingPiece } from '@/lib/experience/store'
+import { getMomentMeta } from '@/lib/notifications'
 
 /**
  * One artwork's standing with capsule machines: the operator an artist grants
- * mint rights to, whether (and how) they have, and the public machines that
- * include the piece. Read by the allowance panel on the artwork page.
+ * mint rights to, whether (and how) they have, the public machines that
+ * include the piece, and the artist Kismet recorded minting it. Read by the
+ * allowance panel on the artwork page, and by the Capsule Studio to fill in a
+ * pasted piece's artist and say whether it is allowed before any check runs.
  *
  * The operator comes from here rather than from a public build-time constant
  * because it is derived from the delivery account itself (see
@@ -32,8 +35,14 @@ export async function GET(req: NextRequest) {
   if (!/^\d+$/.test(rawToken)) return errorResponse(400, 'Invalid tokenId')
   const tokenId = BigInt(rawToken).toString()
 
-  const operator = await experienceOperator()
-  if (!operator) return NextResponse.json({ operator: null, allowed: null, scope: null, machines: [] })
+  const [operator, meta] = await Promise.all([
+    experienceOperator(),
+    getMomentMeta(collection, tokenId).catch(() => null),
+  ])
+  // A hint, not an attestation: the publish gate still requires the named
+  // artist to hold ADMIN on the piece.
+  const artist = meta?.creator ? meta.creator.toLowerCase() : null
+  if (!operator) return NextResponse.json({ operator: null, allowed: null, scope: null, machines: [], artist })
 
   const [scope, ids] = await Promise.all([
     readOperatorGrantScope(collection, tokenId),
@@ -48,5 +57,6 @@ export async function GET(req: NextRequest) {
     allowed: scope === undefined ? null : scope !== null,
     scope: scope ?? null,
     machines,
+    artist,
   })
 }
