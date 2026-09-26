@@ -201,3 +201,38 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
     </div>
   )
 }
+
+/**
+ * For every visitor: the live machines this artwork is in, each a link — the
+ * way Spotify's "Appears On" leads a listener from a track to the playlists
+ * carrying it. A piece whose artist turned reveal machines off lists none of
+ * them. Nothing renders when the piece is in no live machine.
+ */
+export function MachineCallout({ collection, tokenId }: { collection: string; tokenId: string }) {
+  const [machines, setMachines] = useState<{ id: string; name: string; kind: 'capsule' | 'reveal' }[]>([])
+  useEffect(() => {
+    let alive = true
+    fetch(`/api/experience/piece?collection=${collection}&tokenId=${tokenId}&public=1`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { machines?: { id: string; name: string; kind: 'capsule' | 'reveal' }[] } | null) => {
+        if (alive) setMachines(d?.machines ?? [])
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [collection, tokenId])
+  if (machines.length === 0) return null
+  return (
+    <p className="mt-4 text-[11px] font-mono text-muted">
+      In {machines.length === 1 ? 'a machine' : `${machines.length} machines`}:{' '}
+      {machines.map((m, i) => (
+        <span key={m.id}>
+          {i > 0 && ' · '}
+          <Link href={`/experience/${m.id}`} className="text-dim hover:text-ink underline">
+            {m.name}
+          </Link>
+          <span className="text-subtle"> ({m.kind === 'reveal' ? 'pull to reveal' : 'capsule prize'})</span>
+        </span>
+      ))}
+    </p>
+  )
+}

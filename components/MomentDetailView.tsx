@@ -41,7 +41,7 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
 import { useMomentEditPermission, useMomentSaleEditPermission } from '@/hooks/useMomentEditPermission'
-import { ExperienceAllowance } from './ExperienceAllowance'
+import { ExperienceAllowance, MachineCallout } from './ExperienceAllowance'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
 import { useUpdateMomentUri } from '@/hooks/useUpdateMomentUri'
 import type { WindowFieldEdit } from '@/lib/saleEdit'
@@ -2536,6 +2536,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
           {/* Capsule-machine allowance — self-gates on ADMIN over this piece,
               the right its grant and revoke writes require. */}
           <div className="px-5 pb-4 empty:hidden">
+            <MachineCallout collection={address} tokenId={tokenId} />
             <ExperienceAllowance collection={address} tokenId={tokenId} />
           </div>
 

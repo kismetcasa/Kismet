@@ -29,11 +29,17 @@ interface Row {
   tokenId: string
 }
 
+/** Matches lib/experience/linked. */
+const MAX_LINKS = 3
+/** A pasted collection page link, or a bare address. */
+const collectionFrom = (text: string) => text.match(/0x[a-fA-F0-9]{40}/)?.[0]?.toLowerCase() ?? text.trim()
+
 type Standing = { available: boolean | null; artist: string | null } | 'loading'
 
 const STATUS: Record<LineupPiece['status'], string> = {
   'on-sale': 'on sale now',
-  'not-on-sale': 'shows up when its sale opens',
+  upcoming: 'shows up when its sale opens',
+  'not-on-sale': 'not on sale — shows up if its artist opens one',
   'sold-out': 'sold out',
   unavailable: 'not available',
   unreadable: 'could not read its sale just now',
@@ -49,6 +55,7 @@ export function RevealStudio() {
   const [id, setId] = useState('')
   const [name, setName] = useState('')
   const [rows, setRows] = useState<Row[]>([{ collection: '', tokenId: '' }])
+  const [links, setLinks] = useState<string[]>([])
   const [pieces, setPieces] = useState<Record<string, Standing>>({})
   const [problems, setProblems] = useState<{ code: SolvencyProblemCode; detail: string }[] | null>(null)
   const [lineup, setLineup] = useState<Record<string, LineupPiece>>({})
@@ -57,6 +64,15 @@ export function RevealStudio() {
   const [submitted, setSubmitted] = useState<{ id: string; name: string } | null>(null)
 
   const complete = useMemo(() => rows.filter((r) => isAddress(r.collection) && /^\d+$/.test(r.tokenId)), [rows])
+  const linked = useMemo(() => links.filter((c) => isAddress(c)), [links])
+  const ready = complete.length > 0 || linked.length > 0
+  /** After a check: how many pieces the linked collections bring, and how many
+   *  of those are on sale today. */
+  const fromLinks = useMemo(() => {
+    const picked = new Set(complete.map(pieceKey))
+    const rest = Object.values(lineup).filter((p) => !picked.has(p.key))
+    return { total: rest.length, onSale: rest.filter((p) => p.status === 'on-sale').length }
+  }, [complete, lineup])
 
   useEffect(() => {
     for (const r of complete) {
@@ -89,6 +105,7 @@ export function RevealStudio() {
             id: id.trim().toLowerCase(),
             name: name.trim(),
             entries: complete.map((c) => ({ collection: c.collection.toLowerCase(), tokenId: c.tokenId })),
+            collections: linked,
             dryRun,
           }),
         })
@@ -121,7 +138,7 @@ export function RevealStudio() {
         setBusy(null)
       }
     },
-    [authRequired, complete, ensureSession, id, name, router],
+    [authRequired, complete, ensureSession, id, linked, name, router],
   )
 
   if (submitted) return <StudioSubmitted title="reveal studio" machine={submitted} address={address} />
@@ -224,6 +241,48 @@ export function RevealStudio() {
         </button>
       </Section>
 
+      <Section
+        title="linked collections"
+        note="Optional. Every piece minted on Kismet into a linked collection joins by itself — the newest ones there now, and each new one as it's minted."
+      >
+        <div className="flex flex-col gap-2">
+          {links.map((c, i) => (
+            <div key={i} className="flex gap-2">
+              <input
+                value={c}
+                onChange={(e) => setLinks((ls) => ls.map((l, j) => (i === j ? collectionFrom(e.target.value) : l)))}
+                placeholder="collection link, or 0x…"
+                spellCheck={false}
+                aria-label={`Linked collection ${i + 1}`}
+                className={`${inputClass} flex-1`}
+              />
+              <button
+                onClick={() => setLinks((ls) => ls.filter((_, j) => j !== i))}
+                aria-label={`Unlink collection ${i + 1}`}
+                className="px-2 text-[10px] font-mono text-subtle hover:text-[#ff7c80]"
+              >
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+        {linked.length > 0 && problems?.length === 0 && (
+          <p className="text-[10px] font-mono text-subtle">
+            {fromLinks.total === 0
+              ? 'nothing minted on Kismet there yet — new work joins as it’s minted'
+              : `${fromLinks.total} ${fromLinks.total === 1 ? 'piece' : 'pieces'} from ${linked.length === 1 ? 'it' : 'them'} today · ${fromLinks.onSale} on sale now`}
+          </p>
+        )}
+        {links.length < MAX_LINKS && (
+          <button
+            onClick={() => setLinks((ls) => [...ls, ''])}
+            className="self-start px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
+          >
+            link a collection
+          </button>
+        )}
+      </Section>
+
       {problems && (
         <Section title={problems.length === 0 ? 'ready' : 'fix before publishing'}>
           {problems.length === 0 ? (
@@ -255,14 +314,14 @@ export function RevealStudio() {
           <>
             <button
               onClick={() => submit(true)}
-              disabled={busy !== null || complete.length === 0}
+              disabled={busy !== null || !ready}
               className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase border border-line text-dim hover:text-ink disabled:opacity-40"
             >
               {busy === 'check' ? 'checking…' : 'check'}
             </button>
             <button
               onClick={() => submit(false)}
-              disabled={busy !== null || complete.length === 0 || gatedOut}
+              disabled={busy !== null || !ready || gatedOut}
               className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
             >
               {busy === 'publish' ? 'publishing…' : 'publish'}

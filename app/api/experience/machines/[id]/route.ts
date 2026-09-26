@@ -23,7 +23,7 @@ import { readCapsuleSupply } from '@/lib/experience/authority'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { fetchArtworkMeta, hydrateArtworkMeta, type ArtworkMeta } from '@/lib/experience/artwork'
-import { filterDeliverable } from '@/lib/experience/eligibility'
+import { drawableTable } from '@/lib/experience/eligibility'
 import { readLineup } from '@/lib/experience/lineup'
 import { isReveal, type RevealMachine } from '@/lib/experience/types'
 import { ADMIN_ADDRESS } from '@/lib/config'
@@ -77,12 +77,15 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // table is the table a play will actually draw from. A row shown here that
   // the draw would skip is a false disclosure, which is the specific failure
   // this whole design exists to make impossible.
-  // The SAME filter the draw applies — not a reimplementation of two of its
-  // three tests, which is what this was: it omitted the artist blacklist, so a
+  // The SAME function the draw uses — not a reimplementation of part of it,
+  // which is what this once was: it omitted the artist blacklist, so a
   // blacklisted artist's row stayed in the published table with a probability it
-  // could never win, and inflated the denominator under every other row.
+  // could never win, and inflated the denominator under every other row. It
+  // now also drops what the chain says cannot be delivered (sold out, consent
+  // withdrawn); when the chain cannot be read, `live` is false and the page
+  // refuses to sell on an unconfirmed table.
   const snapshot = buildSnapshot(pool, remaining)
-  const visible = await filterDeliverable(snapshot, passCollection)
+  const { table: visible, live } = await drawableTable(snapshot, passCollection)
 
   const odds = deriveOdds(visible)
 
@@ -148,6 +151,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       const key = entryKey(o)
       return { ...o, key, name: art[key]?.name ?? null, image: art[key]?.image ?? null }
     }),
+    // Whether the table above reflects the chain right now. Selling is refused
+    // on a table that could not be confirmed, as it is on an unreadable price.
+    standingReadable: live,
     coverage: coverage({
       capsuleMaxSupply: supply?.maxSupply ?? machine.capsuleMaxSupply,
       capsuleMinted: supply?.minted ?? 0,
@@ -188,9 +194,11 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
     // wallet that published them is not.
     referral: machine.creator === ADMIN_ADDRESS ? null : machine.creator,
     lineup: onSale.map((p) => ({ ...p, name: art[p.key]?.name ?? null, image: art[p.key]?.image ?? null })),
-    // How many pieces are in the lineup but not collectable right now, so the
-    // page can say "more when their sales open" rather than look smaller.
-    waiting: lineup.length - onSale.length,
+    // Pieces whose sale has not opened yet, so the page can say "more when
+    // their sales open". Only those: a sold-out, closed or withdrawn piece is
+    // not coming, and counting it would promise a piece that cannot appear.
+    waiting: lineup.filter((p) => p.status === 'upcoming').length,
+    collections: machine.collections ?? [],
   })
 }
 

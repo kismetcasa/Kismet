@@ -1,7 +1,7 @@
 import 'server-only'
 import type { Address } from 'viem'
 import { serverBaseClient } from '../rpc'
-import { PERMISSION_BIT_SALES, hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
+import { COLLECTION_PERMISSIONS_ABI, PERMISSION_BIT_SALES, hasAdminBit, hasMinterBit, readPermissions } from '../permissions'
 import { resolveOnchainSale } from '../saleConfig'
 import { ZORA_1155_TOKEN_INFO_ABI, ZORA_ERC20_MINTER, isOpenEdition } from '../zoraMint'
 import { experienceOperator } from './delivery'
@@ -363,6 +363,59 @@ export async function readHeadroom(collection: string, tokenId: string): Promise
   const s = await readCapsuleSupply(collection, tokenId)
   if (!s) return undefined // unreadable: the gate refuses the entry and the creator retries
   return s.maxSupply === null ? null : Math.max(0, s.maxSupply - s.minted)
+}
+
+/**
+ * What each piece of a capsule pool can deliver right now, read in ONE
+ * multicall: copies left on-chain (maxSupply − totalMinted; null = open) and
+ * whether the delivery account may mint it, on its own row or collection-wide.
+ *
+ * The machine page publishes its odds through this and every play freezes on
+ * it, so a piece that sold out through its own sale or whose artist withdrew
+ * consent leaves the table — rather than staying a row the draw can only ever
+ * refuse, which would make the published odds differ from the real ones. The
+ * per-pick checkPrizeAuthority still runs on whatever is drawn; this is what
+ * keeps it from having to.
+ *
+ * One round trip, not two reads per piece — the reason this was once left to
+ * the per-pick check. A piece whose reads fail is left out (fails closed);
+ * `null` when the operator or the call itself cannot be reached.
+ */
+export async function readLiveStanding(
+  entries: { collection: string; tokenId: string }[],
+): Promise<Record<string, { left: number | null; granted: boolean }> | null> {
+  if (entries.length === 0) return {}
+  const operator = await experienceOperator()
+  if (!operator) return null
+  let results
+  try {
+    results = await serverBaseClient().multicall({
+      contracts: entries.flatMap((e) => {
+        const collection = e.collection as Address
+        const tokenId = BigInt(e.tokenId)
+        return [
+          { address: collection, abi: ZORA_1155_TOKEN_INFO_ABI, functionName: 'getTokenInfo' as const, args: [tokenId] as const },
+          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [tokenId, operator as Address] as const },
+          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [0n, operator as Address] as const },
+        ]
+      }),
+      allowFailure: true,
+    })
+  } catch {
+    return null
+  }
+  const out: Record<string, { left: number | null; granted: boolean }> = {}
+  entries.forEach((e, i) => {
+    const [info, onToken, onCollection] = results.slice(3 * i, 3 * i + 3)
+    if (info.status !== 'success' || onToken.status !== 'success' || onCollection.status !== 'success') return
+    const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
+    const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
+    out[entryKey(e)] = {
+      left: isOpenEdition(maxSupply) ? null : Number(maxSupply > totalMinted ? maxSupply - totalMinted : 0n),
+      granted: grants(onToken.result as bigint) || grants(onCollection.result as bigint),
+    }
+  })
+  return out
 }
 
 /**

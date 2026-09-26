@@ -32,7 +32,8 @@ import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
-import { filterDeliverable, isDeliverableEntry } from '@/lib/experience/eligibility'
+import { drawableTable, isDeliverableEntry } from '@/lib/experience/eligibility'
+import { noticeIfEmpty } from '@/lib/experience/notices'
 
 /**
  * Finish a claim that stalled.
@@ -72,6 +73,12 @@ const MAX_DELIVERY_ATTEMPTS = 3
  *  Comfortably longer than the slowest legitimate play (a 200-entry freeze plus
  *  a 60s delivery wait) so a live request is never raced. */
 const STALE_CLAIM_MS = 180_000
+
+// A delivery waits up to 60s for its sponsored mint to land, after the
+// capsule's proof and the draw — well past a default function timeout. A cut
+// short request is recoverable (the claim records its userOp before the wait),
+// but the player would wait longer for nothing.
+export const maxDuration = 120
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -311,7 +318,7 @@ async function handle(
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
   const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
-  const eligible: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
+  const eligible: SnapshotEntry[] = (await drawableTable(rawSnapshot, passCollection)).table
 
   const epoch = epochFor(Date.now())
   const { seed } = await seedForEpoch(machineId, epoch)
@@ -341,6 +348,7 @@ async function handle(
       attempt: result.attempt,
       pendingReason: 'no eligible artwork available yet — this capsule stays owed',
     })
+    after(() => noticeIfEmpty(machineId).catch(() => {}))
     return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
   }
 
@@ -415,6 +423,7 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
   after(async () => {
     await recordCollected(claimant, prize.collection, prize.tokenId).catch(() => {})
     await recordPrize(claim).catch(() => {})
+    await noticeIfEmpty(machineId).catch(() => {})
     const meta = await fetchArtworkMeta(prize.collection, prize.tokenId)
     await writeNotification({
       type: 'experience_win',

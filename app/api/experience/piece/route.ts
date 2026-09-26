@@ -42,6 +42,23 @@ export async function GET(req: NextRequest) {
   if (!piece) return errorResponse(400, 'Invalid artwork')
   const { collection, tokenId } = piece
 
+  // `public=1`: what any visitor's artwork page needs — the live machines the
+  // piece is in, and whether its artist allows reveal machines — with no
+  // chain reads, so it can be cached and read on every artwork view.
+  if (url.searchParams.get('public') === '1') {
+    const [optedOut, ids] = await Promise.all([
+      optedOutPieces([piece]).catch(() => null),
+      machinesUsingPiece(collection, tokenId).catch(() => [] as string[]),
+    ])
+    const machines = (await Promise.all(ids.map((id) => getMachine(id).catch(() => null))))
+      .filter((m) => m !== null && m.state === 'live' && (m.kind !== 'reveal' || optedOut?.size === 0))
+      .map((m) => ({ id: m!.id, name: m!.name, kind: m!.kind ?? 'capsule' }))
+    return NextResponse.json(
+      { machines },
+      { headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' } },
+    )
+  }
+
   const [operator, meta, optedOut, ids] = await Promise.all([
     experienceOperator(),
     getMomentMeta(collection, tokenId).catch(() => null),

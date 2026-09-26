@@ -1,6 +1,8 @@
 import 'server-only'
 import { isBlacklisted } from '../blacklist'
 import { isMomentHidden } from '../hiddenMoments'
+import { readLiveStanding } from './authority'
+import { withLiveStanding } from './draw'
 import type { SnapshotEntry } from './types'
 
 /**
@@ -52,4 +54,25 @@ export async function filterDeliverable<T extends Pick<SnapshotEntry, 'collectio
     if (await isDeliverableEntry(e, passCollection)) out.push(e)
   }
   return out
+}
+
+/**
+ * The table a capsule draw uses, and the one its page publishes: the pool,
+ * minus what may not be dispensed, minus what the chain says cannot be
+ * delivered right now (lib/experience/authority.readLiveStanding). One
+ * function for the page, play and resume, so the odds a player reads are the
+ * odds their play draws from.
+ *
+ * `live` is false when the chain could not be read. The table is then only
+ * the moderation-filtered pool: the page refuses to sell on it, and a play
+ * that already paid still draws, with the per-pick authority check refusing
+ * anything undeliverable.
+ */
+export async function drawableTable(
+  snapshot: SnapshotEntry[],
+  passCollection: string | null,
+): Promise<{ table: SnapshotEntry[]; live: boolean }> {
+  const allowed = await filterDeliverable(snapshot, passCollection)
+  const standing = await readLiveStanding(allowed).catch(() => null)
+  return standing ? { table: withLiveStanding(allowed, standing), live: true } : { table: allowed, live: false }
 }

@@ -334,9 +334,11 @@ export function checkLineup(input: {
   /** Entry keys whose artist turned reveal machines off, or that cannot be
    *  shown at all (lib/experience/eligibility). */
   unavailable: Set<string>
+  /** A linked collection fills the lineup, so it may start with no pieces. */
+  linked?: boolean
 }): SolvencyProblem[] {
   const problems: SolvencyProblem[] = []
-  if (input.entries.length === 0) {
+  if (input.entries.length === 0 && !input.linked) {
     problems.push({ code: 'empty-pool', detail: 'a machine needs at least one artwork' })
     return problems
   }

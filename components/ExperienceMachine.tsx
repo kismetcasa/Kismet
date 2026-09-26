@@ -81,6 +81,9 @@ interface MachinePayload {
     saleReadable: boolean
   }
   odds: OddsRow[]
+  /** Whether the odds reflect the chain right now (sold-out pieces and
+   *  withdrawn consent excluded). False means they could not be confirmed. */
+  standingReadable: boolean
   coverage: { capsulesOutstanding: number | null; prizesRemaining: number | null; covered: boolean }
   fairness: Fairness | null
   recentPlays: { player: string; txHash: string }[]
@@ -117,6 +120,18 @@ interface Prize {
  *  worth more than an arbitrary free-entry number a player would have to think
  *  about. */
 const PULL_SIZES = [1, 5, 10] as const
+
+/** The pull sizes a machine can honour: none larger than the artworks it has
+ *  left. `left` null means unlimited. */
+function pullSizes(left: number | null): number[] {
+  return PULL_SIZES.filter((n) => left === null || n <= left)
+}
+
+/** The chosen size, or the largest still on offer when it no longer is. */
+function effectivePull(left: number | null, chosen: number): number {
+  const sizes = pullSizes(left)
+  return sizes.includes(chosen) ? chosen : (sizes[sizes.length - 1] ?? 1)
+}
 
 export function ExperienceMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()
@@ -235,6 +250,7 @@ export function ExperienceMachine({ id }: { id: string }) {
     if (!addr) return
     setAccount(addr)
 
+    const units = effectivePull(data.coverage.prizesRemaining, pull)
     inFlight.current = true
     setPhase('paying')
     setWon([])
@@ -248,7 +264,7 @@ export function ExperienceMachine({ id }: { id: string }) {
       const res = await collect({
         collectionAddress: data.machine.capsule.collection as `0x${string}`,
         tokenId: data.machine.capsule.tokenId,
-        amount: pull,
+        amount: units,
       })
       if (!res) { setPhase('idle'); return }
 
@@ -256,7 +272,7 @@ export function ExperienceMachine({ id }: { id: string }) {
       // tab closing between the mint landing and the server recording a claim,
       // and without it those capsules would be unreachable: /api/experience/play
       // needs the transaction hash and nothing on the server has seen it yet.
-      rememberCapsule(id, { txHash: res.hash, units: pull, at: Date.now() })
+      rememberCapsule(id, { txHash: res.hash, units, at: Date.now() })
       setLocal(listPendingCapsules(id))
       setLastTx(res.hash)
 
@@ -265,21 +281,21 @@ export function ExperienceMachine({ id }: { id: string }) {
       // and revealing them one at a time is both the correct pacing and what
       // keeps a ten-pull from firing ten concurrent sponsored mints.
       const prizes: Prize[] = []
-      for (let unit = 0; unit < pull; unit++) {
-        setProgress({ done: unit, total: pull })
+      for (let unit = 0; unit < units; unit++) {
+        setProgress({ done: unit, total: units })
         const opened = await openUnit(res.hash, unit, addr).catch(() => null)
         if (opened?.prize) { prizes.push(opened.prize); setWon([...prizes]) }
       }
       setProgress(null)
 
-      if (prizes.length === pull) clearPendingCapsule(id, res.hash)
+      if (prizes.length === units) clearPendingCapsule(id, res.hash)
       setLocal(listPendingCapsules(id))
 
       if (prizes.length > 0) {
         setPhase('won')
-        if (prizes.length < pull) {
+        if (prizes.length < units) {
           setPendingReason(
-            `${pull - prizes.length} of ${pull} are still on their way — they are safe and will be honoured.`,
+            `${units - prizes.length} of ${units} are still on their way — they are safe and will be honoured.`,
           )
         }
       } else {
@@ -412,7 +428,15 @@ export function ExperienceMachine({ id }: { id: string }) {
   // thing this surface's odds disclosure exists to prevent.
   const priced = data.machine.saleReadable && !!sale && BigInt(sale.pricePerToken || '0') > 0n
   const saleOpen = windowOpen && priced
-  const playable = data.machine.state === 'live' && saleOpen
+  // NOTHING IS SOLD THAT CANNOT BE DELIVERED. A capsule is a promise of an
+  // artwork, so the button needs more than an open sale: something left to
+  // draw, a table the chain has just confirmed, and — for a multi-pull — at
+  // least as many artworks left as capsules in the pull. Otherwise a player
+  // pays and waits on a draw with nothing behind it.
+  const sizes = pullSizes(data.coverage.prizesRemaining)
+  const drawable = data.odds.some((o) => o.probability > 0) && sizes.length > 0
+  const pullSize = effectivePull(data.coverage.prizesRemaining, pull)
+  const playable = data.machine.state === 'live' && saleOpen && data.standingReadable && drawable
   // NEITHER gate touches opening a capsule already paid for: an ended season and
   // a closed sale both stop sales only, and the recovery panel below stays live.
   const closedLabel =
@@ -424,13 +448,17 @@ export function ExperienceMachine({ id }: { id: string }) {
           ? 'not for sale'
           : saleWindow?.state === 'scheduled'
             ? 'not open yet'
-            : 'sale ended'
+            : !windowOpen
+              ? 'sale ended'
+              : !data.standingReadable
+                ? 'checking what’s left'
+                : 'nothing left to win'
   const unitPrice = sale ? formatPrice(sale.pricePerToken, sale.currency) : null
   const totalPrice =
-    sale && pull > 1
+    sale && pullSize > 1
       ? (() => {
           try {
-            return formatPrice((BigInt(sale.pricePerToken) * BigInt(pull)).toString(), sale.currency)
+            return formatPrice((BigInt(sale.pricePerToken) * BigInt(pullSize)).toString(), sale.currency)
           } catch {
             return null
           }
@@ -515,7 +543,8 @@ export function ExperienceMachine({ id }: { id: string }) {
             <PlayControl
               playable={playable}
               busy={busy}
-              pull={pull}
+              pull={pullSize}
+              sizes={sizes}
               setPull={setPull}
               onPlay={play}
               label="play again"
@@ -574,7 +603,8 @@ export function ExperienceMachine({ id }: { id: string }) {
             <PlayControl
               playable={playable}
               busy={busy}
-              pull={pull}
+              pull={pullSize}
+              sizes={sizes}
               setPull={setPull}
               onPlay={play}
               label={playable ? 'play' : closedLabel}
@@ -584,7 +614,11 @@ export function ExperienceMachine({ id }: { id: string }) {
                 !playable && data.machine.state === 'live'
                   ? !data.machine.saleReadable
                     ? 'We could not read this capsule’s price just now — reload in a moment.'
-                    : (formatSaleWindowLabel(saleWindow) ?? null)
+                    : saleOpen && !data.standingReadable
+                      ? 'We couldn’t confirm which artworks are left just now — reload in a moment.'
+                      : saleOpen && !drawable
+                        ? 'Every artwork in this machine has been given out, so capsules are not on sale here.'
+                        : (formatSaleWindowLabel(saleWindow) ?? null)
                   : null
               }
             />
@@ -804,6 +838,7 @@ function PlayControl({
   playable,
   busy,
   pull,
+  sizes,
   setPull,
   onPlay,
   label,
@@ -814,6 +849,8 @@ function PlayControl({
   playable: boolean
   busy: boolean
   pull: number
+  /** The sizes this machine can honour right now. */
+  sizes: number[]
   setPull: (n: number) => void
   onPlay: () => void
   label: string
@@ -825,7 +862,7 @@ function PlayControl({
     <div className="mt-5">
       {playable && (
         <div className="flex items-center justify-center gap-1 mb-3">
-          {PULL_SIZES.map((n) => (
+          {sizes.map((n) => (
             <button
               key={n}
               onClick={() => setPull(n)}

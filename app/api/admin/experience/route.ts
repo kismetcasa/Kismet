@@ -12,6 +12,7 @@ import { resolveCapsulePayees } from '@/lib/experience/payees'
 import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
 import { getGateConfig } from '@/lib/gate'
 import { readLineup } from '@/lib/experience/lineup'
+import { noticeFeaturedArtists } from '@/lib/experience/notices'
 import {
   buildSnapshot,
   getMachine,
@@ -229,6 +230,8 @@ async function transition(id: string, state: MachineState, signer: string): Prom
       machineId: id,
     }).catch(bestEffort('xp.statusNotify', { id, state }))
   }
+  // A reveal machine going live features its artists' work: they hear of it.
+  if (state === 'live' && isReveal(machine)) await noticeFeaturedArtists(id).catch(() => {})
   await recordAdminAction('experience-state', {
     actor: signer,
     target: id,

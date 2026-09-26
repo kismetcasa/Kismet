@@ -7,7 +7,7 @@ import type { Address } from 'viem'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { toastError } from '@/lib/toast'
-import { shortAddress } from '@/lib/inprocess'
+import { formatPrice, shortAddress } from '@/lib/inprocess'
 
 /**
  * A creator's machines, capsule and reveal, on their profile.
@@ -41,27 +41,43 @@ export type CreatorMachine =
     })
   | (CreatorMachineCommon & { kind: 'reveal'; pieces: number })
 
+/** A reveal machine curated by someone else that features this person's work. */
+export interface FeaturedIn {
+  id: string
+  name: string
+  state: string
+  curator: string
+  pieces: { collection: string; tokenId: string }[]
+}
+
 /** Loaded once by the profile, which shows the section only when there is
  *  something in it. `owner` is the SERVER's verdict — true only when the
  *  signed-in session is this creator, which is what gates non-public states. */
 export function useCreatorMachines(address: string) {
   const [machines, setMachines] = useState<CreatorMachine[]>([])
   const [owner, setOwner] = useState(false)
+  /** Wei of referral rewards confirmed paid to a curator; owner view only. */
+  const [referralPaid, setReferralPaid] = useState<string | null>(null)
+  const [featuredIn, setFeaturedIn] = useState<FeaturedIn[]>([])
   const reload = useCallback(() => {
     fetch(`/api/experience/machines?creator=${address}`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((d: { owner: boolean; machines: CreatorMachine[] } | null) => {
+      .then((d: { owner: boolean; machines: CreatorMachine[]; referralPaid?: string; featuredIn?: FeaturedIn[] } | null) => {
         setMachines(d?.machines ?? [])
         setOwner(d?.owner === true)
+        setReferralPaid(d?.referralPaid ?? null)
+        setFeaturedIn(d?.featuredIn ?? [])
       })
       .catch(() => {})
   }, [address])
   useEffect(() => {
     setMachines([])
     setOwner(false)
+    setReferralPaid(null)
+    setFeaturedIn([])
     reload()
   }, [reload])
-  return { machines, owner, reload }
+  return { machines, owner, referralPaid, featuredIn, reload }
 }
 
 const isPublic = (m: CreatorMachine) => m.state === 'live' || m.state === 'ended'
@@ -90,9 +106,15 @@ export function ProfileMachines({
   machines,
   manage,
   signedIn,
+  referralPaid,
+  featuredIn = [],
   onChange,
 }: {
   machines: CreatorMachine[]
+  /** Other people's reveal machines featuring this person's work. */
+  featuredIn?: FeaturedIn[]
+  /** Owner view of a curator: referral rewards confirmed paid, in wei. */
+  referralPaid?: string | null
   /** The profile belongs to the connected wallet. */
   manage: boolean
   /** The server recognised the session as this creator's. */
@@ -137,6 +159,13 @@ export function ProfileMachines({
 
   return (
     <div className="flex flex-col gap-2">
+      {manage && signedIn && referralPaid != null && (
+        <p className="text-[11px] font-mono text-muted leading-relaxed">
+          Collects through your reveal machines earn you Zora&apos;s mint referral, paid to your wallet
+          automatically each day.{' '}
+          <span className="text-dim">Paid so far: {formatPrice(referralPaid, 'eth')}</span>
+        </p>
+      )}
       {manage && !signedIn && (
         <button
           onClick={() => void ensureSession({ revalidate: true }).then(onChange).catch(() => {})}
@@ -245,6 +274,42 @@ export function ProfileMachines({
           </div>
         )
       })}
+      {featuredIn.length > 0 && (
+        <div className="mt-2">
+          <p className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1.5">
+            {manage ? 'your work in other machines' : 'featured in'}
+          </p>
+          <ul className="flex flex-col gap-1">
+            {featuredIn.map((f) => (
+              <li key={f.id} className="text-[11px] font-mono text-subtle">
+                <Link href={`/experience/${f.id}`} className="text-dim hover:text-ink underline">
+                  {f.name}
+                </Link>{' '}
+                · curated by{' '}
+                <Link href={`/profile/${f.curator}`} className="hover:text-dim">
+                  {shortAddress(f.curator)}
+                </Link>
+                {f.state !== 'live' && ' · closed'}
+                {' · '}
+                {f.pieces.map((p, i) => (
+                  <span key={`${p.collection}:${p.tokenId}`}>
+                    {i > 0 && ', '}
+                    <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="hover:text-dim">
+                      #{p.tokenId}
+                    </Link>
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+          {manage && (
+            <p className="text-[10px] font-mono text-subtle mt-1 leading-relaxed">
+              Curators can feature any of your pieces. To take one out of every reveal machine, turn machines off
+              from that piece&apos;s page.
+            </p>
+          )}
+        </div>
+      )}
       {manage && (
         <Link href="/experience/new" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
           open another machine →

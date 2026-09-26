@@ -50,6 +50,7 @@ const FILTER_LABEL: Record<TypeFilter, string> = {
   file_update: 'updates',
   experience_win: 'experience',
   experience_status: 'experience',
+  experience_featured: 'experience',
 }
 
 const ORDER_KEY = 'kismetart:notif-tab-order'

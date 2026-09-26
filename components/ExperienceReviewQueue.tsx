@@ -37,7 +37,8 @@ interface Row {
 
 const LINEUP_STATUS: Record<LineupPiece['status'], string> = {
   'on-sale': 'on sale',
-  'not-on-sale': 'not on sale yet',
+  upcoming: 'sale opens later',
+  'not-on-sale': 'not on sale',
   'sold-out': 'sold out',
   unavailable: 'unavailable',
   unreadable: 'unreadable',
@@ -160,6 +161,18 @@ export function ExperienceReviewQueue() {
                     </ul>
                   )}
 
+                  {isReveal(m) && m.collections?.length ? (
+                    <p className="mb-2 text-[11px] font-mono text-muted">
+                      auto-updating · new work minted into{' '}
+                      {m.collections.map((c, i) => (
+                        <span key={c}>
+                          {i > 0 && ', '}
+                          <Link href={`/collection/${c}`} className="text-dim hover:text-ink underline">{shortAddress(c)}</Link>
+                        </span>
+                      ))}{' '}
+                      joins by itself
+                    </p>
+                  ) : null}
                   <div className="border border-line divide-y divide-line mb-4">
                     {row.lineup?.map((p) => (
                       <div key={p.key} className="flex items-center gap-3 px-3 py-2">

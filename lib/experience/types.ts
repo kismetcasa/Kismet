@@ -25,6 +25,11 @@ export interface PoolEntry {
   weight: number
   /** Copies the artist consents to release. 0 = unlimited. */
   supply: number
+  /** Reveal machines only: set on a piece that came in through a linked
+   *  collection rather than by hand — when it was minted. A full lineup makes
+   *  room for a new piece by dropping the oldest of these; hand-picked pieces
+   *  are never dropped. */
+  linkedAt?: number
 }
 
 /** A pool entry plus its live remaining count, as frozen into a claim. */
@@ -166,12 +171,18 @@ export type SolvencyProblemCode =
   /** Reveal machines: its artist turned reveal machines off, or it cannot be
    *  shown (hidden, a Pass, or its artist is not permitted). */
   | 'piece-unavailable'
+  /** Reveal machines: a linked collection is not a Zora collection the chain
+   *  answers for, or it is the Pass collection. */
+  | 'collection-invalid'
 
 /** A reveal machine piece's standing right now (lib/experience/lineup). */
 export type PieceStatus =
   /** Collectable now: an open sale with copies left. */
   | 'on-sale'
-  /** No sale, or its window has not opened or has closed. */
+  /** A sale whose window has not opened yet: the piece joins when it does. */
+  | 'upcoming'
+  /** No sale, or its window has closed. Joins again only if its artist opens
+   *  a new one. */
   | 'not-on-sale'
   | 'sold-out'
   /** Its artist turned reveal machines off, it is hidden, its artist is
@@ -263,6 +274,10 @@ export interface CapsuleMachine extends MachineCommon {
  *  price. Anyone's work, unless its artist has turned availability off. */
 export interface RevealMachine extends MachineCommon {
   kind: 'reveal'
+  /** Linked collections, lowercased: every piece Kismet mints into one joins
+   *  the lineup by itself (lib/experience/linked). Absent on machines that
+   *  hold only hand-picked pieces. */
+  collections?: string[]
 }
 
 export type Machine = CapsuleMachine | RevealMachine

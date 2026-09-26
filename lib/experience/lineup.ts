@@ -77,9 +77,8 @@ export async function readLineup(entries: PoolEntry[], passCollection: string | 
     else if (usdcRow && usdcRow.saleEnd !== 0n && usdcRow.currency?.toLowerCase() === USDC_BASE.toLowerCase()) {
       sale = { row: usdcRow, currency: 'usdc' }
     } else if (!ethRow) return { ...base, status: 'unreadable' }
-    if (!sale || sale.row.saleStart > chainNow || sale.row.saleEnd <= chainNow) {
-      return { ...base, status: 'not-on-sale' }
-    }
+    if (!sale || sale.row.saleEnd <= chainNow) return { ...base, status: 'not-on-sale' }
+    if (sale.row.saleStart > chainNow) return { ...base, status: 'upcoming' }
 
     // An unreadable edition size is left to the mint, as the collect-all path
     // does: the sale is open, and a sold-out mint reverts before it charges.

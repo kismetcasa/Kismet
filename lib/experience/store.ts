@@ -56,10 +56,18 @@ const kCapsule = (collection: string, tokenId: string) =>
  *  pledge ledger above; a reveal machine pledges nothing, so it has its own. */
 const kUses = (collection: string, tokenId: string) =>
   `${P}:uses:${collection.toLowerCase()}:${tokenId}`
+/** Reveal machines featuring an artist's work — what their profile lists as
+ *  "featured in". Written with the lineup, removed on withdrawal. */
+const kFeaturing = (artist: string) => `${P}:featuring:${artist.toLowerCase()}`
+/** Reveal machines linked to a collection — the ones a new mint into it joins. */
+const kLinked = (collection: string) => `${P}:linked:${collection.toLowerCase()}`
 /** Pieces whose artist has turned reveal machines off, as `collection:tokenId`.
  *  Membership is the exception: every piece is available until its artist says
  *  otherwise. */
 const K_OPTOUT = `${P}:optout`
+/** Everyone who has curated a reveal machine — the addresses a collect may
+ *  have named as its mint referral, and so the ones the payout run checks. */
+const K_CURATORS = `${P}:curators`
 
 /** Directory of machines, score = createdAt. Write-trimmed like every other
  *  index in the codebase (cf. MAX_FEATURED, RAFFLE_ENABLED_KEY). */
@@ -247,7 +255,10 @@ export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refuse
     .zrem(kCreator(m.creator), id)
     .exec()
   if (isReveal(m)) {
+    await Promise.all((m.collections ?? []).map((c) => redis.srem(kLinked(c), id).catch(() => 0)))
     await Promise.all(pool.map((e) => redis.srem(kUses(e.collection, e.tokenId), id).catch(() => 0)))
+    const artists = [...new Set(pool.map((e) => e.artist).filter(Boolean))]
+    await Promise.all(artists.map((a) => redis.srem(kFeaturing(a), id).catch(() => 0)))
     return 'withdrawn'
   }
   await releaseCapsule(m.capsule.collection, m.capsule.tokenId, id)
@@ -298,6 +309,48 @@ export async function putLineup(id: string, entries: PoolEntry[]): Promise<void>
   for (const e of entries) fields[entryKey(e)] = JSON.stringify(e)
   await redis.hset(kPool(id), fields)
   await Promise.all(entries.map((e) => redis.sadd(kUses(e.collection, e.tokenId), id)))
+  const artists = [...new Set(entries.map((e) => e.artist).filter(Boolean))]
+  await Promise.all(artists.map((a) => redis.sadd(kFeaturing(a), id)))
+}
+
+/** Point each linked collection at its machine, so a mint into it can find
+ *  the machines it joins. */
+export async function linkCollections(id: string, collections: string[]): Promise<void> {
+  await Promise.all(collections.map((c) => redis.sadd(kLinked(c), id)))
+}
+
+/** Reveal machines linked to this collection, any state. */
+export async function machinesLinking(collection: string): Promise<string[]> {
+  return ((await redis.smembers(kLinked(collection))) ?? []).map(String)
+}
+
+/**
+ * Add one newly minted piece to a linked machine's lineup. A full lineup makes
+ * room by dropping its oldest linked piece — so a machine that runs for years
+ * holds its newest work, and hand-picked pieces are never the ones to go. A
+ * lineup of nothing but hand-picked pieces has no room to make, and the piece
+ * is not added. Returns whether it was.
+ */
+export async function joinLineup(id: string, entry: PoolEntry, max: number): Promise<boolean> {
+  const pool = await getPool(id)
+  const key = entryKey(entry)
+  if (pool.some((e) => entryKey(e) === key)) return false
+  const linked = pool
+    .filter((e) => e.linkedAt !== undefined)
+    .sort((a, b) => a.linkedAt! - b.linkedAt! || Number(BigInt(a.tokenId) - BigInt(b.tokenId)))
+  const drop = linked.slice(0, Math.max(0, pool.length - max + 1))
+  if (pool.length - drop.length >= max) return false
+  if (drop.length > 0) {
+    await redis.hdel(kPool(id), ...drop.map(entryKey))
+    await Promise.all(drop.map((e) => redis.srem(kUses(e.collection, e.tokenId), id).catch(() => 0)))
+  }
+  await putLineup(id, [entry])
+  return true
+}
+
+/** Reveal machines whose lineup includes this artist's work, any state. */
+export async function machinesFeaturing(artist: string): Promise<string[]> {
+  return ((await redis.smembers(kFeaturing(artist))) ?? []).map(String)
 }
 
 /** Remaining counts by entry key. `null` = unlimited. Upstash round-trips
@@ -628,6 +681,15 @@ export async function machinesUsingPiece(collection: string, tokenId: string): P
     redis.smembers(kUses(collection, tokenId)),
   ])
   return [...new Set([...Object.keys(pledged ?? {}), ...(listed ?? [])])]
+}
+
+/** Remember a reveal machine's curator for the referral payout run. */
+export async function addCurator(address: string): Promise<void> {
+  await redis.sadd(K_CURATORS, address.toLowerCase())
+}
+
+export async function listCurators(): Promise<string[]> {
+  return ((await redis.smembers(K_CURATORS)) ?? []).map(String)
 }
 
 // ─── availability ────────────────────────────────────────────────────────────

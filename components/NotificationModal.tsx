@@ -47,7 +47,8 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   raffle_ended: 'Raffle results',
   file_update: 'Downloads you own get updated',
   experience_win: 'Artworks you win from a machine',
-  experience_status: 'Curator decisions on your machines',
+  experience_status: 'Your machines: curator decisions, running empty',
+  experience_featured: 'Your work featured in a machine',
 }
 
 type ModalTab = 'feed' | 'settings'

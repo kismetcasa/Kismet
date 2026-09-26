@@ -42,8 +42,15 @@ export const ALL_NOTIFICATION_TYPES = [
   // A curator decided on the recipient's capsule machine (app/api/admin/
   // experience): approved it (note 'live'), ended its season ('ended') or
   // delisted it ('delisted'). `machineId` links the row. Before this, a
-  // creator whose machine went to review heard nothing either way.
+  // creator whose machine went to review heard nothing either way. Also
+  // note 'empty': the machine has given out its last deliverable artwork, so
+  // the creator should close the capsule's sale (lib/experience/notices).
   'experience_status',
+  // An artist's piece went live in someone else's reveal machine. `actor` is
+  // the curator, `note` the machine's name, `machineId` links it. The artist
+  // can turn machines off for the piece from its page; this is how they find
+  // out there is anything to turn off.
+  'experience_featured',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
@@ -98,9 +105,9 @@ export interface Notification {
   comment?: string
   /** file_update: the artist's release note ("added music!") — shown on the
    *  bell row and appended to the push body. experience_status: the machine's
-   *  new state. */
+   *  new state. experience_featured: the machine's name. */
   note?: string
-  /** experience_status: the capsule machine the notice is about. */
+  /** experience_status / experience_featured: the machine the notice is about. */
   machineId?: string
 }
 

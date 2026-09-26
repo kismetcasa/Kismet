@@ -189,6 +189,27 @@ export function pickIndex(n: number): number {
   return crypto.getRandomValues(new Uint32Array(1))[0] % n
 }
 
+/**
+ * A snapshot as the chain stands: pieces the delivery account may no longer
+ * mint, or that have no copies left on-chain, are dropped, and each piece's
+ * remaining count is clamped to the copies that actually exist. A piece with
+ * no standing (its reads failed) is dropped too — fail closed. Order is kept,
+ * because selection walks the array in order.
+ */
+export function withLiveStanding(
+  snapshot: SnapshotEntry[],
+  standing: Record<string, { left: number | null; granted: boolean }>,
+): SnapshotEntry[] {
+  const out: SnapshotEntry[] = []
+  for (const e of snapshot) {
+    const s = standing[entryKey(e)]
+    if (!s || !s.granted || s.left === 0) continue
+    const remaining = s.left === null ? e.remaining : e.remaining === null ? s.left : Math.min(e.remaining, s.left)
+    out.push({ ...e, remaining })
+  }
+  return out
+}
+
 /** Canonical key for a pool entry — the member form used by every Redis hash
  *  and the cross-machine commitment ledger. */
 export function entryKey(e: { collection: string; tokenId: string }): string {

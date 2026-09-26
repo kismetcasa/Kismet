@@ -44,7 +44,11 @@ function notificationHref(n: Notification): string {
     case 'experience_win':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
     case 'experience_status':
-      return n.machineId ? `/experience/${n.machineId}` : `/profile/${n.recipient}`
+      // An empty machine is closed from the creator's profile, where its end
+      // season control lives; every other decision links the machine itself.
+      return n.note !== 'empty' && n.machineId ? `/experience/${n.machineId}` : `/profile/${n.recipient}`
+    case 'experience_featured':
+      return n.machineId ? `/experience/${n.machineId}` : '/'
   }
 }
 
@@ -277,17 +281,35 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>
             {n.note === 'live'
               ? `${name} is live`
-              : n.note === 'ended'
-                ? `${name}'s season was ended by a curator`
-                : `${name} was delisted by a curator`}
+              : n.note === 'empty'
+                ? `${name} has given out every artwork`
+                : n.note === 'ended'
+                  ? `${name}'s season was ended by a curator`
+                  : `${name} was delisted by a curator`}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            {n.note === 'live' ? 'Approved and on sale. · ' : 'Capsules already sold are still honoured. · '}
+            {n.note === 'live'
+              ? 'Approved and on sale. · '
+              : n.note === 'empty'
+                ? 'End its season so no one buys a capsule it can’t fill. · '
+                : 'Capsules already sold are still honoured. · '}
             {time}
           </p>
         </>
       )
     }
+    case 'experience_featured':
+      return (
+        <>
+          <p className="text-xs font-mono text-ink truncate">
+            {n.tokenName ? <span className="font-bold">{n.tokenName}</span> : 'Your artwork'} is in{' '}
+            {n.note ? `"${n.note}"` : 'a reveal machine'}
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            {actorLabel ? `curated by ${actorLabel} · ` : ''}Collectors pull it for free and buy it at your price. · {time}
+          </p>
+        </>
+      )
     default: {
       // Exhaustiveness: if a new NotificationType is added without a case
       // above, TS will fail to assign `n.type` to `never` here.

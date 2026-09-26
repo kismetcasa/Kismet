@@ -38,7 +38,8 @@ import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
-import { filterDeliverable } from '@/lib/experience/eligibility'
+import { drawableTable } from '@/lib/experience/eligibility'
+import { noticeIfEmpty } from '@/lib/experience/notices'
 
 /**
  * One play: prove a capsule, claim it exactly once, freeze the pool, draw,
@@ -62,6 +63,12 @@ import { filterDeliverable } from '@/lib/experience/eligibility'
  *  the drawn piece; more than a few in one play means the pool is broadly
  *  broken, and the claim should pend loudly rather than grind. */
 const MAX_ATTEMPTS = 6
+
+// A delivery waits up to 60s for its sponsored mint to land, after the
+// capsule's proof and the draw — well past a default function timeout. A cut
+// short request is recoverable (the claim records its userOp before the wait),
+// but the player would wait longer for nothing.
+export const maxDuration = 120
 
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -282,7 +289,7 @@ async function drawAndDeliver(params: {
   //    than fail open, and a throw here aborts the freeze rather than silently
   //    widening the pool.
   const passCollection = gate.passCollection?.toLowerCase() ?? null
-  const eligibleSnapshot: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
+  const eligibleSnapshot: SnapshotEntry[] = (await drawableTable(rawSnapshot, passCollection)).table
 
   const epoch = epochFor(now)
   // openEpochSeeds, not seedForEpoch: it also opens the NEXT epoch, so tomorrow's
@@ -326,6 +333,7 @@ async function drawAndDeliver(params: {
       pendingReason: 'no eligible artwork available',
     })
     console.error('[xp] pool failure', { machineId, txHash, unitIndex, attempt })
+    after(() => noticeIfEmpty(machineId).catch(() => {}))
     return NextResponse.json({ ok: true, pending: true, units: units, claim: publicClaim(claim) })
   }
 
@@ -384,6 +392,9 @@ async function drawAndDeliver(params: {
         : Promise.resolve(),
       claim.state === 'delivered' ? recordPrize(claim).catch(() => {}) : Promise.resolve(),
     ])
+    // Was that the last artwork this machine could give? Its creator is told
+    // once, so they close the capsule's sale.
+    await noticeIfEmpty(machineId).catch(() => {})
     if (claim.state === 'delivered') {
       // Hydrate the title and cover so the notification (and the Farcaster push
       // built from it) names the artwork rather than saying "an artwork". Best

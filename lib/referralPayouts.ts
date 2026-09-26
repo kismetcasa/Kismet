@@ -1,7 +1,9 @@
 import 'server-only'
 import { BaseError, ContractFunctionRevertedError, encodeFunctionData, parseAbi, type Address } from 'viem'
+import { redis } from './redis'
 import { serverBaseClient } from './rpc'
 import { KISMET_REFERRAL } from './zoraMint'
+import type { DeliveryReceipt } from './experience/delivery'
 
 /**
  * Referral rewards, paid out without anyone having to claim them.
@@ -94,4 +96,78 @@ export function withdrawForCall(owner: string): { to: Address; data: `0x${string
     to: PROTOCOL_REWARDS,
     data: encodeFunctionData({ abi: PROTOCOL_REWARDS_ABI, functionName: 'withdrawFor', args: [owner as Address, 0n] }),
   }
+}
+
+// ─── ledger ──────────────────────────────────────────────────────────────────
+//
+// A payout is broadcast, not awaited, so the chain is the record of whether it
+// happened — and a record nobody reads is not an audit trail. Each payout is
+// kept by its userOp hash as `sent`; the next run asks what became of it and
+// settles it `landed` (adding it to the owner's paid total) or `failed`. The
+// ledger is written only by the payout run, under its lock.
+
+const K_OPS = 'kismetart:referral-payouts:ops'
+const K_PAID = 'kismetart:referral-payouts:paid'
+/** Totals are stored as `wei:<digits>`: the Upstash client turns a bare
+ *  numeric string back into a JS number, which is exact only below 2^53 wei
+ *  (about 0.009 ETH) — a total past that would silently lose precision. */
+const toStored = (wei: bigint) => `wei:${wei}`
+const fromStored = (v: unknown): bigint => {
+  const s = String(v ?? '')
+  return s.startsWith('wei:') ? BigInt(s.slice(4)) : 0n
+}
+/** Settled entries are pruned after this long; unsettled ones are kept. */
+const LEDGER_DAYS = 30
+
+interface LedgerEntry {
+  address: string
+  amount: string
+  at: number
+  status: 'sent' | 'landed' | 'failed'
+  txHash?: string
+}
+
+export async function recordPayout(p: { address: string; amount: bigint; userOpHash: string }): Promise<void> {
+  const entry: LedgerEntry = { address: p.address, amount: p.amount.toString(), at: Date.now(), status: 'sent' }
+  await redis.hset(K_OPS, { [p.userOpHash]: JSON.stringify(entry) })
+}
+
+/** Settle every `sent` payout the chain has answered for. A landed payout adds
+ *  its amount to the owner's paid total — the figure a curator is shown. */
+export async function reconcilePayouts(
+  read: (userOpHash: string) => Promise<DeliveryReceipt>,
+): Promise<{ landed: number; failed: number; waiting: number }> {
+  const raw = (await redis.hgetall<Record<string, LedgerEntry | string>>(K_OPS)) ?? {}
+  const counts = { landed: 0, failed: 0, waiting: 0 }
+  const cutoff = Date.now() - LEDGER_DAYS * 86_400_000
+  for (const [hash, v] of Object.entries(raw)) {
+    let entry: LedgerEntry
+    try {
+      entry = typeof v === 'string' ? (JSON.parse(v) as LedgerEntry) : v
+    } catch {
+      continue
+    }
+    if (entry.status !== 'sent') {
+      if (entry.at < cutoff) await redis.hdel(K_OPS, hash)
+      continue
+    }
+    const outcome = await read(hash)
+    if (outcome.kind === 'landed') {
+      const paid = fromStored(await redis.hget(K_PAID, entry.address))
+      await redis.hset(K_PAID, { [entry.address]: toStored(paid + BigInt(entry.amount)) })
+      await redis.hset(K_OPS, { [hash]: JSON.stringify({ ...entry, status: 'landed', txHash: outcome.txHash }) })
+      counts.landed++
+    } else if (outcome.kind === 'failed') {
+      await redis.hset(K_OPS, { [hash]: JSON.stringify({ ...entry, status: 'failed' }) })
+      counts.failed++
+    } else {
+      counts.waiting++
+    }
+  }
+  return counts
+}
+
+/** Referral rewards Kismet has confirmed paid into this address's wallet. */
+export async function paidTo(address: string): Promise<bigint> {
+  return fromStored(await redis.hget(K_PAID, address.toLowerCase()))
 }

@@ -53,7 +53,7 @@ export function canEditMomentSale(perms: bigint): boolean {
   return (perms & SALE_EDIT_MASK) !== 0n
 }
 
-const COLLECTION_PERMISSIONS_ABI = [
+export const COLLECTION_PERMISSIONS_ABI = [
   {
     name: 'permissions',
     type: 'function',

@@ -38,6 +38,8 @@ interface Payload {
   referral: string | null
   lineup: LineupRow[]
   waiting: number
+  /** Linked collections: new work minted into them joins by itself. */
+  collections: string[]
 }
 
 /** Long enough to read as a capsule opening, short enough not to be a wait. */
@@ -104,6 +106,18 @@ export function RevealMachine({ id }: { id: string }) {
         <p className="text-[11px] font-mono text-muted mt-1">
           curated by {shortAddress(data.machine.creator)} · pull for free, collect what you reveal at its price
         </p>
+        {data.collections.length > 0 && (
+          <p className="text-[11px] font-mono text-subtle mt-1">
+            auto-updating · new work minted into{' '}
+            {data.collections.map((c, i) => (
+              <span key={c}>
+                {i > 0 && ', '}
+                <Link href={`/collection/${c}`} className="text-dim hover:text-ink underline">{shortAddress(c)}</Link>
+              </span>
+            ))}{' '}
+            joins by itself
+          </p>
+        )}
       </header>
 
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">

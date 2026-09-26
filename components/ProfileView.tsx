@@ -1051,7 +1051,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: loadingListings ? null : displayListings.length,
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
-    machines: creatorMachines.machines.length,
+    machines: creatorMachines.machines.length + creatorMachines.featuredIn.length,
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
   }
@@ -1228,6 +1228,8 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         machines={isOwner ? creatorMachines.machines : shelfMachines}
         manage={isOwner}
         signedIn={creatorMachines.owner}
+        referralPaid={creatorMachines.referralPaid}
+        featuredIn={creatorMachines.featuredIn}
         onChange={creatorMachines.reload}
       />
     ),
@@ -1820,14 +1822,14 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               )
             })
             .concat(
-              shelfMachines.length > 0
+              shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0
                 ? [
                     <div key="machines" className="border-t border-line">
                       <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
-                        Machines ({shelfMachines.length})
+                        Machines ({shelfMachines.length + creatorMachines.featuredIn.length})
                       </h2>
                       <div className="pb-8">
-                        <ProfileMachines machines={shelfMachines} manage={false} signedIn={false} onChange={creatorMachines.reload} />
+                        <ProfileMachines machines={shelfMachines} featuredIn={creatorMachines.featuredIn} manage={false} signedIn={false} onChange={creatorMachines.reload} />
                       </div>
                     </div>,
                   ]
@@ -1836,11 +1838,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         ) : (
           ([
             ...sectionOrder,
-            ...((isOwner ? creatorMachines.machines : shelfMachines).length > 0 ? ['machines' as const] : []),
+            ...((isOwner ? creatorMachines.machines : shelfMachines).length > 0 || creatorMachines.featuredIn.length > 0 ? ['machines' as const] : []),
             ...(showCurate ? ['curate' as const] : []),
           ]).map((section) => {
           const isCollapsed = sectionCollapsed[section] ?? false
-          const count = section === 'machines' && !isOwner ? shelfMachines.length : sectionCount[section]
+          const count = section === 'machines' && !isOwner ? shelfMachines.length + creatorMachines.featuredIn.length : sectionCount[section]
           const isReorderable = section !== 'curate' && section !== 'machines'
           const isDragging = draggingSection === section
           return (

@@ -6,26 +6,32 @@ import { getSessionAddress } from '@/lib/session'
 import { getGateConfig, holdsValidPass, isPlatformPausedFor } from '@/lib/gate'
 import { isBlacklisted } from '@/lib/blacklist'
 import { ADMIN_ADDRESS } from '@/lib/config'
-import { MAX_POOL_ENTRIES } from '@/lib/experience/draw'
+import { entryKey, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
+import { linkedPieces, MAX_LINKED_COLLECTIONS, readNextTokenIds } from '@/lib/experience/linked'
 import { checkLineup, checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
 import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/experience/authority'
 import { experienceOperator } from '@/lib/experience/delivery'
 import { isDeliverableEntry } from '@/lib/experience/eligibility'
 import { readLineup } from '@/lib/experience/lineup'
+import { noticeFeaturedArtists } from '@/lib/experience/notices'
 import { getMomentMetaBatch } from '@/lib/notifications'
+import { paidTo } from '@/lib/referralPayouts'
 import {
   createMachine,
   getMachine,
   getPool,
   listMachines,
   listMachinesByCreator,
+  machinesFeaturing,
   openEpochSeeds,
   optedOutPieces,
   playCount,
   pledgeSupply,
   prizesDelivered,
+  linkCollections,
   putLineup,
+  addCurator,
   releaseCapsule,
   reserveCapsule,
   putPoolEntry,
@@ -109,7 +115,25 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
       return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules, prizes }
     }),
   )
-  return NextResponse.json({ owner, machines })
+  // A curator's own view also says what their reveal machines have earned
+  // them: the mint referral on every collect, paid out to their wallet by
+  // the daily run (lib/referralPayouts), counted once the chain confirms it.
+  // Where this address's own work appears in OTHER people's reveal machines,
+  // on the shelves — "featured in", public like a Spotify "appears on". The
+  // pieces are listed so the artist can reach each one's switch.
+  const featuredIn = (
+    await Promise.all(
+      (await machinesFeaturing(creator).catch(() => [] as string[])).slice(0, 50).map(async (mid) => {
+        const m = await getMachine(mid).catch(() => null)
+        if (!m || !isReveal(m) || m.creator === creator || (m.state !== 'live' && m.state !== 'ended')) return null
+        const pieces = (await getPool(mid).catch(() => [])).filter((e) => e.artist === creator).map((e) => ({ collection: e.collection, tokenId: e.tokenId }))
+        return pieces.length ? { id: m.id, name: m.name, state: m.state, curator: m.creator, pieces } : null
+      }),
+    )
+  ).filter((f) => f !== null)
+  const curates = owner && all.some(isReveal)
+  const referralPaid = curates ? (await paidTo(creator).catch(() => 0n)).toString() : undefined
+  return NextResponse.json({ owner, machines, featuredIn, ...(referralPaid !== undefined ? { referralPaid } : {}) })
 }
 
 export async function POST(req: NextRequest) {
@@ -147,6 +171,9 @@ export async function POST(req: NextRequest) {
     rarity?: string
     capsule?: { collection?: string; tokenId?: string }
     entries?: PoolEntry[]
+    /** Reveal machines: collections whose Kismet-minted pieces join by
+     *  themselves (lib/experience/linked). */
+    collections?: string[]
     /** Validate everything and write nothing. The Capsule Studio calls this on
      *  every edit so a creator sees the REAL verdict — live on-chain headroom
      *  and rival machines' pledges included — before committing. Re-using the
@@ -182,7 +209,12 @@ export async function POST(req: NextRequest) {
   if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
 
   const rawEntries = Array.isArray(body.entries) ? body.entries : []
-  if (rawEntries.length === 0) return errorResponse(400, 'A machine needs at least one artwork')
+  const rawCollections = kind === 'reveal' && Array.isArray(body.collections) ? body.collections : []
+  if (rawCollections.length > MAX_LINKED_COLLECTIONS) return errorResponse(400, 'Too many linked collections')
+  if (rawCollections.some((c) => typeof c !== 'string' || !isAddress(c))) return errorResponse(400, 'Invalid collection')
+  // A linked collection is a lineup in itself, even before anything is minted
+  // into it.
+  if (rawEntries.length === 0 && rawCollections.length === 0) return errorResponse(400, 'A machine needs at least one artwork')
   if (rawEntries.length > MAX_POOL_ENTRIES) return errorResponse(400, 'Too many artworks')
   for (const e of rawEntries) {
     if (!e || !isAddress(e.collection ?? '') || !/^\d+$/.test(String(e.tokenId ?? ''))) {
@@ -191,7 +223,16 @@ export async function POST(req: NextRequest) {
   }
 
   if (kind === 'reveal') {
-    return publishReveal({ id, name, creator, isAdmin, dryRun, pieces: rawEntries, passCollection: gate.passCollection?.toLowerCase() ?? null })
+    return publishReveal({
+      id,
+      name,
+      creator,
+      isAdmin,
+      dryRun,
+      pieces: rawEntries,
+      collections: [...new Set(rawCollections.map((c) => c.toLowerCase()))],
+      passCollection: gate.passCollection?.toLowerCase() ?? null,
+    })
   }
 
   if (!capsuleCollection || !isAddress(capsuleCollection)) return errorResponse(400, 'Invalid capsule collection')
@@ -455,6 +496,7 @@ async function publishReveal(input: {
   isAdmin: boolean
   dryRun: boolean
   pieces: { collection: string; tokenId: string }[]
+  collections: string[]
   passCollection: string | null
 }): Promise<NextResponse> {
   const pieces = input.pieces.map((e) => ({
@@ -481,13 +523,37 @@ async function publishReveal(input: {
     }),
   )
 
-  const problems = checkLineup({ entries, artists, unavailable })
+  const linking = input.collections.length > 0
+  const problems = checkLineup({ entries, artists, unavailable, linked: linking })
+  if (linking && entries.length >= MAX_POOL_ENTRIES) {
+    problems.push({ code: 'too-many-entries', detail: `a machine with a linked collection can hand-pick at most ${MAX_POOL_ENTRIES - 1} artworks, to leave room for new work` })
+  }
+  // A linked collection must be one the chain answers nextTokenId for — a Zora
+  // collection — and never the Pass collection, whose tokens are credentials.
+  const nextTokenIds = await readNextTokenIds(input.collections)
+  input.collections.forEach((c, i) => {
+    if (c === input.passCollection) {
+      problems.push({ code: 'collection-invalid', detail: `${c} is the Pass collection — it can't be linked` })
+    } else if (nextTokenIds[i] === null) {
+      problems.push({ code: 'collection-invalid', detail: `${c} isn't a collection Kismet could read just now` })
+    }
+  })
   if (problems.length > 0) return NextResponse.json({ ok: false, problems }, { status: 400 })
+
+  const linked = await linkedPieces({
+    collections: input.collections,
+    nextTokenIds: nextTokenIds as bigint[],
+    room: MAX_POOL_ENTRIES - entries.length,
+    exclude: new Set(entries.map(entryKey)),
+    passCollection: input.passCollection,
+  }).catch(() => null)
+  if (!linked) return errorResponse(503, 'Could not read the linked collections just now — try again')
+  const lineup = [...entries, ...linked]
 
   if (input.dryRun) {
     // What each piece would show as today, so the studio can say which are on
     // sale now and which will appear when their sale opens.
-    return NextResponse.json({ ok: true, dryRun: true, problems: [], lineup: await readLineup(entries, input.passCollection) })
+    return NextResponse.json({ ok: true, dryRun: true, problems: [], lineup: await readLineup(lineup, input.passCollection) })
   }
 
   const machine: RevealMachine = {
@@ -497,11 +563,17 @@ async function publishReveal(input: {
     name: input.name,
     state: 'draft',
     createdAt: Date.now(),
+    ...(linking ? { collections: input.collections } : {}),
   }
   // Reserved as a draft and filled before it takes its real state, as a
   // capsule machine is: a half-written lineup is never public.
   if (!(await createMachine(machine))) return errorResponse(409, 'That machine id is taken')
-  await putLineup(input.id, entries)
+  await putLineup(input.id, lineup)
+  if (linking) await linkCollections(input.id, input.collections)
+  // Collects through this machine will name its curator as the mint referral
+  // (Kismet's own machines name Kismet), so the payout run must know them.
+  if (!input.isAdmin) await addCurator(input.creator)
   const published = await setMachineState(input.id, input.isAdmin ? 'live' : 'review')
+  if (published?.state === 'live') await noticeFeaturedArtists(input.id).catch(() => {})
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }

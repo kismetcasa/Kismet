@@ -563,6 +563,13 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // A curator's decision on the recipient's own machine. Links the machine
       // page, which serves every state a curator can move it to.
       const subject = tokenName ? `"${tokenName}"` : 'Your machine'
+      if (n.note === 'empty') {
+        return {
+          title: truncate('Your machine is empty', TITLE_MAX),
+          body: truncate(`${subject} has given out every artwork. End its season so no one buys a capsule it can't fill.`, BODY_MAX),
+          targetUrl: `${SITE_URL}/profile/${n.recipient}`,
+        }
+      }
       const title = n.note === 'live' ? 'Your machine is live' : n.note === 'ended' ? 'Season ended' : 'Machine delisted'
       const body =
         n.note === 'live'
@@ -571,6 +578,16 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       return {
         title: truncate(title, TITLE_MAX),
         body: truncate(body, BODY_MAX),
+        targetUrl: n.machineId ? `${SITE_URL}/experience/${n.machineId}` : SITE_URL,
+      }
+    }
+    case 'experience_featured': {
+      // An artist's piece went live in someone else's reveal machine.
+      const subject = tokenName ? `"${tokenName}"` : 'Your artwork'
+      const machine = n.note ? `"${n.note}"` : 'a reveal machine'
+      return {
+        title: truncate('Your work is featured', TITLE_MAX),
+        body: truncate(`${subject} is in ${machine}${actorName ? `, curated by ${actorName}` : ''}`, BODY_MAX),
         targetUrl: n.machineId ? `${SITE_URL}/experience/${n.machineId}` : SITE_URL,
       }
     }
