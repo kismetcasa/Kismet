@@ -168,6 +168,34 @@ export async function readDeliveryOutcome(params: { userOpHash: string }): Promi
   }
 }
 
+/**
+ * One sponsored call from the delivery account that is not a prize — today,
+ * pushing escrowed referral rewards to their owners (lib/referralPayouts).
+ * Broadcast only: the caller records the hash and does not wait, because a
+ * payout that has not landed yet is simply found again by the next run.
+ */
+export async function sendOperatorCall(call: { to: string; data: Hex }): Promise<
+  { kind: 'sent'; userOpHash: string } | { kind: 'unsponsored' | 'unavailable'; error: string }
+> {
+  if (!cdpConfigured()) return { kind: 'unavailable', error: 'CDP credentials not configured' }
+  let smartAccount: Awaited<ReturnType<typeof loadSigner>>
+  try {
+    smartAccount = await resolveSigner()
+  } catch (err) {
+    return { kind: 'unavailable', error: err instanceof Error ? err.message : String(err) }
+  }
+  try {
+    const sent = await smartAccount.sendUserOperation({
+      calls: [{ to: call.to as Address, value: 0n, data: BUILDER_DATA_SUFFIX ? (concat([call.data, BUILDER_DATA_SUFFIX]) as Hex) : call.data }],
+      network: 'base',
+      ...(process.env.CDP_PAYMASTER_URL ? { paymasterUrl: process.env.CDP_PAYMASTER_URL } : {}),
+    })
+    return { kind: 'sent', userOpHash: sent.userOpHash as string }
+  } catch (err) {
+    return { kind: 'unsponsored', error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /** Encoded `adminMint(to, tokenId, 1, 0x)` with the ERC-8021 builder suffix
  *  appended, so a prize carries the same on-chain attribution every other
  *  Kismet write does. Exported for the oracle to assert the suffix survives. */

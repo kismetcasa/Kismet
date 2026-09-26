@@ -94,6 +94,8 @@ const REVEAL = '0xeeee000000000000000000000000000000000001'
 const MINT_FEE = 111_000_000_000_000n
 /** lib/zoraMint.KISMET_REFERRAL — the rewards recipient every collect names. */
 const KISMET_REFERRAL = '0xc6021d9f09e145a6297f64551aa2eca6d66f8f75'
+/** Zora's ProtocolRewards — lib/referralPayouts.PROTOCOL_REWARDS. */
+const PROTOCOL_REWARDS = '0x7777777f279eba3d3ad8f4e708545291a6fdba8b'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
  *  three-transaction evasion of a live permission read. */
 const EVADER = '0x5555000000000000000000000000000000000055'
@@ -237,6 +239,7 @@ const FPSS = '0x2994762aA0E4C750c51f333C10d81961faEBE785'
 const ERC20_SALE = parseAbi(['function sale(address tokenContract, uint256 tokenId) view returns ((uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint256 pricePerToken, address fundsRecipient, address currency))'])
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 const MINT_FEE_ABI = parseAbi(['function mintFee() view returns (uint256)'])
+const REWARDS_ABI = parseAbi(['function balanceOf(address owner) view returns (uint256)', 'function withdrawFor(address to, uint256 amount)'])
 /** The collect a browser sends: Zora 1155 mint through the fixed-price strategy. */
 const MINT_1155 = parseAbi(['function mint(address minter, uint256 tokenId, uint256 quantity, address[] rewardsRecipients, bytes minterArguments) payable'])
 const SEL = {
@@ -272,6 +275,10 @@ const chain = {
   balances: new Map(), // `${collection}:${account}:${id}` -> n
   sales: new Map(),    // `${collection}:${id}` -> { saleStart, saleEnd, pricePerToken, fundsRecipient }
   usdcSales: new Map(), // same, on Zora's ERC20Minter, priced in USDC
+  /** ProtocolRewards escrow: lowercased owner -> wei. */
+  rewards: new Map(),
+  /** Owners whose withdrawal reverts (a contract that refuses ETH). */
+  rejectsEth: new Set(),
   /** Every collect the browser's wallet sent, decoded. */
   mints: [],
   receipts: new Map(), // txHash -> receipt
@@ -338,6 +345,10 @@ function walletSend(tx) {
       if (value !== (MINT_FEE + sale.pricePerToken) * quantity) throw new Error('WrongValueSent')
       if (t.maxSupply !== 0n && t.maxSupply !== OPEN && t.totalMinted + quantity > t.maxSupply) throw new Error('sold out')
       chain.tokens.set(key(tx.to, tokenId), { ...t, totalMinted: t.totalMinted + quantity })
+      // The mint referral's share of the protocol fee on a paid mint, escrowed
+      // in ProtocolRewards as Zora does (28.5714%).
+      const ref = String(rewardsRecipients[0] ?? ZERO).toLowerCase()
+      if (sale.pricePerToken > 0n && ref !== ZERO) chain.rewards.set(ref, (chain.rewards.get(ref) ?? 0n) + (MINT_FEE * 285714n / 1_000_000n) * quantity)
       const bk = key(tx.to, mintTo, tokenId)
       chain.balances.set(bk, (chain.balances.get(bk) ?? 0n) + quantity)
       chain.mints.push({ collection: String(tx.to).toLowerCase(), tokenId, quantity, value, mintTo: String(mintTo).toLowerCase(), rewardsRecipients: rewardsRecipients.map((a) => String(a).toLowerCase()), strategy: String(args[0]).toLowerCase() })
@@ -387,6 +398,13 @@ function rpc(method, params) {
         throw new Error(`missing trie node for block ${pinned} (state pruned)`)
       }
       const sel = data.slice(0, 10)
+      if (String(to).toLowerCase() === PROTOCOL_REWARDS) {
+        const { functionName, args } = decodeFunctionData({ abi: REWARDS_ABI, data })
+        const owner = String(args[0]).toLowerCase()
+        if (functionName === 'balanceOf') return encodeFunctionResult({ abi: REWARDS_ABI, functionName: 'balanceOf', result: chain.rewards.get(owner) ?? 0n })
+        if (chain.rejectsEth.has(owner)) throw new Error('execution reverted: ETH transfer failed')
+        return '0x'
+      }
       if (sel === SEL.tokenInfo) {
         const { args } = decodeFunctionData({ abi: TOKEN_INFO, data })
         const t = chain.tokens.get(key(to, args[0])) ?? { maxSupply: 0n, totalMinted: 0n }
@@ -546,6 +564,12 @@ function cdpHandle(method, path, body) {
       return [400, { errorType: 'invalid_request', errorMessage: 'paymaster declined to sponsor this operation' }]
     }
     const userOpHash = '0x' + (++cdp.seq).toString(16).padStart(64, '0')
+    // A payout the account sends lands: the owner's escrow empties to them.
+    for (const c of body?.calls ?? []) {
+      if (String(c.to).toLowerCase() !== PROTOCOL_REWARDS) continue
+      const { args } = decodeFunctionData({ abi: REWARDS_ABI, data: c.data })
+      chain.rewards.set(String(args[0]).toLowerCase(), 0n)
+    }
     cdp.ops.set(userOpHash, {
       calls: body?.calls ?? [],
       outcome: outcome === 'slow' ? 'complete' : outcome,
@@ -1702,24 +1726,35 @@ try {
     const played = await call('/api/experience/play', { method: 'POST', body: { machineId: 'box-season', txHash: TX_BOX, account: PLAYER, unitIndex: 0 } })
     const claim = JSON.parse(strings.get(`kismetart:xp:box-season:claim:${TX_BOX}:0`) ?? 'null')
     check('a play draws and delivers', played.json?.claim?.state === 'delivered', JSON.stringify(played.json).slice(0, 240))
-    check('from a frozen table whose weights are the copies that were left',
+    check('from a frozen table weighted by each piece\'s total copies',
       claim?.snapshot?.find((e) => e.tokenId === '7')?.weight === 3 && claim.snapshot.find((e) => e.tokenId === '14')?.weight === 1,
       JSON.stringify(claim?.snapshot))
     const won = played.json?.claim?.prize?.tokenId
     const after = await odds()
-    check('and the odds shift by the copy it took',
-      won === '7' ? Math.abs(after['7'] - 2 / 3) < 1e-9 : after['14'] === 0 && after['7'] === 1, `${won} ${JSON.stringify(after)}`)
-    // The next play freezes the box as it is NOW — one copy lighter — which is
-    // the only place a draw that fell back to the weights typed at publish
-    // (equal to the copies on day one) would show.
+    // A one-of-one stays that rare all season: taking a copy of the common
+    // piece does not make it likelier. Only a piece that runs out leaves.
+    check('and the odds hold after a copy is taken, unless a piece ran out',
+      won === '7' ? Math.abs(after['7'] - 0.75) < 1e-9 && Math.abs(after['14'] - 0.25) < 1e-9 : after['14'] === 0 && after['7'] === 1,
+      `${won} ${JSON.stringify(after)}`)
     setHead(chain.head + 2n)
     addMint({ tx: TX_BOX_2, collection: CAPSULE_S, to: PLAYER, id: 1n, value: 1n, block: chain.head - 1n })
     await call('/api/experience/play', { method: 'POST', body: { machineId: 'box-season', txHash: TX_BOX_2, account: PLAYER, unitIndex: 0 } })
     const claim2 = JSON.parse(strings.get(`kismetart:xp:box-season:claim:${TX_BOX_2}:0`) ?? 'null')
     const weightsOf = (c) => Object.fromEntries((c?.snapshot ?? []).map((e) => [e.tokenId, e.weight]))
-    check('the next play draws from the copies left after it',
-      weightsOf(claim2)['7'] === (won === '7' ? 2 : 3) && (weightsOf(claim2)['14'] ?? 0) === (won === '7' ? 1 : 0),
+    check('and the next play still weighs each piece by its total copies',
+      weightsOf(claim2)['7'] === 3 && weightsOf(claim2)['14'] === 1,
       `${won} ${JSON.stringify(weightsOf(claim2))}`)
+
+    // A prize is an adminMint, like an airdrop — the artist sees them apart.
+    // Logged after the response, so give the deferred write a moment.
+    const mine = async () => (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines ?? []
+    let boxRow
+    for (let i = 0; i < 30 && boxRow?.prizes?.count !== 2; i++) { boxRow = (await mine()).find((m) => m.id === 'box-season'); if (boxRow?.prizes?.count !== 2) await sleep(100) }
+    check('the artist\'s machines count the prizes each delivered', boxRow?.prizes?.count === 2, JSON.stringify(boxRow?.prizes))
+    check('and name who won what', boxRow?.prizes?.recent?.length === 2 && boxRow.prizes.recent.every((p) => p.player === PLAYER && ['7', '14'].includes(p.tokenId)))
+    const redrawRow = (await mine()).find((m) => m.id === 'redraw')
+    check('a prize a resume delivered is logged too', redrawRow?.prizes?.recent?.some((p) => p.txHash === TX_REDRAW_2 && p.tokenId === '15'), JSON.stringify(redrawRow?.prizes))
+    check('and none of them is among the artist\'s airdrops', ((await call(`/api/airdrops?artist_address=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.airdrops ?? []).length === 0)
   }
 
   // ═══ 6j. reveal machines ══════════════════════════════════════════════════
@@ -1812,6 +1847,48 @@ try {
     check('and frees its id', (await publish(CURATOR_TOKEN, body({ id: 'second-thoughts', entries: lineup([2]), dryRun: true }))).status === 200)
     const closed = await call('/api/experience/machines/kismet-picks', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'end' } })
     check('its curator closes a live one', closed.status === 200 && closed.json.machine.state === 'ended')
+  }
+
+  // ═══ 6k. referral rewards reach their owners with nobody claiming ═════════
+  console.log('\n6k. referral rewards are pushed to their owners')
+  {
+    const run = () => call(`/api/cron/referral-payouts?secret=${CRON_SECRET}`)
+    check('the payout run refuses without the cron secret', (await call('/api/cron/referral-payouts')).status === 401)
+    // A second curator, whose wallet refuses ETH — a withdrawal to it reverts.
+    await call('/api/experience/machines', { method: 'POST', user: BUSY_TOKEN, body: { kind: 'reveal', id: 'busy-picks', name: 'Busy Picks', entries: [{ collection: REVEAL, tokenId: '2' }] } })
+    chain.rewards.set(KISMET_REFERRAL, 1_000_000_000_000_000n)
+    chain.rewards.set(CURATOR.toLowerCase(), 200_000_000_000_000n)
+    chain.rewards.set(BUSY.toLowerCase(), 300_000_000_000_000n)
+    chain.rejectsEth.add(BUSY.toLowerCase())
+    // The admin wallet that publishes Kismet's own machines is not a curator:
+    // those collects already name Kismet's referral address.
+    chain.rewards.set(ADMIN.toLowerCase(), 5_000_000_000_000_000n)
+    const before = cdp.ops.size
+    const first = await run()
+    const paid = (first.json?.paid ?? []).map((p) => p.address)
+    check('Kismet\'s own referral balance and each curator\'s are paid, largest first',
+      first.status === 200 && paid.join(',') === `${KISMET_REFERRAL},${CURATOR.toLowerCase()}`, JSON.stringify(first.json).slice(0, 300))
+    const sent = [...cdp.ops.values()].slice(before).map((o) => o.calls[0])
+    const decoded = sent.map((c) => decodeFunctionData({ abi: REWARDS_ABI, data: c.data }))
+    check('each as one sponsored withdrawFor(owner, everything) on Zora\'s rewards contract',
+      sent.length === 2 && sent.every((c) => String(c.to).toLowerCase() === PROTOCOL_REWARDS) &&
+      decoded.every((d, i) => d.functionName === 'withdrawFor' && String(d.args[0]).toLowerCase() === paid[i] && d.args[1] === 0n))
+    check('a curator whose wallet would refuse the ETH is skipped, not sent',
+      first.json?.skipped?.some((x) => x.address === BUSY.toLowerCase() && /revert/.test(x.reason)) && !decoded.some((d) => String(d.args[0]).toLowerCase() === BUSY.toLowerCase()))
+    check('the admin wallet is not paid as a curator', !paid.includes(ADMIN.toLowerCase()))
+    check('and the paid balances are now in their owners\' wallets, not the escrow',
+      chain.rewards.get(KISMET_REFERRAL) === 0n && chain.rewards.get(CURATOR.toLowerCase()) === 0n)
+    check('a second run finds nothing left to pay', (await run()).json?.paid?.length === 0 && cdp.ops.size === before + 2)
+    chain.rewards.set(CURATOR.toLowerCase(), 40_000_000_000_000n)
+    check('a balance too small to be worth the gas waits for the next run', (await run()).json?.paid?.length === 0)
+    chain.rewards.set(CURATOR.toLowerCase(), 100_000_000_000_000n)
+    chain.rewards.set(KISMET_REFERRAL, 100_000_000_000_000n)
+    const refusals = cdp.refusals
+    cdp.script.push('refuse')
+    const refusedRun = await run()
+    check('when sponsorship is refused the run stops rather than trying everyone',
+      refusedRun.json?.paid?.length === 0 && cdp.refusals === refusals + 1 && cdp.script.length === 0, JSON.stringify(refusedRun.json).slice(0, 240))
+    chain.rewards.clear()
   }
 
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
@@ -2088,7 +2165,7 @@ try {
           await page.locator('label:has-text("qty") input').nth(0).fill('3')
           await page.locator('label:has-text("qty") input').nth(1).fill('1')
           const boxed = await text(page)
-          check('and the preview is copies over copies', boxed.includes('75.0%') && boxed.includes('25.0%'), boxed.match(/what players will see.{0,160}/)?.[0] ?? '')
+          check('and the preview is total copies over total copies', boxed.includes('75.0%') && boxed.includes('25.0%'), boxed.match(/what players will see.{0,160}/)?.[0] ?? '')
           check('with how far to cap the capsule', boxed.includes('4 copies in the machine — cap the capsule at 4 or fewer'))
           await page.getByRole('radio', { name: 'set per piece' }).click()
           check('switching back brings the weights back', (await page.locator('label:has-text("wt")').count()) === 2)
@@ -2285,6 +2362,27 @@ try {
           check('and the edition really grew by one', chain.tokens.get(key(REVEAL, 1)).totalMinted === before + 1n)
           check('the page says it is collected', (await solo.getByText('collected', { exact: true }).count()) === 1)
           await solo.context().close()
+
+          // A curator's machine: the curator earns the referral on the collect —
+          // but not on their own.
+          await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: { kind: 'reveal', id: 'curator-solo', name: 'Curator Solo', entries: [{ collection: REVEAL, tokenId: '1' }] } })
+          await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'curator-solo', state: 'live' } })
+          const collectFrom = async (wallet) => {
+            const pg = await open('/experience/curator-solo', { wallet, onChain: true })
+            await pg.getByText('free to pull').waitFor()
+            await pg.getByRole('button', { name: 'pull', exact: true }).click()
+            await pg.getByRole('button', { name: 'collect · 0.002 ETH' }).click()
+            await pg.getByText('collected', { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {})
+            await pg.context().close()
+            return chain.mints.at(-1)
+          }
+          const byPlayer = await collectFrom(PLAYER)
+          check('a collect through a curator\'s machine names the curator as the mint referral',
+            byPlayer?.mintTo === PLAYER.toLowerCase() && byPlayer.rewardsRecipients[0] === CURATOR.toLowerCase(), JSON.stringify(byPlayer?.rewardsRecipients))
+          check('which Zora escrows for them to be paid out', (chain.rewards.get(CURATOR.toLowerCase()) ?? 0n) > 0n)
+          const byCurator = await collectFrom(CURATOR)
+          check('but a curator collecting from their own machine earns no rebate — Kismet keeps it',
+            byCurator?.mintTo === CURATOR.toLowerCase() && byCurator.rewardsRecipients[0] === KISMET_REFERRAL, JSON.stringify(byCurator?.rewardsRecipients))
         }
 
         // ── the reveal studio ──
@@ -2323,6 +2421,17 @@ try {
           check('as a reveal machine with the two pieces',
             (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-picks' && r.machine.kind === 'reveal' && r.pool.length === 2))
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: true } })
+          await page.context().close()
+        }
+
+        // ── an artist's capsule prizes, apart from their airdrops ──
+        {
+          const page = await open(`/profile/${ADMIN}`, { user: ADMIN_USER_TOKEN, wallet: ADMIN })
+          await page.getByText('Box Season').first().waitFor()
+          const body = await text(page)
+          check('the artist sees how many prizes each capsule machine delivered', /box season .*2 prizes delivered/.test(body), body.match(/box season.{0,160}/)?.[0] ?? '')
+          check('and who won them', /#(7|14) won by 0x51be…77aa/.test(body))
+          check('labelled as capsule prizes, not airdrops', body.includes('capsule prizes are minted by kismet when a paid capsule is opened. they are not airdrops'))
           await page.context().close()
         }
 

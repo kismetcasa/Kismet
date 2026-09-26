@@ -4,7 +4,7 @@ import { randomHex } from '../random'
 import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
 import { isReveal } from './types'
-import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, Rarity, SnapshotEntry } from './types'
+import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, SnapshotEntry } from './types'
 
 /**
  * Redis persistence for the Experience. Redis is the platform's only datastore,
@@ -30,6 +30,11 @@ const kPool = (id: string) => `${P}:${id}:pool`
 const kRemaining = (id: string) => `${P}:${id}:remaining`
 const kClaim = (id: string, tx: string, unit: number) => `${P}:${id}:claim:${tx.toLowerCase()}:${unit}`
 const kPlays = (id: string) => `${P}:${id}:plays`
+/** Prizes delivered, newest first — what the artist's profile lists under the
+ *  machine. A prize is minted by Kismet's delivery account with adminMint, the
+ *  same call an airdrop uses, so on-chain the two look alike; this log is what
+ *  keeps them apart. The artist's airdrops (lib/airdrops) never include one. */
+const kPrizes = (id: string) => `${P}:${id}:prizes`
 const kSeed = (id: string, epoch: string) => `${P}:${id}:seed:${epoch}`
 const kSpark = (id: string, addr: string) => `${P}:${id}:spark:${addr.toLowerCase()}`
 /** A creator's machines, newest first — what their profile lists. */
@@ -426,6 +431,50 @@ export async function advanceClaim(
   return next
 }
 
+/** Log a delivered prize. One member per claim (its transaction and unit), so
+ *  a repeated write re-scores rather than duplicates. Write-trimmed like the
+ *  play feed; never load-bearing — the claim is the record. */
+export async function recordPrize(claim: ClaimRecord): Promise<void> {
+  if (!claim.prize) return
+  const member = JSON.stringify({
+    player: claim.claimant,
+    collection: claim.prize.collection,
+    tokenId: claim.prize.tokenId,
+    txHash: claim.txHash.toLowerCase(),
+    unitIndex: claim.unitIndex,
+  })
+  await redis
+    .multi()
+    .zadd(kPrizes(claim.machineId), { score: Date.now(), member })
+    .zremrangebyrank(kPrizes(claim.machineId), 0, -(MAX_PLAYS + 1))
+    .exec()
+}
+
+export interface PrizeRecord {
+  player: string
+  collection: string
+  tokenId: string
+  txHash: string
+  unitIndex: number
+}
+
+/** How many prizes a machine has delivered, and the latest few. */
+export async function prizesDelivered(machineId: string, n = 5): Promise<{ count: number; recent: PrizeRecord[] }> {
+  const [count, raw] = await Promise.all([
+    redis.zcard(kPrizes(machineId)),
+    redis.zrange(kPrizes(machineId), 0, n - 1, { rev: true }) as Promise<(string | PrizeRecord)[]>,
+  ])
+  const recent: PrizeRecord[] = []
+  for (const r of raw) {
+    try {
+      recent.push(typeof r === 'string' ? (JSON.parse(r) as PrizeRecord) : r)
+    } catch {
+      continue
+    }
+  }
+  return { count: Number(count) || 0, recent }
+}
+
 /** Append to the machine's public play feed. Write-trimmed; never load-bearing
  *  (the claim record is the durable truth). */
 export async function recordPlay(machineId: string, player: string, txHash: string): Promise<void> {
@@ -650,17 +699,10 @@ export async function getSpark(machineId: string, player: string): Promise<numbe
 export function buildSnapshot(
   pool: PoolEntry[],
   remaining: Record<string, number | null>,
-  rarity: Rarity = 'manual',
 ): SnapshotEntry[] {
   return pool.map((e) => {
     const key = entryKey(e)
     const has = Object.prototype.hasOwnProperty.call(remaining, key)
-    const left = has ? remaining[key] : 0
-    // By supply, a piece weighs what it has left: each copy is one capsule in
-    // the machine. An unlimited count cannot be weighed, so it weighs 0 and is
-    // never drawn — publish refuses one in this mode, and failing closed keeps a
-    // corrupt row from swamping the table.
-    if (rarity === 'supply') return { ...e, weight: left ?? 0, remaining: left }
-    return { ...e, remaining: left }
+    return { ...e, remaining: has ? remaining[key] : 0 }
   })
 }

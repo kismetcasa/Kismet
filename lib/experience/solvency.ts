@@ -120,12 +120,12 @@ export function checkSolvency(input: SolvencyInput): SolvencyProblem[] {
     seen.add(key)
 
     if (bySupply) {
-      // Its copies ARE its weight, so an unlimited piece would have no weight
-      // at all, and a count past MAX_WEIGHT would break the draw's bound.
+      // Its total copies ARE its weight, so an unlimited piece would have no
+      // weight at all, and a count past MAX_WEIGHT would break the draw's bound.
       if (!Number.isInteger(e.supply) || e.supply <= 0 || e.supply > MAX_WEIGHT) {
         problems.push({
           code: 'bad-supply',
-          detail: `${key} needs a number of copies between 1 and ${MAX_WEIGHT} — with rarity by supply, its copies are its odds`,
+          detail: `${key} needs a number of copies between 1 and ${MAX_WEIGHT} — with rarity by supply, its total copies are its odds`,
         })
       }
     } else {

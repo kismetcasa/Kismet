@@ -1148,37 +1148,8 @@ console.log('\n11. creator management')
   check('nor can one with a recorded play', (await store.withdrawMachine('has-a-play')) === 'refused')
 }
 
-// ═══ 12. rarity by supply: every copy is one capsule ════════════════════════
-console.log('\n12. rarity by supply')
-{
-  const M = 'box-machine'
-  const big = entry({ tokenId: '40', supply: 3, weight: 1 })
-  const one = entry({ tokenId: '41', supply: 1, weight: 1_000_000 })
-  for (const e of [big, one]) await store.putPoolEntry(M, e)
-  const box = store.buildSnapshot([big, one], await store.getRemaining(M), 'supply') as SnapshotEntry[]
-  check('a piece weighs its copies left, whatever weight was typed',
-    box.find((e) => e.tokenId === '40')?.weight === 3 && box.find((e) => e.tokenId === '41')?.weight === 1)
-  const odds = deriveOdds(box)
-  check('so the odds are copies over copies', Math.abs(odds[0].probability - 0.75) < 1e-12 && Math.abs(odds[1].probability - 0.25) < 1e-12)
-  check('while by hand the typed weight still rules',
-    (store.buildSnapshot([big, one], await store.getRemaining(M)) as SnapshotEntry[]).find((e) => e.tokenId === '41')?.weight === 1_000_000)
-
-  // Drawing a copy moves the odds: the box has one fewer capsule of that piece.
-  await store.consumeOne(M, entryKey(big))
-  const after = deriveOdds(store.buildSnapshot([big, one], await store.getRemaining(M), 'supply') as SnapshotEntry[])
-  check('and they shift as copies go', Math.abs(after[0].probability - 2 / 3) < 1e-12)
-  await store.consumeOne(M, entryKey(one))
-  const gone = store.buildSnapshot([big, one], await store.getRemaining(M), 'supply') as SnapshotEntry[]
-  check('a piece with none left cannot be drawn', !isDrawable(gone[1]) && deriveOdds(gone)[1].probability === 0)
-
-  const open = entry({ tokenId: '42', supply: 0 })
-  await store.putPoolEntry(M, open)
-  const unlimited = store.buildSnapshot([open], await store.getRemaining(M), 'supply') as SnapshotEntry[]
-  check('an unlimited piece has no weight by supply, so it is never drawn', !isDrawable(unlimited[0]))
-}
-
-// ═══ 13. reveal machines and the artist's availability ═══════════════════════
-console.log('\n13. reveal machines')
+// ═══ 12. reveal machines and the artist's availability ═══════════════════════
+console.log('\n12. reveal machines')
 {
   const CURATOR = '0xc0ffee0000000000000000000000000000000c0c'
   const a = { collection: COLL, tokenId: '50', artist: ART_A, weight: 1, supply: 0 }

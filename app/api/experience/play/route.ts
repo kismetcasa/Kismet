@@ -28,12 +28,13 @@ import {
   openEpochSeeds,
   publicClaim,
   recordPlay,
+  recordPrize,
   releaseOne,
   seedForEpoch,
   settleDeliveredCopy,
 } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
-import type { ClaimRecord, Rarity, SnapshotEntry } from '@/lib/experience/types'
+import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { fetchArtworkMeta } from '@/lib/experience/artwork'
@@ -236,7 +237,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(fresh) })
   }
   try {
-    return await drawAndDeliver({ machineId, rarity: machine.rarity, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
+    return await drawAndDeliver({ machineId, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
   } finally {
     await flight.release()
   }
@@ -245,8 +246,6 @@ export async function POST(req: NextRequest) {
 /** Steps 4–9 for a claim this request just created, run under its lock. */
 async function drawAndDeliver(params: {
   machineId: string
-  /** How the machine's odds are set; by supply, weights come from copies left. */
-  rarity: Rarity | undefined
   txHash: string
   unitIndex: number
   account: string
@@ -255,7 +254,7 @@ async function drawAndDeliver(params: {
   claim: ClaimRecord
   now: number
 }): Promise<NextResponse> {
-  const { machineId, rarity, txHash, unitIndex, account, units, now } = params
+  const { machineId, txHash, unitIndex, account, units, now } = params
   let claim = params.claim
 
   // Index the play NOW, not after delivery. The play feed is what the claims
@@ -271,7 +270,7 @@ async function drawAndDeliver(params: {
   const gate = await getGateConfig()
   const pool = await getPool(machineId)
   const remaining = await getRemaining(machineId)
-  const rawSnapshot = buildSnapshot(pool, remaining, rarity)
+  const rawSnapshot = buildSnapshot(pool, remaining)
 
   // Freeze-time exclusions, all fail-closed:
   //  - the Pass collection can NEVER be a prize. lib/pass-validity credits
@@ -383,6 +382,7 @@ async function drawAndDeliver(params: {
       claim.state === 'delivered'
         ? recordCollected(account, prize.collection, prize.tokenId).catch(() => {})
         : Promise.resolve(),
+      claim.state === 'delivered' ? recordPrize(claim).catch(() => {}) : Promise.resolve(),
     ])
     if (claim.state === 'delivered') {
       // Hydrate the title and cover so the notification (and the Farcaster push

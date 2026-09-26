@@ -25,6 +25,7 @@ import {
   releaseOne,
   seedForEpoch,
   settleDeliveredCopy,
+  recordPrize,
 } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
@@ -309,7 +310,7 @@ async function handle(
   //    bought nothing those checks do not already cover.
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
-  const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId), machine.rarity)
+  const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
   const eligible: SnapshotEntry[] = await filterDeliverable(rawSnapshot, passCollection)
 
   const epoch = epochFor(Date.now())
@@ -413,6 +414,7 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
   const tx = claim.txHash
   after(async () => {
     await recordCollected(claimant, prize.collection, prize.tokenId).catch(() => {})
+    await recordPrize(claim).catch(() => {})
     const meta = await fetchArtworkMeta(prize.collection, prize.tokenId)
     await writeNotification({
       type: 'experience_win',

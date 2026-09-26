@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import crypto from 'node:crypto'
-import { errorResponse } from '@/lib/apiResponse'
+import { refuseUnlessCron } from '@/lib/cronAuth'
 import { epochFor } from '@/lib/experience/fairness'
 import { listMachines, openEpochSeeds } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
@@ -24,21 +23,11 @@ export const dynamic = 'force-dynamic'
  * Idempotent: every write underneath is SET NX, so running it twice — or
  * racing a read — cannot rotate a seed that already exists.
  *
- * Auth mirrors /api/cron/sync-stats: CRON_SECRET as `Authorization: Bearer`
- * or `?secret=`, constant-time compared.
+ * Auth: lib/cronAuth, the same CRON_SECRET check /api/cron/sync-stats makes.
  */
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET
-  if (!secret) return errorResponse(500, 'CRON_SECRET not configured')
-
-  const auth = req.headers.get('authorization')
-  const bearer = auth?.startsWith('Bearer ') ? auth.slice(7) : null
-  const provided = (bearer ?? new URL(req.url).searchParams.get('secret') ?? '').trim()
-  const providedBuf = Buffer.from(provided)
-  const secretBuf = Buffer.from(secret.trim())
-  if (providedBuf.length !== secretBuf.length || !crypto.timingSafeEqual(providedBuf, secretBuf)) {
-    return errorResponse(401, 'Unauthorized')
-  }
+  const refused = refuseUnlessCron(req)
+  if (refused) return refused
 
   const epoch = epochFor(Date.now())
   // Every machine that can still DRAW, not only the ones on sale. An ended or

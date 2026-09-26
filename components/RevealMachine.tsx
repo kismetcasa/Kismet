@@ -33,6 +33,9 @@ interface LineupRow {
 
 interface Payload {
   machine: { id: string; name: string; state: string; creator: string }
+  /** Who earns the mint referral on collects from this machine: its curator,
+   *  or null when Kismet curates (Kismet's own referral then applies). */
+  referral: string | null
   lineup: LineupRow[]
   waiting: number
 }
@@ -77,13 +80,14 @@ export function RevealMachine({ id }: { id: string }) {
       tokenId: pick.tokenId,
       amount: 1,
       share: { momentName: pick.name, creatorAddress: pick.artist },
+      curator: data?.referral,
     })
     if (done) {
       setCollected(pick.key)
       // The piece may have just sold out; the lineup should say so.
       load()
     }
-  }, [collect, collecting, ensureConnected, load, pick])
+  }, [collect, collecting, data?.referral, ensureConnected, load, pick])
 
   if (loadError) {
     return <p className="max-w-3xl mx-auto text-sm font-mono text-muted">This machine could not be loaded.</p>

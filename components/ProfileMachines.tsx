@@ -7,6 +7,7 @@ import type { Address } from 'viem'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { toastError } from '@/lib/toast'
+import { shortAddress } from '@/lib/inprocess'
 
 /**
  * A creator's machines, capsule and reveal, on their profile.
@@ -34,6 +35,9 @@ export type CreatorMachine =
       capsule: { collection: string; tokenId: string }
       plays: number
       capsules: { maxSupply: number | null; minted: number } | null
+      /** Prizes delivered, and the latest few — minted by Kismet when a
+       *  capsule is opened. Not airdrops, and never in the airdrops list. */
+      prizes: { count: number; recent: { player: string; collection: string; tokenId: string; txHash: string; unitIndex: number }[] }
     })
   | (CreatorMachineCommon & { kind: 'reveal'; pieces: number })
 
@@ -172,9 +176,33 @@ export function ProfileMachines({
                   {m.capsules && (
                     <> · {m.capsules.minted}{m.capsules.maxSupply === null ? '' : ` of ${m.capsules.maxSupply}`} capsules minted</>
                   )}
+                  {' · '}{m.prizes.count} {m.prizes.count === 1 ? 'prize' : 'prizes'} delivered
                 </>
               )}
             </p>
+            {m.kind === 'capsule' && m.prizes.recent.length > 0 && (
+              <div className="mt-1.5">
+                <ul className="flex flex-col gap-0.5">
+                  {m.prizes.recent.map((p) => (
+                    <li key={`${p.txHash}:${p.unitIndex}`} className="text-[10px] font-mono text-subtle">
+                      <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="text-dim hover:text-ink underline">
+                        #{p.tokenId}
+                      </Link>{' '}
+                      won by{' '}
+                      <Link href={`/profile/${p.player}`} className="hover:text-dim">
+                        {shortAddress(p.player)}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+                {manage && signedIn && (
+                  <p className="text-[10px] font-mono text-subtle mt-1 leading-relaxed">
+                    Capsule prizes are minted by Kismet when a paid capsule is opened. They are not airdrops: they
+                    don&apos;t appear in your airdrops or count toward your airdrop allowance.
+                  </p>
+                )}
+              </div>
+            )}
 
             {manage && signedIn && (m.state === 'live' || m.withdrawable) && (
               confirming === key(m.state === 'live' ? 'end' : 'withdraw') ? (

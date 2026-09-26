@@ -288,7 +288,7 @@ export function CapsuleStudio() {
         title="rarity"
         note={
           rarity === 'supply'
-            ? 'Every copy is one capsule, like a real gachapon box: a piece with 20 copies comes out 20 times as often as a one-of-one, and the odds shift as copies go.'
+            ? 'Odds follow each piece’s total copies: a piece with 20 copies comes out 20 times as often as a one-of-one, and a one-of-one stays that rare all season.'
             : 'You give each piece a weight. A piece with twice the weight comes out twice as often.'
         }
       >

@@ -205,12 +205,11 @@ export type MachineState = 'draft' | 'review' | 'live' | 'ended' | 'delisted'
 /** How a capsule machine's odds are set.
  *
  *  `manual` — the creator types a weight per piece.
- *  `supply` — every copy is one capsule in the machine, the way a physical
- *  gachapon box works: a piece's weight is the copies it has LEFT, so a piece
- *  with twenty copies comes out twenty times as often as a one-of-one, and the
- *  odds shift as copies go. Weights are derived in store.buildSnapshot from the
- *  same counter the draw consumes, so the published table and the draw still
- *  read one array. Every piece needs a finite supply. */
+ *  `supply` — a piece's weight is its total copies in the machine, set once at
+ *  publish: a piece with twenty copies comes out twenty times as often as a
+ *  one-of-one, and a one-of-one stays that rare all season rather than growing
+ *  likelier as other copies go. So every piece needs a finite supply, and the
+ *  weight the draw reads is simply the one stored — nothing is derived later. */
 export type Rarity = 'manual' | 'supply'
 
 interface MachineCommon {

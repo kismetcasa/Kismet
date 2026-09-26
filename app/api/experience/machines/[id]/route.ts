@@ -26,6 +26,7 @@ import { fetchArtworkMeta, hydrateArtworkMeta, type ArtworkMeta } from '@/lib/ex
 import { filterDeliverable } from '@/lib/experience/eligibility'
 import { readLineup } from '@/lib/experience/lineup'
 import { isReveal, type RevealMachine } from '@/lib/experience/types'
+import { ADMIN_ADDRESS } from '@/lib/config'
 
 /**
  * Everything a player must see BEFORE they can pay: the lineup, the derived
@@ -80,7 +81,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // three tests, which is what this was: it omitted the artist blacklist, so a
   // blacklisted artist's row stayed in the published table with a probability it
   // could never win, and inflated the denominator under every other row.
-  const snapshot = buildSnapshot(pool, remaining, machine.rarity)
+  const snapshot = buildSnapshot(pool, remaining)
   const visible = await filterDeliverable(snapshot, passCollection)
 
   const odds = deriveOdds(visible)
@@ -182,6 +183,10 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
       state: machine.state,
       creator: machine.creator,
     },
+    // The curator earns the mint referral on every collect made through their
+    // machine. Kismet's own machines keep Kismet's referral, which the admin
+    // wallet that published them is not.
+    referral: machine.creator === ADMIN_ADDRESS ? null : machine.creator,
     lineup: onSale.map((p) => ({ ...p, name: art[p.key]?.name ?? null, image: art[p.key]?.image ?? null })),
     // How many pieces are in the lineup but not collectable right now, so the
     // page can say "more when their sales open" rather than look smaller.

@@ -673,7 +673,7 @@ export function ExperienceMachine({ id }: { id: string }) {
         </h2>
         {data.machine.rarity === 'supply' && (
           <p className="text-[11px] font-mono text-subtle -mt-1.5 mb-3">
-            Every copy is one capsule, so a piece&apos;s odds are its copies left — they shift as copies go.
+            Odds follow each piece&apos;s total copies, fixed for the season — a one-of-one stays the rare pull. A piece that runs out leaves the table.
           </p>
         )}
         <div className="border border-line divide-y divide-line">

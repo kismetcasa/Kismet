@@ -24,6 +24,7 @@ import {
   optedOutPieces,
   playCount,
   pledgeSupply,
+  prizesDelivered,
   putLineup,
   releaseCapsule,
   reserveCapsule,
@@ -100,11 +101,12 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
       if (isReveal(m)) {
         return { ...common, kind: 'reveal' as const, pieces: (await getPool(m.id).catch(() => [])).length }
       }
-      const [capsules, plays] = await Promise.all([
+      const [capsules, plays, prizes] = await Promise.all([
         readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
         playCount(m.id).catch(() => 0),
+        prizesDelivered(m.id, 3).catch(() => ({ count: 0, recent: [] })),
       ])
-      return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules }
+      return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules, prizes }
     }),
   )
   return NextResponse.json({ owner, machines })
@@ -242,7 +244,8 @@ export async function POST(req: NextRequest) {
   // therefore not something a request can name: it is the creator, and the
   // ownership read below holds them to it — a piece they do not hold admin on
   // is refused. Curating other artists' work is what reveal machines are for.
-  // By supply, a piece's copies are its weight, so a typed weight is ignored.
+  // By supply, a piece's total copies ARE its weight, stored here once and read
+  // by every draw after, so a typed weight is ignored.
   const entries: PoolEntry[] = rawEntries.map((e) => {
     const supply = Number(e.supply)
     return {

@@ -105,7 +105,7 @@ export async function GET(req: NextRequest) {
       return {
         machine: m,
         pool,
-        odds: deriveOdds(buildSnapshot(pool, remaining, m.rarity)).map((o) => ({ ...o, key: entryKey(o) })),
+        odds: deriveOdds(buildSnapshot(pool, remaining)).map((o) => ({ ...o, key: entryKey(o) })),
         capsule,
         problems,
       }

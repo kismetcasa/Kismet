@@ -454,7 +454,7 @@ console.log('\n5e. rarity by supply')
   check(
     'but every piece needs copies — an unlimited one is refused',
     checkSolvency({ ...bySupply, capsuleMaxSupply: null, entries: [entry({ supply: 0 })] })
-      .some((p) => p.code === 'bad-supply' && p.detail.includes('its copies are its odds')),
+      .some((p) => p.code === 'bad-supply' && p.detail.includes('copies are its odds')),
   )
   check('as is a count past the weight bound', codes(checkSolvency({ ...bySupply, entries: [entry({ supply: MAX_WEIGHT + 1 })], headroom: { ...AMPLE } })).includes('bad-supply'))
   check('manual rarity still checks the weight', codes(checkSolvency({ ...baseInput, entries: [entry({ weight: 0 })] })).includes('bad-weight'))
@@ -511,6 +511,41 @@ console.log('\n5g. a reveal pull is uniform')
   // fair pick, which essentially never fails it; a biased or constant one does.
   check('and each piece comes up about 1 in 3', counts.every((c) => Math.abs(c / 30_000 - 1 / 3) < 0.03), counts.join(','))
   check('a one-piece lineup always reveals it', Array.from({ length: 50 }, () => pickIndex(1)).every((k) => k === 0))
+}
+
+console.log('\n5h. who earns the mint referral')
+{
+  const { KISMET_REFERRAL, buildEthMintCall, buildUsdcMintCall, resolveMintReferral } = await import('../lib/zoraMint.ts')
+  const { planPayouts, payoutAddresses, withdrawForCall, PROTOCOL_REWARDS } = await import('../lib/referralPayouts.ts')
+  const { toFunctionSelector } = await import('viem')
+  const CURATOR = '0x7777000000000000000000000000000000007777'
+  const PLAYER = '0x51be09ac3e7d21f48b6a0c5d9e2f7b3a1c8d77aa'
+  check('a reveal machine\'s curator earns it', resolveMintReferral(CURATOR, [PLAYER]).toLowerCase() === CURATOR)
+  check('Kismet does when no curator is named', resolveMintReferral(null, [PLAYER]) === KISMET_REFERRAL && resolveMintReferral(undefined, [PLAYER]) === KISMET_REFERRAL)
+  check('or the value is not an address', resolveMintReferral('0xnope', [PLAYER]) === KISMET_REFERRAL)
+  check('a curator collecting from their own machine earns no rebate on it', resolveMintReferral(CURATOR, [CURATOR.toUpperCase().replace('0X', '0x')]) === KISMET_REFERRAL)
+  check('nor when gifting to themselves', resolveMintReferral(CURATOR, [PLAYER, CURATOR]) === KISMET_REFERRAL)
+  const eth = (referral?: `0x${string}`) =>
+    buildEthMintCall({ tokenId: 1n, mintTo: PLAYER as `0x${string}`, quantity: 1n, mintFee: 1n, pricePerToken: 2n, comment: '', referral })
+  const usdc = (referral?: `0x${string}`) =>
+    buildUsdcMintCall({ collection: CURATOR as `0x${string}`, tokenId: 1n, mintTo: PLAYER as `0x${string}`, quantity: 1n, pricePerToken: 2n, comment: '', referral })
+  check('an ETH collect names Kismet unless told otherwise', eth().args[3][0] === KISMET_REFERRAL && eth(CURATOR as `0x${string}`).args[3][0] === CURATOR)
+  check('and so does a USDC collect', usdc().args[6] === KISMET_REFERRAL && usdc(CURATOR as `0x${string}`).args[6] === CURATOR)
+
+  const MIN = 50_000_000_000_000n
+  const plan = planPayouts([
+    { address: 'a', balance: MIN - 1n },
+    { address: 'b', balance: MIN },
+    { address: 'c', balance: 10n * MIN },
+  ], MIN, 25)
+  check('a payout waits until it is worth sending, and the largest goes first', plan.map((p) => p.address).join(',') === 'c,b')
+  check('one run is bounded', planPayouts(Array.from({ length: 40 }, (_, i) => ({ address: String(i), balance: MIN })), MIN, 25).length === 25)
+  const addrs = payoutAddresses([CURATOR, CURATOR.toUpperCase().replace('0X', '0x'), KISMET_REFERRAL])
+  check('Kismet and every curator are checked, once each', addrs.length === 2 && addrs[0] === KISMET_REFERRAL.toLowerCase() && addrs[1] === CURATOR)
+  const call = withdrawForCall(CURATOR)
+  check('a payout is withdrawFor(owner, everything) on Zora\'s rewards contract',
+    call.to === PROTOCOL_REWARDS && call.data.startsWith(toFunctionSelector('withdrawFor(address,uint256)')) &&
+      call.data.toLowerCase().includes(CURATOR.slice(2)) && call.data.endsWith('0'.repeat(64)))
 }
 
 // ─── 6. Fairness: commit–reveal, and the weight-table commitment ────────────
