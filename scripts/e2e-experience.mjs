@@ -2182,6 +2182,8 @@ try {
     const nvRow = bVisitor.json?.featuredIn?.find((f) => f.id === 'new-voices')
     check('with who curated each and which of their pieces it holds', nvRow?.curator === CURATOR.toLowerCase() && nvRow.pieces.map((p) => p.tokenId).sort().join() === '1,3,4', JSON.stringify(nvRow))
     check('a closed machine says so', bVisitor.json.featuredIn.find((f) => f.id === 'kismet-picks')?.state === 'ended')
+    // busy-picks holds CREATOR2's piece but is still queued; second-thoughts was withdrawn.
+    check('a queued machine is not listed as featuring anyone', ids(await prof(CREATOR2)) === 'fresh-ink,kismet-picks,new-voices', ids(await prof(CREATOR2)))
     check('the artist signed in sees the same list', ids(await prof(ARTIST_B, ARTIST_B_TOKEN)) === ids(bVisitor))
     check('a curator\'s own machines are not "featured in" on their own profile', ids(await prof(CURATOR, CURATOR_TOKEN)) === '')
     check('the Pass-less and the unknown see it too, with no session', (await prof(ARTIST_B, NOPASS_TOKEN)).status === 200)
