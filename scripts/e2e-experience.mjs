@@ -104,6 +104,9 @@ const EMPTY_COLL = '0xeeee000000000000000000000000000000000004'
 const CAPSULE_D = '0xcccc000000000000000000000000000000000011'
 const TX_DRY = '0x' + '7e'.repeat(32) // opens the machine's last deliverable artwork
 const TX_DRY_2 = '0x' + '8f'.repeat(32) // bought on zora.co after Kismet stopped selling
+const TX_MULTI = '0x' + '9a'.repeat(32) // a three-capsule pull, every capsule opened by the play route
+/** A player whose only purchase is that pull, so their bell holds nothing else. */
+const PLAYER_3 = '0x3333000000000000000000000000000000003333'
 /** Zora's protocol fee per mint, as the collection reports it. */
 const MINT_FEE = 111_000_000_000_000n
 /** lib/zoraMint.KISMET_REFERRAL — the rewards recipient every collect names. */
@@ -2117,6 +2120,26 @@ try {
     await sleep(600)
     check('and the creator is not told twice', empties().length === 1, String(empties().length))
     cdp.applyMints = false
+  }
+
+  // ═══ 6l-ii. a multi-pull is one notice ════════════════════════════════════
+  // The page opens a pull's capsules one after another through the play
+  // route, so a ten-pull delivers ten prizes the player watches appear. The
+  // bell gets one row for the purchase, not ten.
+  console.log('\n6l-ii. a multi-pull is one notice')
+  {
+    setHead(chain.head + 3n)
+    addMint({ tx: TX_MULTI, collection: CAPSULE, to: PLAYER_3, id: 1n, value: 3n, block: chain.head })
+    const opened = []
+    for (const unitIndex of [0, 1, 2]) {
+      const r = await call('/api/experience/play', { method: 'POST', body: { machineId: 'spring-season', txHash: TX_MULTI, account: PLAYER_3, unitIndex } })
+      opened.push(r.json?.claim?.state)
+    }
+    check('all three capsules of the pull are delivered by the play route', opened.join() === 'delivered,delivered,delivered', opened.join())
+    const wins = () => notesFor(PLAYER_3).filter((n) => n.type === 'experience_win')
+    await eventually(() => wins().length >= 1)
+    await sleep(600)
+    check('and the player is told once, counting all three', wins().length === 1 && wins()[0].amount === 3, JSON.stringify(wins().map((n) => n.amount)))
   }
 
   // ═══ 6m. a reveal machine linked to a collection ══════════════════════════
