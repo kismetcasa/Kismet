@@ -77,10 +77,13 @@ export const FEATURED_COLLECTIONS_KEY = 'kismetart:featured-collections'
 // set first (see /api/featured POST).
 export const FEATURED_MOMENT_DISPLAYS_KEY = 'kismetart:featured-moment-displays'
 export const TRENDING_KEY = 'kismetart:trending'
-// Latest-sales feed: member = "collection:tokenId", score = timestamp (ms) of
-// the most recent verified collect. Written alongside TRENDING_KEY's zincrby
-// in /api/collect (zadd overwrites — last collect wins) with the same 10k
-// write-side rank trim, so the two feed zsets stay cost-identical.
+// Latest-sales feed: member = "collection:tokenId", score = the mint BLOCK
+// time (ms) of the most recent verified collect. Written alongside
+// TRENDING_KEY's zincrby in /api/collect under ZADD GT — the newest sale
+// wins, and a late or replayed record of an older mint can neither lower
+// the score nor (as a wall-clock score once could) put a months-old piece
+// at the top of the feed — with the same 10k write-side rank trim, so the
+// two feed zsets stay cost-identical.
 export const TRENDING_LATEST_KEY = 'kismetart:trending-latest'
 // Ending-soon feed: member = "collection:tokenId", score = on-chain saleEnd
 // (unix seconds). Populated write-through by /api/moments — the batch

@@ -37,8 +37,9 @@ import { serverBaseClient } from './rpc'
  *  • A reverted receipt caches a NEGATIVE verdict; an RPC failure caches
  *    nothing, because it is transient and caching it would turn a blip into a
  *    five-minute denial.
- *  • The cache value uses the non-numeric `1:<payer>:<units>:<block>:<purchased>:<operators>`
- *    form (fields appended over time; each reader tolerates the shorter legacy
+ *  • The cache value uses the non-numeric
+ *    `1:<payer>:<units>:<block>:<purchased>:<operators>:<mintedAtMs>` form
+ *    (fields appended over time; each reader tolerates the shorter legacy
  *    shapes and reports what it cannot know as null). Non-numeric is not
  *    cosmetic: Upstash stores '1' unchanged but JSON-PARSES it back as the
  *    NUMBER 1 on read, so an earlier `cached === '1'` comparison never matched
@@ -81,6 +82,19 @@ const ZERO = '0x0000000000000000000000000000000000000000'
  *  share one txHash hits RPC once, not to persist a judgement. */
 const VERIFY_CACHE_TTL_SECONDS = 300
 
+/** The mint's block time in ms, or null when the block can't be read. Never
+ *  part of the verdict — a receipt already proves the mint — so a failed read
+ *  costs only where the sale ranks. */
+async function readBlockTimestampMs(blockNumber: bigint): Promise<number | null> {
+  try {
+    const block = await serverBaseClient().getBlock({ blockNumber })
+    const ms = Number(block.timestamp) * 1000
+    return Number.isFinite(ms) && ms > 0 ? ms : null
+  } catch {
+    return null
+  }
+}
+
 /** Per-log unit clamp, matching lib/passTaint.aggregateMintUnits exactly: a
  *  zero or pathological value reads as 1 (the log matched a real mint, so at
  *  least one unit moved) and an absurd value cannot inflate a count. */
@@ -116,6 +130,10 @@ export interface MintProofOk {
    *  for an ERC20 sale it is Zora's ERC20Minter; for a free mint it is whoever
    *  held mint rights. null when a cached verdict predates the field. */
   operators: string[] | null
+  /** The mint's block time in ms — what /api/collect ranks and ages the sale
+   *  by. Best-effort: null when the block could not be read or a cached
+   *  verdict predates the field, and callers fall back to "now". */
+  mintedAtMs: number | null
 }
 export type MintProof = { ok: false } | MintProofOk
 
@@ -142,10 +160,10 @@ export async function verifyMintOnChain(
   // claim its attribution, and makes a denial mark the minimum 1 unit, for one
   // TTL window after deploy.
   if (cachedStr === '1') {
-    return { ok: true, from: '', units: 1, blockNumber: null, purchasedEvent: null, operators: null }
+    return { ok: true, from: '', units: 1, blockNumber: null, purchasedEvent: null, operators: null, mintedAtMs: null }
   }
   if (cachedStr?.startsWith('1:')) {
-    const [, payer = '', units = '1', block = '', purchased, ops] = cachedStr.split(':')
+    const [, payer = '', units = '1', block = '', purchased, ops, mintedAt = ''] = cachedStr.split(':')
     const b = parseInt(block, 10)
     return {
       ok: true,
@@ -157,6 +175,7 @@ export async function verifyMintOnChain(
       // assuming either answer.
       purchasedEvent: purchased === undefined ? null : purchased === '1',
       operators: ops === undefined ? null : ops ? ops.split(',') : [],
+      mintedAtMs: /^\d+$/.test(mintedAt) ? Number(mintedAt) : null,
     }
   }
 
@@ -198,14 +217,15 @@ export async function verifyMintOnChain(
     if (units > 0) {
       const blockNumber = Number(receipt.blockNumber)
       const ops = [...operators]
+      const mintedAtMs = await readBlockTimestampMs(receipt.blockNumber)
       await redis
         .set(
           cacheKey,
-          `1:${payer}:${units}:${blockNumber}:${purchasedEvent ? 1 : 0}:${ops.join(',')}`,
+          `1:${payer}:${units}:${blockNumber}:${purchasedEvent ? 1 : 0}:${ops.join(',')}${mintedAtMs !== null ? `:${mintedAtMs}` : ''}`,
           { ex: VERIFY_CACHE_TTL_SECONDS },
         )
         .catch(() => {})
-      return { ok: true, from: payer, units, blockNumber, purchasedEvent, operators: ops }
+      return { ok: true, from: payer, units, blockNumber, purchasedEvent, operators: ops, mintedAtMs }
     }
 
     await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
