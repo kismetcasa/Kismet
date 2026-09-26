@@ -183,6 +183,12 @@ function TokenGateCard() {
       desc: 'manually grant or revoke pass validity for an address (used after airdrops).',
     },
     {
+      href: '/admin/experience',
+      title: 'Capsule machines',
+      desc:
+        'review queue for player-created machines: the full lineup, the odds players would see, and a live re-run of the solvency gate. Approve, end a season, or reject.',
+    },
+    {
       href: '/admin/blacklist',
       title: 'Moderation',
       desc:

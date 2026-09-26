@@ -10,6 +10,7 @@ import {
   type NotificationType,
 } from './notifications'
 import { SITE_URL } from './siteUrl'
+import { experienceStatusCopy } from './experience/format'
 import { isSafePublicHttpsUrl } from './safeUrl'
 
 // Farcaster native push notifications, layered on top of the in-app bell.
@@ -472,6 +473,15 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // amountLabel already carries the currency ("0.1 ETH" / "$5").
       const subject = tokenName ? `"${tokenName}"` : 'an artwork'
       const amountLabel = n.price ? formatPushPrice(n.price, n.currency) : 'a payout'
+      // A curator's mint referral rewards (lib/referralPayouts): not tied to
+      // one artwork, so it links the profile, where "paid so far" lives.
+      if (n.note === 'referral') {
+        return {
+          title: truncate('Referral rewards paid', TITLE_MAX),
+          body: truncate(`You received ${amountLabel} from collects through your reveal machines`, BODY_MAX),
+          targetUrl: `${SITE_URL}/profile/${n.recipient}`,
+        }
+      }
       return {
         title: truncate('Payout received', TITLE_MAX),
         body: truncate(`You received ${amountLabel} from ${subject}`, BODY_MAX),
@@ -556,6 +566,46 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       return {
         title: truncate('Download updated', TITLE_MAX),
         body: truncate(`${who} updated the file for ${subject}${noteSuffix}`, BODY_MAX),
+        targetUrl: momentUrl,
+      }
+    }
+    case 'experience_status': {
+      // What happened to the recipient's machine (or, for Kismet, one waiting
+      // for review). Same words and same destination as the bell row.
+      const subject = tokenName ? `"${tokenName}"` : 'Your machine'
+      const { headline, detail, title } = experienceStatusCopy(n.note, subject, actorName)
+      return {
+        title: truncate(title, TITLE_MAX),
+        body: truncate(detail ? `${headline}. ${detail}` : headline, BODY_MAX),
+        targetUrl:
+          n.note === 'review'
+            ? `${SITE_URL}/admin/experience`
+            : n.note === 'empty' || !n.machineId
+              ? `${SITE_URL}/profile/${n.recipient}`
+              : `${SITE_URL}/experience/${n.machineId}`,
+      }
+    }
+    case 'experience_featured': {
+      // An artist's piece went live in someone else's reveal machine.
+      const subject = tokenName ? `"${tokenName}"` : 'Your artwork'
+      const machine = n.note ? `"${n.note}"` : 'a reveal machine'
+      return {
+        title: truncate('Your work is featured', TITLE_MAX),
+        body: truncate(`${subject} is in ${machine}${actorName ? `, curated by ${actorName}` : ''}`, BODY_MAX),
+        // The artwork: its page lists the machines it is in and holds the
+        // switch that takes it out — the bell row links there too.
+        targetUrl: momentUrl,
+      }
+    }
+    case 'experience_win': {
+      // Push copy for a machine win. Names the artist rather than the machine:
+      // the push exists to introduce the maker, and the artwork is already in
+      // the wallet by the time this fires.
+      const subject = tokenName ? `"${tokenName}"` : 'an artwork'
+      const more = (n.amount ?? 1) > 1 ? ` and ${(n.amount ?? 1) - 1} more` : ''
+      return {
+        title: truncate('You won an artwork', TITLE_MAX),
+        body: truncate(`${subject}${more} ${more ? 'are' : 'is'} yours${actorName ? ` — by ${actorName}` : ''}`, BODY_MAX),
         targetUrl: momentUrl,
       }
     }

@@ -146,6 +146,21 @@ function decodeStoredSplits(raw: unknown): StoredSplitsResult {
       return { hasSplits: true, recipients: [] }
     }
   }
+  if (typeof raw === 'number') {
+    // THE LEGACY MARKER, AS UPSTASH ACTUALLY RETURNS IT. Old rows were written
+    // as the bare string '1'; the SDK JSON-parses a GET, so it comes back as the
+    // NUMBER 1 and never matches the `raw === '1'` branch above — which made that
+    // branch dead and reported a moment that HAS a split as having none. Same
+    // dual-representation trap lib/gateFlags.isFlagSet, lib/passTaint.parseUnitCount
+    // and lib/verifyMint's verdict cache each document.
+    //
+    // Recipients stay empty because the marker never carried them: callers must
+    // treat "has a split, members unknown" as unresolved rather than as absent.
+    // resolvePassSplit already guards on an empty list, so its fallback to the
+    // feed is unchanged; lib/experience/payees uses the distinction to refuse a
+    // machine it cannot verify instead of assuming the creator keeps everything.
+    return { hasSplits: raw !== 0, recipients: [] }
+  }
   if (typeof raw === 'object') {
     const obj = raw as { recipients?: unknown }
     return { hasSplits: true, recipients: validateRecipients(obj?.recipients) }

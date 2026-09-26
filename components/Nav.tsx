@@ -26,14 +26,16 @@ import { useAdmin } from '@/contexts/AdminContext'
 // the global nav — it's Base-Account-only, so a tab shown to everyone (EOAs,
 // visitors) misrepresented who can use it. /agent still resolves by URL.
 const NAV_PAGES = [
-  { id: 'enjoy',  label: 'Discover', mobileLabel: 'Enjoy',  href: '/' },
-  { id: 'mint',   label: 'Mint',     mobileLabel: 'Create',   href: '/mint' },
-  { id: 'market', label: 'Market',   mobileLabel: 'Curate', href: '/market' },
+  { id: 'enjoy',  label: 'Discover',   mobileLabel: 'Enjoy',  href: '/' },
+  { id: 'xp',     label: 'Experience', mobileLabel: 'Play',   href: '/experience' },
+  { id: 'mint',   label: 'Mint',       mobileLabel: 'Create', href: '/mint' },
+  { id: 'market', label: 'Market',     mobileLabel: 'Curate', href: '/market' },
 ] as const
 
 type NavPageId = (typeof NAV_PAGES)[number]['id']
 
 function navPageForPath(pathname: string): NavPageId {
+  if (pathname === '/experience' || pathname.startsWith('/experience/')) return 'xp'
   if (pathname === '/mint' || pathname.startsWith('/mint/')) return 'mint'
   if (pathname === '/market' || pathname.startsWith('/market/')) return 'market'
   // Default to Enjoy for `/` AND for every non-nav route (profile,

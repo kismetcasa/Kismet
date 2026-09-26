@@ -12,6 +12,8 @@ import { setMomentContent } from './momentContent'
 import { checkSmartWalletAdmin } from './smartWalletPreflight'
 import { addTrackedCollection, markCreatedMint } from './kv'
 import { runDropCoordination } from './agent/scout/dropCoordinator'
+import { joinLinkedMachines } from './experience/linked'
+import { noticeFeaturedArtists } from './experience/notices'
 import { SITE_URL } from './siteUrl'
 import { setStoredSplits, validateSplitsArray, type SplitRecipient } from './splits'
 import { getGateConfig, getPassCollectionName, hasGateAccess, isPlatformPausedFor } from './gate'
@@ -426,7 +428,20 @@ export async function proxyMintRequest(
       // (image/thumbhash); addTrackedCollection is idempotent on the set and
       // preserves the first-write createdAt stamp, so the two writers compose.
       const isAutoDeployMint = !hasAddress && hasNameAndUri
+      // Reveal machines linked to this collection take the new piece now, for
+      // the same reason: a join left to after() is lost with the pod. Redis
+      // only — one set read when nothing is linked, which is nearly always.
+      const joinedMachines = joinLinkedMachines({
+        collection: contractAddress,
+        tokenId,
+        artist: account,
+        mintedAt: Date.now(),
+      }).catch((err) => {
+        bestEffort('mint-proxy.joinLinkedMachines', { contractAddress, tokenId })(err)
+        return []
+      })
       await Promise.all([
+        joinedMachines,
         markCreatedMint(contractAddress, tokenId).catch(bestEffort('mint-proxy.markCreatedMint', { contractAddress, tokenId })),
         setMomentMeta(contractAddress, tokenId, {
           creator: account,
@@ -479,6 +494,11 @@ export async function proxyMintRequest(
             bestEffort('mint-proxy.dropCoordination', { contractAddress, tokenId }),
           ),
         )
+        // Artists whose new piece just joined someone else's machine are told,
+        // once per machine (lib/experience/notices).
+        for (const { machineId, entry } of await joinedMachines) {
+          tasks.push(noticeFeaturedArtists(machineId, [entry]).catch(bestEffort('mint-proxy.noticeFeatured', { machineId })))
+        }
         if (tokenContent) {
           tasks.push(setMomentContent(contractAddress, tokenId, tokenContent).catch(bestEffort('mint-proxy.setMomentContent', { contractAddress, tokenId })))
         }

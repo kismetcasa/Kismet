@@ -32,6 +32,25 @@ export const ALL_NOTIFICATION_TYPES = [
   // collection within 60s; the per-artwork SET NX notify-lock (24h) in the
   // fanout is the real dedup (COLLECTOR_DOWNLOADS_DESIGN.md §6.2).
   'file_update',
+  // Experience win (app/api/experience/play): the player's capsule opened onto
+  // this artwork and it has been minted to them. `actor` is the ARTIST, not the
+  // machine's creator — the win is an introduction to whoever made the piece,
+  // which is the whole point of the surface. Muteable, unlike the money types:
+  // the artwork is already in the wallet, so a missed notification costs
+  // discovery, not value.
+  'experience_win',
+  // A curator decided on the recipient's capsule machine (app/api/admin/
+  // experience): approved it (note 'live'), ended its season ('ended') or
+  // delisted it ('delisted'). `machineId` links the row. Before this, a
+  // creator whose machine went to review heard nothing either way. Also
+  // note 'empty': the machine has given out its last deliverable artwork, so
+  // the creator should close the capsule's sale (lib/experience/notices).
+  'experience_status',
+  // An artist's piece went live in someone else's reveal machine. `actor` is
+  // the curator, `note` the machine's name, `machineId` links it. The artist
+  // can turn machines off for the piece from its page; this is how they find
+  // out there is anything to turn off.
+  'experience_featured',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
@@ -85,8 +104,14 @@ export interface Notification {
   listingId?: string
   comment?: string
   /** file_update: the artist's release note ("added music!") — shown on the
-   *  bell row and appended to the push body. */
+   *  bell row and appended to the push body. experience_status: what happened
+   *  to the machine — its new state ('live' | 'ended' | 'delisted'),
+   *  'rejected' (delisted without ever going live), 'empty', or 'review' (to
+   *  Kismet: one is waiting). experience_featured: the machine's name.
+   *  payout: 'referral' for mint referral rewards paid to a curator. */
   note?: string
+  /** experience_status / experience_featured: the machine the notice is about. */
+  machineId?: string
 }
 
 type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {
@@ -215,6 +240,11 @@ async function isPriority(
   // that re-delivers what they bought, the badge should surface it.
   if (type === 'file_update') return true
   if (type === 'collect' && price && price !== '0') return true
+  // Machines: a prize the recipient paid for, a decision about their own
+  // machine (one of them — "it has run empty" — carries no actor at all, so
+  // the actor test below could never badge it), and their work put in front
+  // of collectors. Each is rare and about the recipient's own money or work.
+  if (type === 'experience_win' || type === 'experience_status' || type === 'experience_featured') return true
   // listing_created stays non-priority — active sellers shouldn't dominate
   // the priority bell. The "all" tab still surfaces it for engaged followers.
   if (!actor) return false

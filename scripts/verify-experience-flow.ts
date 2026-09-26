@@ -1,0 +1,1325 @@
+// CI oracle for the Experience FLOW — the stateful half that scripts/verify-experience.ts
+// cannot reach.
+//
+// verify-experience.ts pins the PURE core: given a snapshot, what are the odds,
+// who wins, may this machine exist. But the parts most likely to lose a player
+// their artwork are not pure — they are the supply ledger, the claim state
+// machine, the epoch seed, and the redraw loop, all of which live behind Redis.
+// So this file boots a mock Upstash REST server, points the REAL lib/redis
+// client at it, and drives the REAL lib/experience/store and
+// lib/experience/runDraw through every branch. Nothing is re-implemented here;
+// a behavioural change fails in CI rather than in front of someone who paid.
+//
+// The four defects this file exists to keep dead:
+//
+//   F1  buildSnapshot joined the pool to live counts with `?? 0`, but
+//       getRemaining maps the -1 UNLIMITED sentinel to `null` — and `null ?? 0`
+//       is 0, i.e. EXHAUSTED. Every open edition was permanently undrawable,
+//       including the creator floor piece that the entire solvency model rests
+//       on, and a floor-backed machine reported itself undercovered forever.
+//
+//   F2  A racer that lost the last copy left the counter at -1, which IS the
+//       unlimited sentinel. An exhausted capped edition therefore came back as
+//       infinitely drawable — over-issuing past the artist's consented supply
+//       and past the edition's on-chain headroom.
+//
+//   F3  runDraw released a copy on the lost-race path as well, so once the
+//       consume repaired its own overshoot the extra +1 minted a copy that does
+//       not exist. The two roll-forward reasons are NOT symmetric and the oracle
+//       pins that asymmetry.
+//
+//   F4  An authority failure must return the copy it genuinely held, or a
+//       revoked grant silently burns a copy of an unrelated artist's edition.
+//
+// Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
+//        --import ./scripts/register-ts-alias.mjs scripts/verify-experience-flow.ts
+
+import { createServer } from 'node:http'
+import { entryKey, deriveOdds, isDrawable, selectByHash } from '../lib/experience/draw.ts'
+import { runDraw } from '../lib/experience/runDraw.ts'
+import { commitmentFor, drawHash, epochFor, snapshotHash, verifyDraw } from '../lib/experience/fairness.ts'
+import { coverage } from '../lib/experience/solvency.ts'
+import type { ClaimRecord, PoolEntry, SnapshotEntry } from '../lib/experience/types.ts'
+
+let failures = 0
+const check = (name: string, cond: boolean, detail = ''): void => {
+  if (cond) console.log(`  PASS  ${name}`)
+  else {
+    console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
+    failures++
+  }
+}
+
+// ─── mock Upstash (hash-aware) ───────────────────────────────────────────────
+// Only the commands lib/experience/store actually issues. An unsupported command
+// THROWS rather than returning a plausible zero, so a future store change that
+// reaches for a primitive this mock does not model fails loudly here instead of
+// silently testing nothing.
+
+const strings = new Map<string, string>()
+const hashes = new Map<string, Map<string, string>>()
+const zsets = new Map<string, Map<string, number>>()
+/** Redis SETs — the shape lib/blacklist and lib/hiddenMoments read through. */
+const sets = new Map<string, Set<string>>()
+/** Every command the store issued, for assertions ABOUT the calls themselves
+ *  (e.g. that a claim key is never given a TTL). */
+const log: string[][] = []
+
+function exec(cmd: unknown[]): unknown {
+  const name = String(cmd[0]).toLowerCase()
+  const args = cmd.slice(1).map(String)
+  log.push([name, ...args])
+  const k = args[0]
+  switch (name) {
+    case 'get':
+      return strings.get(k) ?? null
+    case 'mget':
+      return args.map((key) => strings.get(key) ?? null)
+    case 'set': {
+      const nx = args.some((a) => a.toLowerCase() === 'nx')
+      if (nx && strings.has(k)) return null
+      strings.set(k, args[1])
+      return 'OK'
+    }
+    case 'del': {
+      let n = 0
+      for (const key of args) {
+        if (strings.delete(key)) n++
+        if (hashes.delete(key)) n++
+        if (zsets.delete(key)) n++
+        if (sets.delete(key)) n++
+      }
+      return n
+    }
+    case 'incrby': {
+      const cur = parseInt(strings.get(k) ?? '0', 10)
+      const next = (Number.isFinite(cur) ? cur : 0) + Number(args[1])
+      strings.set(k, String(next))
+      return next
+    }
+    case 'hset': {
+      const m = hashes.get(k) ?? new Map<string, string>()
+      for (let i = 1; i < args.length; i += 2) m.set(args[i], args[i + 1])
+      hashes.set(k, m)
+      return 1
+    }
+    case 'hget':
+      return hashes.get(k)?.get(args[1]) ?? null
+    case 'hgetall': {
+      const m = hashes.get(k)
+      if (!m) return []
+      const out: string[] = []
+      for (const [f, v] of m) out.push(f, v)
+      return out
+    }
+    case 'hdel': {
+      const m = hashes.get(k)
+      let n = 0
+      for (const f of args.slice(1)) if (m?.delete(f)) n++
+      return n
+    }
+    case 'hincrby': {
+      // The real primitive: read-modify-write is atomic server-side, which is
+      // exactly why a racer can observe a negative value it must repair.
+      const m = hashes.get(k) ?? new Map<string, string>()
+      hashes.set(k, m)
+      const cur = parseInt(m.get(args[1]) ?? '0', 10)
+      const next = (Number.isFinite(cur) ? cur : 0) + Number(args[2])
+      m.set(args[1], String(next))
+      return next
+    }
+    case 'sadd': {
+      // The count of members that were NEW — what Redis returns, and what a
+      // once-only notice (lib/experience/notices) is decided by.
+      const st = sets.get(k) ?? new Set<string>()
+      let added = 0
+      for (const m of args.slice(1)) if (!st.has(m)) { st.add(m); added++ }
+      sets.set(k, st)
+      return added
+    }
+    case 'srem': {
+      const st = sets.get(k)
+      let n = 0
+      for (const m of args.slice(1)) if (st?.delete(m)) n++
+      return n
+    }
+    case 'smembers':
+      return [...(sets.get(k) ?? [])]
+    case 'sismember':
+      return sets.get(k)?.has(args[1]) ? 1 : 0
+    case 'smismember':
+      return args.slice(1).map((m) => (sets.get(k)?.has(m) ? 1 : 0))
+    case 'zadd': {
+      const m = zsets.get(k) ?? new Map<string, number>()
+      const rest = args.slice(1).filter((a) => !['nx', 'xx', 'gt', 'lt', 'ch'].includes(a.toLowerCase()))
+      m.set(rest[1], Number(rest[0]))
+      zsets.set(k, m)
+      return 1
+    }
+    case 'zrem': {
+      const m = zsets.get(k)
+      let n = 0
+      for (const mem of args.slice(1)) if (m?.delete(mem)) n++
+      return n
+    }
+    case 'zcard':
+      return zsets.get(k)?.size ?? 0
+    case 'zrange': {
+      const m = zsets.get(k)
+      if (!m) return []
+      let entries = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      const flags = args.map((a) => a.toLowerCase())
+      const start = Number(args[1])
+      const stop = Number(args[2])
+      if (Number.isFinite(start) && Number.isFinite(stop)) {
+        const n = entries.length
+        const a = start < 0 ? Math.max(0, n + start) : start
+        const b = stop < 0 ? n + stop : Math.min(n - 1, stop)
+        entries = b < a ? [] : entries.slice(a, b + 1)
+      }
+      return (flags.includes('rev') ? entries.reverse() : entries).map(([mem]) => mem)
+    }
+    case 'zremrangebyrank': {
+      const m = zsets.get(k)
+      if (!m) return 0
+      const sorted = [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
+      const n = sorted.length
+      const start = Number(args[1])
+      const stop = Number(args[2])
+      const a = start < 0 ? Math.max(0, n + start) : start
+      const b = stop < 0 ? n + stop : Math.min(n - 1, stop)
+      if (b < a) return 0
+      for (const [mem] of sorted.slice(a, b + 1)) m.delete(mem)
+      return b - a + 1
+    }
+    case 'eval': {
+      // Deliberately NOT a Lua interpreter. The store ships exactly one script —
+      // the capsule-reservation compare-and-set — so this models that script and
+      // nothing else, and asserts the text it was handed. Change the script and
+      // this throws rather than quietly approving whatever the new one does.
+      const script = args[0].replace(/\s+/g, ' ').trim()
+      const CAS = "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]) return 1 end return 0"
+      if (script !== CAS) throw new Error(`unmodelled EVAL script: ${script}`)
+      const nKeys = Number(args[1])
+      const key = args[2]
+      const expect = args[2 + nKeys]
+      const next = args[3 + nKeys]
+      if ((strings.get(key) ?? null) !== expect) return 0
+      strings.set(key, next)
+      return 1
+    }
+    default:
+      throw new Error(`unsupported cmd ${name}`)
+  }
+}
+
+// Protocol fidelity: the SDK sends `Upstash-Encoding: base64` and decodes every
+// string result except the literal "OK", so the mock must encode them.
+const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64')
+function encodeResult(v: unknown): unknown {
+  if (typeof v === 'string') return v === 'OK' ? 'OK' : b64(v)
+  if (Array.isArray(v)) return v.map(encodeResult)
+  return v
+}
+
+const server = createServer((req, res) => {
+  let body = ''
+  req.on('data', (c) => { body += c })
+  req.on('end', () => {
+    try {
+      const useB64 = req.headers['upstash-encoding'] === 'base64'
+      const enc = (v: unknown) => (useB64 ? encodeResult(v) : v)
+      const parsed = JSON.parse(body) as unknown[]
+      const isPipeline = Array.isArray(parsed[0])
+      const out = isPipeline
+        ? (parsed as unknown[][]).map((c) => {
+            try { return { result: enc(exec(c)) } } catch (e) { return { error: String(e) } }
+          })
+        : (() => {
+            try { return { result: enc(exec(parsed)) } } catch (e) { return { error: String(e) } }
+          })()
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(out))
+    } catch (e) {
+      res.writeHead(500)
+      res.end(JSON.stringify({ error: String(e) }))
+    }
+  })
+})
+
+await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+const port = (server.address() as { port: number }).port
+process.env.UPSTASH_REDIS_REST_URL = `http://127.0.0.1:${port}`
+process.env.UPSTASH_REDIS_REST_TOKEN = 'sim-token'
+
+// Imported AFTER the env is wired, so lib/redis reads the mock's URL at module
+// scope. This is the REAL store — every assertion below is about production code.
+const store = await import(new URL('../lib/experience/store.ts', import.meta.url).href)
+
+// ─── fixtures ────────────────────────────────────────────────────────────────
+
+const CREATOR = '0xc0ffee0000000000000000000000000000000001'
+const ART_A = '0xa1000000000000000000000000000000000000a1'
+const ART_B = '0xb2000000000000000000000000000000000000b2'
+const COLL = '0xdddd000000000000000000000000000000000001'
+
+const entry = (over: Partial<PoolEntry> = {}): PoolEntry => ({
+  collection: COLL,
+  tokenId: '1',
+  artist: ART_A,
+  weight: 10,
+  supply: 5,
+  ...over,
+})
+
+/** A hash that makes selectByHash land on cumulative offset `n`. selectByHash
+ *  reads the first 128 bits and reduces modulo Σweight, so an exact target lets
+ *  a test steer the draw without searching for a seed. */
+const hashForTarget = (n: number): string => n.toString(16).padStart(32, '0') + '0'.repeat(32)
+
+/** Read one entry's raw remaining counter through the REAL getRemaining. */
+async function remainingOf(machineId: string, e: PoolEntry): Promise<number | null> {
+  const r = await store.getRemaining(machineId)
+  return r[entryKey(e)]
+}
+
+// ═══ 1. buildSnapshot: unlimited and absent are OPPOSITE, not both zero ══════
+console.log('\n1. buildSnapshot join semantics (F1)')
+{
+  const open = entry({ tokenId: '10', supply: 0, artist: CREATOR })
+  const capped = entry({ tokenId: '11', supply: 3 })
+  const pool = [open, capped]
+
+  // The exact shape getRemaining produces: -1 sentinel -> null.
+  const live: Record<string, number | null> = {
+    [entryKey(open)]: null,
+    [entryKey(capped)]: 3,
+  }
+  const snap = store.buildSnapshot(pool, live) as SnapshotEntry[]
+
+  check('an unlimited entry freezes as null, not 0', snap[0].remaining === null,
+    `got ${String(snap[0].remaining)}`)
+  check('an unlimited entry is therefore drawable', isDrawable(snap[0]))
+  check('a capped entry keeps its count', snap[1].remaining === 3)
+
+  // The failure that made this matter: a floor-backed machine could never
+  // dispense its floor piece, and reported itself undercovered forever.
+  const odds = deriveOdds(snap)
+  check('the floor piece carries real probability', odds[0].probability > 0)
+  const remainingPrizes = snap.some((e) => e.remaining === null)
+    ? null
+    : snap.reduce((s, e) => s + (e.remaining ?? 0), 0)
+  check('a floor-backed pool reports unbounded prizes', remainingPrizes === null)
+  check(
+    'and therefore reads as covered against an open-edition capsule',
+    coverage({ capsuleMaxSupply: null, capsuleMinted: 0, remainingPrizes }).covered,
+  )
+
+  // An ABSENT counter is a different thing and must still fail closed.
+  const orphan = store.buildSnapshot([entry({ tokenId: '99' })], {}) as SnapshotEntry[]
+  check('an entry with no counter at all fails closed at 0', orphan[0].remaining === 0)
+  check('and is not drawable', !isDrawable(orphan[0]))
+}
+
+// ═══ 2. the supply ledger, against the real Redis-backed store ══════════════
+console.log('\n2. supply ledger (F2)')
+{
+  const M = 'ledger-machine'
+  const capped = entry({ tokenId: '20', supply: 2 })
+  const open = entry({ tokenId: '21', supply: 0, artist: CREATOR })
+  await store.putPoolEntry(M, capped)
+  await store.putPoolEntry(M, open)
+
+  check('putPoolEntry seeds a capped counter with its supply', (await remainingOf(M, capped)) === 2)
+  check('putPoolEntry seeds an unlimited counter as null', (await remainingOf(M, open)) === null)
+
+  check('consuming a capped copy returns the post-decrement count',
+    (await store.consumeOne(M, entryKey(capped))) === 1)
+  check('releasing it puts the copy back', (await store.releaseOne(M, entryKey(capped)),
+    (await remainingOf(M, capped)) === 2))
+
+  check('consuming an unlimited entry returns null', (await store.consumeOne(M, entryKey(open))) === null)
+  check('and never decrements the sentinel', (await remainingOf(M, open)) === null)
+  await store.releaseOne(M, entryKey(open))
+  check('releasing an unlimited entry is a no-op', (await remainingOf(M, open)) === null)
+}
+
+console.log('\n3. the last-copy race never aliases onto the unlimited sentinel (F2)')
+{
+  const M = 'race-machine'
+  const last = entry({ tokenId: '30', supply: 1 })
+  await store.putPoolEntry(M, last)
+
+  // Three plays reach for one copy at once — the real production shape.
+  const results = await Promise.all([
+    store.consumeOne(M, entryKey(last)),
+    store.consumeOne(M, entryKey(last)),
+    store.consumeOne(M, entryKey(last)),
+  ])
+  const winners = results.filter((r): r is number => r !== null && r >= 0)
+  const losers = results.filter((r): r is number => r !== null && r < 0)
+
+  check('exactly one caller wins the last copy', winners.length === 1, `winners=${JSON.stringify(results)}`)
+  check('the other two see a negative count', losers.length === 2)
+
+  const after = await remainingOf(M, last)
+  check('the counter settles at 0, not negative', after === 0, `got ${String(after)}`)
+  check('and is NOT read back as unlimited', after !== null, `got ${String(after)}`)
+
+  const snap = store.buildSnapshot([last], await store.getRemaining(M)) as SnapshotEntry[]
+  check('the exhausted edition is undrawable afterwards', !isDrawable(snap[0]))
+}
+
+// ═══ 4. runDraw, every branch, over the real ledger ══════════════════════════
+console.log('\n4. runDraw branches')
+
+/** Wire runDraw to the REAL store, with authority and hashing injected. */
+function effectsFor(machineId: string, opts: {
+  blocked?: Set<string>
+  targets?: number[]
+  releases: string[]
+}) {
+  return {
+    consume: (key: string) => store.consumeOne(machineId, key) as Promise<number | null>,
+    release: async (key: string) => {
+      opts.releases.push(key)
+      await store.releaseOne(machineId, key)
+    },
+    authority: async (e: SnapshotEntry) => !opts.blocked?.has(entryKey(e)),
+    hash: (attempt: number) => hashForTarget(opts.targets ? opts.targets[attempt] ?? 0 : 0),
+  }
+}
+
+{
+  // 4a — happy path
+  const M = 'draw-happy'
+  const a = entry({ tokenId: '40', supply: 4, weight: 10 })
+  const b = entry({ tokenId: '41', supply: 4, weight: 10, artist: ART_B })
+  await store.putPoolEntry(M, a)
+  await store.putPoolEntry(M, b)
+  const snap = store.buildSnapshot([a, b], await store.getRemaining(M)) as SnapshotEntry[]
+
+  const releases: string[] = []
+  // target 0 lands inside a's [0,10) band.
+  const res = await runDraw(snap, effectsFor(M, { targets: [0], releases }), 6)
+  check('a clean draw returns drawn', res.kind === 'drawn')
+  check('on attempt 0', res.attempt === 0)
+  check('with the entry the hash selected', res.kind === 'drawn' && res.prize.tokenId === '40')
+  check('consuming exactly one copy of it', (await remainingOf(M, a)) === 3)
+  check('and touching nothing else', (await remainingOf(M, b)) === 4)
+  check('with no release on the success path', releases.length === 0)
+}
+
+{
+  // 4b — revoked grant: the copy WAS held, so it must come back (F4)
+  const M = 'draw-revoked'
+  const a = entry({ tokenId: '50', supply: 4, weight: 10 })
+  const b = entry({ tokenId: '51', supply: 4, weight: 10, artist: ART_B })
+  await store.putPoolEntry(M, a)
+  await store.putPoolEntry(M, b)
+  const snap = store.buildSnapshot([a, b], await store.getRemaining(M)) as SnapshotEntry[]
+
+  const releases: string[] = []
+  const res = await runDraw(
+    snap,
+    effectsFor(M, { blocked: new Set([entryKey(a)]), targets: [0, 0], releases }),
+    6,
+  )
+  check('a revoked grant rolls forward to a redraw', res.kind === 'drawn' && res.attempt === 1)
+  check('and never returns the revoked piece', res.kind === 'drawn' && res.prize.tokenId === '51')
+  check('the revoked entry gets its copy back', (await remainingOf(M, a)) === 4)
+  check('exactly one release was issued', releases.length === 1 && releases[0] === entryKey(a))
+  check('the delivered entry is decremented', (await remainingOf(M, b)) === 3)
+}
+
+{
+  // 4c — lost race: the copy was NEVER held, so releasing would mint one (F3)
+  const M = 'draw-race'
+  const a = entry({ tokenId: '60', supply: 1, weight: 10 })
+  const b = entry({ tokenId: '61', supply: 4, weight: 10, artist: ART_B })
+  await store.putPoolEntry(M, a)
+  await store.putPoolEntry(M, b)
+  // Freeze while a still shows a copy, then let a concurrent play take it —
+  // exactly the stale-snapshot window the redraw exists for.
+  const snap = store.buildSnapshot([a, b], await store.getRemaining(M)) as SnapshotEntry[]
+  check('the snapshot was frozen with the copy still present', snap[0].remaining === 1)
+  await store.consumeOne(M, entryKey(a)) // the other player wins it
+  check('the other play took it', (await remainingOf(M, a)) === 0)
+
+  const releases: string[] = []
+  const res = await runDraw(snap, effectsFor(M, { targets: [0, 0], releases }), 6)
+  check('losing the race rolls forward', res.kind === 'drawn' && res.attempt === 1)
+  check('to a different entry', res.kind === 'drawn' && res.prize.tokenId === '61')
+  check('NO release is issued for a copy never held', releases.length === 0)
+  const aAfter = await remainingOf(M, a)
+  check('the raced entry stays exhausted at 0', aAfter === 0, `got ${String(aAfter)}`)
+  check('it did not become unlimited', aAfter !== null)
+}
+
+{
+  // 4d — exhausted pool: every entry rejected, every copy conserved
+  const M = 'draw-exhausted'
+  const a = entry({ tokenId: '70', supply: 2, weight: 10 })
+  const b = entry({ tokenId: '71', supply: 2, weight: 10, artist: ART_B })
+  await store.putPoolEntry(M, a)
+  await store.putPoolEntry(M, b)
+  const snap = store.buildSnapshot([a, b], await store.getRemaining(M)) as SnapshotEntry[]
+
+  const releases: string[] = []
+  const res = await runDraw(
+    snap,
+    effectsFor(M, { blocked: new Set([entryKey(a), entryKey(b)]), targets: [0, 0, 0], releases }),
+    6,
+  )
+  check('a fully unauthorised pool is exhausted', res.kind === 'exhausted')
+  check('after trying every entry', res.attempt === 2)
+  check('and the ledger is fully conserved', (await remainingOf(M, a)) === 2 && (await remainingOf(M, b)) === 2)
+  check('one release per attempt', releases.length === 2)
+}
+
+{
+  // 4e — attempt ceiling: stop grinding, pend loudly
+  const M = 'draw-ceiling'
+  const many: PoolEntry[] = []
+  for (let i = 0; i < 8; i++) many.push(entry({ tokenId: `8${i}`, supply: 2, weight: 10 }))
+  for (const e of many) await store.putPoolEntry(M, e)
+  const snap = store.buildSnapshot(many, await store.getRemaining(M)) as SnapshotEntry[]
+
+  const releases: string[] = []
+  const res = await runDraw(
+    snap,
+    effectsFor(M, { blocked: new Set(many.map(entryKey)), targets: [0, 0, 0, 0], releases }),
+    3,
+  )
+  check('the redraw ceiling is honoured', res.kind === 'exhausted' && res.attempt === 3)
+  check('the pool was NOT drained past the ceiling', releases.length === 3)
+  const counts = await Promise.all(many.map((e) => remainingOf(M, e)))
+  check('and every copy is still there', counts.every((c) => c === 2))
+}
+
+{
+  // 4f — degenerate inputs
+  const releases: string[] = []
+  let consumed = 0
+  let hashed = 0
+  const spy = {
+    consume: async (_k: string) => { consumed++; return 0 },
+    release: async (k: string) => { releases.push(k) },
+    authority: async () => true,
+    hash: (a: number) => { hashed++; return hashForTarget(a) },
+  }
+  const empty = await runDraw([], spy, 6)
+  check('an empty snapshot is exhausted at attempt 0', empty.kind === 'exhausted' && empty.attempt === 0)
+  check('and consumes nothing', consumed === 0)
+
+  const zero = await runDraw([{ ...entry(), remaining: 5 }], spy, 0)
+  check('maxAttempts 0 is exhausted at attempt 0', zero.kind === 'exhausted' && zero.attempt === 0)
+  check('and does not even hash', hashed === 1, `hashed=${hashed}`)
+  check('nor release', releases.length === 0)
+}
+
+{
+  // 4g — an unlimited entry draws without ever being decremented
+  const M = 'draw-open'
+  const floor = entry({ tokenId: '90', supply: 0, artist: CREATOR })
+  await store.putPoolEntry(M, floor)
+  const snap = store.buildSnapshot([floor], await store.getRemaining(M)) as SnapshotEntry[]
+  const releases: string[] = []
+  const res = await runDraw(snap, effectsFor(M, { targets: [0], releases }), 6)
+  check('the floor piece is drawable', res.kind === 'drawn' && res.prize.tokenId === '90')
+  check('and is never decremented', (await remainingOf(M, floor)) === null)
+  check('a null consume is not mistaken for a lost race', res.kind === 'drawn' && res.attempt === 0)
+}
+
+{
+  // 4h — determinism: the same frozen snapshot and seed give the same answer
+  const snap: SnapshotEntry[] = [
+    { ...entry({ tokenId: 'd1', weight: 30 }), remaining: 9 },
+    { ...entry({ tokenId: 'd2', weight: 70, artist: ART_B }), remaining: 9 },
+  ]
+  const seed = 'a'.repeat(64)
+  const tx = '0x' + 'c'.repeat(64)
+  const inert = {
+    consume: async () => 5,
+    release: async () => {},
+    authority: async () => true,
+    hash: (attempt: number) => drawHash({ serverSeed: seed, txHash: tx, unitIndex: 0, attempt }),
+  }
+  const one = await runDraw(snap, inert, 6)
+  const two = await runDraw(snap, inert, 6)
+  check('two runs over one frozen snapshot agree',
+    one.kind === 'drawn' && two.kind === 'drawn' && one.prize.tokenId === two.prize.tokenId)
+  check('and a different unit is an independent draw',
+    selectByHash(snap, drawHash({ serverSeed: seed, txHash: tx, unitIndex: 0, attempt: 0 })) !== null &&
+    drawHash({ serverSeed: seed, txHash: tx, unitIndex: 0, attempt: 0 }) !==
+      drawHash({ serverSeed: seed, txHash: tx, unitIndex: 1, attempt: 0 }))
+}
+
+// ═══ 5. the claim state machine ══════════════════════════════════════════════
+console.log('\n5. claims are an obligation, not a flag')
+{
+  const M = 'claim-machine'
+  const tx = '0x' + '1'.repeat(64)
+  const rec: ClaimRecord = {
+    machineId: M,
+    claimant: '0x' + '9'.repeat(40),
+    txHash: tx,
+    unitIndex: 0,
+    state: 'claimed',
+    createdAt: 1,
+  }
+  check('the first claim wins', (await store.createClaim(rec)) === true)
+  check('a replay does not', (await store.createClaim(rec)) === false)
+
+  // A second unit of the same capsule mint is a SEPARATE claim — collapsing
+  // them would silently swallow N-1 paid plays.
+  check('unit 1 of the same tx is its own claim',
+    (await store.createClaim({ ...rec, unitIndex: 1 })) === true)
+
+  const frozen = await store.advanceClaim(rec, {
+    state: 'frozen',
+    snapshot: [{ ...entry(), remaining: 5 }],
+    snapshotHash: 'deadbeef',
+    epoch: '2026-01-01',
+  })
+  check('advanceClaim moves the state', frozen.state === 'frozen')
+  check('and preserves the identity fields', frozen.txHash === tx && frozen.claimant === rec.claimant)
+
+  const read = (await store.getClaim(M, tx, 0)) as ClaimRecord
+  check('the advanced claim is what a replay reads back', read.state === 'frozen' && read.epoch === '2026-01-01')
+  check('unit 1 is untouched by unit 0 advancing',
+    ((await store.getClaim(M, tx, 1)) as ClaimRecord).state === 'claimed')
+
+  // No TTL until terminal. An expiring claim is a paid play with no evidence of
+  // what was owed.
+  const claimKey = `kismetart:xp:${M}:claim:${tx}:0`
+  const ttlOnClaim = log.some(
+    (c) =>
+      (c[0] === 'expire' || c[0] === 'pexpire' || c[0] === 'expireat') && c[1] === claimKey,
+  )
+  const setWithTtl = log.some(
+    (c) => c[0] === 'set' && c[1] === claimKey && c.some((a) => ['ex', 'px', 'exat', 'pxat'].includes(a.toLowerCase())),
+  )
+  check('a live claim is never given a TTL', !ttlOnClaim && !setWithTtl)
+}
+
+console.log('\n5b. a machine id is claimed, not just checked')
+{
+  const base = {
+    id: 'contested',
+    creator: CREATOR,
+    name: 'first',
+    state: 'draft' as const,
+    capsule: { collection: COLL, tokenId: '1' },
+    capsuleMaxSupply: 100,
+    splitRecipients: [CREATOR, ART_B],
+    createdAt: 1,
+  }
+  check('the first creator claims the id', (await store.createMachine(base)) === true)
+  check('a second creator cannot overwrite it',
+    (await store.createMachine({ ...base, creator: ART_B, name: 'second' })) === false)
+  const held = await store.getMachine('contested')
+  check('and the winner keeps the record', held.creator === CREATOR && held.name === 'first')
+
+  // Publish-last: a machine is inert until its pool exists.
+  check('a reserved machine starts as a draft', held.state === 'draft')
+  check('drafts are not listed publicly',
+    ((await store.listMachines(['live', 'ended'])) as { id: string }[]).every((m) => m.id !== 'contested'))
+  const live = await store.setMachineState('contested', 'live')
+  check('promotion flips it live', live.state === 'live')
+  check('and only then is it listed',
+    ((await store.listMachines(['live'])) as { id: string }[]).some((m) => m.id === 'contested'))
+  check('while its identity is untouched by the flip', live.creator === CREATOR && live.name === 'first')
+  // The split must survive as part of the machine: an artist who cannot be paid
+  // must not be drawable, and nothing can check that later if the recipient set
+  // is discarded after the publish-time validation.
+  check('the split recipients persist with the machine',
+    Array.isArray(live.splitRecipients) && live.splitRecipients.length === 2)
+  check('and survive a state change', live.splitRecipients.includes(ART_B))
+}
+
+// ═══ 6. epoch seeds: fixed in advance, revealed only once closed ════════════
+console.log('\n6. commit and reveal')
+{
+  const M = 'seed-machine'
+  const epoch = '2026-01-01'
+  const first = await store.seedForEpoch(M, epoch)
+  const second = await store.seedForEpoch(M, epoch)
+  check('the first caller fixes the epoch seed', first.seed === second.seed)
+  check('and no later caller can replace it', first.commitment === second.commitment)
+  check('the commitment is sha256 of the seed', first.commitment === commitmentFor(first.seed))
+  check('the public commitment matches without exposing the seed',
+    (await store.commitmentForEpoch(M, epoch)) === first.commitment)
+
+  check('a live epoch NEVER reveals its seed', (await store.revealSeed(M, epoch, epoch)) === null)
+  check('a future epoch does not either', (await store.revealSeed(M, '2026-01-02', epoch)) === null)
+  check('a closed epoch reveals', (await store.revealSeed(M, epoch, '2026-01-02')) === first.seed)
+  check('an unopened epoch has no commitment', (await store.commitmentForEpoch(M, '2020-01-01')) === null)
+  check('epochFor is the UTC calendar day', epochFor(Date.UTC(2026, 0, 1, 23, 59, 59)) === '2026-01-01')
+}
+
+// ═══ 7. end to end: play, then verify the receipt reproduces it ═════════════
+console.log('\n7. a whole play, then its receipt')
+{
+  const M = 'e2e-machine'
+  const epoch = '2026-03-01'
+  const tx = '0x' + '7'.repeat(64)
+  const a = entry({ tokenId: 'e1', supply: 3, weight: 40 })
+  const b = entry({ tokenId: 'e2', supply: 3, weight: 60, artist: ART_B })
+  await store.putPoolEntry(M, a)
+  await store.putPoolEntry(M, b)
+
+  // Freeze exactly as the route does.
+  const snapshot = store.buildSnapshot([a, b], await store.getRemaining(M)) as SnapshotEntry[]
+  const sHash = snapshotHash(snapshot)
+  const { seed, commitment } = await store.seedForEpoch(M, epoch)
+
+  const res = await runDraw(snapshot, {
+    consume: (k: string) => store.consumeOne(M, k) as Promise<number | null>,
+    release: (k: string) => store.releaseOne(M, k) as Promise<void>,
+    authority: async () => true,
+    hash: (attempt: number) => drawHash({ serverSeed: seed, txHash: tx, unitIndex: 0, attempt }),
+  }, 6)
+  check('the play draws', res.kind === 'drawn')
+  const prize = res.kind === 'drawn' ? res.prize : null
+
+  // Now the verifier's job, with only what /api/experience/verify publishes.
+  const v = verifyDraw({
+    serverSeed: seed,
+    commitment,
+    snapshot,
+    snapshotHash: sHash,
+    txHash: tx,
+    unitIndex: 0,
+    attempt: res.attempt,
+  })
+  check('the published seed matches the published commitment', v.ok)
+  const recomputed = v.ok && v.hash ? selectByHash(snapshot, v.hash) : null
+  check('and an independent recomputation lands on the delivered prize',
+    !!prize && recomputed?.tokenId === prize.tokenId)
+
+  // The half the industry omits: a tampered weight table must fail even though
+  // the seed still verifies.
+  const rigged = snapshot.map((e) => (e.tokenId === 'e1' ? { ...e, weight: 999 } : e))
+  const tampered = verifyDraw({
+    serverSeed: seed, commitment, snapshot: rigged, snapshotHash: sHash,
+    txHash: tx, unitIndex: 0, attempt: res.attempt,
+  })
+  check('a valid seed over a rigged weight table FAILS', !tampered.ok)
+  check('and says why', (tampered.reason ?? '').includes('weight table'))
+
+  // The play feed is a feed, never the source of truth.
+  await store.recordPlay(M, '0x' + '5'.repeat(40), tx)
+  const plays = (await store.recentPlays(M, 5)) as { player: string; txHash: string }[]
+  check('the play is recorded for the public feed', plays.length === 1 && plays[0].txHash === tx)
+  check('and attributed to the player', plays[0].player === '0x' + '5'.repeat(40))
+  check('played tx hashes are queryable per player',
+    (await store.playedTxHashes(M, '0x' + '5'.repeat(40)) as Set<string>).has(tx))
+
+  // Spark is denominated in plays, never money.
+  check('a play credits exactly one spark', (await store.addSpark(M, '0x' + '5'.repeat(40), 1)) === 1)
+  check('and reads back', (await store.getSpark(M, '0x' + '5'.repeat(40))) === 1)
+}
+
+// ═══ 8. the cross-machine commitment ledger ═════════════════════════════════
+console.log('\n8. two machines cannot promise the same copy')
+{
+  await store.pledgeSupply(COLL, 'x1', 'machine-one', 4)
+  await store.pledgeSupply(COLL, 'x1', 'machine-two', 3)
+  check('a machine does not count its own pledge against itself',
+    (await store.otherPledges(COLL, 'x1', 'machine-one')) === 3)
+  check('and sees every other machine that pledged',
+    (await store.otherPledges(COLL, 'x1', 'machine-two')) === 4)
+  // Re-pledging is how a machine's claim on an edition changes; there is no
+  // un-pledge, because the only caller that ever wanted one (delisting) was
+  // releasing copies it still owed.
+  await store.pledgeSupply(COLL, 'x1', 'machine-two', 1)
+  check('a machine can only revise its own pledge',
+    (await store.otherPledges(COLL, 'x1', 'machine-one')) === 1)
+  check('an unpledged edition is clear', (await store.otherPledges(COLL, 'x9', 'machine-one')) === 0)
+  check('the ledger has no un-pledge to call', store.releasePledge === undefined)
+
+  // Delivered copies leave the ledger as they reach the chain. Live headroom
+  // already drops by every minted copy, so a pledge that never shrank counted
+  // each one twice and refused a second season supply that was free.
+  const pledged = () => hashes.get(`kismetart:xp:commit:${COLL}:x2`)?.get('season-one')
+  await store.pledgeSupply(COLL, 'x2', 'season-one', 3)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('a delivered copy releases exactly one unit of its pledge',
+    (await store.otherPledges(COLL, 'x2', 'season-two')) === 2)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('a machine that delivered its whole pledge blocks nothing',
+    (await store.otherPledges(COLL, 'x2', 'season-two')) === 0)
+  await store.settleDeliveredCopy('season-one', { collection: COLL, tokenId: 'x2' })
+  check('and a stray release never drives a pledge negative', pledged() === '0', `ledger=${pledged()}`)
+  await store.pledgeSupply(COLL, 'x3', 'open-floor', 0)
+  await store.settleDeliveredCopy('open-floor', { collection: COLL, tokenId: 'x3' })
+  check('an unlimited entry pledges nothing before or after a delivery',
+    hashes.get(`kismetart:xp:commit:${COLL}:x3`)?.get('open-floor') === '0')
+}
+
+// ═══ 8b. seeds committed a day AHEAD, not lazily on first play ══════════════
+console.log('\n8b. commit-ahead seeds')
+{
+  const M = 'ahead-machine'
+  const today = '2026-05-10'
+
+  check('no commitment exists before the machine is opened',
+    (await store.commitmentForEpoch(M, today)) === null)
+
+  const opened = await store.openEpochSeeds(M, today)
+  check('opening returns today\'s commitment', opened.commitment.length === 64)
+  check('and tomorrow\'s, already fixed', opened.next.epoch === '2026-05-11')
+  check('tomorrow\'s commitment is real, not a placeholder',
+    (await store.commitmentForEpoch(M, '2026-05-11')) === opened.next.commitment)
+
+  // THE PROPERTY THIS EXISTS FOR. A commitment created lazily on first play is
+  // created AFTER that player's capsule transaction — which is precisely the
+  // ordering commit-reveal is supposed to rule out. Because tomorrow's seed is
+  // fixed today, tomorrow's first player draws against a seed that predates any
+  // transaction they could possibly have made.
+  const tomorrowSeed = await store.seedForEpoch(M, '2026-05-11')
+  check('tomorrow\'s seed is already the committed one',
+    commitmentFor(tomorrowSeed.seed) === opened.next.commitment)
+
+  // Idempotent: calling again — including from a request that has already seen
+  // a player's transaction — cannot replace a fixed seed.
+  const again = await store.openEpochSeeds(M, today)
+  check('re-opening never rotates a live seed', again.commitment === opened.commitment)
+  check('nor the one committed ahead', again.next.commitment === opened.next.commitment)
+
+  // And rolling forward a day reuses yesterday's commitment rather than minting
+  // a fresh one, which is what makes "we published this yesterday" true.
+  const rolled = await store.openEpochSeeds(M, '2026-05-11')
+  check('the next day inherits the commitment published for it',
+    rolled.commitment === opened.next.commitment)
+  check('and commits the day after that', rolled.next.epoch === '2026-05-12')
+
+  check('a live seed still refuses to reveal', (await store.revealSeed(M, today, today)) === null)
+  check('a closed one still does',
+    (await store.revealSeed(M, today, '2026-05-11')) !== null)
+}
+
+// ═══ 8c. the browser-local capsule ledger ═══════════════════════════════════
+console.log('\n8c. local capsule ledger')
+{
+  // A tiny in-memory localStorage so the REAL module runs. The store can also
+  // THROW on read (private-mode Safari, blocked site data) and a capsule ledger
+  // must never be why a machine page fails to render, so that is exercised too.
+  const mem = new Map<string, string>()
+  let broken = false
+  ;(globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => { if (broken) throw new Error('blocked'); return mem.get(k) ?? null },
+    setItem: (k: string, v: string) => { if (broken) throw new Error('blocked'); mem.set(k, v) },
+    removeItem: (k: string) => { mem.delete(k) },
+  }
+
+  const pending = await import(new URL('../lib/experience/pendingCapsules.ts', import.meta.url).href)
+  const M = 'ledger'
+  const tx = (n: number) => '0x' + String(n).padStart(2, '0').repeat(32)
+
+  check('an empty ledger lists nothing', pending.listPendingCapsules(M).length === 0)
+
+  pending.rememberCapsule(M, { txHash: tx(1), units: 3, at: 1 })
+  const one = pending.listPendingCapsules(M)
+  check('a remembered capsule comes back', one.length === 1 && one[0].txHash === tx(1))
+  check('with its unit count', one[0].units === 3)
+
+  // Re-remembering the same transaction must not duplicate it — the play loop
+  // writes before every attempt.
+  pending.rememberCapsule(M, { txHash: tx(1), units: 3, at: 2 })
+  check('re-remembering does not duplicate', pending.listPendingCapsules(M).length === 1)
+
+  pending.rememberCapsule(M, { txHash: tx(2), units: 1, at: 3 })
+  check('newest first', pending.listPendingCapsules(M)[0].txHash === tx(2))
+  check('machines are kept apart', pending.listPendingCapsules('other').length === 0)
+
+  pending.clearPendingCapsule(M, tx(2))
+  const left = pending.listPendingCapsules(M)
+  check('clearing removes only that capsule', left.length === 1 && left[0].txHash === tx(1))
+  pending.clearPendingCapsule(M, tx(1))
+  check('clearing the last empties the machine', pending.listPendingCapsules(M).length === 0)
+
+  // Bounded, so an abandoned browser cannot grow it without limit.
+  for (let i = 0; i < 40; i++) pending.rememberCapsule(M, { txHash: tx(i), units: 1, at: i })
+  check('the ledger is bounded', pending.listPendingCapsules(M).length === 20)
+
+  // A corrupt or hostile value must read as empty rather than throw.
+  mem.set('kismetart:xp:pending', 'not json')
+  check('corrupt storage reads as empty', pending.listPendingCapsules(M).length === 0)
+  mem.set('kismetart:xp:pending', '[1,2,3]')
+  check('a non-object ledger reads as empty', pending.listPendingCapsules(M).length === 0)
+  mem.set('kismetart:xp:pending', JSON.stringify({ [M]: [{ txHash: 'nope', units: 1, at: 1 }] }))
+  check('a malformed hash is filtered out', pending.listPendingCapsules(M).length === 0)
+
+  broken = true
+  check('a storage that throws on read still returns a list', pending.listPendingCapsules(M).length === 0)
+  let threw = false
+  try { pending.rememberCapsule(M, { txHash: tx(9), units: 1, at: 1 }) } catch { threw = true }
+  check('and a write that throws is swallowed', !threw)
+  broken = false
+}
+
+// ═══ 8d. capsule discovery: grouping mints found on-chain ═══════════════════
+console.log('\n8d. capsule discovery')
+{
+  // groupCapsuleMints is the pure half of the zora.co recovery path: raw
+  // TransferSingle rows in, per-transaction {txHash, units} out. The I/O half
+  // (the getLogs call) is a thin wrapper that is deliberately NOT exercised
+  // here — a hermetic oracle must not depend on an RPC answering.
+  const discovery = await import(new URL('../lib/experience/discovery.ts', import.meta.url).href)
+  const group = discovery.groupCapsuleMints as (
+    rows: { transactionHash: string | null; blockNumber: bigint | null; from: string; to: string; id: bigint; value: bigint }[],
+    tokenId: string,
+    account: string,
+  ) => { txHash: string; units: number; blockNumber: number }[]
+
+  const ME = '0x' + 'ab'.repeat(20)
+  const THEM = '0x' + 'cd'.repeat(20)
+  const ZERO_A = '0x' + '0'.repeat(40)
+  const T1 = '0x' + '11'.repeat(32)
+  const T2 = '0x' + '22'.repeat(32)
+  const row = (over: Partial<{ transactionHash: string | null; blockNumber: bigint | null; from: string; to: string; id: bigint; value: bigint }> = {}) => ({
+    transactionHash: T1, blockNumber: 100n, from: ZERO_A, to: ME, id: 7n, value: 1n, ...over,
+  })
+
+  const single = group([row()], '7', ME)
+  check('one mint log becomes one capsule', single.length === 1 && single[0].units === 1)
+  check('with its transaction hash lowercased', single[0].txHash === T1.toLowerCase())
+
+  check('two logs in one transaction SUM their units',
+    group([row({ value: 2n }), row({ value: 3n })], '7', ME)[0]?.units === 5)
+
+  const multi = group([row(), row({ transactionHash: T2, blockNumber: 200n })], '7', ME)
+  check('separate transactions stay separate', multi.length === 2)
+  check('newest block first', multi[0].txHash === T2.toLowerCase())
+
+  // THE FILTER THAT MATTERS: TransferSingle's tokenId lives in the DATA, not
+  // the topics, so the log query cannot exclude a different edition minted on
+  // the same collection — only this decode-side check keeps edition 8's mints
+  // from being counted as capsules for edition 7's machine.
+  check('a different edition on the same collection is excluded',
+    group([row({ id: 8n })], '7', ME).length === 0)
+  check('a secondary transfer (non-genesis) is excluded',
+    group([row({ from: THEM })], '7', ME).length === 0)
+  check('someone else\'s mint is excluded', group([row({ to: THEM })], '7', ME).length === 0)
+  check('account matching is case-insensitive',
+    group([row({ to: ME.toUpperCase().replace('0X', '0x') })], '7', ME).length === 1)
+  check('a null transaction hash is skipped', group([row({ transactionHash: null })], '7', ME).length === 0)
+
+  check('a zero-value log still counts as one unit', group([row({ value: 0n })], '7', ME)[0]?.units === 1)
+  check('an absurd value clamps to one unit',
+    group([row({ value: 10_000_000_000n })], '7', ME)[0]?.units === 1)
+  check('an empty log set is an empty result', group([], '7', ME).length === 0)
+}
+
+// ═══ 8e. one definition of "may be dispensed", shared by every path ════════
+console.log('\n8e. the eligibility filter')
+{
+  // Seeded before the first read: lib/blacklist memoizes for 15 minutes and
+  // lib/hiddenMoments caches too, so a fresh process is the only honest way to
+  // exercise them. This is exactly why the end-to-end harness cannot cover it.
+  const BANNED = '0x' + 'ba'.repeat(20)
+  const PASS_COLL = '0x' + 'ca'.repeat(20)
+  sets.set('kismetart:blacklist', new Set([BANNED]))
+  sets.set('kismetart:hidden-moments', new Set([`${COLL}:hidden1`]))
+
+  const elig = await import(new URL('../lib/experience/eligibility.ts', import.meta.url).href)
+  const row = (over: Partial<{ collection: string; tokenId: string; artist: string }> = {}) => ({
+    collection: COLL, tokenId: '1', artist: ART_A, ...over,
+  })
+
+  check('an ordinary entry is deliverable', (await elig.isDeliverableEntry(row(), null)) === true)
+  check('a hidden artwork is not',
+    (await elig.isDeliverableEntry(row({ tokenId: 'hidden1' }), null)) === false)
+  check('a blacklisted artist\'s entry is not',
+    (await elig.isDeliverableEntry(row({ artist: BANNED }), null)) === false)
+  check('a Pass-collection artwork is never deliverable',
+    (await elig.isDeliverableEntry(row({ collection: PASS_COLL }), PASS_COLL)) === false)
+  check('and is fine once it is not the Pass collection',
+    (await elig.isDeliverableEntry(row({ collection: PASS_COLL }), null)) === true)
+
+  // THE DRIFT THIS ENDS. The published odds table applied only two of these
+  // three tests, so a blacklisted artist's row stayed in the table with a
+  // probability it could never win — and inflated the denominator under every
+  // other row, understating what players were really being offered.
+  const pool = [row({ tokenId: 'a' }), row({ tokenId: 'b', artist: BANNED }), row({ tokenId: 'c' })]
+  const kept = await elig.filterDeliverable(pool, null)
+  check('filterDeliverable drops exactly the undeliverable rows', kept.length === 2)
+  check('and preserves order, which selection depends on',
+    kept[0].tokenId === 'a' && kept[1].tokenId === 'c')
+  check('the published table and the draw now filter through the same function',
+    (await elig.filterDeliverable(pool, null)).length ===
+      (await elig.filterDeliverable(pool, null)).length)
+
+  sets.delete('kismetart:blacklist')
+  sets.delete('kismetart:hidden-moments')
+}
+
+// ═══ 9. operator identity: the grant and the signer must be the same account ══
+console.log('\n9. operator identity')
+{
+  const authority = await import(new URL('../lib/experience/authority.ts', import.meta.url).href)
+  const delivery = await import(new URL('../lib/experience/delivery.ts', import.meta.url).href)
+  const creds = {
+    id: process.env.CDP_API_KEY_ID,
+    secret: process.env.CDP_API_KEY_SECRET,
+    wallet: process.env.CDP_WALLET_SECRET,
+  }
+  delete process.env.CDP_API_KEY_ID
+  delete process.env.CDP_API_KEY_SECRET
+  delete process.env.CDP_WALLET_SECRET
+
+  // The operator is READ OFF the delivery account, never configured, so there
+  // is no second address that could disagree with the signer. Without the
+  // account there is no operator — and no authority at all.
+  check('the operator is derived from the delivery account', authority.readOperatorGrant !== undefined &&
+    (await delivery.experienceOperator()) === null)
+  check('no delivery account means no grant can be confirmed',
+    (await authority.readOperatorGrant(COLL, '1')) === undefined)
+  check('and no authority to mint',
+    (await authority.checkPrizeAuthority({ collection: COLL, tokenId: '1' })).ok === false)
+  check('the old configured operator list is gone', authority.operatorAddresses === undefined)
+
+  // Delivery fails CLOSED on missing credentials — before the Redis lock and
+  // before anything is broadcast — and so does the receipt read.
+  let broadcast = false
+  const out = await delivery.deliverPrize({
+    claimKey: 'oracle:0xabc:0',
+    collection: COLL,
+    tokenId: '1',
+    player: '0x' + '3'.repeat(40),
+    onBroadcast: async () => { broadcast = true },
+  })
+  check('unconfigured delivery is unavailable, not an exception', out.kind === 'unavailable')
+  check('and nothing was ever broadcast', !broadcast)
+  check('an unconfigured receipt read is unknown, never a verdict',
+    (await delivery.readDeliveryOutcome({ userOpHash: '0x' + '9'.repeat(64) })).kind === 'unknown')
+  if (creds.id) process.env.CDP_API_KEY_ID = creds.id
+  if (creds.secret) process.env.CDP_API_KEY_SECRET = creds.secret
+  if (creds.wallet) process.env.CDP_WALLET_SECRET = creds.wallet
+
+  // What each CDP userOp status means for the claim that broadcast it. This is
+  // the whole of the reconciliation decision, so every value is pinned: only
+  // `complete` is a landed mint; `failed` and `dropped` are terminal without
+  // one (re-attempt is safe); everything else — including a status this code
+  // has never heard of — is still in flight: not delivered, not re-mintable.
+  const state = delivery.deliveryStateFromStatus as (s: string | undefined) => string
+  check('complete is a landed mint', state('complete') === 'landed')
+  check('failed is terminal with nothing landed', state('failed') === 'failed')
+  check('dropped is terminal with nothing landed', state('dropped') === 'failed')
+  check('pending is still in flight', state('pending') === 'pending')
+  check('signed is still in flight', state('signed') === 'pending')
+  check('broadcast is still in flight', state('broadcast') === 'pending')
+  check('an unknown status is treated as in flight, never as landed or failed',
+    state('some-future-status') === 'pending' && state(undefined) === 'pending')
+
+  // The prize mint itself: adminMint(to, id, 1, 0x) carrying Kismet's ERC-8021
+  // attribution, exactly like every other write on the platform.
+  const viem = await import('viem')
+  const builder = await import(new URL('../lib/builderCode.ts', import.meta.url).href)
+  const player = '0x' + '4'.repeat(40)
+  const { data } = delivery.buildAdminMintCall(player, '77') as { data: string }
+  const selector = viem.toFunctionSelector('adminMint(address,uint256,uint256,bytes)')
+  check('the prize call is adminMint', data.startsWith(selector))
+  const suffix = builder.BUILDER_DATA_SUFFIX as string | undefined
+  check('with the builder attribution suffix appended',
+    !suffix || data.endsWith(suffix.slice(2)))
+  const bare = suffix ? data.slice(0, data.length - (suffix.length - 2)) : data
+  const collections = await import(new URL('../lib/collections.ts', import.meta.url).href)
+  const decoded = viem.decodeFunctionData({ abi: collections.COLLECTION_ABI, data: bare as `0x${string}` })
+  check('minting exactly one copy to the winner',
+    decoded.args?.[0] === viem.getAddress(player) &&
+    decoded.args?.[1] === 77n &&
+    decoded.args?.[2] === 1n)
+}
+
+// ═══ 10. one capsule token, one machine, for life ═══════════════════════════
+//
+// The reservation is what stops two machines honouring the SAME capsule mint —
+// claims are keyed per (machine, tx, unit), so a shared capsule is a
+// double-spend the claim key cannot see. Two failure modes pull in opposite
+// directions and both are asserted here: releasing too eagerly (a successor
+// takes a token whose machine still owes capsules) and never releasing at all
+// (a crash between the reservation and the machine write strands the token
+// forever, with no record for any admin surface to target).
+{
+  console.log('\n10. the capsule reservation')
+  const CAP = '0xcafe000000000000000000000000000000000001'
+  const machine = (id: string, coll = CAP, tokenId = '1') => ({
+    id,
+    creator: CREATOR,
+    name: id,
+    state: 'live' as const,
+    capsule: { collection: coll, tokenId },
+    capsuleMaxSupply: 0,
+    createdBlock: 1,
+    splitRecipients: [CREATOR],
+    createdAt: Date.now(),
+  })
+
+  await store.createMachine(machine('mach-a'))
+  check('the first machine takes the token', await store.reserveCapsule(CAP, '1', 'mach-a'))
+  check('and re-taking it is idempotent, not a conflict',
+    await store.reserveCapsule(CAP, '1', 'mach-a'))
+
+  await store.createMachine(machine('mach-b'))
+  check('a second machine cannot take a token a live machine holds',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+
+  // THE MONEY CASE. Delisting is a shelf decision taken while capsules are
+  // already in wallets; the machine still owes every one of them. Handing its
+  // token to a successor would make one paid mint honourable by both.
+  await store.setMachineState('mach-a', 'delisted')
+  check('nor one a DELISTED machine holds — it still owes the capsules it sold',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+  await store.setMachineState('mach-a', 'live')
+
+  // A reservation whose machine was never written: the publish crash window.
+  const ORPHAN = '0xcafe000000000000000000000000000000000002'
+  check('a reservation naming no machine at all is reserved', await store.reserveCapsule(ORPHAN, '1', 'ghost'))
+  check('and is taken over rather than stranding the token forever',
+    await store.reserveCapsule(ORPHAN, '1', 'mach-b'))
+
+  // A reservation left pointing at a machine that has since moved on.
+  const DRIFT = '0xcafe000000000000000000000000000000000003'
+  await store.createMachine(machine('mach-c', DRIFT))
+  check('a machine holds its own token', await store.reserveCapsule(DRIFT, '1', 'mach-c'))
+  // Rewrite mach-c's record so it now names a DIFFERENT capsule, straight into
+  // the mock store — production has no whole-record overwrite (createMachine is
+  // NX, setMachineState only flips state), so the store exposes none; the point
+  // under test is reserveCapsule's staleness rule, not how the drift arose.
+  strings.set('kismetart:xp:mach-c:meta', JSON.stringify(machine('mach-c', '0xcafe000000000000000000000000000000000099')))
+  check('a reservation whose machine now names a different capsule is stale',
+    await store.reserveCapsule(DRIFT, '1', 'mach-b'))
+
+  // The compensating release can only ever free the caller's OWN reservation.
+  await store.releaseCapsule(CAP, '1', 'mach-b')
+  check('releasing under the wrong machine id frees nothing',
+    (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
+  await store.releaseCapsule(CAP, '1', 'mach-a')
+  check('and under the right one it does', await store.reserveCapsule(CAP, '1', 'mach-b'))
+}
+
+// ═══ 11. a creator's machines: listed, first-live, withdrawn ═════════════════
+console.log('\n11. creator management')
+{
+  const OWNER = '0x' + '6'.repeat(40)
+  const CAP2 = '0xcafe000000000000000000000000000000000002'
+  const PIECE = { collection: COLL, tokenId: 'w1', artist: OWNER, weight: 1, supply: 4 }
+  const queued = (id: string, capsuleToken = '1') => ({
+    id, creator: OWNER, name: id, state: 'review' as const,
+    capsule: { collection: CAP2, tokenId: capsuleToken }, capsuleMaxSupply: 10, createdBlock: 1,
+    splitRecipients: [OWNER], createdAt: Date.now(),
+  })
+  const publish = async (id: string, capsuleToken: string) => {
+    await store.reserveCapsule(CAP2, capsuleToken, id)
+    await store.createMachine(queued(id, capsuleToken))
+    await store.putPoolEntry(id, PIECE)
+    await store.pledgeSupply(PIECE.collection, PIECE.tokenId, id, PIECE.supply)
+  }
+
+  await publish('queued-one', '1')
+  check('a creator\'s machine is listed on their own index',
+    (await store.listMachinesByCreator(OWNER)).map((m: { id: string }) => m.id).join() === 'queued-one')
+
+  // Withdrawing a machine that was never on sale frees everything it held.
+  check('a queued machine that was never live is withdrawn', (await store.withdrawMachine('queued-one')) === 'withdrawn')
+  check('its record is gone', (await store.getMachine('queued-one')) === null)
+  check('and it leaves both indexes',
+    (await store.listMachinesByCreator(OWNER)).length === 0 && !(await store.listMachines()).some((m: { id: string }) => m.id === 'queued-one'))
+  check('its capsule is free for the next machine', await store.reserveCapsule(CAP2, '1', 'queued-two'))
+  check('and so is its pledged supply', (await store.otherPledges(PIECE.collection, PIECE.tokenId, 'someone-else')) === 0)
+  check('a missing machine is reported as such', (await store.withdrawMachine('queued-one')) === 'missing')
+
+  // listedAt is set the first time a machine goes live and never moves again.
+  await publish('went-live', '2')
+  const first = await store.setMachineState('went-live', 'live')
+  await store.setMachineState('went-live', 'delisted')
+  const again = await store.setMachineState('went-live', 'live')
+  check('going live records when, once', !!first?.listedAt && again?.listedAt === first.listedAt)
+
+  // THE GUARD. A machine that was ever live may have sold capsules, and those
+  // are owed for life — so it can never be withdrawn, even pulled back to review.
+  await store.setMachineState('went-live', 'review')
+  check('a machine that was ever live cannot be withdrawn, even back in review',
+    (await store.withdrawMachine('went-live')) === 'refused')
+  check('and keeps its pledge', (await store.otherPledges(PIECE.collection, PIECE.tokenId, 'someone-else')) === 4)
+
+  // Belt and braces: a recorded play refuses it too.
+  await publish('has-a-play', '3')
+  await store.recordPlay('has-a-play', OWNER, '0x' + 'ab'.repeat(32))
+  check('nor can one with a recorded play', (await store.withdrawMachine('has-a-play')) === 'refused')
+}
+
+// ═══ 12. reveal machines and the artist's availability ═══════════════════════
+console.log('\n12. reveal machines')
+{
+  const CURATOR = '0xc0ffee0000000000000000000000000000000c0c'
+  const a = { collection: COLL, tokenId: '50', artist: ART_A, weight: 1, supply: 0 }
+  const b = { collection: COLL, tokenId: '51', artist: ART_B, weight: 1, supply: 0 }
+  const created = await store.createMachine({ id: 'curated', kind: 'reveal', creator: CURATOR, name: 'Curated', state: 'draft', createdAt: Date.now() })
+  await store.putLineup('curated', [a, b])
+  check('a reveal machine is created', created && (await store.getMachine('curated'))?.kind === 'reveal')
+  check('its lineup reads back whole', (await store.getPool('curated')).length === 2)
+  check('and holds no supply', Object.keys(await store.getRemaining('curated')).length === 0)
+  check('each piece knows it is listed there', (await store.machinesUsingPiece(COLL, '50')).includes('curated'))
+
+  // A piece in a capsule machine AND a reveal machine lists both.
+  await store.pledgeSupply(COLL, '50', 'a-capsule-machine', 2)
+  const both = await store.machinesUsingPiece(COLL, '50')
+  check('a piece in both kinds lists both, once each', both.length === 2 && both.includes('a-capsule-machine') && both.includes('curated'))
+
+  check('every piece starts available', (await store.optedOutPieces([a, b])).size === 0)
+  await store.setPieceAvailable(COLL, '51', false)
+  const off = await store.optedOutPieces([a, b])
+  check('turning one off marks only that one', off.size === 1 && off.has(entryKey(b)))
+  await store.setPieceAvailable(COLL, '51', true)
+  check('and turning it back on clears it', (await store.optedOutPieces([a, b])).size === 0)
+
+  check('withdrawing it removes the record', (await store.withdrawMachine('curated')) === 'withdrawn' && (await store.getMachine('curated')) === null)
+  const left = await store.machinesUsingPiece(COLL, '50')
+  check('and its listing on each piece, leaving other machines alone', !left.includes('curated') && left.includes('a-capsule-machine'))
+}
+
+// ═══ 13. linked collections: a reveal machine that grows by itself ═══════════
+console.log('\n13. linked collections')
+{
+  const { joinLinkedMachines } = await import(new URL('../lib/experience/linked.ts', import.meta.url).href)
+  const CURATOR = '0xc0ffee0000000000000000000000000000000c1c'
+  const LCOLL = '0x1111000000000000000000000000000000000011'
+  const piece = (tokenId: string, artist: string, linkedAt?: number) =>
+    ({ collection: LCOLL, tokenId, artist, weight: 1, supply: 0, ...(linkedAt !== undefined ? { linkedAt } : {}) })
+  const keys = async (id: string) => (await store.getPool(id)).map(entryKey).sort()
+  const hand = { collection: COLL, tokenId: '60', artist: ART_A, weight: 1, supply: 0 }
+
+  await store.createMachine({ id: 'linked', kind: 'reveal', creator: CURATOR, name: 'Linked', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('linked', [hand, piece('1', ART_A, 1000), piece('2', ART_B, 2000)])
+  await store.linkCollections('linked', [LCOLL])
+  check('a linked collection points at its machine', (await store.machinesLinking(LCOLL)).includes('linked'))
+
+  check('a piece already in the lineup is not added twice', (await store.joinLineup('linked', piece('2', ART_B, 5000), 4)) === false && (await store.getPool('linked')).length === 3)
+  check('with room, a new piece joins and nothing leaves', (await store.joinLineup('linked', piece('3', ART_B, 3000), 4)) === true && (await store.getPool('linked')).length === 4)
+  const ART_C = '0xc3000000000000000000000000000000000000c3'
+  check('when full, a new piece still joins', (await store.joinLineup('linked', piece('4', ART_C, 4000), 4)) === true)
+  const afterFull = await keys('linked')
+  check('by taking the place of the oldest linked piece', afterFull.length === 4 && !afterFull.includes(`${LCOLL}:1`) && afterFull.includes(`${LCOLL}:4`), afterFull.join(' '))
+  check('and the hand-picked piece stays', afterFull.includes(entryKey(hand)))
+  check('the piece that left no longer lists the machine', !(await store.machinesUsingPiece(LCOLL, '1')).includes('linked'))
+  check('the piece that joined does', (await store.machinesUsingPiece(LCOLL, '4')).includes('linked'))
+  check('and its artist sees the machine as featuring them', (await store.machinesFeaturing(ART_C)).includes('linked'))
+
+  // Two linked pieces minted in the same instant: the lower token id is older.
+  await store.createMachine({ id: 'linked-tie', kind: 'reveal', creator: CURATOR, name: 'Tie', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('linked-tie', [piece('8', ART_A, 7000), piece('7', ART_A, 7000)])
+  await store.joinLineup('linked-tie', piece('9', ART_A, 8000), 2)
+  check('a tie in mint time drops the lower token id', (await keys('linked-tie')).join(' ') === [`${LCOLL}:8`, `${LCOLL}:9`].join(' '))
+
+  // Hand-picked pieces are never what makes room.
+  await store.createMachine({ id: 'all-hand', kind: 'reveal', creator: CURATOR, name: 'Hand', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('all-hand', [hand, { ...hand, tokenId: '61' }])
+  check('a lineup of only hand-picked pieces takes nothing new', (await store.joinLineup('all-hand', piece('5', ART_A, 9000), 2)) === false)
+  check('and drops nothing', (await keys('all-hand')).length === 2)
+
+  // A mint joins every live or queued machine linked to its collection, and
+  // names only the live ones for the artist's notice.
+  const LC2 = '0x2222000000000000000000000000000000000022'
+  const mk = async (id: string, state: string, kind: 'reveal' | 'capsule' = 'reveal') => {
+    await store.createMachine(kind === 'reveal'
+      ? { id, kind, creator: CURATOR, name: id, state: 'draft', createdAt: Date.now(), collections: [LC2] }
+      : { id, creator: CURATOR, name: id, state: 'draft', createdAt: Date.now(), capsule: { collection: LC2, tokenId: '1' }, capsuleMaxSupply: 10, splitRecipients: [CURATOR] })
+    await store.linkCollections(id, [LC2])
+    if (state !== 'draft') await store.setMachineState(id, state)
+  }
+  await mk('m-live', 'live')
+  await mk('m-review', 'review')
+  await mk('m-ended', 'ended')
+  await mk('m-delisted', 'delisted')
+  await mk('m-capsule', 'live', 'capsule')
+  const joined = await joinLinkedMachines({ collection: LC2.toUpperCase().replace('0X', '0x'), tokenId: '007', artist: ART_B.toUpperCase().replace('0X', '0x'), mintedAt: 42 })
+  check('a mint is reported for the live machine only', joined.length === 1 && joined[0].machineId === 'm-live', JSON.stringify(joined.map((j: { machineId: string }) => j.machineId)))
+  check('with the piece canonicalised (lowercase, base-10 token id)', joined[0]?.entry.collection === LC2 && joined[0]?.entry.tokenId === '7' && joined[0]?.entry.artist === ART_B && joined[0]?.entry.linkedAt === 42)
+  check('the live machine holds it', (await keys('m-live')).includes(`${LC2}:7`))
+  check('a queued machine takes it too, ready for approval', (await keys('m-review')).includes(`${LC2}:7`))
+  check('an ended or delisted machine does not', (await keys('m-ended')).length === 0 && (await keys('m-delisted')).length === 0)
+  check('nor a capsule machine, whatever the index says', (await store.getPool('m-capsule')).length === 0)
+  check('a second report of the same mint changes nothing', (await joinLinkedMachines({ collection: LC2, tokenId: '7', artist: ART_B, mintedAt: 43 })).length === 0 && (await keys('m-live')).length === 1)
+  check('a mint into an unlinked collection joins nothing', (await joinLinkedMachines({ collection: COLL, tokenId: '99', artist: ART_A, mintedAt: 1 })).length === 0)
+
+  check('withdrawing a linked machine unlinks it', (await store.withdrawMachine('m-review')) === 'withdrawn' && !(await store.machinesLinking(LC2)).includes('m-review'))
+  check('leaving the other machines linked', (await store.machinesLinking(LC2)).includes('m-live'))
+}
+
+// ═══ 14. who the payout run pays, and what it has paid ═══════════════════════
+console.log('\n14. payout ledger')
+{
+  const payouts = await import(new URL('../lib/referralPayouts.ts', import.meta.url).href)
+  const C1 = '0xc1c1000000000000000000000000000000000001'
+  const C2 = '0xc2c2000000000000000000000000000000000002'
+  await store.addCurator(C1.toUpperCase().replace('0X', '0x'))
+  await store.addCurator(C1)
+  await store.addCurator(C2)
+  const curators = await store.listCurators()
+  check('curators are kept once each, lowercased', curators.length === 2 && curators.includes(C1) && curators.includes(C2))
+
+  // Past 2^53 wei, where a bare number would lose precision in the client.
+  const BIG = 9_007_199_254_740_993n
+  await payouts.recordPayout({ address: C1, amount: BIG, userOpHash: '0xop1' })
+  await payouts.recordPayout({ address: C1, amount: 7n, userOpHash: '0xop2' })
+  await payouts.recordPayout({ address: C2, amount: 5n, userOpHash: '0xop3' })
+  await payouts.recordPayout({ address: C2, amount: 9n, userOpHash: '0xop4' })
+  check('nothing is counted as paid until the chain says so', (await payouts.paidTo(C1)) === 0n)
+  const outcomes: Record<string, { kind: string; txHash?: string }> = {
+    '0xop1': { kind: 'landed', txHash: '0xt1' },
+    '0xop2': { kind: 'landed', txHash: '0xt2' },
+    '0xop3': { kind: 'failed' },
+    '0xop4': { kind: 'unknown' },
+  }
+  const first = await payouts.reconcilePayouts(async (h: string) => outcomes[h])
+  check('a run settles what landed and what failed, and waits on the rest', first.landed === 2 && first.failed === 1 && first.waiting === 1 && first.expired === 0, JSON.stringify(first))
+  check('a landed payout counts toward its owner, exactly', (await payouts.paidTo(C1)) === BIG + 7n, String(await payouts.paidTo(C1)))
+  check('a failed one does not', (await payouts.paidTo(C2)) === 0n)
+  check('the owner is found however their address is cased', (await payouts.paidTo(C1.toUpperCase().replace('0X', '0x'))) === BIG + 7n)
+  let asked = 0
+  const second = await payouts.reconcilePayouts(async (h: string) => { asked++; return outcomes[h] })
+  check('a second run asks only about what is still unsettled', asked === 1 && second.landed === 0 && second.waiting === 1)
+  check('and never counts a payout twice', (await payouts.paidTo(C1)) === BIG + 7n)
+  outcomes['0xop4'] = { kind: 'landed', txHash: '0xt4' }
+  await payouts.reconcilePayouts(async (h: string) => outcomes[h])
+  check('one that lands later is counted when it does', (await payouts.paidTo(C2)) === 9n)
+
+  // Each landed payout tells its curator, once; Kismet's own address is told nothing.
+  const referralNotes = (addr: string) => [...(zsets.get(`kismetart:notif:${addr.toLowerCase()}`)?.keys() ?? [])]
+    .map((m) => JSON.parse(m) as { type: string; note?: string; price?: string; currency?: string; priority?: boolean })
+    .filter((n) => n.type === 'payout' && n.note === 'referral')
+  const c1Notes = referralNotes(C1)
+  check('a curator is told of each payout that lands, with its amount',
+    c1Notes.length === 2 && c1Notes.map((n) => n.price).sort().join() === ['7', String(BIG)].sort().join() && c1Notes.every((n) => n.currency === 'eth'),
+    JSON.stringify(c1Notes))
+  check('as a money notice that always badges', c1Notes.every((n) => n.priority === true))
+  check('never for one that failed, nor twice for one counted later', referralNotes(C2).length === 1 && referralNotes(C2)[0].price === '9')
+  const { KISMET_REFERRAL } = await import(new URL('../lib/zoraMint.ts', import.meta.url).href)
+  await payouts.recordPayout({ address: KISMET_REFERRAL.toLowerCase(), amount: 13n, userOpHash: '0xopk' })
+  await payouts.reconcilePayouts(async () => ({ kind: 'landed', txHash: '0xtk' }))
+  check('Kismet\'s own referral address is counted but not notified', (await payouts.paidTo(KISMET_REFERRAL)) === 13n && referralNotes(KISMET_REFERRAL).length === 0)
+
+  // A payout nobody can account for is dropped after the retention window.
+  const realNow = Date.now
+  await payouts.recordPayout({ address: C2, amount: 11n, userOpHash: '0xop5' })
+  Date.now = () => realNow() + 31 * 86_400_000
+  try {
+    const late = await payouts.reconcilePayouts(async () => ({ kind: 'unknown' }))
+    check('an unsettled payout past the window stops being asked about', late.expired === 1 && late.waiting === 0, JSON.stringify(late))
+    let again = 0
+    await payouts.reconcilePayouts(async () => { again++; return { kind: 'unknown' } })
+    check('and settled entries past it are pruned', again === 0 && !(hashes.get('kismetart:referral-payouts:ops')?.size))
+  } finally {
+    Date.now = realNow
+  }
+  check('pruning never touches the paid totals', (await payouts.paidTo(C2)) === 9n && (await payouts.paidTo(C1)) === BIG + 7n)
+}
+
+server.close()
+console.log(failures > 0 ? `\n${failures} FAILURE(S)\n` : '\nAll experience flow invariants hold.\n')
+if (failures > 0) process.exit(1)
