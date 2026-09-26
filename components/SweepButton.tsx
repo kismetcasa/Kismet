@@ -4,6 +4,7 @@ import { useState } from 'react'
 import dynamic from 'next/dynamic'
 import { useQuery } from '@tanstack/react-query'
 import type { SweepApiResponse } from '@/lib/sweepIndexCore'
+import { trackFunnel } from '@/lib/funnel'
 
 // The one sweep entry point (SWEEP_IMPLEMENTATION.md §1.1): a button in the
 // advanced discover page's sticky header. Renders nothing until /api/sweep
@@ -33,7 +34,10 @@ export function SweepButton() {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          trackFunnel('sweep_open') // once per sheet open — not per size toggle or "next N"
+          setOpen(true)
+        }}
         className="shrink-0 rounded-full border border-accent/40 px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider text-accent transition-colors hover:border-accent hover:bg-accent/10"
       >
         sweep

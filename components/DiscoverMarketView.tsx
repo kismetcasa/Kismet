@@ -770,7 +770,7 @@ export function DiscoverMarketView({
       style={{ top: 'calc(3.5rem + var(--safe-top))' }}
     >
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           {/* overflow-hidden: the active pill is its own rounded-full — at
               fractional device-pixel ratios its corner arc can poke past the
               container's inner curve and sit on the border. Clipping to the
@@ -791,9 +791,12 @@ export function DiscoverMarketView({
             ))}
           </div>
           {/* The one sweep entry point (SWEEP_IMPLEMENTATION.md §1.1): renders
-              nothing until /api/sweep reports an enabled, non-empty pool. */}
+              nothing until /api/sweep reports an enabled, non-empty pool. The
+              row wraps so a narrow phone drops the stats block under the
+              toggle + button (ml-auto keeps it right-aligned) instead of
+              squeezing all three. */}
           <SweepButton />
-          <div className="text-right leading-tight">
+          <div className="ml-auto text-right leading-tight">
             <div className="font-mono text-[11px] uppercase tracking-widest text-subtle">{market} market</div>
             <div className="mt-0.5 font-mono text-xs tabular-nums text-muted">{statLine}</div>
             {/* The glance line above stays; this opens the full-figure dialog. */}

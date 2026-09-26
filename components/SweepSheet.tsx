@@ -19,8 +19,10 @@ import { SWEEP_DEFAULT_N, SWEEP_MAX_N } from '@/lib/sweepIndexCore'
 
 const SIZES: readonly number[] = [SWEEP_DEFAULT_N, SWEEP_MAX_N]
 
-function buttonLabel(status: SweepStatus, basketCount: number, totalWei: bigint, n: number): string {
+function buttonLabel(status: SweepStatus, basketCount: number, totalWei: bigint, n: number, unaffordable: number): string {
   switch (status) {
+    case 'idle':
+      return 'connect wallet'
     case 'loading':
       return 'loading…'
     case 'verifying':
@@ -36,7 +38,7 @@ function buttonLabel(status: SweepStatus, basketCount: number, totalWei: bigint,
     case 'error':
       return 'retry'
     case 'empty':
-      return 'nothing to sweep right now'
+      return unaffordable > 0 ? 'add ETH, then re-check' : 're-check'
     case 'ready':
       return basketCount === 0 ? 'nothing to sweep' : `sweep ${basketCount} for ${formatPrice(totalWei.toString(), 'eth')}`
     default:
@@ -46,12 +48,13 @@ function buttonLabel(status: SweepStatus, basketCount: number, totalWei: bigint,
 
 function Row({
   row,
-  busy,
+  locked,
   onRemove,
   onRestore,
 }: {
   row: SweepRow
-  busy: boolean
+  /** Remove / undo are inert while a sweep is in flight and after it landed. */
+  locked: boolean
   onRemove: () => void
   onRestore: () => void
 }) {
@@ -88,7 +91,7 @@ function Row({
         <button
           type="button"
           onClick={onRemove}
-          disabled={busy}
+          disabled={locked}
           aria-label={`Remove ${name}`}
           className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center text-muted transition-colors hover:text-ink disabled:opacity-60"
         >
@@ -99,7 +102,7 @@ function Row({
         <button
           type="button"
           onClick={onRestore}
-          disabled={busy}
+          disabled={locked}
           className="min-h-[44px] shrink-0 px-2 font-mono text-[10px] uppercase tracking-wider text-accent disabled:opacity-60"
         >
           undo
@@ -110,7 +113,7 @@ function Row({
 }
 
 export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: () => void; initialN?: number }) {
-  const { status, rows, n, totalWei, unaffordable, result, open, remove, restore, confirm } = useSweep()
+  const { status: hookStatus, rows, n, totalWei, unaffordable, result, open, remove, restore, confirm } = useSweep()
   const ethUsd = useEthUsd()
   const dialogRef = useRef<HTMLDivElement>(null)
   useBodyScrollLock()
@@ -121,9 +124,16 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
   // ref keeps this effect from re-running (and re-fetching) on those renders.
   const openRef = useRef(open)
   openRef.current = open
+  const startedRef = useRef(false)
   useEffect(() => {
+    startedRef.current = true
     void openRef.current(initialN)
   }, [initialN])
+  // Until the mount effect has called open() the hook still reads `idle`
+  // (the sheet arrives through a lazy chunk, so that render is painted).
+  // Show it as loading, so a connected user never sees a one-frame
+  // "connect wallet". After a declined connect, `idle` is the real state.
+  const status: SweepStatus = hookStatus === 'idle' && !startedRef.current ? 'loading' : hookStatus
 
   const busy =
     status === 'loading' ||
@@ -131,15 +141,18 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
     status === 'minting' ||
     status === 'confirming' ||
     status === 'recording'
+  const rowsLocked = busy || status === 'done'
   const basketCount = rows.filter((r) => r.state === 'basket').length
   const visibleRows = rows.filter((r) => r.state !== 'reserve')
   const usd = ethUsd != null && totalWei > 0n ? ` ≈ $${(Number(formatEther(totalWei)) * ethUsd).toFixed(2)}` : ''
-  const label = buttonLabel(status, basketCount, totalWei, n)
-  const primaryDisabled = busy || status === 'empty' || (status === 'ready' && basketCount === 0)
+  const label = buttonLabel(status, basketCount, totalWei, n, unaffordable)
+  const primaryDisabled = busy || (status === 'ready' && basketCount === 0)
 
   function onPrimary() {
     if (status === 'ready') void confirm()
-    else if (status === 'error' || status === 'done' || status === 'idle') void open(n)
+    // Every other settled state re-opens: a retry after a revert must
+    // re-verify, and "re-check" after adding ETH is the same path.
+    else if (!busy) void open(n)
   }
 
   return (
@@ -193,12 +206,18 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
         <div className="max-h-[50vh] overflow-y-auto px-5 sm:px-6">
           {visibleRows.length === 0 ? (
             <p className="py-6 text-center font-mono text-xs text-muted">
-              {status === 'loading' ? 'loading the pool…' : status === 'error' ? 'something went wrong' : 'nothing to sweep right now'}
+              {status === 'loading'
+                ? 'loading the pool…'
+                : status === 'idle'
+                  ? 'connect a wallet to sweep'
+                  : status === 'error'
+                    ? 'something went wrong'
+                    : 'nothing to sweep right now'}
             </p>
           ) : (
             <ul className="flex flex-col gap-2 py-2">
               {visibleRows.map((row) => (
-                <Row key={row.key} row={row} busy={busy} onRemove={() => remove(row.key)} onRestore={() => restore(row.key)} />
+                <Row key={row.key} row={row} locked={rowsLocked} onRemove={() => remove(row.key)} onRestore={() => restore(row.key)} />
               ))}
             </ul>
           )}

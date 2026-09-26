@@ -1,22 +1,21 @@
 # Sweep (ETH-only) — Implementation Design
 
-_Implementation design for the **sweep** button, scoped by the 2026-09-26
-decision: collect one edition each of the cheapest N (default 10, max 20)
-**ETH-priced** mints live on Kismet, in **one transaction on any wallet**.
-USDC-priced (ERC20Minter) work is out of scope. Companion to
-`SWEEP_DESIGN.md`, which holds the option space and the reasoning; this
-document specifies what to build, file by file, and closes with an honest
-assessment of what is left to be desired (including whether a cap or a floor
-is needed — short answer: not for v1, keep the hooks)._
+**Date:** 2026-09-26 · **Status:** IMPLEMENTED behind `kismetart:sweep-enabled` (default
+off). The build: `lib/sweepIndexCore.ts` + `lib/sweepRank.ts` + `lib/sweepIndex.ts` (the
+hourly index, §2), `app/api/sweep/route.ts` + `app/api/admin/sweep/route.ts` (§3),
+`lib/saleConfig.ts` `fetchEligibleTokensMulti` + `lib/sweepBatch.ts` + `lib/sweepSimulate.ts`
+(§4), `hooks/useSweep.ts` + `components/SweepSheet.tsx` + `components/SweepButton.tsx`
+mounted in `components/DiscoverMarketView.tsx` (§5), `scripts/verify-sweep.ts` (pins the
+pure rules; wired into `npm run check` as `verify:sweep`). One deviation from the text
+below as first written: the sheet formats ETH through the existing `formatPrice`, so
+nothing was moved out of `CollectAllAction`.
+**Scope:** collect one edition each of the cheapest N (default 10, max 20) **ETH-priced**
+mints live on Kismet, in **one transaction on any wallet**. USDC-priced (ERC20Minter) work is
+out of scope by decision; §0 keeps the alternatives that were weighed and why they lost.
 
-> **Revision 3 (2026-09-26) — validated and built.** Every claim in this
-> design was checked against the code and, where it cites external behavior,
-> against the source (Multicall3, go-ethereum, viem 2.55.10). The architecture
-> held; seven statements were corrected and are folded into the body below,
-> marked ✏️ in §10. The **index, the API and the client phase are built and
-> verified** behind the flag (§11). The one deviation from the design as
-> written: the sheet formats ETH through the existing `formatPrice`, so
-> `formatEthChip` was not moved.
+**To turn it on:** deploy → `GET /api/cron/sync-stats?secret=…` once (or wait for the hour)
+→ `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
+Until then `/api/sweep` answers `{ enabled: false }` and the button does not render.
 
 > **Scope in one line.** FixedPriceSaleStrategy sales on Base only → one
 > Multicall3 `aggregate3Value` transaction → `/api/collect` records, exactly
@@ -26,9 +25,9 @@ is needed — short answer: not for v1, keep the hooks)._
 
 ---
 
-## 0. What the ETH-only decision removes and what it keeps
+## 0. Scope: what the ETH-only decision removes, and the alternatives considered
 
-| Concern | Mixed-currency design (`SWEEP_DESIGN.md`) | ETH-only (this doc) |
+| Concern | Mixed-currency alternative (not built) | ETH-only (this doc) |
 |---|---|---|
 | Execution path | Multicall3 **or** EIP-5792 `wallet_sendCalls` with a sequential fallback | **Multicall3 only** (plain `eth_sendTransaction`); N = 1 falls back to the direct `1155.mint` |
 | Wallet dependency | Atomic EIP-5792 support decides "one signature" on smart wallets; N prompts on legacy EOAs; Farcaster host wallet unverified | **None.** Every wallet in `lib/wagmi.ts` (RainbowKit set, Farcaster Mini App connector, Coinbase WebView `injected`) sends a plain transaction |
@@ -40,6 +39,20 @@ is needed — short answer: not for v1, keep the hooks)._
 
 Net effect: the hook is roughly a third of `useCollectAll`'s size, and the only
 new on-chain surface is a read-only simulation.
+
+**Alternatives considered** (the feasibility survey that preceded this design, condensed
+to what still matters):
+
+| Variant | Verdict | Why |
+|---|---|---|
+| ETH-only sweep, cheapest N ≤ 20, one tx, any wallet | **Built** | Multicall3 `aggregate3Value` takes a `target` per sub-call, so the cross-collection batch is collect-all's fast path with a different candidate list; no new contracts |
+| USDC-only sweep | Deferred | The ERC20Minter pulls USDC from `msg.sender`, so it cannot ride Multicall3; it would ride EIP-5792 as collect-all does — atomic on smart wallets, N + 1 prompts on legacy EOAs |
+| Mixed ETH + USDC in one tx on any wallet | Rejected | Needs a Kismet-owned router contract (first contract, audit, ops); the data does not justify it |
+| Best-effort batch via Multicall3 `allowFailure=true` | Rejected | Verified against the Multicall3 source: a value-carrying sub-call that reverts under `allowFailure=true` leaves its ETH in Multicall3, which has no withdraw and no `receive` — stranded. Partial-failure tolerance comes from simulating before signing instead (§4.3) |
+| Gas sponsorship (paymaster) | Not applicable | Rides EIP-5792, which this design does not use; the user pays cents on Base |
+| Secondary-market (listings) sweep | Out of scope | A Seaport `fulfillAvailableAdvancedOrders` path with its own verification and index |
+| "Everything" in one go | Rounds of ≤ 20 | The size cap is wallet-preview readability plus `/api/collect`'s per-IP budget; `sweep the next N` covers the rest |
+| Per-artist cap / price floor in the ranking | Deferred (§8) | The zero-cost tie-break (artists interleave within a price tier) covers the gaming case; both exist as dormant `rankSweepCandidates` options |
 
 ---
 
@@ -56,9 +69,10 @@ new on-chain surface is a read-only simulation.
 
 Placement: `DiscoverMarketView`'s `stickyHeader` — the control surface
 rendered once above whichever market branch is active (sticky under the nav on
-`sm+`, in-flow on mobile). The button sits in the header's top row
-(`flex items-center justify-between gap-4`), between the primary/secondary
-market toggle on the left and the stats block on the right, so it is the
+`sm+`, in-flow on mobile). The button sits in the header's top row right after
+the primary/secondary market toggle, with the stats block pushed to the right
+(`ml-auto`); the row wraps (`flex-wrap`), so on a narrow phone the stats block
+drops under the toggle and the button instead of squeezing all three. It is the
 first thing on the page after the market choice. Styling follows the header's
 own `stats` button (rounded-full, `border-line`, mono uppercase, `hover:border-accent`)
 with the accent border so it reads as an action rather than a filter; no
@@ -70,7 +84,7 @@ offer a primary sweep — but it always opens the same sheet.
 
 ### 1.2 The sweep sheet
 
-Tapping the pill opens `SweepSheet` — a centered, scrollable card modal in the
+Tapping the button opens `SweepSheet` — a centered, scrollable card modal in the
 `PatronInfoModal` pattern (`role="dialog"`, `useBodyScrollLock`,
 `useEscapeKey`, backdrop click closes). Contents, top to bottom:
 
@@ -95,14 +109,14 @@ Tapping the pill opens `SweepSheet` — a centered, scrollable card modal in the
 
 | Situation | Behavior |
 |---|---|
-| Not connected | Pill tap runs `useEnsureConnected` (host wallet inside Mini App / Coinbase WebView, RainbowKit modal on web) before opening the sheet |
-| Wrong chain | `useEnsureBase` prompts the switch; a switch during verification re-runs verification (chain guard before send, as `useCollectAll`) |
-| Pool empty / index missing | Pill hidden; if opened via a stale render, sheet shows `nothing to sweep right now` |
+| Not connected | The sheet opens at once and runs `useEnsureConnected` (host wallet inside Mini App / Coinbase WebView, RainbowKit modal on web); a declined connect leaves it on `connect wallet`, which re-runs the connect |
+| Wrong chain / wallet | `useEnsureBase` prompts the switch; a chain guard runs right before the send (as `useCollectAll`). A wallet **account** switched between verification and the tap is re-verified, never signed for: the ownership, balance and simulation checks were for the other signer |
+| Pool empty / index missing | Button hidden; if opened via a stale render, the sheet shows `nothing to sweep right now` with a `re-check` button |
 | Fewer than N eligible after verification | Sheet shows what is available (`sweep 4 for Ξ x`); no error |
 | Exactly 1 eligible | Direct `1155.mint` via `useDirectCollect`'s builder path (keeps `Purchased.sender` = user); the sheet still shows one row |
-| Balance short | Trim to the cheapest affordable prefix (§4.4); footnote `2 more need Ξ 0.004 more`; if zero affordable, button reads `insufficient ETH` |
+| Balance short | Trim to the cheapest affordable prefix (§4.4); the rows show `needs more ETH` and the footnote counts them; if zero affordable, the button reads `add ETH, then re-check` |
 | Simulation drops rows | Refill from the ranked reserve and re-simulate (≤ 2 rounds); dropped rows stay visible, greyed, with reason |
-| Bundle reverts on-chain (a 1/1 minted by someone else between simulation and mining) | Toast `sweep reverted — nothing charged`; button returns to `sweep N…`; re-verification drops the culprit on the next attempt |
+| Bundle reverts on-chain (a 1/1 minted by someone else between simulation and mining) | Error toast `Sweep reverted on-chain — nothing was charged`; the button reads `retry`, which re-verifies and drops the culprit |
 | User rejects in wallet | Existing `isUserRejection` handling via `useWalletRecovery` (`sweep` toast id) |
 | Record POSTs fail | Bounded retry (3, backoff, `keepalive`) then `reportClientError('sweep.record_failed')`; success toast still shows because the mint landed |
 | Wants more than 20 | `sweep the next N` rounds; the cap stays `MAX_COLLECT_ALL_BATCH` (wallet-preview readability) |
@@ -391,8 +405,9 @@ true` on every sub-call**, `value = Σ value`, `account`. This is an
 `eth_call`: nothing is sent and nothing can strand. The decoded
 `Result[].success` flags map 1:1 to items. The hook then rebuilds the strict
 bundle (`allowFailure: false`) from `kept` — the verifier asserts the strict
-bundle never carries `allowFailure: true` (the stranding hazard documented in
-`SWEEP_DESIGN.md` §4.4).
+bundle never carries `allowFailure: true` (the stranding hazard: a failed
+value-carrying sub-call leaves its ETH in Multicall3, which has no withdraw and
+no `receive` — §0 and the record in §9).
 
 Two caveats the implementation must respect: (a) op-geth's `eth_call`
 enforces `balance ≥ value` when `from` is set, so run the balance trim
@@ -423,7 +438,7 @@ idle ─open→ loading-pool ─→ verifying ─→ ready ─confirm→ minting
                                   └→ empty                └→ error (recoverable → ready)
 ```
 
-1. `open(n)`: `trackFunnel('sweep_open')`; ensure connected; fetch
+1. `open(n)` (the button fired `sweep_open` once, before mounting the sheet): ensure connected; fetch
    `/api/sweep?n=n`; render rows immediately from the pool (state
    `verifying`, rows marked pending).
 2. `verify()`: `fetchEligibleTokensMulti(refs of all returned rows, account)`
@@ -464,7 +479,7 @@ interface UseSweepReturn {
 Add `'sweep_open' | 'sweep_attempt' | 'sweep_success'` to `FUNNEL_EVENTS`
 (`lib/funnel.ts`) and document them in `ANALYTICS.md`.
 
-### 5.2 `components/SweepSheet.tsx` and `components/SweepPill.tsx`
+### 5.2 `components/SweepSheet.tsx` and `components/SweepButton.tsx`
 
 - Sheet: the `PatronInfoModal` skeleton (fixed inset, `bg-black/80`, centered
   `max-w-md` card, `border-line`, mono uppercase header), rows in a
@@ -521,7 +536,7 @@ N records instead of N fetches of the same receipt.
   artist with many dust items never occupies every slot within a price tier).
 - **Existing checks** cover the rest: `typecheck`, `lint`, `verify:a11y`
   (the sheet's text), `check:bundle` (the hook is small; the sheet lazy-loads
-  behind the pill).
+  behind the button).
 - **Rollout**: ship with `kismetart:sweep-enabled` absent (off); run the cron
   once (`/api/cron/sync-stats?secret=…`) to materialize the index; check
   `/api/admin/stats-health` (`sweepIndex`, `sweepHealthy`) or
@@ -561,34 +576,7 @@ else is either bounded by construction (cheapest-first), shown before signing
 
 ---
 
-## 9. Files and effort
-
-| File | Change | ≈ lines |
-|---|---|---|
-| `lib/catalogCensus.ts` | Split `runCensus` into `resolveCatalog` + `censusFromCatalog`; return the catalog | 60 (moves) |
-| `lib/sweepIndex.ts` | Build (two-pass chain reads, persist), `getSweepIndex`, flag read/write | 220 |
-| `lib/sweepIndexCore.ts` | Pure: record shape, admission, string-wei adapter, pool cut, serve selection, Moment projection | 200 |
-| `lib/sweepRank.ts` | Pure ranker with tie-breaks and the two dormant options | 80 |
-| `lib/saleConfig.ts` | `classifyOnchainSaleWindow` + `classifyTokenSupply` (extracted, shared), `aggregate3Strict`, `readMintFeesWithBound`; later `fetchEligibleTokensMulti` | 150 |
-| `lib/zoraMint.ts` | Export the fee bound + a `mintFee()`-only ABI | 10 |
-| `app/api/admin/sweep/route.ts` | Flag GET/POST (admin session, audit log) | 60 |
-| `lib/sweepBatch.ts`, `lib/sweepSimulate.ts` | Bundle builder, simulation + pure mapping | 120 |
-| `lib/redis.ts`, `lib/statsHealth.ts`, `lib/funnel.ts` | `SWEEP_INDEX_KEY` + `SWEEP_ENABLED_KEY`, `'sweep-index'` phase, three funnel events | 20 |
-| `app/api/cron/sync-stats/route.ts` | Third phase after the census | 25 |
-| `app/api/sweep/route.ts` | Flag, rate limit, serve-time hide filter, enrichment, cache headers | 110 |
-| `hooks/useSweep.ts` | State machine, verify/simulate/trim, send, record | 300 |
-| `components/SweepSheet.tsx`, `components/SweepButton.tsx` | Sheet + the one entry button, lazy-loaded | 270 |
-| `components/DiscoverMarketView.tsx` | Mount the button in the sticky header's top row | 10 |
-| `scripts/verify-sweep.ts`, `package.json` | Oracles + `check` wiring | 250 |
-| `ANALYTICS.md`, `STACK_OVERVIEW.md` §4.2 | Funnel events; collect-flow note | 20 |
-
-≈ 1,650 lines including the verifier. Sequencing: index + API first (can
-ship dark behind the flag and be inspected from `/admin`), then helpers +
-verifier, then hook + sheet. No contract work, no new environment variables.
-
----
-
-## 10. Validation record (2026-09-26)
+## 9. Validation record (2026-09-26)
 
 Every claim the design makes was traced to its source. ✅ = verified as
 written; ✏️ = corrected (the body above already carries the correction);
@@ -623,8 +611,8 @@ written; ✏️ = corrected (the body above already carries the correction);
 | `/api/admin/stats-health` is a dashboard panel | ✏️ | It is a JSON ops endpoint (`app/api/admin/stats-health/route.ts`); it now reports `sweepIndex` + `sweepHealthy` without touching `healthy` |
 | `/api/collect` allows 60/min per IP, sized for a 20-batch, and verifies each `TransferSingle` against the named collection | ✅ | `app/api/collect/route.ts` (`checkRateLimit('collect:…', 60, 60)`, `verifyMintOnChain` requires `log.address === collection`) — a multi-collection receipt verifies per item |
 | Adding funnel events needs a server allowlist change too | ✅ (no extra work) | `app/api/funnel/route.ts` builds its allowlist from `FUNNEL_EVENTS`, so extending the array updates both |
-| `FilterPill` can be reused by the pill | ✏️ | It is module-local to `components/DiscoverPage.tsx`; export it or mount the pill there |
-| `formatEthChip` is reusable | ✏️ | Module-local to `components/CollectAllAction.tsx`; move or export it (client phase) |
+| `FilterPill` can be reused by the pill | ✏️ moot | The pill was withdrawn with the one-button decision (§1.1); `SweepButton` carries its own classes |
+| `formatEthChip` is reusable | ✏️ moot | Module-local to `components/CollectAllAction.tsx`; the sheet formats through `formatPrice` instead, nothing moved |
 | `enrichMomentsWithKismetMeta` supplies username/avatar and the curated-collection chip from a `Moment[]` | ✅ | `lib/momentEnrichment.ts`; `collectionName` was therefore dropped from the index |
 | Flag as `kismetart:flags:sweep`, plain `'1'/'0'` | ✏️ | Renamed `kismetart:sweep-enabled` to match the existing flags, read via `isFlagSet` (Upstash returns the number `1` for a stored `'1'`) |
 | `MAX_REASONABLE_MINT_FEE_WEI` is importable | ✏️ | It was module-private; exported now |
@@ -641,44 +629,3 @@ written; ✏️ = corrected (the body above already carries the correction);
 | Per-mint gas on Base | ⚠️ The repo's ≈ 250k estimate is used; the cap exists for preview readability, not cost |
 
 ---
-
-## 11. Build status (2026-09-26) — index + API shipped behind the flag
-
-**Shipped (all behind `kismetart:sweep-enabled`, default off):**
-
-| File | What |
-|---|---|
-| `lib/sweepRank.ts` | Pure ranker (outlay asc → artist interleave per tier → newest → key); dormant `perArtist` / `floorWei` |
-| `lib/sweepIndexCore.ts` | Record shape, `isLivePaidSale`, `buildSweepItem`, pool cut, `clampSweepN`, `selectSweepItems`, `sweepItemToMoment` |
-| `lib/sweepIndex.ts` | `rebuildSweepIndex(catalog)` (two chunked `aggregate3Strict` passes + batched fees), `getSweepIndex`, `isSweepEnabled` (60 s memo, fail-closed), `setSweepEnabled` |
-| `lib/saleConfig.ts` | `classifyOnchainSaleWindow`, `classifyTokenSupply` (now also used by `fetchEligibleTokens`, behavior unchanged), `aggregate3Strict`, `readMintFeesWithBound` |
-| `lib/catalogCensus.ts` | `resolveCatalog` + `censusFromCatalog`; `rebuildCatalogCensus` returns `{ census, catalog }` |
-| `lib/zoraMint.ts`, `lib/redis.ts`, `lib/statsHealth.ts` | Exported fee bound + `mintFee()` ABI; the two keys; the `'sweep-index'` phase |
-| `app/api/cron/sync-stats/route.ts` | Third phase after the census, own try/catch + health record; runs whether or not the flag is on |
-| `app/api/sweep/route.ts` | Public pool read: rate-limited, flag-gated, hide-filtered at serve time, enriched, edge-cached 30 s |
-| `app/api/admin/sweep/route.ts` | Flag GET/POST with admin session + audit log; GET reports the index snapshot |
-| `app/api/admin/stats-health/route.ts` | `sweepIndex` phase, `snapshots.sweepIndex`, separate `sweepHealthy` |
-| `scripts/verify-sweep.ts`, `package.json` | 104 assertions over the pure rules (index half and client half); wired into `npm run check` as `verify:sweep` |
-
-**Checks run:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (77/77) · `verify:agent` ✅ ·
-`verify:sale-index` ✅ · `verify:sale-edit` ✅ · `verify-moments-batch` ✅ · `verify-stats` ✅ ·
-`verify-gate-flags` ✅ · `next build` — see the commit message for the outcome of the run
-that accompanied this revision.
-
-**To turn it on:** deploy → `GET /api/cron/sync-stats?secret=…` once (or wait for the
-hour) → `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
-Until then `/api/sweep` answers `{ enabled: false }` and no UI exists that calls it.
-
-**Client phase (shipped in the same session, behind the same flag):**
-
-| File | What |
-|---|---|
-| `lib/saleConfig.ts` `fetchEligibleTokensMulti` | ONE aggregate3 (a single eth_call on the browser client — viem never re-batches an aggregate3) for sale / supply / balance per ref + the wallet's ETH balance; per-row rules identical to `fetchEligibleTokens` |
-| `lib/sweepBatch.ts` | Pure: `buildSweepCalls` (every call via `buildEthMintCall`), `sweepBundle` (strict), `sweepSimulationArgs` (same calls, allowFailure on), `trimToBudget`, `applySimulation`, the gas headroom |
-| `lib/sweepSimulate.ts` | `simulateSweep` (eth_call, per-slot success, insufficient-funds classification), `estimateSweepGasCost` |
-| `hooks/useSweep.ts` | The state machine: pool → live re-verification → live re-rank → balance trim → simulate/refill (≤ 3) → gas refinement → strict Multicall3 (or direct mint for one item) → receipt → `/api/collect` × N with bounded retry; funnel events |
-| `components/SweepSheet.tsx`, `components/SweepButton.tsx` | The trust surface and the one entry point; `DiscoverMarketView` mounts the button in its sticky header's top row |
-| `lib/funnel.ts`, `ANALYTICS.md` | `sweep_open`, `sweep_attempt`, `sweep_success` |
-| `scripts/verify-sweep.ts` | + the client-half oracles: calldata decoding, strict vs simulated bundles, trim, simulation mapping |
-
-Optional v1.1, unchanged: pool refresh on read, append on mint, the agent envelope.

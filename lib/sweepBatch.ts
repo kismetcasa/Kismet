@@ -64,7 +64,7 @@ export function sweepTotalValue(calls: readonly SweepCall[]): bigint {
  * The bundle the user SIGNS: Multicall3 aggregate3Value with allowFailure=false
  * on every sub-call, so one revert undoes the whole batch and nobody is
  * partially charged. Never loosen this — a value-carrying sub-call that fails
- * under allowFailure=true leaves its ETH stranded in Multicall3 (SWEEP_DESIGN.md §4.4).
+ * under allowFailure=true leaves its ETH stranded in Multicall3 (SWEEP_IMPLEMENTATION.md §4.3).
  */
 export function sweepBundle(calls: readonly SweepCall[]) {
   return buildMulticall3Batch(calls)

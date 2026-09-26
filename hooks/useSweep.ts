@@ -149,10 +149,7 @@ async function verifyBasket(
 
   let fees: Map<string, bigint>
   try {
-    fees = await readMintFeesWithBound(
-      client,
-      [...new Set(live.map((l) => l.collection.toLowerCase()))] as Address[],
-    )
+    fees = await readMintFeesWithBound(client, live.map((l) => l.collection))
   } catch {
     return { ok: false, reason: 'rpc' }
   }
@@ -322,16 +319,22 @@ export function useSweep(): UseSweepReturn {
   // (size toggle, "sweep the next N") discards its result.
   const openSeqRef = useRef(0)
   const confirmRef = useRef<() => Promise<{ hash: Hash; minted: number } | null>>(() => Promise.resolve(null))
+  // The signer the current rows were verified for (ownership, balance,
+  // simulation are all per-account) and the size they were fetched at, so
+  // confirm() can refuse a basket that was verified for a different wallet.
+  const verifiedForRef = useRef<Address | null>(null)
+  const nRef = useRef<number>(SWEEP_DEFAULT_N)
 
   const open = useCallback(
     async (size: number = SWEEP_DEFAULT_N) => {
       const seq = ++openSeqRef.current
       setN(size)
+      nRef.current = size
+      verifiedForRef.current = null
       setResult(null)
       setGasCostWei(null)
       setRows([])
       setStatus('loading')
-      trackFunnel('sweep_open')
 
       const account = await ensureConnected()
       if (seq !== openSeqRef.current) return
@@ -370,6 +373,7 @@ export function useSweep(): UseSweepReturn {
         await ensureBase()
       } catch (err) {
         if (seq !== openSeqRef.current) return
+        setRows([]) // pending rows would otherwise keep reading "verifying…"
         setStatus('error')
         showError(err, false, () => void open(size))
         return
@@ -378,10 +382,12 @@ export function useSweep(): UseSweepReturn {
       const verified = await verifyBasket(publicClient, account, pending, size)
       if (seq !== openSeqRef.current) return
       if (!verified.ok) {
+        setRows([])
         setStatus('error')
         toast.error('Could not verify the sweep on-chain — try again')
         return
       }
+      verifiedForRef.current = account
       setRows(verified.rows)
       setGasCostWei(verified.gasCostWei)
       setStatus(verified.rows.some((r) => r.state === 'basket') ? 'ready' : 'empty')
@@ -416,6 +422,14 @@ export function useSweep(): UseSweepReturn {
     const account = getAccount(config).address
     if (!account) {
       toast.error('Connect a wallet to sweep')
+      return null
+    }
+    // Verified for one signer, signed by another (account switched in the
+    // wallet since open): the ownership / balance / simulation checks do not
+    // transfer, so re-verify for this signer instead of sending.
+    if (verifiedForRef.current?.toLowerCase() !== account.toLowerCase()) {
+      toast('Wallet changed — re-verifying', { id: TOAST_ID })
+      void open(nRef.current)
       return null
     }
     inFlightRef.current = true
@@ -485,7 +499,7 @@ export function useSweep(): UseSweepReturn {
     } finally {
       inFlightRef.current = false
     }
-  }, [ackSuccess, config, consumeRetryFlag, ensureBase, publicClient, setRows, showError, writeContractAsync])
+  }, [ackSuccess, config, consumeRetryFlag, ensureBase, open, publicClient, setRows, showError, writeContractAsync])
 
   confirmRef.current = confirm
 

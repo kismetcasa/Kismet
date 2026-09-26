@@ -271,7 +271,7 @@ The events, in funnel order, and where they fire:
 | `collect_success` | `useDirectCollect` | Collect confirmed |
 | `mint_attempt` | `MintForm` | Mint submitted |
 | `mint_success` | `MintForm` (both paths) | Mint confirmed |
-| `sweep_open` | `useSweep` | Sweep sheet opened from `/discover` |
+| `sweep_open` | `SweepButton` | Sweep sheet opened from `/discover` (once per open, not per size toggle) |
 | `sweep_attempt` | `useSweep` | Sweep wallet prompt requested (basket verified and simulated) |
 | `sweep_success` | `useSweep` | Sweep bundle confirmed on-chain |
 

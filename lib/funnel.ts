@@ -16,9 +16,10 @@
 // oval — the measurements that decide which discover backlog items (activity
 // strip, sale-open index, windowed trending) earn their build.
 //
-// The sweep_* trio instruments the sweep sheet (hooks/useSweep): sheet opened,
-// wallet prompt requested, sweep confirmed on-chain — the open → attempt →
-// success ratio is what decides whether the sweep earns its place on /discover.
+// The sweep_* trio instruments the sweep: sheet opened (components/SweepButton,
+// once per open), wallet prompt requested and sweep confirmed on-chain
+// (hooks/useSweep) — the open → attempt → success ratio is what decides
+// whether the sweep earns its place on /discover.
 export const FUNNEL_EVENTS = [
   'landing',
   'connect_modal',
