@@ -24,6 +24,7 @@ import {
   selectByHash,
   totalWeight,
   withExcluded,
+  withLiveStanding,
 } from '../lib/experience/draw.ts'
 import { checkLineup, checkSolvency, coverage, findFloorPiece } from '../lib/experience/solvency.ts'
 import { runDraw } from '../lib/experience/runDraw.ts'
@@ -494,6 +495,46 @@ console.log('\n5f. reveal machine lineups')
       artists: Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`${A.collection}:${i}`, '0xart0000000000000000000000000000000000001'])),
     })).includes('too-many-entries'),
   )
+}
+
+{
+  // A linked collection is a lineup in itself, even before anything is minted.
+  const lineup = (entries: { collection: string; tokenId: string }[], linked: boolean) =>
+    checkLineup({ entries, artists: {}, unavailable: new Set(), linked })
+  check('with a linked collection, no hand-picked pieces is allowed', lineup([], true).length === 0)
+  check('without one, it is still refused', codes(lineup([], false)).includes('empty-pool'))
+  check(
+    'a linked collection excuses nothing else',
+    codes(lineup([{ collection: '0xaaaa000000000000000000000000000000000001', tokenId: '1' }], true)).includes('artist-unknown'),
+  )
+}
+
+console.log('\n5f2. the draw follows the chain (D1)')
+{
+  const A = snap({ tokenId: '1', remaining: 5 })
+  const B = snap({ tokenId: '2', remaining: null, supply: 0 })
+  const C = snap({ tokenId: '3', remaining: 4 })
+  const D = snap({ tokenId: '4', remaining: 3 })
+  const standing = {
+    [entryKey(A)]: { left: 2, granted: true },    // fewer copies on-chain than pledged
+    [entryKey(B)]: { left: 7, granted: true },    // unlimited pledge, capped edition
+    [entryKey(C)]: { left: 0, granted: true },    // sold out on-chain
+    [entryKey(D)]: { left: null, granted: false }, // grant revoked
+  }
+  const live = withLiveStanding([A, B, C, D], standing)
+  check('a sold-out piece leaves the table', !live.some((e) => e.tokenId === '3'))
+  check('a piece whose grant was revoked leaves it', !live.some((e) => e.tokenId === '4'))
+  check('what remains keeps its order (selection walks it)', live.map((e) => e.tokenId).join(',') === '1,2')
+  check('a pledge is clamped to the copies that exist', live[0]?.remaining === 2)
+  check('an unlimited pledge takes the edition’s own limit', live[1]?.remaining === 7)
+  check('an open edition keeps the pledge', withLiveStanding([A], { [entryKey(A)]: { left: null, granted: true } })[0]?.remaining === 5)
+  check('and open on both sides stays unlimited', withLiveStanding([B], { [entryKey(B)]: { left: null, granted: true } })[0]?.remaining === null)
+  check('more copies on-chain never raise a pledge', withLiveStanding([A], { [entryKey(A)]: { left: 99, granted: true } })[0]?.remaining === 5)
+  check('a piece with no reading is dropped, not assumed', withLiveStanding([A, B], { [entryKey(B)]: { left: 1, granted: true } }).map((e) => e.tokenId).join(',') === '2')
+  check('nothing readable, nothing drawable', withLiveStanding([A, B], {}).length === 0)
+  check('the input snapshot is not modified', A.remaining === 5 && B.remaining === null)
+  const odds = deriveOdds(live)
+  check('the published odds cover only what can be delivered', odds.length === 2 && Math.abs(odds.reduce((t, o) => t + o.probability, 0) - 1) < 1e-12)
 }
 
 console.log('\n5g. a reveal pull is uniform')

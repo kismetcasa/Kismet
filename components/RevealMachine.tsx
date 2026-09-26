@@ -222,7 +222,8 @@ export function RevealMachine({ id }: { id: string }) {
         )}
         <p className="text-[11px] font-mono text-subtle mt-2 max-w-xl leading-relaxed">
           Only pieces on sale right now are inside. One that sells out or closes leaves by itself
-          {data.waiting > 0 && n > 0 && `, and ${data.waiting} more join when their sales open`}.
+          {data.waiting > 0 && n > 0 &&
+            `, and ${data.waiting} more ${data.waiting === 1 ? 'joins when its sale opens' : 'join when their sales open'}`}.
         </p>
       </section>
     </div>

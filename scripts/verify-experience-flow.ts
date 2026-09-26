@@ -1178,6 +1178,128 @@ console.log('\n12. reveal machines')
   check('and its listing on each piece, leaving other machines alone', !left.includes('curated') && left.includes('a-capsule-machine'))
 }
 
+// ═══ 13. linked collections: a reveal machine that grows by itself ═══════════
+console.log('\n13. linked collections')
+{
+  const { joinLinkedMachines } = await import(new URL('../lib/experience/linked.ts', import.meta.url).href)
+  const CURATOR = '0xc0ffee0000000000000000000000000000000c1c'
+  const LCOLL = '0x1111000000000000000000000000000000000011'
+  const piece = (tokenId: string, artist: string, linkedAt?: number) =>
+    ({ collection: LCOLL, tokenId, artist, weight: 1, supply: 0, ...(linkedAt !== undefined ? { linkedAt } : {}) })
+  const keys = async (id: string) => (await store.getPool(id)).map(entryKey).sort()
+  const hand = { collection: COLL, tokenId: '60', artist: ART_A, weight: 1, supply: 0 }
+
+  await store.createMachine({ id: 'linked', kind: 'reveal', creator: CURATOR, name: 'Linked', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('linked', [hand, piece('1', ART_A, 1000), piece('2', ART_B, 2000)])
+  await store.linkCollections('linked', [LCOLL])
+  check('a linked collection points at its machine', (await store.machinesLinking(LCOLL)).includes('linked'))
+
+  check('a piece already in the lineup is not added twice', (await store.joinLineup('linked', piece('2', ART_B, 5000), 4)) === false && (await store.getPool('linked')).length === 3)
+  check('with room, a new piece joins and nothing leaves', (await store.joinLineup('linked', piece('3', ART_B, 3000), 4)) === true && (await store.getPool('linked')).length === 4)
+  const ART_C = '0xc3000000000000000000000000000000000000c3'
+  check('when full, a new piece still joins', (await store.joinLineup('linked', piece('4', ART_C, 4000), 4)) === true)
+  const afterFull = await keys('linked')
+  check('by taking the place of the oldest linked piece', afterFull.length === 4 && !afterFull.includes(`${LCOLL}:1`) && afterFull.includes(`${LCOLL}:4`), afterFull.join(' '))
+  check('and the hand-picked piece stays', afterFull.includes(entryKey(hand)))
+  check('the piece that left no longer lists the machine', !(await store.machinesUsingPiece(LCOLL, '1')).includes('linked'))
+  check('the piece that joined does', (await store.machinesUsingPiece(LCOLL, '4')).includes('linked'))
+  check('and its artist sees the machine as featuring them', (await store.machinesFeaturing(ART_C)).includes('linked'))
+
+  // Two linked pieces minted in the same instant: the lower token id is older.
+  await store.createMachine({ id: 'linked-tie', kind: 'reveal', creator: CURATOR, name: 'Tie', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('linked-tie', [piece('8', ART_A, 7000), piece('7', ART_A, 7000)])
+  await store.joinLineup('linked-tie', piece('9', ART_A, 8000), 2)
+  check('a tie in mint time drops the lower token id', (await keys('linked-tie')).join(' ') === [`${LCOLL}:8`, `${LCOLL}:9`].join(' '))
+
+  // Hand-picked pieces are never what makes room.
+  await store.createMachine({ id: 'all-hand', kind: 'reveal', creator: CURATOR, name: 'Hand', state: 'draft', createdAt: Date.now(), collections: [LCOLL] })
+  await store.putLineup('all-hand', [hand, { ...hand, tokenId: '61' }])
+  check('a lineup of only hand-picked pieces takes nothing new', (await store.joinLineup('all-hand', piece('5', ART_A, 9000), 2)) === false)
+  check('and drops nothing', (await keys('all-hand')).length === 2)
+
+  // A mint joins every live or queued machine linked to its collection, and
+  // names only the live ones for the artist's notice.
+  const LC2 = '0x2222000000000000000000000000000000000022'
+  const mk = async (id: string, state: string, kind: 'reveal' | 'capsule' = 'reveal') => {
+    await store.createMachine(kind === 'reveal'
+      ? { id, kind, creator: CURATOR, name: id, state: 'draft', createdAt: Date.now(), collections: [LC2] }
+      : { id, creator: CURATOR, name: id, state: 'draft', createdAt: Date.now(), capsule: { collection: LC2, tokenId: '1' }, capsuleMaxSupply: 10, splitRecipients: [CURATOR] })
+    await store.linkCollections(id, [LC2])
+    if (state !== 'draft') await store.setMachineState(id, state)
+  }
+  await mk('m-live', 'live')
+  await mk('m-review', 'review')
+  await mk('m-ended', 'ended')
+  await mk('m-delisted', 'delisted')
+  await mk('m-capsule', 'live', 'capsule')
+  const joined = await joinLinkedMachines({ collection: LC2.toUpperCase().replace('0X', '0x'), tokenId: '007', artist: ART_B.toUpperCase().replace('0X', '0x'), mintedAt: 42 })
+  check('a mint is reported for the live machine only', joined.length === 1 && joined[0].machineId === 'm-live', JSON.stringify(joined.map((j: { machineId: string }) => j.machineId)))
+  check('with the piece canonicalised (lowercase, base-10 token id)', joined[0]?.entry.collection === LC2 && joined[0]?.entry.tokenId === '7' && joined[0]?.entry.artist === ART_B && joined[0]?.entry.linkedAt === 42)
+  check('the live machine holds it', (await keys('m-live')).includes(`${LC2}:7`))
+  check('a queued machine takes it too, ready for approval', (await keys('m-review')).includes(`${LC2}:7`))
+  check('an ended or delisted machine does not', (await keys('m-ended')).length === 0 && (await keys('m-delisted')).length === 0)
+  check('nor a capsule machine, whatever the index says', (await store.getPool('m-capsule')).length === 0)
+  check('a second report of the same mint changes nothing', (await joinLinkedMachines({ collection: LC2, tokenId: '7', artist: ART_B, mintedAt: 43 })).length === 0 && (await keys('m-live')).length === 1)
+  check('a mint into an unlinked collection joins nothing', (await joinLinkedMachines({ collection: COLL, tokenId: '99', artist: ART_A, mintedAt: 1 })).length === 0)
+
+  check('withdrawing a linked machine unlinks it', (await store.withdrawMachine('m-review')) === 'withdrawn' && !(await store.machinesLinking(LC2)).includes('m-review'))
+  check('leaving the other machines linked', (await store.machinesLinking(LC2)).includes('m-live'))
+}
+
+// ═══ 14. who the payout run pays, and what it has paid ═══════════════════════
+console.log('\n14. payout ledger')
+{
+  const payouts = await import(new URL('../lib/referralPayouts.ts', import.meta.url).href)
+  const C1 = '0xc1c1000000000000000000000000000000000001'
+  const C2 = '0xc2c2000000000000000000000000000000000002'
+  await store.addCurator(C1.toUpperCase().replace('0X', '0x'))
+  await store.addCurator(C1)
+  await store.addCurator(C2)
+  const curators = await store.listCurators()
+  check('curators are kept once each, lowercased', curators.length === 2 && curators.includes(C1) && curators.includes(C2))
+
+  // Past 2^53 wei, where a bare number would lose precision in the client.
+  const BIG = 9_007_199_254_740_993n
+  await payouts.recordPayout({ address: C1, amount: BIG, userOpHash: '0xop1' })
+  await payouts.recordPayout({ address: C1, amount: 7n, userOpHash: '0xop2' })
+  await payouts.recordPayout({ address: C2, amount: 5n, userOpHash: '0xop3' })
+  await payouts.recordPayout({ address: C2, amount: 9n, userOpHash: '0xop4' })
+  check('nothing is counted as paid until the chain says so', (await payouts.paidTo(C1)) === 0n)
+  const outcomes: Record<string, { kind: string; txHash?: string }> = {
+    '0xop1': { kind: 'landed', txHash: '0xt1' },
+    '0xop2': { kind: 'landed', txHash: '0xt2' },
+    '0xop3': { kind: 'failed' },
+    '0xop4': { kind: 'unknown' },
+  }
+  const first = await payouts.reconcilePayouts(async (h: string) => outcomes[h])
+  check('a run settles what landed and what failed, and waits on the rest', first.landed === 2 && first.failed === 1 && first.waiting === 1 && first.expired === 0, JSON.stringify(first))
+  check('a landed payout counts toward its owner, exactly', (await payouts.paidTo(C1)) === BIG + 7n, String(await payouts.paidTo(C1)))
+  check('a failed one does not', (await payouts.paidTo(C2)) === 0n)
+  check('the owner is found however their address is cased', (await payouts.paidTo(C1.toUpperCase().replace('0X', '0x'))) === BIG + 7n)
+  let asked = 0
+  const second = await payouts.reconcilePayouts(async (h: string) => { asked++; return outcomes[h] })
+  check('a second run asks only about what is still unsettled', asked === 1 && second.landed === 0 && second.waiting === 1)
+  check('and never counts a payout twice', (await payouts.paidTo(C1)) === BIG + 7n)
+  outcomes['0xop4'] = { kind: 'landed', txHash: '0xt4' }
+  await payouts.reconcilePayouts(async (h: string) => outcomes[h])
+  check('one that lands later is counted when it does', (await payouts.paidTo(C2)) === 9n)
+
+  // A payout nobody can account for is dropped after the retention window.
+  const realNow = Date.now
+  await payouts.recordPayout({ address: C2, amount: 11n, userOpHash: '0xop5' })
+  Date.now = () => realNow() + 31 * 86_400_000
+  try {
+    const late = await payouts.reconcilePayouts(async () => ({ kind: 'unknown' }))
+    check('an unsettled payout past the window stops being asked about', late.expired === 1 && late.waiting === 0, JSON.stringify(late))
+    let again = 0
+    await payouts.reconcilePayouts(async () => { again++; return { kind: 'unknown' } })
+    check('and settled entries past it are pruned', again === 0 && !(hashes.get('kismetart:referral-payouts:ops')?.size))
+  } finally {
+    Date.now = realNow
+  }
+  check('pruning never touches the paid totals', (await payouts.paidTo(C2)) === 9n && (await payouts.paidTo(C1)) === BIG + 7n)
+}
+
 server.close()
 console.log(failures > 0 ? `\n${failures} FAILURE(S)\n` : '\nAll experience flow invariants hold.\n')
 if (failures > 0) process.exit(1)

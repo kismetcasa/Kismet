@@ -136,9 +136,9 @@ export async function recordPayout(p: { address: string; amount: bigint; userOpH
  *  its amount to the owner's paid total — the figure a curator is shown. */
 export async function reconcilePayouts(
   read: (userOpHash: string) => Promise<DeliveryReceipt>,
-): Promise<{ landed: number; failed: number; waiting: number }> {
+): Promise<{ landed: number; failed: number; waiting: number; expired: number }> {
   const raw = (await redis.hgetall<Record<string, LedgerEntry | string>>(K_OPS)) ?? {}
-  const counts = { landed: 0, failed: 0, waiting: 0 }
+  const counts = { landed: 0, failed: 0, waiting: 0, expired: 0 }
   const cutoff = Date.now() - LEDGER_DAYS * 86_400_000
   for (const [hash, v] of Object.entries(raw)) {
     let entry: LedgerEntry
@@ -160,6 +160,12 @@ export async function reconcilePayouts(
     } else if (outcome.kind === 'failed') {
       await redis.hset(K_OPS, { [hash]: JSON.stringify({ ...entry, status: 'failed' }) })
       counts.failed++
+    } else if (entry.at < cutoff) {
+      // Nobody can say what became of it — the operation is no longer known —
+      // so stop asking. The payout itself is on-chain or not regardless; only
+      // the paid-so-far figure can miss it.
+      await redis.hdel(K_OPS, hash)
+      counts.expired++
     } else {
       counts.waiting++
     }

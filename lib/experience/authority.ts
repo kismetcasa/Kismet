@@ -378,8 +378,14 @@ export async function readHeadroom(collection: string, tokenId: string): Promise
  * keeps it from having to.
  *
  * One round trip, not two reads per piece — the reason this was once left to
- * the per-pick check. A piece whose reads fail is left out (fails closed);
- * `null` when the operator or the call itself cannot be reached.
+ * the per-pick check.
+ *
+ * `null` when anything could not be read: the operator, the call, or any one
+ * piece's rows. With failures allowed, an unreachable node does not throw — it
+ * fails every row — so treating failed rows as "cannot be delivered" read an
+ * RPC outage as an EMPTY machine: nothing left to win, every paid play
+ * pending, its creator told to close the sale. An unconfirmed table is
+ * reported as unconfirmed instead, and the caller decides what that means.
  */
 export async function readLiveStanding(
   entries: { collection: string; tokenId: string }[],
@@ -404,10 +410,10 @@ export async function readLiveStanding(
   } catch {
     return null
   }
+  if (results.some((r) => r.status !== 'success')) return null
   const out: Record<string, { left: number | null; granted: boolean }> = {}
   entries.forEach((e, i) => {
     const [info, onToken, onCollection] = results.slice(3 * i, 3 * i + 3)
-    if (info.status !== 'success' || onToken.status !== 'success' || onCollection.status !== 'success') return
     const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
     const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
     out[entryKey(e)] = {
