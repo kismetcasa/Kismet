@@ -1,8 +1,7 @@
 import { redis } from './redis'
 
 // Heartbeat for the hourly stats pipeline (rebuild + catalog census + sweep
-// index). The
-// pipeline's integrity guards ABORT on an anomaly (implausible shrink,
+// index). The pipeline's integrity guards ABORT on an anomaly (implausible shrink,
 // value-jump/unit-drift, scope collapse, unreadable collection) and preserve
 // the last good snapshot — the safe behavior — but the only prior signal was a
 // console.error nobody watches. So a wedged rebuild (e.g. the value-jump guard

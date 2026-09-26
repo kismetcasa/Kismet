@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Moment } from '@/lib/inprocess'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse } from '@/lib/apiResponse'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -28,6 +29,10 @@ export const runtime = 'nodejs'
 //   GET /api/sweep?n=10   → { enabled, updatedAt, eligible, maxN, n, items }
 //                          → { enabled: false } while the flag is off
 const PUBLIC_CACHE = 'public, s-maxage=30, stale-while-revalidate=120'
+// The flag-off answer skips stale-while-revalidate: with it, a shared cache
+// could keep serving "disabled" for up to 150 s after an operator enables the
+// feature; without it the pill appears within 30 s plus the 60 s flag memo.
+const DISABLED_CACHE = 'public, s-maxage=30'
 const NO_STORE = 'private, no-store'
 
 interface SweepResponseItem extends SweepIndexItem {
@@ -50,7 +55,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ enabled: false }, { headers: { 'Cache-Control': NO_STORE } })
   }
   if (!enabled) {
-    return NextResponse.json({ enabled: false }, { headers: { 'Cache-Control': PUBLIC_CACHE } })
+    return NextResponse.json({ enabled: false }, { headers: { 'Cache-Control': DISABLED_CACHE } })
   }
 
   const index = await getSweepIndex()
@@ -84,7 +89,7 @@ export async function GET(req: NextRequest) {
   // curated-collection chip, hidden-identity scrub). Display-only: on a
   // failure the rows ship with bare addresses, which leaks nothing (the index
   // stores no names) and the client's shortAddress fallback renders them.
-  let enriched: ReturnType<typeof sweepItemToMoment>[] | null = null
+  let enriched: Moment[] | null = null
   try {
     enriched = await enrichMomentsWithKismetMeta(selected.map(sweepItemToMoment))
   } catch {

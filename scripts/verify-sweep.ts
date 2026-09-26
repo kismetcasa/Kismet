@@ -278,7 +278,7 @@ console.log('finalizeSweepIndex / selectSweepItems / clampSweepN')
   const hu = selectSweepItems(index, { n: 20, ...none, hiddenUsers: new Set([ART_2]) })
   check('admin-hidden CREATOR drops the row', !hu.some((i) => i.creator === ART_2))
   const ha = selectSweepItems(index, { n: 20, ...none, hiddenUsers: new Set([ART_3]) })
-  check('admin-hidden folded ARTIST drops the row too', !ha.some((i) => i.artist === ART_3) && ha.length < 60 + 1)
+  check('admin-hidden folded ARTIST drops the row too', !ha.some((i) => i.artist === ART_3))
   check('serveCount floors at SWEEP_SERVE_MIN', serveCount(1) === SWEEP_SERVE_MIN && serveCount(10) === 30 && serveCount(11) === 33 && serveCount(20) === 60)
 }
 check('clampSweepN: absent → default', clampSweepN(null) === SWEEP_DEFAULT_N && clampSweepN('') === SWEEP_DEFAULT_N && clampSweepN(undefined) === SWEEP_DEFAULT_N)

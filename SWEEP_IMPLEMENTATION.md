@@ -46,15 +46,26 @@ new on-chain surface is a read-only simulation.
 
 ### 1.1 Entry point
 
-A `sweep` pill in the Discover page's **trending** and **main** feed headers,
-rendered beside the existing sort pills through `PaginatedGrid`'s `header`
-slot (`components/DiscoverPage.tsx`, `TrendingFeed` / `MainFeed`; the
-`FilterPill` component is the visual — ✏️ it is module-local to
-`DiscoverPage.tsx`, so either export it or mount the pill from that file). It
-reads as a content action, not a
-filter, so it gets the accent-bordered style with a small `Sparkles` (or
-`Layers`) icon and no `aria-pressed`. Hidden while `/api/sweep` reports
-`enabled: false` or an empty pool.
+> **Decision (2026-09-26): one `sweep` button, at the top of the advanced
+> discover page, nothing else for now.** The advanced discover page is
+> `/discover` (`app/discover/page.tsx` → `components/DiscoverMarketView.tsx`,
+> whose docblock names it the "advanced market browser"), not the home page's
+> tab strip in `components/DiscoverPage.tsx`. The two-pill plan (trending +
+> main feed headers) is withdrawn.
+
+Placement: `DiscoverMarketView`'s `stickyHeader` — the control surface
+rendered once above whichever market branch is active (sticky under the nav on
+`sm+`, in-flow on mobile). The button sits in the header's top row
+(`flex items-center justify-between gap-4`), between the primary/secondary
+market toggle on the left and the stats block on the right, so it is the
+first thing on the page after the market choice. Styling follows the header's
+own `stats` button (rounded-full, `border-line`, mono uppercase, `hover:border-accent`)
+with the accent border so it reads as an action rather than a filter; no
+icon, no `aria-pressed`. Rendered only while `/api/sweep` answers
+`enabled: true` with a non-empty pool (a small `useSweepAvailability` query,
+60 s stale time); otherwise nothing renders and the row keeps its two-item
+layout. Visible in both markets — a resale browser is still a fine place to
+offer a primary sweep — but it always opens the same sheet.
 
 ### 1.2 The sweep sheet
 
@@ -466,9 +477,10 @@ Add `'sweep_open' | 'sweep_attempt' | 'sweep_success'` to `FUNNEL_EVENTS`
 - Button label follows `status` exactly as `CollectAllAction.statusLabel`
   does; disabled while `verifying`/in flight; `aria-live="polite"` on the
   totals so screen readers hear the count change after verification.
-- Pill: `FilterPill`-styled button in the two feed headers, hidden until
-  `/api/sweep` says `enabled` with a non-empty pool (a tiny
-  `useSweepAvailability` query, 60 s stale time, shared by both headers).
+- Button: `components/SweepButton.tsx`, mounted once in
+  `DiscoverMarketView`'s `stickyHeader` top row (§1.1); hidden until
+  `/api/sweep` says `enabled` with a non-empty pool (`useSweepAvailability`,
+  60 s stale time).
 - Mobile: the sheet is the Mini App's primary surface — rows must not
   truncate the artwork name (wrap to two lines), and the primary button is
   sticky at the card bottom.
@@ -565,8 +577,8 @@ else is either bounded by construction (cheapest-first), shown before signing
 | `app/api/cron/sync-stats/route.ts` | Third phase after the census | 25 |
 | `app/api/sweep/route.ts` | Flag, rate limit, serve-time hide filter, enrichment, cache headers | 110 |
 | `hooks/useSweep.ts` | State machine, verify/simulate/trim, send, record | 300 |
-| `components/SweepSheet.tsx`, `components/SweepPill.tsx` | Sheet + entry pill, lazy-loaded | 280 |
-| `components/DiscoverPage.tsx` | Mount the pill in two headers | 15 |
+| `components/SweepSheet.tsx`, `components/SweepButton.tsx` | Sheet + the one entry button, lazy-loaded | 270 |
+| `components/DiscoverMarketView.tsx` | Mount the button in the sticky header's top row | 10 |
 | `scripts/verify-sweep.ts`, `package.json` | Oracles + `check` wiring | 250 |
 | `ANALYTICS.md`, `STACK_OVERVIEW.md` §4.2 | Funnel events; collect-flow note | 20 |
 
@@ -646,9 +658,9 @@ written; ✏️ = corrected (the body above already carries the correction);
 | `app/api/sweep/route.ts` | Public pool read: rate-limited, flag-gated, hide-filtered at serve time, enriched, edge-cached 30 s |
 | `app/api/admin/sweep/route.ts` | Flag GET/POST with admin session + audit log; GET reports the index snapshot |
 | `app/api/admin/stats-health/route.ts` | `sweepIndex` phase, `snapshots.sweepIndex`, separate `sweepHealthy` |
-| `scripts/verify-sweep.ts`, `package.json` | 80 assertions over the pure rules; wired into `npm run check` as `verify:sweep` |
+| `scripts/verify-sweep.ts`, `package.json` | 77 assertions over the pure rules; wired into `npm run check` as `verify:sweep` |
 
-**Checks run:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (80/80) · `verify:agent` ✅ ·
+**Checks run:** `typecheck` ✅ · `lint` ✅ · `verify:sweep` ✅ (77/77) · `verify:agent` ✅ ·
 `verify:sale-index` ✅ · `verify:sale-edit` ✅ · `verify-moments-batch` ✅ · `verify-stats` ✅ ·
 `verify-gate-flags` ✅ · `next build` — see the commit message for the outcome of the run
 that accompanied this revision.
@@ -657,7 +669,8 @@ that accompanied this revision.
 hour) → `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
 Until then `/api/sweep` answers `{ enabled: false }` and no UI exists that calls it.
 
-**Still to build (client phase, unchanged design):** `fetchEligibleTokensMulti`,
+**Still to build (client phase):** `fetchEligibleTokensMulti`,
 `lib/sweepBatch.ts`, `lib/sweepSimulate.ts`, `hooks/useSweep.ts`, `SweepSheet` +
-pill, the three funnel events, the `formatEthChip` move, docs. Optional v1.1:
-pool refresh on read, append on mint, the agent envelope.
+the single `SweepButton` at the top of `/discover` (§1.1), the three funnel
+events, the `formatEthChip` move, docs. Optional v1.1: pool refresh on read,
+append on mint, the agent envelope.

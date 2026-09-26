@@ -4,7 +4,7 @@ import { redis, SWEEP_ENABLED_KEY, SWEEP_INDEX_KEY } from './redis'
 import { serverBaseClient } from './rpc'
 import { isFlagSet } from './gateFlags'
 import { memoize } from './memoCache'
-import { isValidTokenId } from './address'
+import { isAddress, isValidTokenId } from './address'
 import { PATRON_COLLECTION_ADDRESS } from './patronCollection'
 import { FPSS_SALE_ABI, aggregate3Strict, readMintFeesWithBound } from './saleConfig'
 import { ZORA_1155_TOKEN_INFO_ABI, ZORA_FIXED_PRICE_STRATEGY } from './zoraMint'
@@ -41,9 +41,14 @@ import {
 // fresh: the click-time re-verification (a cross-collection multicall) is the
 // guarantee; the index only has to be a good candidate pool.
 
-// Pass-1 chunk: 200 sale() reads ≈ 20 KB of calldata, fixed-size returns.
+// Pass-1 chunk: 200 sale() reads. Each Call3 element ABI-encodes to 256 bytes
+// (head + target + allowFailure + 68-byte calldata padded to 96), so a chunk is
+// ≈ 51 KB of calldata and ≈ 58 KB of fixed-size return data — far inside any
+// RPC payload limit; each sale() read is a few thousand gas of SLOADs, so the
+// chunk stays far below an eth_call gas cap as well.
 const PASS1_CHUNK = 200
-// Pass-2 chunk: bounded by RESPONSE size (one uri string per row).
+// Pass-2 chunk: bounded by RESPONSE size — every getTokenInfo row carries the
+// token's `uri` string (the feeds cap the same read at 80 / 240 rows).
 const PASS2_CHUNK = 100
 
 function chunk<T>(arr: readonly T[], size: number): T[][] {
@@ -69,7 +74,15 @@ export function candidatesFromCatalog(catalog: ResolvedCatalog): SweepCandidate[
   const out: SweepCandidate[] = []
   for (const it of catalog.items) {
     if (it.hidden) continue
+    // resolveCatalog already excludes the pass contract; this re-check pins
+    // the product rule at the consumer too (a swept pass would enter the
+    // validity ledger as a purchase), so a future census change can't leak it.
     if (it.addr === PATRON_COLLECTION_ADDRESS) continue
+    // `addr` can come from an upstream inprocess row (`m.address`), not only
+    // from the validated tracked set: a malformed address would throw inside
+    // encodeFunctionData and abort EVERY rebuild until the row is fixed. Skip
+    // the row instead — the census tolerates it the same way (it only keys by it).
+    if (!isAddress(it.addr)) continue
     const rawId = String(it.m.token_id)
     // Non-decimal ids would throw in BigInt(); canonicalize the rest so the
     // member form matches /api/collect's trending keys and the hide sets.

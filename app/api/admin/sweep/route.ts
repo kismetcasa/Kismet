@@ -21,7 +21,18 @@ export async function GET(req: NextRequest) {
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
 
-  const [enabled, index] = await Promise.all([isSweepEnabled().catch(() => false), getSweepIndex()])
+  // An operator read must not report "disabled" when the truth is "unknown":
+  // a Redis failure on the flag read is a 503, not a false. The flag read is
+  // memoized (60 s), so a cached verdict can outlive a blip that makes
+  // getSweepIndex resolve null — which is why `index: null` below means "no
+  // readable index", not "no build yet": enable only on `index.pool > 0`.
+  let enabled: boolean
+  try {
+    enabled = await isSweepEnabled()
+  } catch {
+    return errorResponse(503, 'Sweep flag unreadable (Redis)')
+  }
+  const index = await getSweepIndex()
   return NextResponse.json(
     {
       enabled,
