@@ -1,11 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
+import { isAddress } from '@/lib/address'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { acquireLock } from '@/lib/redisLock'
+import { getSessionAddress } from '@/lib/session'
 import { getGateConfig } from '@/lib/gate'
 import { deriveOdds, entryKey, oddsAreCoherent } from '@/lib/experience/draw'
 import { coverage } from '@/lib/experience/solvency'
 import { openEpochSeeds } from '@/lib/experience/store'
 import { epochFor } from '@/lib/experience/fairness'
-import { buildSnapshot, getMachine, getPool, getRemaining, recentPlays } from '@/lib/experience/store'
+import {
+  buildSnapshot,
+  getMachine,
+  getPool,
+  getRemaining,
+  machineStateLockKey,
+  recentPlays,
+  setMachineState,
+  withdrawMachine,
+} from '@/lib/experience/store'
 import { readCapsuleSupply } from '@/lib/experience/authority'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
@@ -32,8 +45,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const machine = await getMachine(id)
   if (!machine) return errorResponse(404, 'Machine not found')
   if (machine.state === 'draft' || machine.state === 'review') {
-    // Unlisted machines are not public. The creator reads their own draft
-    // through the authenticated write route instead.
+    // Unlisted machines are not public. The creator sees their own on their
+    // profile (GET /api/experience/machines?creator=).
     return errorResponse(404, 'Machine not found')
   }
 
@@ -144,4 +157,50 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     fairness,
     recentPlays: plays,
   })
+}
+
+/**
+ * The creator's own actions on their machine.
+ *
+ *   end       live → ended. Stops the LISTING; the capsule's on-chain sale is
+ *             the creator's to close, which the profile does in the same step
+ *             (an ended machine still honours every capsule minted, wherever).
+ *   withdraw  take back a machine that has never been on sale, freeing its id,
+ *             its capsule token and its pledged supply (store.withdrawMachine
+ *             carries the guard).
+ *
+ * Under the same state lock a curator's decision takes, so the two cannot
+ * interleave.
+ */
+export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  if (!(await checkRateLimit(`xp-owner:${getClientIp(req)}`, 20, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
+  const { id } = await ctx.params
+  if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
+  const session = await getSessionAddress(req).catch(() => null)
+  if (!session || !isAddress(session)) return errorResponse(401, 'Sign in to change your machine')
+  const body = (await req.json().catch(() => null)) as { action?: string } | null
+  const action = body?.action
+  if (action !== 'end' && action !== 'withdraw') return errorResponse(400, 'Invalid action')
+
+  const lock = await acquireLock(machineStateLockKey(id), 60).catch(() => ({ acquired: false, release: async () => {} }))
+  if (!lock.acquired) return errorResponse(409, 'This machine is being changed — try again')
+  try {
+    const machine = await getMachine(id)
+    if (!machine) return errorResponse(404, 'Machine not found')
+    if (machine.creator !== session.toLowerCase()) return errorResponse(403, 'Only its creator can change this machine')
+    if (action === 'end') {
+      if (machine.state !== 'live') return errorResponse(409, 'Only a live machine can end its season')
+      return NextResponse.json({ ok: true, machine: await setMachineState(id, 'ended') })
+    }
+    const outcome = await withdrawMachine(id)
+    if (outcome === 'missing') return errorResponse(404, 'Machine not found')
+    if (outcome === 'refused') {
+      return errorResponse(409, 'Only a machine that has never been on sale can be withdrawn')
+    }
+    return NextResponse.json({ ok: true, withdrawn: true })
+  } finally {
+    await lock.release()
+  }
 }

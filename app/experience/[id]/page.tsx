@@ -36,8 +36,8 @@ export default async function MachinePage({ params }: Props) {
   const { id } = await params
   if (!/^[a-z0-9-]{3,64}$/.test(id)) notFound()
   const machine = await getMachine(id).catch(() => null)
-  // Drafts and review-queue machines are not public; the creator reads their own
-  // through the authenticated route instead.
+  // Drafts and review-queue machines are not public; the creator sees their own
+  // on their profile.
   if (!machine || machine.state === 'draft' || machine.state === 'review') notFound()
 
   return (

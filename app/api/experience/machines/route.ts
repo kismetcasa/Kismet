@@ -15,7 +15,9 @@ import {
   createMachine,
   getMachine,
   listMachines,
+  listMachinesByCreator,
   openEpochSeeds,
+  playCount,
   pledgeSupply,
   releaseCapsule,
   reserveCapsule,
@@ -46,7 +48,9 @@ import type { Machine, PoolEntry } from '@/lib/experience/types'
  * design is worth copying, the business model is not evidence of anything.
  */
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const creatorParam = new URL(req.url).searchParams.get('creator')
+  if (creatorParam !== null) return creatorMachines(req, creatorParam)
   const machines = await listMachines(['live', 'ended'])
   return NextResponse.json({
     machines: machines.map((m) => ({
@@ -58,6 +62,43 @@ export async function GET() {
       createdAt: m.createdAt,
     })),
   })
+}
+
+/**
+ * One creator's machines, for their profile. Everyone sees the ones on the
+ * shelves (live and ended); the creator, signed in, also sees drafts, queued
+ * and delisted machines — the ones nothing else would ever show them — with
+ * whether each can still be withdrawn. Read from the creator's own index.
+ */
+async function creatorMachines(req: NextRequest, raw: string): Promise<NextResponse> {
+  if (!(await checkRateLimit(`xp-creator:${getClientIp(req)}`, 60, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
+  if (!isAddress(raw)) return errorResponse(400, 'Invalid creator')
+  const creator = raw.toLowerCase()
+  const session = await getSessionAddress(req).catch(() => null)
+  const owner = !!session && session.toLowerCase() === creator
+  const all = await listMachinesByCreator(creator)
+  const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
+  const machines = await Promise.all(
+    visible.map(async (m) => {
+      const [capsules, plays] = await Promise.all([
+        readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
+        playCount(m.id).catch(() => 0),
+      ])
+      return {
+        id: m.id,
+        name: m.name,
+        state: m.state,
+        capsule: m.capsule,
+        createdAt: m.createdAt,
+        plays,
+        capsules,
+        ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
+      }
+    }),
+  )
+  return NextResponse.json({ owner, machines })
 }
 
 export async function POST(req: NextRequest) {

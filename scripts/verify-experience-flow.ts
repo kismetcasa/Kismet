@@ -149,6 +149,14 @@ function exec(cmd: unknown[]): unknown {
       zsets.set(k, m)
       return 1
     }
+    case 'zrem': {
+      const m = zsets.get(k)
+      let n = 0
+      for (const mem of args.slice(1)) if (m?.delete(mem)) n++
+      return n
+    }
+    case 'zcard':
+      return zsets.get(k)?.size ?? 0
     case 'zrange': {
       const m = zsets.get(k)
       if (!m) return []
@@ -1085,6 +1093,57 @@ console.log('\n9. operator identity')
     (await store.reserveCapsule(CAP, '1', 'mach-b')) === false)
   await store.releaseCapsule(CAP, '1', 'mach-a')
   check('and under the right one it does', await store.reserveCapsule(CAP, '1', 'mach-b'))
+}
+
+// ═══ 11. a creator's machines: listed, first-live, withdrawn ═════════════════
+console.log('\n11. creator management')
+{
+  const OWNER = '0x' + '6'.repeat(40)
+  const CAP2 = '0xcafe000000000000000000000000000000000002'
+  const PIECE = { collection: COLL, tokenId: 'w1', artist: OWNER, weight: 1, supply: 4 }
+  const queued = (id: string, capsuleToken = '1') => ({
+    id, creator: OWNER, name: id, state: 'review' as const,
+    capsule: { collection: CAP2, tokenId: capsuleToken }, capsuleMaxSupply: 10, createdBlock: 1,
+    splitRecipients: [OWNER], createdAt: Date.now(),
+  })
+  const publish = async (id: string, capsuleToken: string) => {
+    await store.reserveCapsule(CAP2, capsuleToken, id)
+    await store.createMachine(queued(id, capsuleToken))
+    await store.putPoolEntry(id, PIECE)
+    await store.pledgeSupply(PIECE.collection, PIECE.tokenId, id, PIECE.supply)
+  }
+
+  await publish('queued-one', '1')
+  check('a creator\'s machine is listed on their own index',
+    (await store.listMachinesByCreator(OWNER)).map((m: { id: string }) => m.id).join() === 'queued-one')
+
+  // Withdrawing a machine that was never on sale frees everything it held.
+  check('a queued machine that was never live is withdrawn', (await store.withdrawMachine('queued-one')) === 'withdrawn')
+  check('its record is gone', (await store.getMachine('queued-one')) === null)
+  check('and it leaves both indexes',
+    (await store.listMachinesByCreator(OWNER)).length === 0 && !(await store.listMachines()).some((m: { id: string }) => m.id === 'queued-one'))
+  check('its capsule is free for the next machine', await store.reserveCapsule(CAP2, '1', 'queued-two'))
+  check('and so is its pledged supply', (await store.otherPledges(PIECE.collection, PIECE.tokenId, 'someone-else')) === 0)
+  check('a missing machine is reported as such', (await store.withdrawMachine('queued-one')) === 'missing')
+
+  // listedAt is set the first time a machine goes live and never moves again.
+  await publish('went-live', '2')
+  const first = await store.setMachineState('went-live', 'live')
+  await store.setMachineState('went-live', 'delisted')
+  const again = await store.setMachineState('went-live', 'live')
+  check('going live records when, once', !!first?.listedAt && again?.listedAt === first.listedAt)
+
+  // THE GUARD. A machine that was ever live may have sold capsules, and those
+  // are owed for life — so it can never be withdrawn, even pulled back to review.
+  await store.setMachineState('went-live', 'review')
+  check('a machine that was ever live cannot be withdrawn, even back in review',
+    (await store.withdrawMachine('went-live')) === 'refused')
+  check('and keeps its pledge', (await store.otherPledges(PIECE.collection, PIECE.tokenId, 'someone-else')) === 4)
+
+  // Belt and braces: a recorded play refuses it too.
+  await publish('has-a-play', '3')
+  await store.recordPlay('has-a-play', OWNER, '0x' + 'ab'.repeat(32))
+  check('nor can one with a recorded play', (await store.withdrawMachine('has-a-play')) === 'refused')
 }
 
 server.close()

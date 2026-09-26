@@ -39,6 +39,11 @@ export const ALL_NOTIFICATION_TYPES = [
   // the artwork is already in the wallet, so a missed notification costs
   // discovery, not value.
   'experience_win',
+  // A curator decided on the recipient's capsule machine (app/api/admin/
+  // experience): approved it (note 'live'), ended its season ('ended') or
+  // delisted it ('delisted'). `machineId` links the row. Before this, a
+  // creator whose machine went to review heard nothing either way.
+  'experience_status',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
@@ -92,8 +97,11 @@ export interface Notification {
   listingId?: string
   comment?: string
   /** file_update: the artist's release note ("added music!") — shown on the
-   *  bell row and appended to the push body. */
+   *  bell row and appended to the push body. experience_status: the machine's
+   *  new state. */
   note?: string
+  /** experience_status: the capsule machine the notice is about. */
+  machineId?: string
 }
 
 type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {

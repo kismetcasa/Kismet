@@ -559,6 +559,21 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         targetUrl: momentUrl,
       }
     }
+    case 'experience_status': {
+      // A curator's decision on the recipient's own machine. Links the machine
+      // page, which serves every state a curator can move it to.
+      const subject = tokenName ? `"${tokenName}"` : 'Your machine'
+      const title = n.note === 'live' ? 'Your machine is live' : n.note === 'ended' ? 'Season ended' : 'Machine delisted'
+      const body =
+        n.note === 'live'
+          ? `${subject} was approved and is on sale`
+          : `${subject} was ${n.note === 'ended' ? 'ended' : 'delisted'} by a curator. Capsules already sold are still honoured.`
+      return {
+        title: truncate(title, TITLE_MAX),
+        body: truncate(body, BODY_MAX),
+        targetUrl: n.machineId ? `${SITE_URL}/experience/${n.machineId}` : SITE_URL,
+      }
+    }
     case 'experience_win': {
       // Push copy for a machine win. Names the artist rather than the machine:
       // the push exists to introduce the maker, and the artwork is already in

@@ -203,4 +203,8 @@ export interface Machine {
    *  actually paying the people in it?". */
   splitRecipients: string[]
   createdAt: number
+  /** When the machine first went live. Set once and never cleared: a machine
+   *  that has ever been live may have sold capsules, and every one of them is
+   *  owed for life, so it can never be withdrawn — only ended or delisted. */
+  listedAt?: number
 }

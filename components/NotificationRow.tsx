@@ -43,6 +43,8 @@ function notificationHref(n: Notification): string {
     case 'file_update':
     case 'experience_win':
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
+    case 'experience_status':
+      return n.machineId ? `/experience/${n.machineId}` : `/profile/${n.recipient}`
   }
 }
 
@@ -268,6 +270,24 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           </p>
         </>
       )
+    case 'experience_status': {
+      const name = n.tokenName ? `"${n.tokenName}"` : 'Your machine'
+      return (
+        <>
+          <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>
+            {n.note === 'live'
+              ? `${name} is live`
+              : n.note === 'ended'
+                ? `${name}'s season was ended by a curator`
+                : `${name} was delisted by a curator`}
+          </p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            {n.note === 'live' ? 'Approved and on sale. · ' : 'Capsules already sold are still honoured. · '}
+            {time}
+          </p>
+        </>
+      )
+    }
     default: {
       // Exhaustiveness: if a new NotificationType is added without a case
       // above, TS will fail to assign `n.type` to `never` here.

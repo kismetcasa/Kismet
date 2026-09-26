@@ -3,6 +3,9 @@ import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { verifyAdminSession } from '@/lib/curator'
 import { recordAdminAction } from '@/lib/adminAudit'
+import { acquireLock } from '@/lib/redisLock'
+import { writeNotification } from '@/lib/notifications'
+import { bestEffort } from '@/lib/bestEffort'
 import { deriveOdds, entryKey } from '@/lib/experience/draw'
 import { checkSolvency } from '@/lib/experience/solvency'
 import { resolveCapsulePayees } from '@/lib/experience/payees'
@@ -14,6 +17,7 @@ import {
   getPool,
   getRemaining,
   listMachines,
+  machineStateLockKey,
   setMachineState,
 } from '@/lib/experience/store'
 import type { MachineState } from '@/lib/experience/types'
@@ -118,6 +122,19 @@ export async function POST(req: NextRequest) {
   if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
   if (!TRANSITIONS.includes(state)) return errorResponse(400, 'Invalid state')
 
+  // The same lock the creator's own actions take, held from the read through
+  // the write: an approval and a withdrawal racing each other would otherwise
+  // both act on the state they each read.
+  const lock = await acquireLock(machineStateLockKey(id), 60).catch(() => ({ acquired: false, release: async () => {} }))
+  if (!lock.acquired) return errorResponse(409, 'This machine is being changed — try again')
+  try {
+    return await transition(id, state, auth.signer)
+  } finally {
+    await lock.release()
+  }
+}
+
+async function transition(id: string, state: MachineState, signer: string): Promise<NextResponse> {
   const machine = await getMachine(id)
   if (!machine) return errorResponse(404, 'Machine not found')
 
@@ -188,8 +205,21 @@ export async function POST(req: NextRequest) {
   // Holding both over-reserves, which costs a machine headroom rather than an
   // artist a copy, and leaves this a single idempotent write.
   const next = await setMachineState(id, state)
+  // Tell the creator about the decisions that change what they can do: on
+  // sale, season ended, or delisted. A curator acting on their own machine is
+  // skipped by writeNotification itself.
+  if (state !== machine.state && state !== 'review') {
+    await writeNotification({
+      type: 'experience_status',
+      recipient: machine.creator,
+      actor: signer,
+      tokenName: machine.name,
+      note: state,
+      machineId: id,
+    }).catch(bestEffort('xp.statusNotify', { id, state }))
+  }
   await recordAdminAction('experience-state', {
-    actor: auth.signer,
+    actor: signer,
     target: id,
     meta: { from: machine.state, to: state },
   })

@@ -31,6 +31,8 @@ const kClaim = (id: string, tx: string, unit: number) => `${P}:${id}:claim:${tx.
 const kPlays = (id: string) => `${P}:${id}:plays`
 const kSeed = (id: string, epoch: string) => `${P}:${id}:seed:${epoch}`
 const kSpark = (id: string, addr: string) => `${P}:${id}:spark:${addr.toLowerCase()}`
+/** A creator's machines, newest first — what their profile lists. */
+const kCreator = (addr: string) => `${P}:creator:${addr.toLowerCase()}`
 /** Cross-machine commitment ledger, keyed by the EDITION rather than the
  *  machine: machineId -> pledged supply. Without this two machines can each
  *  promise the same last copy of one edition and only one can be honoured. */
@@ -80,8 +82,18 @@ export async function createMachine(m: Machine): Promise<boolean> {
     .multi()
     .zadd(K_INDEX, { score: m.createdAt, member: m.id })
     .zremrangebyrank(K_INDEX, 0, -(MAX_MACHINES + 1))
+    .zadd(kCreator(m.creator), { score: m.createdAt, member: m.id })
     .exec()
   return true
+}
+
+/** One creator's machines, newest first, in every state. Read from their own
+ *  index rather than filtered out of the global one, so a profile costs reads
+ *  proportional to that creator's machines, not the platform's. */
+export async function listMachinesByCreator(creator: string): Promise<Machine[]> {
+  const ids = (await redis.zrange(kCreator(creator), 0, -1, { rev: true })) as string[]
+  const raws = await Promise.all(ids.map((id) => getMachine(id).catch(() => null)))
+  return raws.filter((m): m is Machine => m !== null)
 }
 
 /** Atomic compare-and-set, so a stale reservation can be taken over without two
@@ -169,12 +181,59 @@ export async function releaseCapsule(
   if (holder === machineId) await redis.del(kCapsule(collection, tokenId)).catch(() => {})
 }
 
+/** Every state change — a curator's or the creator's — happens under this
+ *  lock, so a withdrawal and an approval racing each other cannot interleave:
+ *  one of them sees the other's result and refuses. */
+export const machineStateLockKey = (id: string): string => `${P}:lock:state:${id}`
+
 export async function setMachineState(id: string, state: MachineState): Promise<Machine | null> {
   const m = await getMachine(id)
   if (!m) return null
-  const next = { ...m, state }
+  const next: Machine = { ...m, state, ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}) }
   await redis.set(kMachine(id), JSON.stringify(next))
   return next
+}
+
+/** How many capsule transactions have been opened on a machine. */
+export async function playCount(machineId: string): Promise<number> {
+  return Number(await redis.zcard(kPlays(machineId))) || 0
+}
+
+/**
+ * Take back a machine that was never on sale, freeing everything it held.
+ *
+ * Only a machine that has NEVER been live — a draft left by a failed publish,
+ * or one still waiting for a curator — and has no recorded play. Every other
+ * machine may have sold capsules, and those are owed for life, which is why
+ * the pledge ledger has no general un-pledge and a capsule stays reserved
+ * through delisting. Here nothing can be owed: play refuses draft and review,
+ * so no capsule was ever honourable on it.
+ *
+ * Record first, resources after. Once the record is gone nothing can approve
+ * or play the machine; a crash after that leaves the capsule reservation and
+ * pledges held by a machine that no longer exists, which over-reserves — the
+ * safe direction — and the reservation is then taken over by the next publish
+ * (reserveCapsule treats a missing holder as stale). Releasing first would
+ * leave, on the same crash, a queued machine a curator could approve with no
+ * supply held for it.
+ */
+export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refused' | 'missing'> {
+  const m = await getMachine(id)
+  if (!m) return 'missing'
+  if (m.listedAt || (m.state !== 'draft' && m.state !== 'review')) return 'refused'
+  if ((await playCount(id)) > 0) return 'refused'
+  const pool = await getPool(id)
+  await redis
+    .multi()
+    .del(kMachine(id))
+    .del(kPool(id))
+    .del(kRemaining(id))
+    .zrem(K_INDEX, id)
+    .zrem(kCreator(m.creator), id)
+    .exec()
+  await releaseCapsule(m.capsule.collection, m.capsule.tokenId, id)
+  await Promise.all(pool.map((e) => redis.hdel(kCommit(e.collection, e.tokenId), id).catch(() => 0)))
+  return 'withdrawn'
 }
 
 /** Machines newest-first, optionally filtered by state. Bounded read. */
@@ -454,13 +513,12 @@ export async function pledgeSupply(
   await redis.hset(kCommit(collection, tokenId), { [machineId]: supply })
 }
 
-// There is deliberately NO releasePledge. Its only caller was the delist
-// transition, where it was wrong — an off-the-shelf machine still owes every
-// capsule it sold, and calling those copies free let a second machine promise
-// them too. Nothing else in the system has ever needed to un-pledge, so rather
-// than leave an exported mutator whose one safe use does not exist yet, the
-// ledger is append-and-hold. If draft cleanup is ever built it can reintroduce
-// this with the guard that use requires: a machine with no outstanding claims.
+// There is deliberately NO general releasePledge. Its only caller was the
+// delist transition, where it was wrong — an off-the-shelf machine still owes
+// every capsule it sold, and calling those copies free let a second machine
+// promise them too. A pledge moves only two ways: down by a copy that reached
+// the chain (settleDeliveredCopy), or away entirely with a machine that was
+// never on sale and so owes nothing (withdrawMachine, which carries the guard).
 
 /**
  * Release ONE copy of a machine's pledge on a piece, once that copy is minted.

@@ -76,6 +76,8 @@ const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
 const CAPSULE_R = '0xcccc00000000000000000000000000000000000b'
 /** An unused capsule for the collection-wide grant dry run (section 6f). */
 const CAPSULE_W = '0xcccc00000000000000000000000000000000000c'
+/** CREATOR2's capsule for the machine they withdraw and publish again (section 6h). */
+const CAPSULE_V = '0xcccc00000000000000000000000000000000000d'
 /** A wallet the creator granted MINTER to, minted from, and revoked — the
  *  three-transaction evasion of a live permission read. */
 const EVADER = '0x5555000000000000000000000000000000000055'
@@ -221,7 +223,10 @@ SEL.aggregate3 = toFunctionSelector('aggregate3((address,bool,bytes)[])')
 const WALLET_WRITES = parseAbi([
   'function addPermission(uint256 tokenId, address user, uint256 permissionBits)',
   'function removePermission(uint256 tokenId, address user, uint256 permissionBits)',
+  'function callSale(uint256 tokenId, address salesConfig, bytes data)',
 ])
+/** What callSale forwards to the fixed-price strategy: the whole sale row. */
+const FPSS_SET_SALE = parseAbi(['function setSale(uint256 tokenId, (uint64 saleStart, uint64 saleEnd, uint64 maxTokensPerAddress, uint96 pricePerToken, address fundsRecipient) salesConfig)'])
 const OPEN = 18446744073709551615n
 
 const chain = {
@@ -286,9 +291,16 @@ function walletSend(tx) {
   let ok = true
   try {
     const { functionName, args } = decodeFunctionData({ abi: WALLET_WRITES, data: tx.data })
-    const k = key(tx.to, args[0], args[1])
-    const cur = chain.perms.get(k) ?? 0n
-    chain.perms.set(k, functionName === 'addPermission' ? cur | args[2] : cur & ~args[2])
+    if (functionName === 'callSale') {
+      if (String(args[1]).toLowerCase() !== FPSS.toLowerCase()) throw new Error('only the fixed-price strategy is modelled')
+      const inner = decodeFunctionData({ abi: FPSS_SET_SALE, data: args[2] })
+      const cfg = inner.args[1]
+      chain.sales.set(key(tx.to, inner.args[0]), { saleStart: cfg.saleStart, saleEnd: cfg.saleEnd, pricePerToken: cfg.pricePerToken, fundsRecipient: cfg.fundsRecipient })
+    } else {
+      const k = key(tx.to, args[0], args[1])
+      const cur = chain.perms.get(k) ?? 0n
+      chain.perms.set(k, functionName === 'addPermission' ? cur | args[2] : cur & ~args[2])
+    }
   } catch {
     ok = false
   }
@@ -631,6 +643,9 @@ chain.tokens.set(key(POOL_WIDE, 1), { maxSupply: OPEN, totalMinted: 0n })
 chain.perms.set(key(POOL_WIDE, 1, ADMIN), 2n)
 chain.perms.set(key(POOL_WIDE, 0, OPERATOR), 4n)
 chain.tokens.set(key(CAPSULE_W, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.tokens.set(key(CAPSULE_V, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.perms.set(key(CAPSULE_V, 0, CREATOR2), 2n)
+chain.sales.set(key(CAPSULE_V, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: CREATOR2 })
 chain.sales.set(key(CAPSULE_W, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
 chain.perms.set(key(POOL, 15, OPERATOR), 4n)
 chain.perms.set(key(POOL, 15, ADMIN), 2n)
@@ -1359,6 +1374,12 @@ try {
   check('the review API needs the admin cookie', (await call('/api/admin/experience?state=review')).status === 401)
   const queue = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
   check('the queue shows it with a live solvency verdict', queue.status === 200 && queue.json.machines.length === 1 && queue.json.machines[0].problems.length === 0, JSON.stringify(queue.json).slice(0, 300))
+  const mineQueued = await call(`/api/experience/machines?creator=${CREATOR2}`, { user: USER_TOKEN })
+  check('its creator sees the queued machine on their own list, withdrawable',
+    mineQueued.json?.owner === true && mineQueued.json.machines.some((m) => m.id === 'field-recordings' && m.state === 'review' && m.withdrawable === true),
+    JSON.stringify(mineQueued.json).slice(0, 240))
+  const theirsQueued = await call(`/api/experience/machines?creator=${CREATOR2}`)
+  check('a visitor does not', theirsQueued.json?.owner === false && !theirsQueued.json.machines.some((m) => m.id === 'field-recordings'))
   check('a queued machine is not named on its pieces',
     !(await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.machines?.some((m) => m.id === 'field-recordings'))
   // The artist revokes while the machine waits. The queue must show it, and
@@ -1373,6 +1394,13 @@ try {
   const promote = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'live' } })
   check('the curator promotes it', promote.status === 200 && promote.json.machine.state === 'live')
   check('and it is public now', (await call('/api/experience/machines/field-recordings')).status === 200)
+  const inbox = [...(zsets.get(`kismetart:notif:${CREATOR2}`)?.keys() ?? [])].map((j) => JSON.parse(j))
+  check('approval tells the creator, linking the machine',
+    inbox.some((n) => n.type === 'experience_status' && n.note === 'live' && n.machineId === 'field-recordings' && n.tokenName === 'Field Recordings'),
+    JSON.stringify(inbox.map((n) => [n.type, n.note])))
+  const mineLive = await call(`/api/experience/machines?creator=${CREATOR2}`, { user: USER_TOKEN })
+  check('and their list shows it on sale, no longer withdrawable',
+    mineLive.json?.machines?.some((m) => m.id === 'field-recordings' && m.state === 'live' && m.withdrawable === false))
   check('and named on its pieces now', (await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.machines?.some((m) => m.id === 'field-recordings'))
   const list = await call('/api/experience/machines')
   check('the public list carries every live machine',
@@ -1414,6 +1442,29 @@ try {
   const pWide = await call(`/api/experience/piece?collection=${POOL_WIDE}&tokenId=1`)
   check('a collection-wide grant reads as such', pWide.json?.allowed === true && pWide.json.scope === 'collection')
   check('a malformed piece is refused', (await call(`/api/experience/piece?collection=nope&tokenId=1`)).status === 400)
+
+  // ═══ 6h. a creator takes back a machine, and ends a season ════════════════
+  console.log('\n6h. withdraw and end season')
+  const withdrawBody = {
+    id: 'withdraw-me', name: 'Withdraw Me', capsule: { collection: CAPSULE_V, tokenId: '1' },
+    entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }],
+  }
+  const queuedW = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: withdrawBody })
+  check('a creator\'s machine queues for review', queuedW.status === 200 && queuedW.json.machine.state === 'review', JSON.stringify(queuedW.json).slice(0, 200))
+  const withdraw = (user) => call('/api/experience/machines/withdraw-me', { method: 'POST', user, body: { action: 'withdraw' } })
+  check('nobody else can withdraw it', (await withdraw(ADMIN_USER_TOKEN)).status === 403)
+  check('nor anyone signed out', (await withdraw(undefined)).status === 401)
+  const withdrawn = await withdraw(USER_TOKEN)
+  check('its creator withdraws it', withdrawn.status === 200 && withdrawn.json.withdrawn === true)
+  check('it leaves their list', !(await call(`/api/experience/machines?creator=${CREATOR2}`, { user: USER_TOKEN })).json.machines.some((m) => m.id === 'withdraw-me'))
+  const republished = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: withdrawBody })
+  check('and its id and capsule are free to publish again', republished.status === 200 && republished.json.machine.state === 'review', JSON.stringify(republished.json).slice(0, 200))
+  check('withdrawing again leaves nothing behind', (await withdraw(USER_TOKEN)).status === 200 && strings.get(`kismetart:xp:capsule:${CAPSULE_V}:1`) === undefined)
+  check('a machine that has been on sale cannot be withdrawn',
+    (await call('/api/experience/machines/field-recordings', { method: 'POST', user: USER_TOKEN, body: { action: 'withdraw' } })).status === 409)
+  const endRedraw = await call('/api/experience/machines/redraw', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'end' } })
+  check('a creator ends their own season', endRedraw.status === 200 && endRedraw.json.machine.state === 'ended', JSON.stringify(endRedraw.json).slice(0, 160))
+  check('and a season ends once', (await call('/api/experience/machines/redraw', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'end' } })).status === 409)
 
   // ═══ 6e. the credential gate, and the credential as a coin slot ═══════════
   console.log('\n6e. the Pass gate actually gates')
@@ -1846,6 +1897,32 @@ try {
           await page.getByRole('button', { name: 'stop allowing' }).click()
           await page.getByRole('button', { name: 'allow capsule machines' }).waitFor()
           check('stopping revokes it', (chain.perms.get(key(POOL, 99, OPERATOR)) ?? 0n) === 0n)
+          await page.context().close()
+        }
+
+        // ── a creator's machines on their profile ──
+        // Visitors see what is on sale; the creator sees every state in plain
+        // words and ends a season in one step that closes the capsule's sale
+        // on-chain, from their own wallet, before the listing changes.
+        {
+          const visitor = await open(`/profile/${CREATOR2}`)
+          await visitor.getByText('Machines (2)').waitFor()
+          const vBody = await text(visitor)
+          check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
+          check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0)
+          await visitor.context().close()
+
+          const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
+          await page.getByText('Machines (2)').waitFor()
+          check('the creator sees each machine in plain words', (await text(page)).includes('on sale'))
+          const row = page.locator('div.border', { hasText: 'Browser Machine' }).last()
+          await row.getByRole('button', { name: 'end season' }).click()
+          await row.getByRole('button', { name: 'confirm end season' }).click()
+          await page.getByText('Season ended').first().waitFor()
+          const sale = chain.sales.get(key(CAPSULE_A, 1))
+          check('ending a season closes the capsule\'s sale on-chain', !!sale && sale.saleEnd <= BigInt(Math.floor(Date.now() / 1000)), String(sale?.saleEnd))
+          check('in one signature from the creator\'s wallet', chain.walletTxs.at(-1)?.to?.toLowerCase() === CAPSULE_A)
+          check('and then ends the machine', (await call('/api/experience/machines/browser-machine')).json?.machine?.state === 'ended')
           await page.context().close()
         }
       } finally {
