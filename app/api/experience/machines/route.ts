@@ -66,17 +66,23 @@ export async function GET(req: NextRequest) {
   const creatorParam = new URL(req.url).searchParams.get('creator')
   if (creatorParam !== null) return creatorMachines(req, creatorParam)
   const machines = await listMachines(['live', 'ended'])
-  return NextResponse.json({
-    machines: machines.map((m) => ({
-      id: m.id,
-      kind: isReveal(m) ? 'reveal' : 'capsule',
-      name: m.name,
-      state: m.state,
-      creator: m.creator,
-      ...(isReveal(m) ? {} : { capsule: m.capsule }),
-      createdAt: m.createdAt,
-    })),
-  })
+  return NextResponse.json(
+    {
+      machines: machines.map((m) => ({
+        id: m.id,
+        kind: isReveal(m) ? 'reveal' : 'capsule',
+        name: m.name,
+        state: m.state,
+        creator: m.creator,
+        ...(isReveal(m) ? {} : { capsule: m.capsule }),
+        createdAt: m.createdAt,
+      })),
+    },
+    // The same for everyone, and read by the home page's "play" tab: the CDN
+    // serves it, so a machine list costs Redis one read per minute or so
+    // rather than one per visitor (each read is a record per machine).
+    { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' } },
+  )
 }
 
 /**

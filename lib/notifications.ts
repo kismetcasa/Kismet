@@ -106,7 +106,7 @@ export interface Notification {
   /** file_update: the artist's release note ("added music!") — shown on the
    *  bell row and appended to the push body. experience_status: what happened
    *  to the machine — its new state ('live' | 'ended' | 'delisted'),
-   *  'rejected' (delisted without ever going live), 'empty', or 'review' (to
+   *  'rejected' (taken off without ever going live), 'empty', or 'review' (to
    *  Kismet: one is waiting). experience_featured: the machine's name.
    *  payout: 'referral' for mint referral rewards paid to a curator. */
   note?: string

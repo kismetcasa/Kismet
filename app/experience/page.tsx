@@ -4,12 +4,11 @@ import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { listMachines } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
-import { shortAddress } from '@/lib/inprocess'
+import { MachineRows } from '@/components/MachineRows'
 
-// The Experience is a top-level destination, not a Discover sub-tab — the same
-// call the codebase already made for /market ("keeps the discover page's
-// horizontal tab strip from overflowing on mobile / Mini App"), and for the same
-// reason: a machine needs room for its lineup, its odds table and its reveal.
+// The Experience is a top-level destination: a machine needs room for its
+// lineup, its odds table and its reveal. The Discover "play" tab lists the
+// live machines and links here; this page also keeps the closed ones.
 export const metadata: Metadata = {
   title: 'experience — Kismet',
   description:
@@ -56,30 +55,9 @@ export default async function ExperiencePage() {
           </p>
         </div>
       ) : (
-        <div className="border border-line divide-y divide-line">
-          {machines.map((m) => (
-            <Link
-              key={m.id}
-              href={`/experience/${m.id}`}
-              className="flex items-center gap-3 px-4 py-3.5 hover:bg-raised transition-colors"
-            >
-              <span className="flex-1 min-w-0 text-sm font-mono text-ink truncate">{m.name}</span>
-              <span className="text-[10px] font-mono text-subtle shrink-0">
-                {isReveal(m) ? 'reveal' : 'capsule'}
-              </span>
-              <span className="text-[10px] font-mono text-subtle shrink-0">
-                {shortAddress(m.creator)}
-              </span>
-              <span
-                className={`text-[10px] font-mono uppercase tracking-wider shrink-0 ${
-                  m.state === 'live' ? 'text-accent' : 'text-subtle'
-                }`}
-              >
-                {m.state === 'live' ? 'live' : 'closed'}
-              </span>
-            </Link>
-          ))}
-        </div>
+        <MachineRows
+          machines={machines.map((m) => ({ id: m.id, name: m.name, kind: isReveal(m) ? 'reveal' : 'capsule', creator: m.creator, state: m.state }))}
+        />
       )}
     </div>
   )

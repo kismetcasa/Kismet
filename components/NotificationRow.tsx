@@ -304,7 +304,8 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
         <>
           <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>{headline}</p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
-            {detail} · {time}
+            {detail && `${detail} · `}
+            {time}
           </p>
         </>
       )
