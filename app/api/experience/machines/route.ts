@@ -80,7 +80,8 @@ export async function GET(req: NextRequest) {
     },
     // The same for everyone, and read by the home page's "play" tab. Cacheable
     // like the timeline routes, for a CDN in front (OPS_RUNBOOK §3); without
-    // one, each read is two Redis commands (store.listMachines).
+    // one, each read is an index read plus one MGET per 500 machines
+    // (store.listMachines).
     { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' } },
   )
 }
