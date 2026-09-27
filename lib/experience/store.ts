@@ -114,8 +114,26 @@ export async function createMachine(m: Machine): Promise<boolean> {
  *  proportional to that creator's machines, not the platform's. */
 export async function listMachinesByCreator(creator: string): Promise<Machine[]> {
   const ids = (await redis.zrange(kCreator(creator), 0, -1, { rev: true })) as string[]
-  const raws = await Promise.all(ids.map((id) => getMachine(id).catch(() => null)))
-  return raws.filter((m): m is Machine => m !== null)
+  return getMachines(ids)
+}
+
+/** Machine records in the order given, missing or unreadable ones skipped. One
+ *  MGET per 500 ids: Redis bills a command per GET, so reading the list a GET
+ *  at a time cost a command per machine on every page and every "play" tab. */
+async function getMachines(ids: string[]): Promise<Machine[]> {
+  const out: Machine[] = []
+  for (let i = 0; i < ids.length; i += 500) {
+    const raws = await redis.mget<(Machine | string | null)[]>(...ids.slice(i, i + 500).map(kMachine))
+    for (const raw of raws) {
+      if (!raw) continue
+      try {
+        out.push(typeof raw === 'string' ? (JSON.parse(raw) as Machine) : raw)
+      } catch {
+        continue
+      }
+    }
+  }
+  return out
 }
 
 /** Atomic compare-and-set, so a stale reservation can be taken over without two
@@ -269,9 +287,7 @@ export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refuse
 /** Machines newest-first, optionally filtered by state. Bounded read. */
 export async function listMachines(states?: MachineState[]): Promise<Machine[]> {
   const ids = (await redis.zrange(K_INDEX, 0, MAX_MACHINES - 1, { rev: true })) as string[]
-  if (ids.length === 0) return []
-  const raws = await Promise.all(ids.map((id) => getMachine(id).catch(() => null)))
-  const out = raws.filter((m): m is Machine => m !== null)
+  const out = await getMachines(ids)
   return states ? out.filter((m) => states.includes(m.state)) : out
 }
 

@@ -78,9 +78,9 @@ export async function GET(req: NextRequest) {
         createdAt: m.createdAt,
       })),
     },
-    // The same for everyone, and read by the home page's "play" tab: the CDN
-    // serves it, so a machine list costs Redis one read per minute or so
-    // rather than one per visitor (each read is a record per machine).
+    // The same for everyone, and read by the home page's "play" tab. Cacheable
+    // like the timeline routes, for a CDN in front (OPS_RUNBOOK §3); without
+    // one, each read is two Redis commands (store.listMachines).
     { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' } },
   )
 }

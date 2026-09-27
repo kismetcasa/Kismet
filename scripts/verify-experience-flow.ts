@@ -1348,6 +1348,30 @@ console.log('\n15. the mint proof\'s cache')
   check('a cached refusal is still a refusal', (await proofOf('0x05', '0')).ok === false)
 }
 
+// ═══ 16. machine lists are read in two commands, however many machines ═════
+console.log('\n16. machine lists')
+{
+  const cmds = async (fn: () => Promise<unknown>) => {
+    const before = log.length
+    const result = await fn()
+    return { result, names: log.slice(before).map((c) => c[0]).join() }
+  }
+  const all = await cmds(() => store.listMachines())
+  const machines = all.result as { id: string; createdAt: number }[]
+  check('the whole list is one index read and one MGET', all.names === 'zrange,mget' && machines.length > 5, `${all.names} (${machines.length} machines)`)
+  check('newest first, as the index orders it', machines.every((m, i) => i === 0 || machines[i - 1].createdAt >= m.createdAt))
+  zsets.get('kismetart:xp:index')!.set('unreadable-one', Date.now() + 1e9)
+  strings.set('kismetart:xp:unreadable-one:meta', '{not json')
+  zsets.get('kismetart:xp:index')!.set('gone-one', Date.now() + 2e9)
+  const again = (await store.listMachines()) as { id: string }[]
+  check('an unreadable or missing record is skipped, the rest still listed',
+    again.length === machines.length && again.map((m) => m.id).join() === machines.map((m) => m.id).join())
+  const CREATOR16 = '0xc0ffee0000000000000000000000000000000c1c'
+  const mine = await cmds(() => store.listMachinesByCreator(CREATOR16))
+  const ids = (mine.result as { id: string }[]).map((m) => m.id).sort().join()
+  check('a creator\'s list is read the same way, and is theirs', mine.names === 'zrange,mget' && ids === [...(zsets.get(`kismetart:xp:creator:${CREATOR16}`)?.keys() ?? [])].sort().join() && ids.length > 0, `${mine.names} ${ids}`)
+}
+
 server.close()
 console.log(failures > 0 ? `\n${failures} FAILURE(S)\n` : '\nAll experience flow invariants hold.\n')
 if (failures > 0) process.exit(1)
