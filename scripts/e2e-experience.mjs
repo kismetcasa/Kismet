@@ -3045,6 +3045,26 @@ try {
           }
         }
 
+        // ── the site nav: machines are found in Discover's play tab ──
+        // No Experience item; a machine page sits under Discover, as every
+        // page outside Mint and Market does.
+        {
+          const desk = await open('/experience/spring-season')
+          await desk.getByText('Spring Season').first().waitFor()
+          // textContent, not innerText: the nav is styled uppercase.
+          const items = await desk.locator('header nav a:visible').evaluateAll((as) => as.map((a) => a.textContent.trim()))
+          check('the desktop nav has no Experience item', items.join() === 'Discover,Mint,Market', items.join())
+          const discover = await desk.locator('header nav a:visible', { hasText: 'Discover' }).getAttribute('class')
+          check('and on a machine page Discover is the active item', /font-bold/.test(discover ?? ''), discover)
+          await desk.context().close()
+          const phone = await open('/experience/spring-season', { viewport: { width: 390, height: 800 } })
+          await phone.getByText('Spring Season').first().waitFor()
+          const current = (await phone.locator('header nav button[aria-haspopup="menu"]').textContent()).trim()
+          const others = await phone.locator('header nav [role="menu"] a').evaluateAll((as) => as.map((a) => a.textContent.trim()))
+          check('on a phone the menu reads Enjoy, with Create and Curate to go to', current === 'Enjoy' && others.join() === 'Create,Curate', `${current} | ${others.join()}`)
+          await phone.context().close()
+        }
+
         // ── the bell: where each machine notice takes you ──
         {
           const bell = async (user, wallet) => {
