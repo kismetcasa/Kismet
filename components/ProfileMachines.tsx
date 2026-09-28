@@ -2,12 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { toast } from 'sonner'
-import type { Address } from 'viem'
-import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { toastError } from '@/lib/toast'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { MachineAction } from './MachineAction'
 
 /**
  * A creator's machines, capsule and reveal, on their profile.
@@ -122,40 +119,6 @@ export function ProfileMachines({
   onChange: () => void
 }) {
   const { ensureSession } = useUploadSession()
-  const { endNow } = useUpdateMomentSale()
-  const [confirming, setConfirming] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
-
-  const act = async (m: CreatorMachine, action: 'end' | 'withdraw') => {
-    setBusy(m.id)
-    try {
-      await ensureSession()
-      if (action === 'end' && m.kind === 'capsule') {
-        // The on-chain sale first: it is what actually stops capsules being
-        // bought, here or on zora.co. Our record only stops the listing. An
-        // already-closed sale is a no-op that needs no signature. A reveal
-        // machine has no sale of its own; closing it is the listing alone.
-        await endNow({ collection: m.capsule.collection as Address, tokenId: BigInt(m.capsule.tokenId) })
-      }
-      const r = await fetch(`/api/experience/machines/${m.id}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action }),
-      })
-      const body = await r.json().catch(() => null)
-      if (!r.ok) {
-        toast.error(body?.error ?? 'Could not update this machine')
-        return
-      }
-      toast.success(action === 'end' ? (m.kind === 'reveal' ? 'Machine closed' : 'Season ended') : 'Machine withdrawn')
-      setConfirming(null)
-      onChange()
-    } catch (err) {
-      toastError(action === 'end' ? 'End season' : 'Withdraw', err)
-    } finally {
-      setBusy(null)
-    }
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -176,7 +139,6 @@ export function ProfileMachines({
       )}
       {machines.map((m) => {
         const onShelf = m.state !== 'draft' && m.state !== 'review'
-        const key = (a: string) => `${m.id}:${a}`
         return (
           <div key={m.id} className="border border-line px-4 py-3">
             <div className="flex items-center gap-3">
@@ -234,42 +196,7 @@ export function ProfileMachines({
             )}
 
             {manage && signedIn && (m.state === 'live' || m.withdrawable) && (
-              confirming === key(m.state === 'live' ? 'end' : 'withdraw') ? (
-                <div className="mt-2 border-t border-line pt-2">
-                  <p className="text-[11px] font-mono text-muted leading-relaxed">
-                    {m.state === 'live'
-                      ? m.kind === 'reveal'
-                        ? 'This takes the machine off the shelves. Its artworks stay on sale on their own pages.'
-                        : 'This ends the capsule’s sale on-chain (one signature) and closes the season. Every capsule already sold is still honoured.'
-                      : m.kind === 'reveal'
-                        ? 'This takes the machine back and frees its id, so you can fix it and publish again.'
-                        : 'This takes the machine back. Its id, its capsule and the editions it held are freed, so you can fix it and publish again.'}
-                  </p>
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      onClick={() => void act(m, m.state === 'live' ? 'end' : 'withdraw')}
-                      disabled={busy === m.id}
-                      className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider btn-accent disabled:opacity-40"
-                    >
-                      {busy === m.id ? 'working…' : m.state === 'live' ? (m.kind === 'reveal' ? 'confirm close' : 'confirm end season') : 'confirm withdraw'}
-                    </button>
-                    <button
-                      onClick={() => setConfirming(null)}
-                      disabled={busy === m.id}
-                      className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40"
-                    >
-                      cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirming(key(m.state === 'live' ? 'end' : 'withdraw'))}
-                  className="mt-2 text-[11px] font-mono text-dim hover:text-ink underline"
-                >
-                  {m.state === 'live' ? (m.kind === 'reveal' ? 'close machine' : 'end season') : 'withdraw'}
-                </button>
-              )
+              <MachineAction machine={m} action={m.state === 'live' ? 'end' : 'withdraw'} onDone={onChange} />
             )}
           </div>
         )

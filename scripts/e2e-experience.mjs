@@ -3135,6 +3135,76 @@ try {
           check('and then ends the machine', (await call('/api/experience/machines/browser-machine')).json?.machine?.state === 'ended')
           await page.context().close()
         }
+
+        // ── a creator ends their machine where they see it ──
+        // On the machine list, the play tab and the machine's own page: shown to
+        // its creator only, one tap to see what ending does, one to do it.
+        {
+          const listed = (await call('/api/experience/machines')).json.machines
+          const liveBy = (addr) => listed.filter((m) => m.state === 'live' && m.creator === addr.toLowerCase()).length
+          const endControls = (pg) => pg.getByRole('button', { name: /^(end season|close machine)$/ })
+          const rowOf = (pg, id) => pg.locator('div.divide-y > div').filter({ has: pg.locator(`a[href="/experience/${id}"]`) })
+          const stateOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.machine?.state
+
+          const visitor = await open('/experience')
+          await visitor.getByRole('link', { name: 'open a machine' }).waitFor()
+          await visitor.waitForTimeout(1500)
+          check('a visitor sees no way to end anyone\'s machine', (await endControls(visitor).count()) === 0)
+          await visitor.context().close()
+          const other = await open('/experience/spring-season', { wallet: PLAYER })
+          await other.getByText('Spring Season').first().waitFor()
+          await other.waitForTimeout(1500)
+          check('nor does anyone else on a machine\'s page', (await endControls(other).count()) === 0)
+          await other.context().close()
+          const admin = await open('/experience', { user: ADMIN_USER_TOKEN, wallet: ADMIN })
+          await endControls(admin).first().waitFor({ timeout: 10_000 }).catch(() => {})
+          check('a creator sees one on each of their live machines in the list, and on no one else\'s',
+            liveBy(ADMIN) > 0 && (await endControls(admin).count()) === liveBy(ADMIN), `${await endControls(admin).count()} vs ${liveBy(ADMIN)}`)
+          await admin.context().close()
+
+          // From the list.
+          const list = await open('/experience', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const row = rowOf(list, 'curator-usdc')
+          await row.getByRole('button', { name: 'close machine' }).click()
+          check('the first tap says what closing does, and changes nothing yet',
+            (await row.innerText()).toLowerCase().includes('this takes the machine off the shelves') && (await stateOf('curator-usdc')) === 'live')
+          await row.getByRole('button', { name: 'confirm close' }).click()
+          await row.getByText('closed', { exact: true }).waitFor({ timeout: 10_000 }).catch(() => {})
+          check('the second closes it, and the list shows it closed with no control left',
+            (await stateOf('curator-usdc')) === 'ended' && (await row.getByText('closed', { exact: true }).count()) === 1 && (await endControls(list).count()) === liveBy(CURATOR) - 1)
+          await list.context().close()
+
+          // From the play tab: the machine leaves it.
+          const tab = await open('/', { user: CURATOR_TOKEN, wallet: CURATOR, storage: { 'kismetart:active-tab': 'play' } })
+          const nv = rowOf(tab, 'new-voices')
+          await nv.getByRole('button', { name: 'close machine' }).click()
+          await nv.getByRole('button', { name: 'confirm close' }).click()
+          await tab.locator('a[href="/experience/new-voices"]').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+          check('closed from the play tab, it leaves the tab', (await stateOf('new-voices')) === 'ended' && (await tab.locator('a[href="/experience/new-voices"]').count()) === 0)
+          await tab.context().close()
+
+          // From a capsule machine's page: one signature closes the capsule's sale.
+          const capsulePage = await open('/experience/dry-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, onChain: true })
+          await capsulePage.getByRole('button', { name: 'end season' }).click()
+          const signed = chain.walletTxs.length
+          await capsulePage.getByRole('button', { name: 'confirm end season' }).click()
+          await capsulePage.getByRole('button', { name: 'season closed' }).waitFor({ timeout: 15_000 }).catch(() => {})
+          const sale = chain.sales.get(key(CAPSULE_D, 1))
+          check('from a capsule machine\'s page, one signature closes the capsule\'s sale on-chain',
+            chain.walletTxs.length === signed + 1 && String(chain.walletTxs.at(-1)?.to).toLowerCase() === CAPSULE_D && sale.saleEnd <= BigInt(Math.floor(Date.now() / 1000)))
+          check('and ends the season: the page reads season closed, with no control left',
+            (await stateOf('dry-season')) === 'ended' && (await capsulePage.getByRole('button', { name: 'season closed' }).count()) === 1 && (await endControls(capsulePage).count()) === 0)
+          await capsulePage.context().close()
+
+          // From a reveal machine's page.
+          const revealPage = await open('/experience/fresh-ink', { user: CURATOR_TOKEN, wallet: CURATOR })
+          await revealPage.getByRole('button', { name: 'close machine' }).click()
+          await revealPage.getByRole('button', { name: 'confirm close' }).click()
+          await revealPage.getByText('this machine is closed').waitFor({ timeout: 10_000 }).catch(() => {})
+          check('from a reveal machine\'s page, it closes, and the page says so',
+            (await stateOf('fresh-ink')) === 'ended' && (await text(revealPage)).includes('this machine is closed') && (await endControls(revealPage).count()) === 0)
+          await revealPage.context().close()
+        }
       } finally {
         await browser.close()
       }

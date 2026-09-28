@@ -9,6 +9,7 @@ import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
+import { MachineAction } from './MachineAction'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -117,6 +118,9 @@ export function RevealMachine({ id }: { id: string }) {
             ))}{' '}
             joins by itself
           </p>
+        )}
+        {live && (
+          <MachineAction machine={{ id: data.machine.id, kind: 'reveal' }} action="end" creator={data.machine.creator} onDone={load} />
         )}
       </header>
 

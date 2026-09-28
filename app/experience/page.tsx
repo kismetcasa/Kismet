@@ -57,7 +57,13 @@ export default async function ExperiencePage() {
         </div>
       ) : (
         <MachineRows
-          machines={machines.map((m) => ({ id: m.id, name: m.name, kind: isReveal(m) ? 'reveal' : 'capsule', creator: m.creator, state: m.state }))}
+          machines={machines.map((m) => ({
+            id: m.id,
+            name: m.name,
+            creator: m.creator,
+            state: m.state,
+            ...(isReveal(m) ? { kind: 'reveal' as const } : { kind: 'capsule' as const, capsule: m.capsule }),
+          }))}
         />
       )}
     </div>

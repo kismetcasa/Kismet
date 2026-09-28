@@ -704,7 +704,7 @@ function PlayFeed() {
   }
   return (
     <div className="mt-4">
-      <MachineRows machines={machines} />
+      <MachineRows machines={machines} onEnded={(id) => setMachines(machines.filter((m) => m.id !== id))} />
     </div>
   )
 }

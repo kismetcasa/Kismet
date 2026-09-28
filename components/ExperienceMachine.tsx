@@ -8,6 +8,7 @@ import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from '@/lib/inprocess'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
+import { MachineAction } from './MachineAction'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -501,6 +502,14 @@ export function ExperienceMachine({ id }: { id: string }) {
           )}
           {spark > 0 && <> · {spark} {spark === 1 ? 'play' : 'plays'} here</>}
         </p>
+        {data.machine.state === 'live' && (
+          <MachineAction
+            machine={{ id: data.machine.id, kind: 'capsule', capsule: data.machine.capsule }}
+            action="end"
+            creator={data.machine.creator}
+            onDone={load}
+          />
+        )}
       </header>
 
       {/* The machine. The reveal replaces this face in place, so the capsule
