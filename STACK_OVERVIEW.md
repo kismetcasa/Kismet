@@ -1116,9 +1116,11 @@ they are flagged for follow-up.
    (`1bf7b1b`). The operational Arweave wallet balance is the only remaining ceiling.
 6. **The `vercel.json` crons won't fire on Coolify** without an external scheduler
    hitting each of them — if unconfigured, artist earnings stats silently stop
-   refreshing (`/api/cron/sync-stats`), machine seeds are committed only when a
-   machine is viewed rather than a day ahead (`/api/cron/experience-seeds`), and
-   curators' referral rewards are never paid out (`/api/cron/referral-payouts`).
+   refreshing (`/api/cron/sync-stats`), a machine nobody has viewed can have its
+   seed created only at a play, after the player's capsule transaction — the
+   ordering its commitment exists to rule out (`/api/cron/experience-seeds`), and
+   curators' referral rewards stay escrowed with Zora until they withdraw them
+   themselves (`/api/cron/referral-payouts`).
 7. **Minor label fix (already corrected in this doc):** the marketplace is **Seaport
    1.5** (`lib/seaport.ts:93` EIP-712 domain `version: '1.5'`), not 1.6 as one
    inventory pass guessed.

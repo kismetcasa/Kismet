@@ -7,8 +7,9 @@ import { isReveal } from '@/lib/experience/types'
 import { MachineRows } from '@/components/MachineRows'
 
 // The Experience is a top-level destination: a machine needs room for its
-// lineup, its odds table and its reveal. The Discover "play" tab lists the
-// live machines and links here; this page also keeps the closed ones.
+// lineup, its odds table and its reveal. People find the live machines in the
+// Discover "play" tab; this list — reached from the studio, the sitemap and
+// shared links — also keeps the closed ones.
 export const metadata: Metadata = {
   title: 'experience — Kismet',
   description:
@@ -56,7 +57,13 @@ export default async function ExperiencePage() {
         </div>
       ) : (
         <MachineRows
-          machines={machines.map((m) => ({ id: m.id, name: m.name, kind: isReveal(m) ? 'reveal' : 'capsule', creator: m.creator, state: m.state }))}
+          machines={machines.map((m) => ({
+            id: m.id,
+            name: m.name,
+            creator: m.creator,
+            state: m.state,
+            ...(isReveal(m) ? { kind: 'reveal' as const } : { kind: 'capsule' as const, capsule: m.capsule }),
+          }))}
         />
       )}
     </div>
