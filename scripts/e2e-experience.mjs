@@ -179,7 +179,7 @@ function exec(cmd) {
     case 'ltrim': { const l = strings.get('__list:' + k) ? JSON.parse(strings.get('__list:' + k)) : []; const [a, b] = rankRange(l.length, Number(args[1]), Number(args[2])); strings.set('__list:' + k, JSON.stringify(b < a ? [] : l.slice(a, b + 1))); return 'OK' }
     case 'lrange': { const l = strings.get('__list:' + k) ? JSON.parse(strings.get('__list:' + k)) : []; const [a, b] = rankRange(l.length, Number(args[1]), Number(args[2])); return b < a ? [] : l.slice(a, b + 1) }
     // The count of members that were new, as Redis returns it — a once-only
-    // notice (lib/play/notices) is decided by exactly this.
+    // notice (lib/experience/notices) is decided by exactly this.
     case 'sadd': { const s = sets.get(k) ?? new Set(); let n = 0; for (const m of args.slice(1)) if (!s.has(m)) { s.add(m); n++ } sets.set(k, s); return n }
     case 'srem': { const s = sets.get(k); let n = 0; for (const m of args.slice(1)) { if (s?.delete(m)) n++ } return n }
     case 'smembers': return [...(sets.get(k) ?? [])]
@@ -788,7 +788,7 @@ strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${CREATOR2}`, '1')
 strings.set(`kismetart:auth-session:${ADMIN_TOKEN}`, ADMIN)
 
 // The capsule's recorded split — the ONLY thing that now authorises a foreign
-// artist into a pool (lib/play/payees reads exactly this key). CAPSULE:1
+// artist into a pool (lib/experience/payees reads exactly this key). CAPSULE:1
 // pays ADMIN and ARTIST_B, so spring-season may pool ARTIST_B's work.
 strings.set(
   `kismetart:splits:${CAPSULE.toLowerCase()}:1`,
@@ -1138,7 +1138,7 @@ try {
   {
     // What was actually put on the wire: one userOp, calling adminMint on the
     // prize's collection, minting exactly one copy of the drawn token to the
-    // player — the same shape lib/play/delivery's oracle pins, now seen
+    // player — the same shape lib/experience/delivery's oracle pins, now seen
     // arriving at CDP.
     const ops = [...cdp.ops.values()]
     check('exactly one userOp was broadcast for it', ops.length === 1, String(ops.length))
@@ -1652,7 +1652,7 @@ try {
       Math.abs(before.odds.reduce((a, o) => a + o.probability, 0) - 1) < 1e-9)
 
     // The blacklist exclusion itself is pinned in scripts/verify-experience-flow
-    // against lib/play/eligibility directly: lib/blacklist memoizes for 15
+    // against lib/experience/eligibility directly: lib/blacklist memoizes for 15
     // minutes, which no end-to-end run can wait out honestly, and reaching past
     // the memo would test a path production never takes.
     check('every published row is one the draw could actually return',
@@ -2171,7 +2171,7 @@ try {
   // ═══ 6m. a reveal machine linked to a collection ══════════════════════════
   // A curator links a collection instead of (or as well as) picking pieces:
   // every Kismet-minted piece there joins, newest first, and new mints join as
-  // they are minted (lib/mint-proxy → lib/play/linked; the join itself
+  // they are minted (lib/mint-proxy → lib/experience/linked; the join itself
   // is proved by scripts/verify-experience-flow.ts section 13).
   console.log('\n6m. a reveal machine linked to a collection')
   {

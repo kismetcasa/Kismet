@@ -8,7 +8,7 @@ import { MachineRows } from '@/components/MachineRows'
 
 // Every machine: people find the live ones in the Discover "play" tab; this
 // list — reached from the studio, the sitemap and shared links — also keeps
-// the closed ones. The old /experience URLs redirect here (next.config.mjs).
+// the closed ones. The old /experience list redirects here (next.config.mjs).
 export const metadata: Metadata = {
   title: 'play — Kismet',
   description:
