@@ -15,7 +15,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `verify a play — Kismet`,
     description:
       'Recompute a capsule draw from the seed committed before it happened, and check it against what was delivered.',
-    alternates: { canonical: `${SITE_URL}/experience/${id}/verify` },
+    alternates: { canonical: `${SITE_URL}/play/${id}/verify` },
     // Deliberately noindex: this page is a tool for a specific play, not a
     // destination, and every useful visit arrives with a transaction hash.
     robots: { index: false, follow: true },

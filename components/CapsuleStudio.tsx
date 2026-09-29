@@ -182,7 +182,7 @@ export function CapsuleStudio() {
         if (!dryRun && body?.machine) {
           if (body.machine.state === 'live') {
             toast.success('Machine is live')
-            router.push(`/experience/${body.machine.id}`)
+            router.push(`/play/${body.machine.id}`)
             return
           }
           toast.success('Submitted for review')
@@ -209,7 +209,7 @@ export function CapsuleStudio() {
           set the rarity; the odds are derived from it and published automatically — there is no percentage
           to type, and no way for the table players see to differ from the one the draw uses. To curate other
           artists&apos; work, open a{' '}
-          <Link href="/experience/new?kind=reveal" className="text-dim hover:text-ink underline">
+          <Link href="/play/create-reveal" className="text-dim hover:text-ink underline">
             reveal machine
           </Link>{' '}
           instead.
@@ -504,7 +504,7 @@ export function StudioSubmitted({
         <p className="text-[11px] font-mono text-muted mt-2 max-w-lg leading-relaxed">
           <span className="text-dim">{machine.name}</span> is queued for a curator. It isn&apos;t public
           yet; once approved it will be live at{' '}
-          <span className="text-dim">/experience/{machine.id}</span>, and you&apos;ll be notified either
+          <span className="text-dim">/play/{machine.id}</span>, and you&apos;ll be notified either
           way.
         </p>
         <div className="flex flex-wrap gap-4 mt-4">
@@ -513,8 +513,8 @@ export function StudioSubmitted({
               see it on your profile →
             </Link>
           )}
-          <Link href="/experience" className="text-[11px] font-mono text-dim hover:text-ink underline">
-            back to experience →
+          <Link href="/play" className="text-[11px] font-mono text-dim hover:text-ink underline">
+            back to play →
           </Link>
         </div>
       </section>

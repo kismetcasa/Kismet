@@ -143,7 +143,7 @@ export function ProfileMachines({
           <div key={m.id} className="border border-line px-4 py-3">
             <div className="flex items-center gap-3">
               {onShelf ? (
-                <Link href={`/experience/${m.id}`} className="flex-1 min-w-0 text-sm font-mono text-ink hover:underline truncate">
+                <Link href={`/play/${m.id}`} className="flex-1 min-w-0 text-sm font-mono text-ink hover:underline truncate">
                   {m.name}
                 </Link>
               ) : (
@@ -209,7 +209,7 @@ export function ProfileMachines({
           <ul className="flex flex-col gap-1">
             {featuredIn.map((f) => (
               <li key={f.id} className="text-[11px] font-mono text-subtle">
-                <Link href={`/experience/${f.id}`} className="text-dim hover:text-ink underline">
+                <Link href={`/play/${f.id}`} className="text-dim hover:text-ink underline">
                   {f.name}
                 </Link>{' '}
                 · curated by{' '}
@@ -238,7 +238,7 @@ export function ProfileMachines({
         </div>
       )}
       {manage && (
-        <Link href="/experience/new" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
+        <Link href="/play/create" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
           open another machine →
         </Link>
       )}

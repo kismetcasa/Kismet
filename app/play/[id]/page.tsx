@@ -25,12 +25,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     description: reveal
       ? `Pull ${name} on Kismet for free and collect the artwork you reveal.`
       : `Play ${name} on Kismet. Published odds; every play returns a real artwork.`,
-    alternates: { canonical: `${SITE_URL}/experience/${id}` },
+    alternates: { canonical: `${SITE_URL}/play/${id}` },
     other: buildFarcasterEmbed({
       imageUrl:
         process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
       buttonTitle: reveal ? 'Pull' : 'See the odds',
-      action: { url: `${SITE_URL}/experience/${id}` },
+      action: { url: `${SITE_URL}/play/${id}` },
     }),
   }
 }

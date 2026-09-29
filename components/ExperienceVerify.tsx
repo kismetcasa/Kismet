@@ -89,7 +89,7 @@ export function ExperienceVerify({ machineId, initialTx }: { machineId: string; 
         <h1 className="text-lg font-mono tracking-wider text-ink">verify a play</h1>
         <p className="text-[11px] font-mono text-muted mt-1">
           Recompute any finished draw on{' '}
-          <Link href={`/experience/${machineId}`} className="text-dim hover:text-ink underline">
+          <Link href={`/play/${machineId}`} className="text-dim hover:text-ink underline">
             this machine
           </Link>{' '}
           from the seed that was committed before it happened.

@@ -143,6 +143,10 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   return NextResponse.json({ owner, machines, featuredIn, ...(referralPaid !== undefined ? { referralPaid } : {}) })
 }
 
+/** The pages beside the machines under /play (app/play/*): a machine with one
+ *  of these ids would sit behind that page, unreachable. */
+const PAGE_IDS = new Set(['create', 'create-capsule', 'create-reveal'])
+
 export async function POST(req: NextRequest) {
   // A flood guard per IP, before anything is authenticated. The real budgets
   // are per wallet, below, once the request says whether it is a check.
@@ -198,6 +202,7 @@ export async function POST(req: NextRequest) {
   const rawCapsuleToken = body.capsule?.tokenId
 
   if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
+  if (PAGE_IDS.has(id)) return errorResponse(400, 'That id is taken by one of Kismet’s own pages — choose another')
   if (!name) return errorResponse(400, 'A machine needs a name')
   if (kind !== 'capsule' && kind !== 'reveal') return errorResponse(400, 'Invalid kind')
   if (rarity !== 'manual' && rarity !== 'supply') return errorResponse(400, 'Invalid rarity')

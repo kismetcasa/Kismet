@@ -52,8 +52,8 @@ function notificationHref(n: Notification): string {
       // Kismet reviews from the queue; an empty machine is closed from the
       // creator's profile, where its end-season control lives; every other
       // decision links the machine itself.
-      if (n.note === 'review') return '/admin/experience'
-      return n.note !== 'empty' && n.machineId ? `/experience/${n.machineId}` : `/profile/${n.recipient}`
+      if (n.note === 'review') return '/admin/play'
+      return n.note !== 'empty' && n.machineId ? `/play/${n.machineId}` : `/profile/${n.recipient}`
     case 'experience_featured':
       // The artwork, not the machine: its page lists every machine the piece
       // is in and holds the switch that takes it out of them.

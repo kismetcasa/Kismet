@@ -236,7 +236,7 @@ export function ExperienceReviewQueue() {
                         machine 404s there, and its lineup is right above. */}
                     {m.state !== 'review' && m.state !== 'draft' && (
                       <Link
-                        href={`/experience/${m.id}`}
+                        href={`/play/${m.id}`}
                         className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-subtle hover:text-dim"
                       >
                         view

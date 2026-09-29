@@ -6,39 +6,38 @@ import { listMachines } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
 import { MachineRows } from '@/components/MachineRows'
 
-// The Experience is a top-level destination: a machine needs room for its
-// lineup, its odds table and its reveal. People find the live machines in the
-// Discover "play" tab; this list — reached from the studio, the sitemap and
-// shared links — also keeps the closed ones.
+// Every machine: people find the live ones in the Discover "play" tab; this
+// list — reached from the studio, the sitemap and shared links — also keeps
+// the closed ones. The old /experience URLs redirect here (next.config.mjs).
 export const metadata: Metadata = {
-  title: 'experience — Kismet',
+  title: 'play — Kismet',
   description:
     'Play a capsule machine or pull a reveal machine and collect an artwork from a Kismet artist. Published odds, every play returns a real artwork.',
-  alternates: { canonical: `${SITE_URL}/experience` },
+  alternates: { canonical: `${SITE_URL}/play` },
   other: buildFarcasterEmbed({
     imageUrl:
       process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
     buttonTitle: 'Open a capsule',
-    action: { url: `${SITE_URL}/experience` },
+    action: { url: `${SITE_URL}/play` },
   }),
 }
 
 export const dynamic = 'force-dynamic'
 
-export default async function ExperiencePage() {
+export default async function PlayPage() {
   const machines = await listMachines(['live', 'ended']).catch(() => [])
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <header className="mb-8 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-lg font-mono tracking-wider text-ink">experience</h1>
+          <h1 className="text-lg font-mono tracking-wider text-ink">play</h1>
           <p className="text-[11px] font-mono text-muted mt-1">
             capsule machines and reveal machines · published odds
           </p>
         </div>
         <Link
-          href="/experience/new"
+          href="/play/create"
           className="shrink-0 px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
         >
           open a machine
@@ -50,7 +49,7 @@ export default async function ExperiencePage() {
           <p className="text-sm font-mono text-muted">no machines running yet</p>
           <p className="text-xs font-mono text-subtle mt-2">
             any Pass holder can{' '}
-            <Link href="/experience/new" className="text-dim hover:text-ink underline">
+            <Link href="/play/create" className="text-dim hover:text-ink underline">
               open one
             </Link>
           </p>

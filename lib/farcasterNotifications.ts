@@ -579,10 +579,10 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         body: truncate(detail ? `${headline}. ${detail}` : headline, BODY_MAX),
         targetUrl:
           n.note === 'review'
-            ? `${SITE_URL}/admin/experience`
+            ? `${SITE_URL}/admin/play`
             : n.note === 'empty' || !n.machineId
               ? `${SITE_URL}/profile/${n.recipient}`
-              : `${SITE_URL}/experience/${n.machineId}`,
+              : `${SITE_URL}/play/${n.machineId}`,
       }
     }
     case 'experience_featured': {

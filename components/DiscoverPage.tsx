@@ -675,8 +675,9 @@ export function DiscoverPage({
 // ─── play feed ───────────────────────────────────────────────────────────────
 
 // The machines on the shelves right now, one row each, opening to the machine.
-// A closed machine cannot be played, so only live ones are listed (/experience
-// keeps the closed ones); with none, the way to open the first.
+// A closed machine cannot be played, so only live ones are listed (/play keeps
+// the closed ones). The way to build one is always here: the tab is where
+// people find machines, so it is where a creator looks for how to open one.
 function PlayFeed() {
   const [machines, setMachines] = useState<MachineRow[] | null>(null)
   const [failed, setFailed] = useState(false)
@@ -694,7 +695,7 @@ function PlayFeed() {
       <div className="border border-line p-8 sm:p-16 text-center mt-4">
         <p className="text-sm font-mono text-muted">nothing to play yet</p>
         <Link
-          href="/experience/new"
+          href="/play/create"
           className="inline-block mt-5 px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent"
         >
           build gachapon
@@ -704,6 +705,14 @@ function PlayFeed() {
   }
   return (
     <div className="mt-4">
+      <div className="flex justify-end mb-3">
+        <Link
+          href="/play/create"
+          className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
+        >
+          build gachapon
+        </Link>
+      </div>
       <MachineRows machines={machines} onEnded={(id) => setMachines(machines.filter((m) => m.id !== id))} />
     </div>
   )
