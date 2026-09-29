@@ -1,5 +1,6 @@
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
 import { reportClientError } from '@/lib/clientError'
+import { gifTimingArgs, readGifTiming } from './gifTiming'
 
 // Past ~100MB, ffmpeg.wasm starts OOM'ing on phones. Bigger GIFs upload
 // unchanged — proxy + edge cache still help.
@@ -289,7 +290,11 @@ export async function transcodeGifToMp4(
   ff.on('progress', progressHandler)
   try {
     const bytes = new Uint8Array(await file.arrayBuffer())
-    await runWatched(ff, 'gif write', () => ff.writeFile('in.gif', bytes))
+    // Encoded on the GIF's own timing (lib/media/gifTiming): left to itself,
+    // this ffmpeg ends the MP4 at its last frame's start.
+    const timing = readGifTiming(bytes)
+    const keep = timing ? gifTimingArgs(timing) : null
+    await runWatched(ff, 'gif write', () => ff.writeFile('in.gif', timing?.bytes ?? bytes))
     await runWatched(ff, 'gif poster', () => ff.exec([
       '-i', 'in.gif',
       '-vf', 'select=eq(n\\,0)',
@@ -301,7 +306,8 @@ export async function transcodeGifToMp4(
       '-i', 'in.gif',
       '-movflags', 'faststart',
       '-pix_fmt', 'yuv420p',
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+      ...(keep ? ['-t', keep.duration] : []),
       '-c:v', 'libx264',
       '-preset', 'fast',
       '-crf', '23',

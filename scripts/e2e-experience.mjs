@@ -83,16 +83,17 @@ const TEST_COVER = { uri: 'ar://' + 'e2eCover'.repeat(5) + 'abc' }
 // A stage frame as a publish or its creator's edit carries one (lib/experience/cover).
 const TEST_FRAME = { uri: 'ar://' + 'e2eFrame'.repeat(5) + 'abc', kind: 'video', poster: 'ar://' + 'e2ePostr'.repeat(5) + 'abc' }
 // A two-frame 16×16 animated gif, written out by hand so the suite carries no
-// binary fixture: two colours, `cs` hundredths of a second a frame, and an LZW
-// stream that clears its table every two codes so every code stays 3 bits.
-function tinyGif(cs) {
+// binary fixture: two colours, `cs` hundredths of a second for the first frame
+// and `last` for the second, and an LZW stream that clears its table every two
+// codes so every code stays 3 bits.
+function tinyGif(cs, last = cs) {
   const bytes = []
   const push = (...b) => bytes.push(...b)
   const u16 = (n) => [n & 255, n >> 8]
   push(...Buffer.from('GIF89a'), ...u16(16), ...u16(16), 0x80, 0, 0, 255, 0, 170, 0, 200, 255)
   push(0x21, 0xff, 0x0b, ...Buffer.from('NETSCAPE2.0'), 0x03, 0x01, 0, 0, 0x00)
   for (const colour of [0, 1]) {
-    push(0x21, 0xf9, 0x04, 0x00, ...u16(cs), 0x00, 0x00, 0x2c, ...u16(0), ...u16(0), ...u16(16), ...u16(16), 0x00, 0x02)
+    push(0x21, 0xf9, 0x04, 0x00, ...u16(colour ? last : cs), 0x00, 0x00, 0x2c, ...u16(0), ...u16(0), ...u16(16), ...u16(16), 0x00, 0x02)
     const codes = []
     for (let i = 0; i < 256; i += 2) codes.push(4, colour, colour)
     codes.push(5)
@@ -113,6 +114,42 @@ function tinyGif(cs) {
 }
 /** What the browser uploaded to Arweave's upload service, in order (open()'s `uploads`). */
 const arweaveUploads = []
+/** The file inside an uploaded Arweave data item (ANS-104): past its
+ *  signature and owner (sized by signature type), target, anchor and tags. */
+function dataItemPayload(item) {
+  const sizes = { 1: [512, 512], 2: [64, 32], 3: [65, 65], 4: [64, 32] }[item.readUInt16LE(0)]
+  if (!sizes) return null
+  let o = 2 + sizes[0] + sizes[1]
+  o += item[o] === 1 ? 33 : 1
+  o += item[o] === 1 ? 33 : 1
+  return item.subarray(o + 16 + Number(item.readBigUInt64LE(o + 8)))
+}
+/** An MP4's length (its movie header) and its video's sample count — read
+ *  from the boxes, since nothing here can decode H.264. */
+function mp4Timing(mp4) {
+  const boxes = (buf, from, to) => {
+    const out = {}
+    for (let o = from; o + 8 <= to;) {
+      let size = buf.readUInt32BE(o)
+      let head = 8
+      if (size === 1) { size = Number(buf.readBigUInt64BE(o + 8)); head = 16 }
+      if (size < head) break
+      out[buf.toString('latin1', o + 4, o + 8)] ??= [o + head, o + size]
+      o += size
+    }
+    return out
+  }
+  const top = boxes(mp4, 0, mp4.length)
+  if (!top.moov) return null
+  const moov = boxes(mp4, ...top.moov)
+  const [h] = moov.mvhd
+  const v1 = mp4[h] === 1
+  const scale = mp4.readUInt32BE(h + (v1 ? 20 : 12))
+  const length = v1 ? Number(mp4.readBigUInt64BE(h + 24)) : mp4.readUInt32BE(h + 16)
+  const trak = boxes(mp4, ...moov.trak)
+  const stbl = boxes(mp4, ...boxes(mp4, ...boxes(mp4, ...trak.mdia).minf).stbl)
+  return { seconds: length / scale, samples: mp4.readUInt32BE(stbl.stsz[0] + 8) }
+}
 /** Spring Season's cover: an Arweave upload, as the studio makes one. */
 const SPRING_COVER = { uri: 'ar://' + 'Sp1ngC0ver'.repeat(4) + 'abc' }
 /** A fresh capsule for the machine the browser publishes in section 9. */
@@ -2579,7 +2616,8 @@ try {
             const req = r.request()
             if (req.method() === 'POST' && /\/tx\//.test(new URL(req.url()).pathname)) {
               const id = `e2eUpload${String(arweaveUploads.length + 1).padStart(34, '0')}`
-              arweaveUploads.push({ id, bytes: req.postDataBuffer()?.length ?? 0 })
+              const body = req.postDataBuffer() ?? Buffer.alloc(0)
+              arweaveUploads.push({ id, bytes: body.length, body })
               return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
                 id, owner: 'e2e', dataCaches: ['arweave.net'], fastFinalityIndexes: ['arweave.net'], winc: '0', deadlineHeight: 0, timestamp: Date.now(),
               }) })
@@ -3084,7 +3122,7 @@ try {
             tooLong && tooWide && arweaveUploads.length === uploadsBefore && (await studio.getByRole('button', { name: 'save frames' }).count()) === 0,
             `${tooLong} ${tooWide} ${arweaveUploads.length - uploadsBefore} | ${toastsSeen}`)
           await studio.getByLabel('dispense frame', { exact: true }).setInputFiles({ name: 'dispense.gif', mimeType: 'image/gif', buffer: tinyGif(50) })
-          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(50) })
+          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(10, 70) })
           await studio.getByRole('button', { name: 'save frames' }).click({ timeout: 60_000 })
           await studio.getByText('Frames updated').waitFor({ timeout: 30_000 }).catch(() => {})
           const frames = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
@@ -3094,6 +3132,17 @@ try {
             frames?.dispense?.kind === 'video' && frames.open?.kind === 'video' && !!frames.dispense.thumbhash &&
               sent.length === 4 && parts.every((u) => sent.includes(u)) && new Set(parts).size === 4,
             `${JSON.stringify(frames)} | ${sent.join(' ')}`)
+          // What was uploaded is the GIF, to the hundredth: the browser's own
+          // ffmpeg ends an MP4 at its last frame's start unless told the timing.
+          const clip = (uri) => {
+            const item = arweaveUploads.find((u) => `ar://${u.id}` === uri)?.body
+            const mp4 = item && dataItemPayload(item)
+            return mp4 && mp4.toString('latin1', 4, 8) === 'ftyp' ? mp4Timing(mp4) : null
+          }
+          const [dispenseClip, openClip] = [clip(frames?.dispense?.uri), clip(frames?.open?.uri)]
+          check('each clip runs exactly as long as its gif — even gifs at their own frame rate, a held last frame for its whole hold',
+            dispenseClip?.seconds === 1 && dispenseClip.samples === 2 && openClip?.seconds === 0.8 && openClip.samples === 8,
+            JSON.stringify({ dispenseClip, openClip }))
           await studio.context().close()
 
           // ── and the play is theirs ──
@@ -3116,7 +3165,11 @@ try {
               (await withFrames.locator('[data-frame="dispense"]').getAttribute('loop')) !== null,
             JSON.stringify(stages))
           check('both clips were loaded before the play needed them', preloadedBy(asked), mediaRequests.slice(askedFrom, asked).join(' '))
-          check('and the open ends when the clip does, not at its bound', stageMs(stages, 'open') < 3000, String(stageMs(stages, 'open')))
+          // The clip runs a second; the bound is 4.5 s and the platform's own open 1.2 s,
+          // so only the clip itself, played through, lands in between.
+          check('and the open is the clip, played through, ending when it does — not at its bound',
+            !!opening?.[3]?.startsWith('video ') && stageMs(stages, 'open') >= 800 && stageMs(stages, 'open') < 3000,
+            `${opening?.[3]} ${stageMs(stages, 'open')}`)
           await withFrames.context().close()
 
           const calm = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true, reducedMotion: true })

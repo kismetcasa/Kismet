@@ -5,6 +5,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { gifSeconds, readGifTiming } from '@/lib/media/gifTiming'
 import { FRAME_LIMITS, type StageFrame } from './types'
 
 /**
@@ -48,7 +49,9 @@ async function prepare(file: File): Promise<PreparedFrame | string> {
   let frame: PreparedFrame
   let seconds: number | null = null
   if (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')) {
-    seconds = gifSeconds(new Uint8Array(await file.arrayBuffer()))
+    // Read from the gif itself, as a browser plays it (lib/media/gifTiming).
+    const timing = readGifTiming(new Uint8Array(await file.arrayBuffer()))
+    seconds = timing ? gifSeconds(timing) : null
     try {
       const { mp4, poster } = await transcodeGifToMp4(file)
       frame = { media: mp4, poster, kind: 'video' }
@@ -65,44 +68,6 @@ async function prepare(file: File): Promise<PreparedFrame | string> {
     frame = { media: file, poster: file, kind: 'image' }
   }
   return (await overLimit(frame, seconds)) ?? frame
-}
-
-/**
- * A gif's running time: its frames' delays summed, each as a browser and
- * ffmpeg show it (a delay under 2/100 s plays as 1/10). Read from the gif and
- * not from the mp4 it becomes, which ffmpeg ends at its last frame's START —
- * a gif of two 2.5 s frames measures 2.51 s as an mp4. Null when the bytes are
- * not a gif this can walk.
- */
-export function gifSeconds(b: Uint8Array): number | null {
-  if (b.length < 13 || b[0] !== 0x47 || b[1] !== 0x49 || b[2] !== 0x46) return null
-  const table = (flags: number) => (flags & 0x80 ? 3 << ((flags & 7) + 1) : 0)
-  let i = 13 + table(b[10])
-  let hundredths = 0
-  const skipSubBlocks = () => {
-    while (i < b.length && b[i] !== 0) i += b[i] + 1
-    i++
-  }
-  while (i < b.length) {
-    const block = b[i++]
-    if (block === 0x3b) break
-    if (block === 0x21) {
-      // An extension; a graphic control one carries the next frame's delay.
-      if (b[i] === 0xf9 && b[i + 1] === 4) {
-        const delay = b[i + 3] | (b[i + 4] << 8)
-        hundredths += delay < 2 ? 10 : delay
-      }
-      i++
-      skipSubBlocks()
-    } else if (block === 0x2c) {
-      // An image: its descriptor, any local colour table, then its data.
-      i += 9 + table(b[i + 8]) + 1
-      skipSubBlocks()
-    } else {
-      return null
-    }
-  }
-  return hundredths > 0 ? hundredths / 100 : null
 }
 
 async function overLimit(frame: PreparedFrame, seconds: number | null): Promise<string | null> {

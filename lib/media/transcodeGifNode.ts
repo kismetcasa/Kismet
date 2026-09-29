@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { rgbaToThumbHash } from 'thumbhash'
+import { gifTimingArgs, readGifTiming } from './gifTiming'
 
 const execFileAsync = promisify(execFile)
 
@@ -32,7 +33,11 @@ export async function transcodeGifToMp4Node(
   const mp4Path = join(dir, 'out.mp4')
   const posterPath = join(dir, 'poster.jpg')
   try {
-    await writeFile(inPath, gif)
+    // Encoded on the GIF's own timing (lib/media/gifTiming), as the browser
+    // path is: left to itself, this ffmpeg snaps frames to a guessed rate.
+    const timing = readGifTiming(new Uint8Array(gif.buffer, gif.byteOffset, gif.byteLength))
+    const keep = timing ? gifTimingArgs(timing) : null
+    await writeFile(inPath, timing?.bytes ?? gif)
     // Poster = frame 0. The comma in the select filter is escaped for
     // ffmpeg's filtergraph parser (matches the wasm recipe).
     await execFileAsync(
@@ -45,7 +50,8 @@ export async function transcodeGifToMp4Node(
       [
         '-y', '-loglevel', 'error', '-i', inPath,
         '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
-        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+        ...(keep ? ['-t', keep.duration] : []),
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', '30', '-an',
         mp4Path,
       ],
