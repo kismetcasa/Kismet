@@ -53,7 +53,7 @@ export type SweepStatus =
   | 'done'
   | 'error'
 
-export interface UseSweepReturn {
+interface UseSweepReturn {
   status: SweepStatus
   rows: SweepRow[]
   /** Basket size the sheet asked for. */

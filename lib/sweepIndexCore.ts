@@ -146,7 +146,7 @@ function toRankable(it: SweepIndexItem): RankableSweepItem & { item: SweepIndexI
 }
 
 /** Rank persisted items (string wei → bigint adapter over lib/sweepRank). */
-export function rankIndexItems(items: readonly SweepIndexItem[]): SweepIndexItem[] {
+function rankIndexItems(items: readonly SweepIndexItem[]): SweepIndexItem[] {
   return rankSweepCandidates(items.map(toRankable)).map((r) => r.item)
 }
 

@@ -7,7 +7,7 @@ import { sweepBundle, sweepSimulationArgs, type SweepCall } from './sweepBatch'
 // network half over lib/sweepBatch's pure builders. Both reads are eth_call
 // shaped — nothing is broadcast — so a failure here costs the user nothing.
 
-export type SweepSimulation = { ok: boolean[] } | { error: 'insufficient-funds' | 'rpc' }
+type SweepSimulation = { ok: boolean[] } | { error: 'insufficient-funds' | 'rpc' }
 
 /**
  * Simulate the bundle with allowFailure=true on every sub-call and report each
