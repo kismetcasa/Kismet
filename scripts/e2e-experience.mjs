@@ -19,7 +19,7 @@
 import { createServer, request as httpRequest } from 'node:http'
 import { spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import {
   decodeAbiParameters,
   decodeFunctionData,
@@ -760,12 +760,32 @@ const probe = (path) => new Promise((resolve) => {
 const dayShift = (epoch, d) => { const [y, m, dd] = epoch.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd + d)).toISOString().slice(0, 10) }
 
 // ── boot ─────────────────────────────────────────────────────────────────────
+// ── mock inprocess: artwork titles and images ──
+// The server reads them from inprocess's /moment (lib/experience/artwork).
+// Only the artworks listed here answer; every other request is cut off, which
+// is what the real host does from this sandbox, so pages that already cope
+// with no metadata see exactly what they did before.
+const ARTWORK_META = new Map([
+  [key(POOL, 8), { name: 'Piece Eight', image: 'ar://piece-eight' }],
+])
+const inprocessServer = createServer((req, res) => {
+  const u = new URL(req.url, 'http://stub')
+  const meta = u.pathname === '/api/moment'
+    ? ARTWORK_META.get(key(u.searchParams.get('collectionAddress') ?? '', u.searchParams.get('tokenId') ?? ''))
+    : null
+  if (!meta) { req.socket.destroy(); return }
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ metadata: meta }))
+})
+
 await new Promise((r) => redisServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => rpcServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => cdpServer.listen(0, '127.0.0.1', r))
+await new Promise((r) => inprocessServer.listen(0, '127.0.0.1', r))
 const redisPort = redisServer.address().port
 const rpcPort = rpcServer.address().port
 const cdpPort = cdpServer.address().port
+const inprocessPort = inprocessServer.address().port
 
 // Sessions: the create route reads the USER cookie (and decides admin by
 // address); the review API reads the ADMIN cookie.
@@ -994,6 +1014,9 @@ function killMarked() {
     try { if (readFileSync(`/proc/${d}/environ`, 'latin1').includes(`${MARKER_KEY}=${MARKER_VAL}`)) process.kill(Number(d), 'SIGKILL') } catch { /* gone or not ours */ }
   }
 }
+// Next keeps server fetches (artwork metadata among them) on disk across runs;
+// a run must see only what this run's stubs serve.
+rmSync('.next/cache/fetch-cache', { recursive: true, force: true })
 const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '-p', String(PORT)], {
   cwd: process.cwd(),
   detached: true,
@@ -1013,6 +1036,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     // Set so the SDK does not go looking up a paymaster of its own; CDP would
     // call it, and this CDP never does.
     CDP_PAYMASTER_URL: `http://127.0.0.1:${cdpPort}/paymaster`,
+    INPROCESS_API_URL: `http://127.0.0.1:${inprocessPort}/api`,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -1022,7 +1046,7 @@ child.stderr.on('data', (d) => { serverLog += d; if (DEBUG) process.stderr.write
 child.on('error', (err) => { console.error(`spawn failed: ${err.message}`); process.exit(1) })
 child.on('exit', (code, sig) => { if (!up) { console.error(`server exited before ready (code=${code} sig=${sig})\n${serverLog.slice(-1500)}`); process.exit(1) } })
 let up = false
-const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close() }
+const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close(); inprocessServer.close() }
 process.on('exit', shutdown)
 // A SIGTERM/SIGINT (a `timeout`, a Ctrl-C) does not run 'exit' handlers on its
 // own, and an orphaned server would hold the port for the next run.
@@ -2670,6 +2694,27 @@ try {
           await page.getByRole('button', { name: 'approve · live' }).click()
           await page.getByText('browser-machine \u2192 live').waitFor()
           check('approving promotes it', (await call('/api/experience/machines/browser-machine')).status === 200)
+          await page.context().close()
+        }
+
+        // ── a capsule bought in the browser opens to the artwork it won ──
+        // Pay, open, reveal: the one path every player takes. Its lineup is one
+        // piece, so the win is known — and must show that artwork, not its id.
+        {
+          const page = await open('/play/browser-machine', { wallet: PLAYER, onChain: true })
+          await page.getByText('insert coin').waitFor()
+          const paid = chain.walletTxs.length
+          await page.getByRole('button', { name: 'play', exact: true }).click()
+          await page.getByText('you won').waitFor({ timeout: 60_000 }).catch(() => {})
+          check('a capsule is paid for in one signature from the player\'s wallet',
+            chain.walletTxs.length === paid + 1 && String(chain.walletTxs.at(-1)?.to).toLowerCase() === CAPSULE_A)
+          // The first link to it is the win; the odds table below links it too.
+          const win = page.locator(`a[href="/artwork/${POOL}/8"]`).first()
+          const winText = (await win.innerText().catch(() => '')).toLowerCase()
+          const winImage = (await win.locator('img').getAttribute('src').catch(() => null)) ?? ''
+          check('and opens to the artwork it won: its image and its title, not its token id',
+            winText.includes('piece eight') && !winText.includes('#8') && decodeURIComponent(winImage).includes('piece-eight'),
+            `${winText.replace(/\s+/g, ' ')} | ${winImage.slice(0, 120)} | page: ${(await text(page)).match(/(you won|on its way|opening|still|insert coin).{0,200}/)?.[0] ?? ''}`)
           await page.context().close()
         }
 

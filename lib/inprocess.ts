@@ -31,7 +31,11 @@ import { USDC_BASE } from './zoraMint'
 // new /moment links (eslint.config.mjs no-restricted-syntax).
 // ───────────────────────────────────────────────────────────────────────────
 
-export const INPROCESS_API = 'https://api.inprocess.world/api'
+// INPROCESS_API_URL exists for the end-to-end suite, which points the server at
+// a local stub (scripts/e2e-experience.mjs) the way it points CDP at one. Unset
+// everywhere else, and never read by the browser, so the constant below is the
+// only value production sees.
+export const INPROCESS_API = process.env.INPROCESS_API_URL || 'https://api.inprocess.world/api'
 
 /** Build an inprocess API URL. Pass `path` with leading slash; nullish param values are skipped. */
 export function inprocessUrl(

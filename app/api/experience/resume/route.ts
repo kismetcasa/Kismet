@@ -21,7 +21,6 @@ import {
   getPool,
   getRemaining,
   openEpochSeeds,
-  publicClaim,
   releaseOne,
   seedForEpoch,
   settleDeliveredCopy,
@@ -31,7 +30,7 @@ import { isReveal } from '@/lib/experience/types'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
-import { fetchArtworkMeta } from '@/lib/experience/artwork'
+import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable, isDeliverableEntry } from '@/lib/experience/eligibility'
 import { noticeIfEmpty } from '@/lib/experience/notices'
 
@@ -137,7 +136,7 @@ async function handle(
   // every later use and force a null check that cannot actually be reached.
   let claim: ClaimRecord = found
   if (claim.state === 'delivered') {
-    return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+    return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
   }
 
   const player = claim.claimant
@@ -170,14 +169,14 @@ async function handle(
       if (receipt.kind === 'landed') {
         claim = await advanceClaim(claim, { state: 'delivered', txDelivered: receipt.txHash })
         await settle(claim, machineId)
-        return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: true })
+        return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: true })
       }
       if (receipt.kind === 'pending') {
         // Still in flight. The first mint may yet land, so a second one is the
         // one action that turns a payment into two artworks. Wait.
         return NextResponse.json({
           ok: true,
-          claim: publicClaim(claim),
+          claim: await claimForPlayer(claim),
           resumed: false,
           reason: 'delivery is still confirming — try again shortly',
         })
@@ -187,7 +186,7 @@ async function handle(
         // an unknown is how one payment becomes two artworks.
         return NextResponse.json({
           ok: true,
-          claim: publicClaim(claim),
+          claim: await claimForPlayer(claim),
           resumed: false,
           reason: 'could not read delivery state — try again shortly',
         })
@@ -212,7 +211,7 @@ async function handle(
         pendingReason: 'the drawn artwork is no longer eligible to be dispensed — an operator is looking at this capsule',
       })
       console.error('[xp] resume blocked by eligibility', { machineId, txHash, unitIndex })
-      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+      return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
     }
 
     const auth = await checkPrizeAuthority({
@@ -224,7 +223,7 @@ async function handle(
         state: 'pending',
         pendingReason: `the drawn artwork can no longer be minted (${auth.reason ?? 'unknown'})`,
       })
-      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+      return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
     }
 
     // Every broadcast is gas the platform pays. A prize whose adminMint reverts
@@ -237,7 +236,7 @@ async function handle(
         pendingReason: 'delivery has failed repeatedly — an operator is looking at this capsule',
       })
       console.error('[xp] delivery attempts exhausted', { machineId, txHash, unitIndex })
-      return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+      return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
     }
     claim = await advanceClaim(claim, { state: claim.state, deliveryAttempts: attempts + 1 })
 
@@ -254,7 +253,7 @@ async function handle(
     if (claim.state === 'delivered') await settle(claim, machineId)
     return NextResponse.json({
       ok: true,
-      claim: publicClaim(claim),
+      claim: await claimForPlayer(claim),
       resumed: claim.state === 'delivered',
     })
   }
@@ -276,7 +275,7 @@ async function handle(
     if (!abandoned) {
       return NextResponse.json({
         ok: true,
-        claim: publicClaim(claim),
+        claim: await claimForPlayer(claim),
         resumed: false,
         reason: 'this capsule is still being opened — check back in a moment',
       })
@@ -349,7 +348,7 @@ async function handle(
       pendingReason: 'no eligible artwork available yet — this capsule stays owed',
     })
     after(() => noticeIfEmpty(machineId).catch(() => {}))
-    return NextResponse.json({ ok: true, claim: publicClaim(claim), resumed: false })
+    return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
   }
 
   const prize = result.prize
@@ -378,7 +377,7 @@ async function handle(
 
   return NextResponse.json({
     ok: true,
-    claim: publicClaim(claim),
+    claim: await claimForPlayer(claim),
     resumed: claim.state === 'delivered',
   })
 }

@@ -1,5 +1,7 @@
 import 'server-only'
 import { inprocessUrl, resolveUri } from '../inprocess'
+import { publicClaim } from './store'
+import type { ClaimRecord } from './types'
 
 /**
  * Artwork titles and cover images for the machine surfaces.
@@ -99,4 +101,17 @@ export async function hydrateArtworkMeta(
     }),
   )
   return out
+}
+
+/**
+ * A claim as the player's own page receives it. A delivered claim's prize
+ * carries its title and image, so the reveal shows the artwork that was won —
+ * the stored prize is only `{collection, tokenId, artist}`, which rendered every
+ * win as its token id. Any other state returns at once, with nothing fetched.
+ */
+export async function claimForPlayer(claim: ClaimRecord) {
+  const pub = publicClaim(claim)
+  if (claim.state !== 'delivered' || !claim.prize) return pub
+  const meta = await fetchArtworkMeta(claim.prize.collection, claim.prize.tokenId)
+  return { ...pub, prize: { ...claim.prize, name: meta?.name ?? null, image: meta?.image ?? null } }
 }
