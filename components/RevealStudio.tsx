@@ -157,7 +157,7 @@ export function RevealStudio() {
 
       {gatedOut && (
         <div className="border border-line p-4 mb-6">
-          <p className="text-xs font-mono text-ink">a Kismet Pass is required to open a machine</p>
+          <p className="text-xs font-mono text-ink">a Kismet Pass is required to build a gachapon</p>
           <Link href={passCollectionHref} className="inline-block mt-2 text-[11px] font-mono text-dim hover:text-ink underline">
             collect {passCollectionName ?? 'a Pass'} →
           </Link>

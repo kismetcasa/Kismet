@@ -208,7 +208,7 @@ export function CapsuleStudio() {
           A machine of your own work: players pay your capsule price once and get one of your pieces. You
           set the rarity; the odds are derived from it and published automatically — there is no percentage
           to type, and no way for the table players see to differ from the one the draw uses. To curate other
-          artists&apos; work, open a{' '}
+          artists&apos; work, build a{' '}
           <Link href="/play/create-reveal" className="text-dim hover:text-ink underline">
             reveal machine
           </Link>{' '}
@@ -218,7 +218,7 @@ export function CapsuleStudio() {
 
       {gatedOut && (
         <div className="border border-line p-4 mb-6">
-          <p className="text-xs font-mono text-ink">a Kismet Pass is required to open a machine</p>
+          <p className="text-xs font-mono text-ink">a Kismet Pass is required to build a gachapon</p>
           <p className="text-[11px] font-mono text-muted mt-1.5">
             The Pass is earned on-platform and can&apos;t be bought or transferred into — which is what keeps
             machines from becoming a spam surface.

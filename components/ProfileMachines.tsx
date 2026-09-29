@@ -239,7 +239,7 @@ export function ProfileMachines({
       )}
       {manage && (
         <Link href="/play/create" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
-          open another machine →
+          build another gachapon →
         </Link>
       )}
     </div>
