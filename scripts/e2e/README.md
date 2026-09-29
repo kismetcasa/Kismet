@@ -281,4 +281,7 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
 - **Single item** — a lone row is a direct `1155.mint` to the collection with
   the suffix, decodes to `mint(FPSS, 1, 1, [referral], (user, comment))`,
   reaches "swept 1 artwork" and is recorded.
+- **Walkthrough regressions** — a dropped row keeps its name visible beside a
+  long reason (the reason column wraps), and a success toast after an earlier
+  failure carries no stale description.
 - No uncaught page errors during the run.

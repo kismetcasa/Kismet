@@ -4,9 +4,10 @@
 off). The build: `lib/sweepIndexCore.ts` + `lib/sweepRank.ts` + `lib/sweepIndex.ts` (the
 hourly index, §2), `app/api/sweep/route.ts` + `app/api/admin/sweep/route.ts` (§3),
 `lib/saleConfig.ts` `fetchEligibleTokensMulti` + `lib/sweepBatch.ts` + `lib/sweepSimulate.ts`
-(§4), `hooks/useSweep.ts` + `components/SweepSheet.tsx` + `components/SweepButton.tsx`
-mounted in `components/DiscoverMarketView.tsx` (§5), `scripts/verify-sweep.ts` (pins the
-pure rules; wired into `npm run check` as `verify:sweep`). One deviation from the text
++ `lib/sweepVerify.ts` (§4), `hooks/useSweep.ts` + `components/SweepSheet.tsx` +
+`components/SweepButton.tsx` mounted in `components/DiscoverMarketView.tsx` (§5), and the
+checks in §7 (`verify:sweep` and `verify:sweep-index` in `npm run check`, a section of the
+routes harness, a browser script). One deviation from the text
 below as first written: the sheet formats ETH through the existing `formatPrice`, so
 nothing was moved out of `CollectAllAction`.
 **Scope:** collect one edition each of the cheapest N (default 10, max 20) **ETH-priced**
@@ -52,7 +53,7 @@ to what still matters):
 | Gas sponsorship (paymaster) | Not applicable | Rides EIP-5792, which this design does not use; the user pays cents on Base |
 | Secondary-market (listings) sweep | Out of scope | A Seaport `fulfillAvailableAdvancedOrders` path with its own verification and index |
 | "Everything" in one go | Rounds of ≤ 20 | The size cap is wallet-preview readability plus `/api/collect`'s per-IP budget; `sweep the next N` covers the rest |
-| Per-artist cap / price floor in the ranking | Deferred (§8) | The zero-cost tie-break (artists interleave within a price tier) covers the gaming case; both exist as dormant `rankSweepCandidates` options |
+| Per-artist cap / price floor in the ranking | Deferred (§8) | The zero-cost tie-break (artists interleave within a price tier) covers the gaming case; neither is built — either would be a few lines in `rankSweepCandidates` |
 
 ---
 
@@ -75,11 +76,11 @@ the primary/secondary market toggle, with the stats block pushed to the right
 drops under the toggle and the button instead of squeezing all three. It is the
 first thing on the page after the market choice. Styling follows the header's
 own `stats` button (rounded-full, `border-line`, mono uppercase, `hover:border-accent`)
-with the accent border so it reads as an action rather than a filter; no
-icon, no `aria-pressed`. Rendered only while `/api/sweep` answers
-`enabled: true` with a non-empty pool (a small `useSweepAvailability` query,
-60 s stale time); otherwise nothing renders and the row keeps its two-item
-layout. Visible in both markets — a resale browser is still a fine place to
+but with an accent border and text (`border-accent/40`, `text-accent`) so it
+reads as an action rather than a filter; no icon, no `aria-pressed`. Rendered
+only while `/api/sweep` answers `enabled: true` with a non-empty pool
+(`useSweepAvailable`, one shared react-query with a 60 s stale time);
+otherwise nothing renders and the row keeps its two-item layout. Visible in both markets — a resale browser is still a fine place to
 offer a primary sweep — but it always opens the same sheet.
 
 ### 1.2 The sweep sheet
@@ -92,16 +93,25 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
    A size toggle `10 | 20`.
 2. **Rows** (one per candidate, in rank order): thumbnail (`MomentImage`,
    thumbhash placeholder), artwork name, artist name (enriched the
-   same way feed cards are), price `Ξ 0.0010` + small `+ fee` hint, a remove
-   `×`. A row the verification step dropped shows greyed with its reason
-   (`sold out`, `sale ended`, `already yours`) and is not counted.
-3. **Totals**: `N artworks · Ξ 0.0123 (≈ $52)` — the on-chain `value`
+   same way feed cards are), the live price through `formatPrice`
+   (`0.0010 ETH`) + a muted `+ fee` suffix, a remove `×`. A row that
+   verification could not put in the bundle shows greyed with its reason and
+   is not counted: `sold out, ended, or already yours` · `now a free mint` ·
+   `mint fee unreadable` · `not mintable right now` (it failed the simulation)
+   · `needs more ETH` (the balance trim, §4.4). A removed row offers `undo`.
+3. **Totals**: `N artworks · 0.0123 ETH ≈ $52.00` — the on-chain `value`
    (prices + protocol fees), never a bare price sum, so the wallet prompt and
-   the sheet agree to the wei.
-4. **Primary button**, one of: `verifying…` (disabled) → `sweep N for Ξ x` →
-   `confirm in wallet…` → `confirming…` → `finalizing…` → `swept N!`, then
+   the sheet agree to the wei; the `≈ $` part comes from `useEthUsd` and is
+   omitted when the rate is unavailable. After a sweep: `swept N artworks ·
+   view on basescan`.
+4. **Primary button**, one of: `loading…` → `verifying…` (disabled) → `sweep N
+   for 0.0123 ETH` → `confirm in wallet…` → `confirming…` → `finalizing…` →
    `sweep the next N` (re-runs discovery, which now excludes what was just
-   collected) and `done`.
+   collected; the success itself is the toast `Swept N artworks!` and the
+   totals line). Other states: `retry` after an error, `re-check` on an empty
+   pool, `add ETH, then re-check` when nothing is affordable, `connect wallet`
+   after a declined connect, `nothing to sweep` when every row was removed.
+   The sheet closes on `×`, Escape or the backdrop.
 5. **Footnotes**: `one edition each` and the
    count of candidates the wallet balance cannot cover, if any.
 
@@ -115,8 +125,8 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 | Receipt wait times out (5 min) | Error. The next open checks that hash once before anything can be re-sent: still pending → `Your last sweep is still pending — check your wallet before trying again`; mined → proceeds, and verification excludes whatever it minted (no double mint) |
 | The strict bundle cannot be gas-estimated | Never presented as ready: `Could not verify the sweep on-chain — try again` (an RPC failure or a bundle that would revert), retry re-verifies |
 | Pool empty / index missing | Button hidden; if opened via a stale render, the sheet shows `nothing to sweep right now` with a `re-check` button |
-| Fewer than N eligible after verification | Sheet shows what is available (`sweep 4 for Ξ x`); no error |
-| Exactly 1 eligible | Direct `1155.mint` via `useDirectCollect`'s builder path (keeps `Purchased.sender` = user); the sheet still shows one row |
+| Fewer than N eligible after verification | Sheet shows what is available (`sweep 4 for 0.0042 ETH`); no error |
+| Exactly 1 eligible | Direct `1155.mint` built by `buildEthMintCall` in the hook (keeps `Purchased.sender` = user), with the same builder suffix; the sheet still shows one row |
 | Balance short | Trim to the cheapest affordable prefix (§4.4); the rows show `needs more ETH` and the footnote counts them; if zero affordable, the button reads `add ETH, then re-check` |
 | Simulation drops rows | Refill from the ranked reserve and re-simulate (≤ 2 rounds); dropped rows stay visible, greyed, with reason |
 | Bundle reverts on-chain (a 1/1 minted by someone else between simulation and mining) | Error toast `Sweep reverted on-chain — nothing was charged`; the button reads `retry`, which re-verifies and drops the culprit |
@@ -154,8 +164,10 @@ computes the hidden verdict with the timeline's three filters.
 export interface ResolvedCatalogItem {
   m: Moment              // full inprocess row (metadata inlined)
   addr: string           // effective collection, lowercased
-  creator: string | null // resolved + folded, lowercased
+  creator: string | null // resolved (KV override over the feed), lowercased — the display identity
+  artist: string | null  // `creator` folded to the owning EOA — the diversity identity
   hidden: boolean        // moment-hidden | hidden collection | admin-hidden creator
+  meta: MomentMeta | null // the KV moment-meta row (creator override, pinned createdAt)
 }
 export interface ResolvedCatalog {
   items: ResolvedCatalogItem[]
@@ -164,7 +176,7 @@ export interface ResolvedCatalog {
   pageFailures: number
 }
 async function resolveCatalog(): Promise<ResolvedCatalog>          // walk + dedup + attribution + fold + hidden
-function censusFromCatalog(cat: ResolvedCatalog): CatalogCensus    // the pure counting half
+export function censusFromCatalog(cat: ResolvedCatalog, updatedAt: number): CatalogCensus  // the pure counting half
 export async function rebuildCatalogCensus():
   Promise<{ census: CatalogCensus; catalog: ResolvedCatalog } | { skipped: true }>
 ```
@@ -190,8 +202,10 @@ versa).
 
 `lib/sweepIndex.ts` `rebuildSweepIndex(catalog)`:
 
-1. **Candidates** = `catalog.items` where `!hidden`, `isValidTokenId(m.token_id)`,
-   `addr !== PATRON_COLLECTION_ADDRESS`.
+1. **Candidates** = `catalog.items` where `!hidden`,
+   `addr !== PATRON_COLLECTION_ADDRESS`, `isAddress(addr)` and
+   `isValidTokenId(m.token_id)` (a malformed row is skipped, never allowed to
+   abort every rebuild), deduped by `collection:tokenId` with the id canonicalized.
 2. **Pass 1 — sale rows.** One `FPSS.sale(addr, id)` per candidate
    (`FPSS_SALE_ABI`), chunked **200 candidates per call** through
    `aggregate3Strict` (`lib/saleConfig.ts`) — ✏️ not viem's `multicall`
@@ -209,8 +223,8 @@ versa).
    per survivor chunked **≤ 100 per call** (each row carries a `uri` string —
    the same reason the feeds cap supply reads at 80/240), plus `mintFee()`
    once per distinct collection among the survivors. Drop sold-out capped
-   editions (`!isOpenEdition(maxSupply) && totalMinted >= maxSupply`); carry
-   `remaining` for capped ones. Drop every token of a collection whose
+   editions (`classifyTokenSupply(...).soldOut`); an unreadable or reverting
+   supply row counts as open, as every other mintability read does. Drop every token of a collection whose
    `mintFee` exceeds the `readMintFeeWithBound` bound (fail-closed per
    collection, never per run) — the batched reader
    `readMintFeesWithBound(client, collections[])` lives in `lib/saleConfig.ts`
@@ -240,14 +254,15 @@ few lines in this function if the data ever calls for it.
 ### 2.4 Record shape and persistence
 
 ```ts
-// lib/sweepIndex.ts
+// lib/sweepIndexCore.ts (the pure half; lib/sweepIndex.ts, the I/O half, imports it)
 export interface SweepIndexItem {
   address: string        // collection, lowercased
   tokenId: string        // decimal, BigInt-canonical
   priceWei: string       // FPSS pricePerToken
   feeWei: string         // that collection's mintFee()
   outlayWei: string      // price + fee (the sort key)
-  creator: string | null // resolved + folded
+  creator: string | null // resolved (KV override over the feed) — the display identity
+  artist: string | null  // creator folded to the owning EOA — the diversity identity (§2.3)
   createdAt: string | null
   // Moment-shaped preview fields so /api/sweep can run the feed's identity
   // enrichment (enrichMomentsWithKismetMeta) unchanged; the sheet reads only
@@ -263,13 +278,14 @@ export interface SweepIndex {
   /** Cheapest POOL_SIZE after ranking. */
   items: SweepIndexItem[]
 }
-export const SWEEP_INDEX_KEY = 'kismetart:sweep-index'   // in lib/redis.ts beside SALE_ENDS_KEY
+export const SWEEP_INDEX_KEY = 'kismetart:sweep-index'   // lib/redis.ts, with SWEEP_ENABLED_KEY, beside SALE_ENDS_KEY
 export const SWEEP_POOL_SIZE = 120                       // 6 × MAX_COLLECT_ALL_BATCH (lib/sweepIndexCore.ts)
 ```
 
 One `redis.set(SWEEP_INDEX_KEY, index)` per rebuild (≈ 30–40 KB at the pool
 cap; a single JSON blob like `kismetart:stats:platform:catalog`, read with the
-same `typeof raw === 'string' ? JSON.parse(raw) : raw` guard). No shrink
+same `typeof raw === 'string' ? JSON.parse(raw) : raw` guard plus a shape check —
+`updatedAt` a number, `items` an array — else null). No shrink
 guard: unlike the census, the pool legitimately shrinks as sales end. The
 walk's abort-don't-overwrite still applies upstream: an unreadable collection
 throws in `rebuildCatalogCensus` and the index build never runs, so a sick
@@ -280,7 +296,7 @@ upstream leaves the last good pool in place.
 | Lever | Cost | Lag it removes |
 |---|---|---|
 | **Hourly rebuild** (cron) | The census walk it already piggybacks + ≈ (candidates / 200) + (survivors / 100) + 1 `eth_call`s | Discovers new mints and price edits within ≤ 60 min |
-| **Click-time verification** (§4.1) | One multicall per sweep | Makes staleness a UX matter, never a correctness one — this is the guarantee |
+| **Click-time verification** (§4.1–4.4) | One aggregate, the fee read, ≤ 3 simulations and one gas estimate per open | Makes staleness a UX matter, never a correctness one — this is the guarantee |
 | **Pool refresh on read** (optional, v1.1) | When `/api/sweep` sees `updatedAt` older than 10 min: re-run pass 2 over the pool only (≤ 120 rows, chain-only, no inprocess), single-flight via `acquireLock`, in `after()` | Removes sold-out / ended rows from the pool between rebuilds so the sheet rarely shows greyed rows |
 | **Append on mint** (optional, v1.1) | In `lib/mint-proxy.ts`'s post-mint hook (next to `markCreatedMint`), push the new token into the pool if it is ETH-priced and cheaper than the pool's tail | A fresh drop becomes sweepable immediately instead of at the next hour |
 
@@ -344,80 +360,120 @@ Route rules (`app/api/sweep/route.ts`):
 ```ts
 // lib/saleConfig.ts
 export interface EligibleTokenRef { collection: Address; tokenId: bigint }
+export interface EligibleTokenMulti extends EligibleToken { collection: Address }
+export interface EligibleTokensMultiResult {
+  items: EligibleTokenMulti[]
+  /** Multicall3.getEthBalance(account) from the same aggregate; null = the aggregate itself failed. */
+  ethBalance: bigint | null
+}
 export async function fetchEligibleTokensMulti(
   client: AnyClient,
-  refs: EligibleTokenRef[],
+  refs: readonly EligibleTokenRef[],
   account: Address,
   excludeOwnedAtOrAbove: bigint = 1n,     // "one of each"
-): Promise<Array<EligibleToken & { collection: Address }>>
+): Promise<EligibleTokensMultiResult>
 ```
 
-One `multicall` (`allowFailure: true`), **three slots per ref** —
+One aggregate (`allowFailure` on per slot, a single `eth_call` — the verifier
+pins that viem does not re-batch it), **three slots per ref** —
 `FPSS.sale(collection, id)`, `collection.getTokenInfo(id)`,
 `collection.balanceOf(account, id)` — plus a trailing
 `Multicall3.getEthBalance(account)` slot (`MULTICALL3_BALANCE_ABI`) so the
 balance pre-check costs no extra round trip. Semantics are **identical** to
 `fetchEligibleTokens` (window rule from chain time, sold-out rule,
 per-wallet cap, fail-closed per row on a failed balance read, the
-`excludeOwnedAtOrAbove` skip) — factor the per-row decision into a pure
-`classifySaleRow(...)` that both functions call, so the two cannot drift and
-`scripts/verify-sweep.ts` can pin it with synthetic rows (the
-`saleConfigsFromMulticall` precedent). The ETH-only sweep never reads the
-ERC20Minter.
+`excludeOwnedAtOrAbove` skip): the per-row decision is the shared pair
+`classifyOnchainSaleWindow` / `classifyTokenSupply` that `fetchEligibleTokens`
+calls too, so the two cannot drift and `scripts/verify-sweep.ts` pins them
+with synthetic rows. A null `ethBalance` means the aggregate failed and the
+caller reports "could not verify", never "nothing eligible". The ETH-only
+sweep never reads the ERC20Minter.
 
 `readMintFeesWithBound(client, collections[])` (in `lib/saleConfig.ts`,
-shipped with the index) is a second, smaller aggregate — or fold it into the
-same call as extra slots; either way it is one round trip. The bound is enforced per collection; a
-collection over the bound is dropped with reason `fee-out-of-bounds`, never
-thrown.
+shipped with the index) is a second, smaller aggregate: one `mintFee()` per
+distinct collection, returning a map. A collection whose fee is unreadable or
+over `MAX_REASONABLE_MINT_FEE_WEI` is simply absent from the map, never
+thrown; each consumer drops its rows (the index builder through
+`buildSweepItem`, verification with the reason `mint fee unreadable`).
 
 ### 4.2 Building the bundle
 
 ```ts
 // lib/sweepBatch.ts (pure — verifier target)
-export function buildSweepCalls(items: VerifiedSweepItem[], mintTo: Address, comment: string):
-  { to: Address; data: Hex; value: bigint }[]          // buildEthMintCall per item, encoded
-export function sweepBundle(calls) => buildMulticall3Batch(calls)   // allowFailure=false, value = Σ
+export interface SweepBasketItem { address: Address; tokenId: bigint; priceWei: bigint; feeWei: bigint }
+export interface SweepCall { to: Address; data: Hex; value: bigint }
+export const SWEEP_GAS_HEADROOM_WEI = 500_000_000_000_000n   // 0.0005 ETH kept back for gas (§4.4)
+export function buildSweepCalls(items: readonly SweepBasketItem[], mintTo: Address, comment = DEFAULT_COLLECT_COMMENT): SweepCall[]
+export function sweepBundle(calls)          // buildMulticall3Batch(calls): allowFailure=false on every call, value = Σ
+export function sweepSimulationArgs(calls)  // the SAME calls with allowFailure=true — for eth_call only (§4.3)
+export function trimToBudget<T extends { outlayWei: bigint }>(items: readonly T[], budgetWei: bigint): { kept: T[]; dropped: T[] }
+export function applySimulation<T>(items: readonly T[], ok: readonly boolean[]): { kept: T[]; dropped: T[] }
+export function countSweepMints(logs, items: readonly SweepBasketItem[], account: Address): number  // the receipt-side success test (§5.1)
 ```
 
 Every call comes from `buildEthMintCall` (Kismet referral, FPSS address,
 `minterArguments` encoding) — the treasury-critical rule in `lib/zoraMint.ts`
-applies unchanged, and the verifier decodes every sub-call to assert it.
-`comment` = `DEFAULT_COLLECT_COMMENT`.
+applies unchanged, and the verifier decodes every sub-call to assert it. The
+price and fee on each `SweepBasketItem` are the click-time values (§4.1),
+never the index's. `comment` = `DEFAULT_COLLECT_COMMENT`.
 
 ### 4.3 Simulation before the prompt
 
 ```ts
 // lib/sweepSimulate.ts
 export async function simulateSweep(
-  client: PublicClient, account: Address, calls: SweepCall[],
+  client: PublicClient, account: Address, calls: readonly SweepCall[],
 ): Promise<{ ok: boolean[] } | { error: 'insufficient-funds' | 'rpc' }>
-export function applySimulation<T>(items: T[], ok: boolean[]): { kept: T[]; dropped: T[] }   // pure
+export async function estimateSweepGasCost(client, account, calls): Promise<bigint | null>   // §4.4
 ```
 
-`simulateContract` on Multicall3 `aggregate3Value` with **`allowFailure:
-true` on every sub-call**, `value = Σ value`, `account`. This is an
-`eth_call`: nothing is sent and nothing can strand. The decoded
-`Result[].success` flags map 1:1 to items. The hook then rebuilds the strict
-bundle (`allowFailure: false`) from `kept` — the verifier asserts the strict
-bundle never carries `allowFailure: true` (the stranding hazard: a failed
+`simulateContract` on Multicall3 `aggregate3Value` with the bundle from
+`sweepSimulationArgs` — **`allowFailure: true` on every sub-call**, `value = Σ
+value`, `account`. This is an `eth_call`: nothing is sent and nothing can
+strand. The decoded `Result[].success` flags map 1:1 to items through
+`applySimulation` (`lib/sweepBatch.ts`, pure; a length mismatch drops
+everything, fail-closed). What the user signs is rebuilt from `kept` through
+`sweepBundle` (`allowFailure: false`) — the verifier asserts the strict bundle
+never carries `allowFailure: true` (the stranding hazard: a failed
 value-carrying sub-call leaves its ETH in Multicall3, which has no withdraw and
 no `receive` — §0 and the record in §9).
 
-Two caveats the implementation must respect: (a) op-geth's `eth_call`
-enforces `balance ≥ value` when `from` is set, so run the balance trim
-(§4.4) **before** simulating, and treat an `insufficient funds` revert as
-that state rather than as a per-item failure; (b) simulate at most 3 times
-per open sheet (initial + 2 refills) — beyond that show what survived.
+Two caveats the implementation respects: (a) op-geth's `eth_call` enforces
+`balance ≥ value` when `from` is set, so the balance trim (§4.4) runs
+**before** simulating, and an `insufficient funds` revert is treated as that
+state (the priciest row is shed and the bundle re-simulated) rather than as a
+per-item failure; (b) at most `MAX_SIMULATIONS` = 3 simulations per open
+(initial + 2 refills, `lib/sweepVerify.ts`): a refill that would go
+unsimulated is not made, and rows still unresolved when the cap is hit never
+reach the wallet.
 
-### 4.4 Balance trim
+### 4.4 Balance trim and gas
 
-`affordableWei = ethBalance − gasHeadroomWei`, where `gasHeadroomWei` =
-`estimateContractGas(strict bundle) × maxFeePerGas` (one `eth_estimateGas` +
-`estimateFeesPerGas`, both cheap on Base), with a constant fallback of
-`0.0003 ETH` if estimation fails. Keep the longest cheapest-first prefix with
-`Σ outlay ≤ affordableWei`. Cheapest-first makes the trim a prefix, so the
-user always keeps the best-value part of the basket.
+Two steps, both in `verifyBasket` (`lib/sweepVerify.ts`):
+
+1. **Before simulation**: `budgetWei = ethBalance − SWEEP_GAS_HEADROOM_WEI`
+   (0.0005 ETH, a constant that covers a 20-mint Multicall3 bundle on Base with
+   a wide margin), then `trimToBudget` keeps the longest cheapest-first prefix
+   with `Σ outlay ≤ budgetWei`. Cheapest-first makes the trim a prefix, so the
+   user always keeps the best-value part of the basket; the rest is shown as
+   `needs more ETH`.
+2. **After the final simulation**: `estimateSweepGasCost` on the exact strict
+   bundle — `estimateContractGas × maxFeePerGas` (one `eth_estimateGas` plus
+   `estimateFeesPerGas`, both cheap on Base). Rows are shed from the tail while
+   `ethBalance < Σ outlay + gasCost`; one estimate upper-bounds every shorter
+   prefix, so shedding never needs a second one. A bundle that cannot be
+   estimated (an RPC failure, or one that would revert) is never presented as
+   ready: the sheet reads `Could not verify the sweep on-chain — try again`
+   and retry re-verifies from the top. There is no constant fallback.
+
+`verifyBasket(client, account, pending, n)` returns `{ ok: true, rows,
+gasCostWei }`, or `{ ok: false, reason: 'rpc' }` when any read failed. Every
+`basket` row it returns passed the last simulation it was part of, and the
+basket's outlay plus gas fits the balance read in the same aggregate. Row
+states (`SweepRowState`): `pending` (not yet verified) · `basket` (in the
+bundle) · `reserve` (verified, beyond `n`, hidden; refills a dropped row) ·
+`dropped` (with its reason) · `unaffordable` (`needs more ETH`) · `removed`
+(by the user) · `swept` (minted in the last confirm).
 
 ---
 
@@ -425,75 +481,102 @@ user always keeps the best-value part of the basket.
 
 ### 5.1 `hooks/useSweep.ts`
 
-State machine and steps (all inside one `useCallback`, `inFlightRef` latch,
-`useWalletRecovery('sweep', 'Sweep')`, `useEnsureBase`, `useEnsureConnected`):
+State machine (`useWalletRecovery('sweep', 'Sweep')`, `useEnsureBase`,
+`useEnsureConnected`; an `inFlightRef` latch against a double tap, an
+`openSeqRef` so a verification that finishes after a newer `open()` discards
+its result, a `verifiedForRef` holding the signer the rows were verified for,
+and a `pendingHashRef` for a sweep sent but never seen mined):
 
 ```
-idle ─open→ loading-pool ─→ verifying ─→ ready ─confirm→ minting ─→ confirming ─→ recording ─→ done
-                                  └→ empty                └→ error (recoverable → ready)
+idle ─open→ loading ─→ verifying ─→ ready ─confirm→ minting ─→ confirming ─→ recording ─→ done
+                          └→ empty                    └→ error (the sheet re-opens to re-verify)
 ```
 
-1. `open(n)` (the button fired `sweep_open` once, before mounting the sheet): ensure connected; fetch
-   `/api/sweep?n=n`; render rows immediately from the pool (state
-   `verifying`, rows marked pending).
-2. `verify()`: `fetchEligibleTokensMulti(refs of all returned rows, account)`
-   + `readMintFeesWithBound(distinct collections)`; recompute `outlayWei`
-   from **live** price + fee (never the index's); `rankSweepCandidates`;
-   take `n`, keep the rest as `reserve`; balance trim; `simulateSweep`;
-   `applySimulation` → drop, refill from `reserve`, re-simulate (≤ 2 refills).
-   Chain guard: if `getAccount(config).chainId !== base.id` at any point,
-   abort to `error` with the existing "Switched off Base — retry" message.
-3. `confirm()`: `trackFunnel('sweep_attempt')`; N ≥ 2 → `writeContractAsync`
-   Multicall3 `aggregate3Value` (strict bundle, `dataSuffix:
-   BUILDER_DATA_SUFFIX`); N = 1 → direct `1155.mint` via `buildEthMintCall`.
-   `waitForTransactionReceipt({ timeout: 300_000 })`; `status !== 'success'`
-   → throw `Bundle reverted on-chain — nothing charged`.
-4. `record()`: one `POST /api/collect` per item with the shared `txHash`,
-   `currency: 'eth'`, `pricePerToken` (bare price, as collect-all sends),
-   bounded retry ×3 with `keepalive: true` (port from `useDirectCollect`),
-   `reportClientError('sweep.record_failed', …)` on total failure of an item.
+1. `open(n)` (the button fired `sweep_open` once, before mounting the sheet):
+   ensure connected (a declined connect → `idle`); if a previous sweep's
+   receipt wait timed out, read that hash once — still pending → `error`
+   (`Your last sweep is still pending — check your wallet before trying
+   again`), mined → continue; fetch `/api/sweep?n=n` (`empty` when disabled or
+   no pool); render the rows at once as `pending` (state `verifying`).
+2. Verification is `verifyBasket` (§4.1–4.4) against the Base public client —
+   read-only, so the wallet is not asked to switch chains here. `ok: false` →
+   `error` (`Could not verify the sweep on-chain — try again`); otherwise
+   `ready` when any row is in the basket, else `empty`.
+3. `confirm()`: refuse while in flight or with an empty basket; the signer is
+   read from wagmi at the tap and must be the one the rows were verified for,
+   else `Wallet changed — re-verifying` and `open(n)` runs again instead of a
+   send; `trackFunnel('sweep_attempt')`; `ensureBase()` then a chain guard
+   (`getAccount(config).chainId === base.id`, as `useCollectAll`); N ≥ 2 →
+   `writeContractAsync` Multicall3 `aggregate3Value` with `sweepBundle` (strict)
+   and `dataSuffix: BUILDER_DATA_SUFFIX`; N = 1 → the direct `1155.mint` from
+   `buildEthMintCall` with the same suffix. The hash is held in
+   `pendingHashRef` until `waitForTransactionReceipt({ timeout: 300_000 })`
+   returns. `status !== 'success'` → `Sweep reverted on-chain — nothing was
+   charged`. Then the receipt must SHOW the mints: `countSweepMints` counts one
+   `TransferSingle(0x0 → user, id)` per basket row from the row's own
+   collection; anything short (a wallet-side cancel that replaced the
+   transaction) → `The transaction was replaced in the wallet — check it before
+   trying again`. Everything downstream uses `receipt.transactionHash` (a
+   speed-up mines under a new hash).
+4. Records: one `POST /api/collect` per basket row with the mined hash,
+   `currency: 'eth'`, `pricePerToken` (the bare live price, as collect-all
+   sends), `RECORD_ATTEMPTS` = 5 spaced attempts (≈ 6 s in all, `keepalive:
+   true` — the server 403s until its own RPC sees the receipt), then
+   `reportClientError('sweep.record_failed', …)` for a row that never records.
    The 60/min per-IP budget on `/api/collect` was sized for a 20-batch.
-5. `done`: `trackFunnel('sweep_success')`; toast `Swept N artworks!`; expose
-   `next()` which re-runs `open(n)` (balances now exclude what landed).
+5. `done`: rows marked `swept`, `result = { hash, minted }`, toast `Swept N
+   artworks!`, `trackFunnel('sweep_success')`. There is no separate "next":
+   the sheet's primary button calls `open(n)` again from every settled state
+   (`done`, `error`, `empty`), and the next verification excludes what the
+   wallet now owns.
 
 Return shape:
 
 ```ts
-interface UseSweepReturn {
-  status: SweepStatus
-  rows: SweepRow[]          // { item, state: 'pending'|'ready'|'dropped'|'removed', reason? }
-  totalWei: bigint          // Σ outlay of ready rows — the value that will be sent
-  unaffordable: number      // rows trimmed by balance
-  open(n: 10 | 20): Promise<void>
-  remove(key: string): void // user-removed row → re-simulate lazily on confirm
+export interface UseSweepReturn {
+  status: SweepStatus       // 'idle' | 'loading' | 'verifying' | 'ready' | 'empty' | 'minting' | 'confirming' | 'recording' | 'done' | 'error'
+  rows: SweepRow[]          // lib/sweepVerify: { key, item, state, reason?, priceWei, feeWei, outlayWei }
+  n: number                 // basket size the sheet asked for
+  totalWei: bigint          // Σ outlay of the basket rows — the exact value that will be sent
+  unaffordable: number      // rows the wallet cannot cover
+  result: { hash: Hash; minted: number } | null
+  open(n?: number): Promise<void>
+  remove(key: string): void   // basket → removed. No re-simulation: the remaining sub-calls
+  restore(key: string): void  // are independent of the removed one and the total only shrinks
   confirm(): Promise<{ hash: Hash; minted: number } | null>
-  next(): Promise<void>
 }
 ```
 
-Add `'sweep_open' | 'sweep_attempt' | 'sweep_success'` to `FUNNEL_EVENTS`
-(`lib/funnel.ts`) and document them in `ANALYTICS.md`.
+`sweep_open` / `sweep_attempt` / `sweep_success` are in `FUNNEL_EVENTS`
+(`lib/funnel.ts`) and documented in `ANALYTICS.md`.
 
 ### 5.2 `components/SweepSheet.tsx` and `components/SweepButton.tsx`
 
 - Sheet: the `PatronInfoModal` skeleton (fixed inset, `bg-black/80`, centered
-  `max-w-md` card, `border-line`, mono uppercase header), rows in a
-  `flex-col gap-2`, thumbnails 40 px via `MomentImage` (`src` = raw
-  `image` URI, thumbhash placeholder), artist from the enriched creator
-  (username, else the short address), price in `formatPrice(priceWei, 'eth')`
-  with the fee as a muted `+ fee` suffix, `×` per row (44 px hit area).
-  Totals row uses `formatPrice` on the summed outlay (✏️ no `formatEthChip`
-  move needed) and `useEthUsd` for the `≈ $` label (hidden when null).
+  `max-w-md` card, `border-line`, mono uppercase header; `useBodyScrollLock`,
+  `useEscapeKey`, `useFocusTrap`, backdrop click closes), rows in a
+  `flex-col gap-2` list that scrolls inside the card (`max-h-[50vh]`) so the
+  totals and the primary button stay in view; thumbnails 40 px via
+  `MomentImage` (`src` = raw `image` URI, thumbhash placeholder); artist from
+  the enriched creator (username, else the short address); price in
+  `formatPrice(priceWei, 'eth')` with the fee as a muted `+ fee` suffix; `×`
+  per row (44 px hit area) and `undo` on a removed row, both inert while busy
+  and after a sweep landed. The artwork name truncates to one line; the
+  right-hand column is capped at half the row so a long reason wraps instead
+  of squeezing the name away. Totals use `formatPrice` on the summed outlay
+  (✏️ no `formatEthChip` move needed) and `useEthUsd` for the `≈ $` label
+  (omitted when the rate is unavailable); `aria-live="polite"` on the totals
+  so screen readers hear the count change after verification.
 - Button label follows `status` exactly as `CollectAllAction.statusLabel`
-  does; disabled while `verifying`/in flight; `aria-live="polite"` on the
-  totals so screen readers hear the count change after verification.
+  does (§1.2 item 4); the primary is disabled while busy and, in `ready`, when
+  the basket is empty; the size toggle is disabled while busy. The sheet's
+  first paint (it arrives through a lazy chunk) reads as `loading…`, never as
+  a one-frame `connect wallet`.
 - Button: `components/SweepButton.tsx`, mounted once in
   `DiscoverMarketView`'s `stickyHeader` top row (§1.1); hidden until
-  `/api/sweep` says `enabled` with a non-empty pool (`useSweepAvailability`,
-  60 s stale time).
-- Mobile: the sheet is the Mini App's primary surface — rows must not
-  truncate the artwork name (wrap to two lines), and the primary button is
-  sticky at the card bottom.
+  `/api/sweep` says `enabled` with a non-empty pool (`useSweepAvailable`, one
+  shared react-query with a 60 s stale time; the header reads the same hook to
+  keep its two-child layout while the button is absent).
 
 ---
 
@@ -542,7 +625,7 @@ Four layers, three of them in `npm run check`:
   100 / one fee read) and the pool cut, the persisted blob's round trip,
   abort-don't-overwrite, corrupt or unreadable blobs, and the flag's `'1'` →
   number-`1` round trip with a Redis failure propagating on a cache miss.
-- **`verify:agent:routes`** (section 5 of `scripts/verify-agent-routes.ts`) —
+- **`verify:agent:routes`** (section 4c of `scripts/verify-agent-routes.ts`) —
   the REAL built server: `/api/sweep` off (cache header without SWR) → the admin
   front door (401 / 403 / 400 / 200, the audit write) → on with no build → a
   seeded pool with `n` clamping and the serve-time hide filter → a pool older
@@ -558,7 +641,10 @@ Four layers, three of them in `npm run check`:
   beacons counted once each in Redis, ownership exclusion on the next round,
   "add ETH, then re-check", the hidden button with the flag off (the header's
   two-child layout byte-identical to before), a wallet-side cancel that must
-  never read as swept, and the direct-mint path for a single item.
+  never read as swept, the direct-mint path for a single item, and two things a
+  frame-by-frame walkthrough caught (a dropped row's name stays visible beside a
+  long reason; a success toast after an earlier failure carries no stale
+  description).
 
 Existing checks cover the rest: `typecheck`, `lint`, `verify:a11y` (the
 sheet's text), `check:bundle` (the sheet lazy-loads behind the button).
@@ -587,9 +673,9 @@ for the ETH-only, cheapest-N design, with the reasons:
 | **Per-item max price** | **No** | Cheapest-first bounds it by construction: the priciest item in a sweep is the N-th cheapest live mint. The sheet shows it |
 | **Spend cap** | **No** | The total is displayed to the wei and the wallet balance trims the basket; a separate cap adds a knob without adding protection |
 | **Size cap (20)** | **Yes, keep** | Wallet-preview readability, and `/api/collect`'s per-IP budget is sized for it. Larger sweeps are rounds |
-| USDC-priced work is invisible to sweep | Accepted by decision | State it in copy. Artists who price in USDC do not appear in this discovery surface; that is a nudge toward ETH pricing, which is worth knowing when explaining the feature to artists |
+| USDC-priced work is invisible to sweep | Accepted by decision | Not announced by the sheet (§1.4). Artists who price in USDC do not appear in this discovery surface; that is a nudge toward ETH pricing, which is worth knowing when explaining the feature to artists |
 | New mints lag up to an hour | Acceptable | `append on mint` (§2.5) removes it later for ~30 lines |
-| Sold-out rows in the pool between rebuilds | Handled | Click-time verification drops them; the pool refresh (§2.5) makes them rare |
+| Sold-out rows in the pool between rebuilds | Handled | Click-time verification drops them; the optional pool refresh (§2.5, not built) would make them rare |
 | Two collectors sweep the same 1/1 in the same minute | Rare, handled | The later bundle reverts atomically (nothing charged), and the next attempt drops it. A `prefer remaining ≥ 2` tie-break could reduce it; not worth v1 complexity |
 | Gas sponsorship | Not applicable | Paymasters ride EIP-5792, which this design deliberately does not use. The user pays cents |
 | Non-inprocess Zora collections / legacy `mintWithRewards` | Out of scope | Same limits as collect-all; documented in `lib/zoraMint.ts` |
