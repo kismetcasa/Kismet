@@ -382,6 +382,9 @@ async function main() {
     const next3 = outlay(1) + outlay(11) + outlay(12)
     ok(await until(async () => (await label()) === `sweep 3 for ${formatPrice(next3.toString(), 'eth')}`, 30_000), 'the next round holds only the three the wallet does not own (the removed one and the two reserve rows)', await label())
     ok(funnelKeys('sweep_open').join() === '1', 're-opening for the next round is NOT a new sweep_open', funnelKeys('sweep_open'))
+    const droppedName = dialog.getByText('Piece 2', { exact: true })
+    const nameBox = await droppedName.boundingBox()
+    ok(nameBox !== null && nameBox.width > 30, 'a dropped row still shows its name beside the long reason (the reason column wraps)', nameBox)
 
     // ── 6. needs more ETH ──
     console.log('needs more ETH')
@@ -440,6 +443,8 @@ async function main() {
       ok(false, 'the direct mint calldata decodes', String(e))
     }
     ok(await until(async () => /swept 1 artwork\b/.test((await dialog.textContent()) ?? ''), 45_000), 'the sheet reaches "swept 1 artwork"')
+    await sleep(500)
+    ok((await page.getByText(/replaced in the wallet/).count()) === 0, 'the success toast does not inherit the earlier failure\'s description', await page.getByText(/replaced in the wallet/).count())
     ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${[...chain.receipts.keys()][2].toLowerCase()}:`)).length === 1, 30_000), 'the record is verified server-side under the mined hash')
 
     ok(pageErrors.length === 0, 'no uncaught page errors during the run', pageErrors)

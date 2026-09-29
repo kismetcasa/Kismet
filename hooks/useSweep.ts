@@ -251,14 +251,17 @@ export function useSweep(): UseSweepReturn {
     // wallet since open): the ownership / balance / simulation checks do not
     // transfer, so re-verify for this signer instead of sending.
     if (verifiedForRef.current?.toLowerCase() !== account.toLowerCase()) {
-      toast('Wallet changed — re-verifying', { id: TOAST_ID })
+      toast('Wallet changed — re-verifying', { id: TOAST_ID, description: undefined })
       void open(nRef.current)
       return null
     }
     inFlightRef.current = true
     trackFunnel('sweep_attempt')
     setStatus('minting')
-    toast.loading(`Confirm in wallet — sweeping ${basket.length}…`, { id: TOAST_ID })
+    // One toast id per flow (the recovery toast's contract). A new attempt
+    // must not inherit the previous failure's description: sonner merges
+    // options for the same id, so it is cleared here explicitly.
+    toast.loading(`Confirm in wallet — sweeping ${basket.length}…`, { id: TOAST_ID, description: undefined })
 
     try {
       await ensureBase()

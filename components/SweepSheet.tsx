@@ -75,7 +75,9 @@ function Row({
         {/* Usernames are set in the feeds' uppercase style; an address fallback keeps its case ("0x…", not "0X…"). */}
         <div className={`truncate font-mono text-[10px] tracking-wider text-muted ${username ? 'uppercase' : ''}`}>{artist}</div>
       </div>
-      <div className="shrink-0 text-right font-mono text-xs tabular-nums text-dim">
+      {/* Capped at half the row so a long reason ("sold out, ended, or already
+          yours") wraps instead of squeezing the name column to nothing. */}
+      <div className="max-w-[48%] shrink-0 text-right font-mono text-xs leading-tight tabular-nums text-dim">
         {row.state === 'pending' ? (
           <span className="text-muted">verifying…</span>
         ) : row.state === 'dropped' || row.state === 'unaffordable' ? (

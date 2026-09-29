@@ -546,7 +546,7 @@ Four layers, three of them in `npm run check`:
   seeded pool with `n` clamping and the serve-time hide filter → a pool older
   than a day serving empty (`stale: true` on the admin read) → off again with
   the memo invalidated by the write.
-- **`scripts/e2e/sweep.ts`** (52 assertions; a built app, a server and Chromium,
+- **`scripts/e2e/sweep.ts`** (54 assertions; a built app, a server and Chromium,
   so outside `check` — see `scripts/e2e/README.md`) — the button in the
   discover header at 375 px (no overflow, the stats block wraps under) and
   1280 px, the sheet's painted states, the exact transaction the wallet is asked

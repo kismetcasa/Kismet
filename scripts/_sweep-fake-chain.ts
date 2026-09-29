@@ -107,6 +107,9 @@ export interface FakeChain {
   /** Transactions "mined" by mineTransaction, by hash. */
   receipts: Map<string, Record<string, unknown>>
   txs: Map<string, { from: Address; to: Address; value: bigint; data: Hex }>
+  /** Wall-clock start, so eth_blockNumber advances like a chain (2 s blocks):
+   *  viem re-polls a receipt only when the block number moves. */
+  startedAt: number
   log: { method: string; params: unknown[] }[]
   ethCalls: number
   /** aggregate3Value eth_calls that reached Multicall3 (executed). */
@@ -133,6 +136,7 @@ export function createFakeChain(over: Partial<FakeChain> = {}): FakeChain {
     replaceNextWithCancel: false,
     receipts: new Map(),
     txs: new Map(),
+    startedAt: Date.now(),
     log: [],
     ethCalls: 0,
     simulations: 0,
@@ -421,7 +425,7 @@ export function handleRpc(chain: FakeChain, method: string, params: unknown[] = 
     case 'eth_chainId':
       return '0x2105'
     case 'eth_blockNumber':
-      return '0x10'
+      return numberToHex(16n + BigInt(Math.floor((Date.now() - chain.startedAt) / 2000)))
     case 'eth_getBlockByNumber':
       return block(chain)
     case 'eth_call':
