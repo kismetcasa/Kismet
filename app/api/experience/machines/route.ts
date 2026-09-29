@@ -102,6 +102,7 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         name: m.name,
         state: m.state,
         createdAt: m.createdAt,
+        cover: m.cover?.uri ?? null,
         ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
       }
       if (isReveal(m)) {
@@ -204,6 +205,9 @@ export async function POST(req: NextRequest) {
   const cover = body.cover === undefined ? undefined : parseCover(body.cover)
   if (cover === null) return errorResponse(400, 'Invalid cover')
   const dryRun = body.dryRun === true
+  // A machine's card is its cover, so none is published without one. A check
+  // needs none: the studio uploads the cover only when it publishes.
+  if (!dryRun && !cover) return errorResponse(400, 'A machine needs a cover')
   // Separate budgets, because the two are different acts. A check is how a
   // creator iterates on a lineup — sharing one five-per-five-minutes budget
   // with publishing locked them out a few edits in. A publish writes a machine.

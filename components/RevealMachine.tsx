@@ -10,6 +10,7 @@ import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
+import { CoverEditor } from './CoverField'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -33,7 +34,7 @@ interface LineupRow {
 }
 
 interface Payload {
-  machine: { id: string; name: string; state: string; creator: string }
+  machine: { id: string; name: string; state: string; creator: string; cover: string | null }
   /** Who earns the mint referral on collects from this machine: its curator,
    *  or null when Kismet curates (Kismet's own referral then applies). */
   referral: string | null
@@ -122,6 +123,7 @@ export function RevealMachine({ id }: { id: string }) {
         {live && (
           <MachineAction machine={{ id: data.machine.id, kind: 'reveal' }} action="end" creator={data.machine.creator} onDone={load} />
         )}
+        <CoverEditor machineId={data.machine.id} current={data.machine.cover} creator={data.machine.creator} onDone={load} />
       </header>
 
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">

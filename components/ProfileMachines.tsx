@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { MachineAction } from './MachineAction'
+import { CoverEditor } from './CoverField'
 
 /**
  * A creator's machines, capsule and reveal, on their profile.
@@ -24,6 +25,8 @@ interface CreatorMachineCommon {
   createdAt: number
   /** Present only in the creator's own view. */
   withdrawable?: boolean
+  /** Its cover, an ar:// upload; null for a machine published before covers. */
+  cover: string | null
 }
 
 export type CreatorMachine =
@@ -198,6 +201,7 @@ export function ProfileMachines({
             {manage && signedIn && (m.state === 'live' || m.withdrawable) && (
               <MachineAction machine={m} action={m.state === 'live' ? 'end' : 'withdraw'} onDone={onChange} />
             )}
+            {manage && signedIn && m.state !== 'draft' && <CoverEditor machineId={m.id} current={m.cover} onDone={onChange} />}
           </div>
         )
       })}

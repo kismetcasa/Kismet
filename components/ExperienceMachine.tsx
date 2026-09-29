@@ -9,6 +9,7 @@ import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from 
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
+import { CoverEditor } from './CoverField'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -69,6 +70,8 @@ interface MachinePayload {
     name: string
     state: string
     creator: string
+    /** Its cover, an ar:// upload; null for a machine published before covers. */
+    cover: string | null
     rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
@@ -510,6 +513,7 @@ export function ExperienceMachine({ id }: { id: string }) {
             onDone={load}
           />
         )}
+        <CoverEditor machineId={data.machine.id} current={data.machine.cover} creator={data.machine.creator} onDone={load} />
       </header>
 
       {/* The machine. The reveal replaces this face in place, so the capsule

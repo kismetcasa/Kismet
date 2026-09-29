@@ -4,7 +4,7 @@ import { randomHex } from '../random'
 import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
 import { isReveal } from './types'
-import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, SnapshotEntry } from './types'
+import type { ClaimRecord, ClaimState, Machine, MachineCover, MachineState, PoolEntry, SnapshotEntry } from './types'
 
 /**
  * Redis persistence for the Experience. Redis is the platform's only datastore,
@@ -231,6 +231,16 @@ export async function setMachineState(id: string, state: MachineState): Promise<
   const m = await getMachine(id)
   if (!m) return null
   const next: Machine = { ...m, state, ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}) }
+  await redis.set(kMachine(id), JSON.stringify(next))
+  return next
+}
+
+/** A machine's new cover. Its callers hold the machine's state lock, as a state
+ *  change's do, so the two cannot overwrite each other's record. */
+export async function setMachineCover(id: string, cover: MachineCover): Promise<Machine | null> {
+  const m = await getMachine(id)
+  if (!m) return null
+  const next: Machine = { ...m, cover }
   await redis.set(kMachine(id), JSON.stringify(next))
   return next
 }

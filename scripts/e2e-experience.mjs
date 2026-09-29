@@ -15,6 +15,11 @@
 // merging anything that touches app/api/experience or lib/experience:
 //
 //   npm run build && npm run e2e:experience
+//
+// The build needs an Arweave signer key (NEXT_PUBLIC_ARWEAVE_N) so the studios
+// can upload; any 512-byte value will do, and the suite says so if it is missing:
+//
+//   NEXT_PUBLIC_ARWEAVE_N=$(node -e "process.stdout.write(Buffer.alloc(512, 7).toString('base64url'))") npm run build
 
 import { createServer, request as httpRequest } from 'node:http'
 import { spawn } from 'node:child_process'
@@ -73,6 +78,10 @@ const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refu
 const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was revoked
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+/** The cover every other publish carries: the route requires one (call()). */
+const TEST_COVER = { uri: 'ar://' + 'e2eCover'.repeat(5) + 'abc' }
+/** What the browser uploaded to Arweave's upload service, in order (open()'s `uploads`). */
+const arweaveUploads = []
 /** Spring Season's cover: an Arweave upload, as the studio makes one. */
 const SPRING_COVER = { uri: 'ar://' + 'Sp1ngC0ver'.repeat(4) + 'abc' }
 /** A fresh capsule for the machine the browser publishes in section 9. */
@@ -732,6 +741,9 @@ let ipCounter = 0
 const USER_COOKIE = '__Host-kismet_session'
 const ADMIN_COOKIE = '__Host-kismetart-admin'
 async function call(path, { method = 'GET', body, user, admin } = {}) {
+  // A machine is published with a cover (the route requires one); a test of
+  // that requirement sends `cover: undefined`, which JSON drops.
+  if (method === 'POST' && path === '/api/experience/machines' && body && !('cover' in body)) body = { ...body, cover: TEST_COVER }
   const headers = { 'content-type': 'application/json', 'x-forwarded-for': `10.0.${Math.floor(ipCounter / 250)}.${(ipCounter++ % 250) + 1}` }
   const cookies = []
   if (user) cookies.push(`${USER_COOKIE}=${user}`)
@@ -1007,6 +1019,30 @@ if ((await probe('/api/experience/machines')) !== null) {
     process.exit(1)
   }
 }
+// ── the build must be able to sign an upload ──
+// The studios upload covers through the browser's Arweave signer, whose public
+// key is inlined at build (NEXT_PUBLIC_ARWEAVE_N; lib/arweave/client). Built
+// without one, the bundle reads it at run time instead, finds nothing, and
+// every upload fails before a request is made. Any value works here: the suite
+// signs with its own key and answers the upload service itself.
+{
+  const chunks = []
+  const stack = ['.next/static/chunks']
+  while (stack.length) {
+    const d = stack.pop()
+    for (const n of readdirSync(d, { withFileTypes: true })) {
+      if (n.isDirectory()) stack.push(`${d}/${n.name}`)
+      else if (n.name.endsWith('.js')) chunks.push(`${d}/${n.name}`)
+    }
+  }
+  if (chunks.some((f) => readFileSync(f, 'utf8').includes('env.NEXT_PUBLIC_ARWEAVE_N'))) {
+    console.error('this build cannot sign an upload (no NEXT_PUBLIC_ARWEAVE_N). Build with any 512-byte value:\n' +
+      `  NEXT_PUBLIC_ARWEAVE_N=$(node -e "process.stdout.write(Buffer.alloc(512, 7).toString('base64url'))") npm run build`)
+    process.exit(1)
+  }
+}
+/** The server's Arweave key: /api/sign really signs every upload with it. */
+const ARWEAVE_JWK = Buffer.from(JSON.stringify(generateKeyPairSync('rsa', { modulusLength: 4096 }).privateKey.export({ format: 'jwk' }))).toString('base64')
 
 // Next renames its server process ("next-server (v…)") and it outlives a
 // process-group kill, so the child is tagged through its environment and
@@ -1045,6 +1081,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     // call it, and this CDP never does.
     CDP_PAYMASTER_URL: `http://127.0.0.1:${cdpPort}/paymaster`,
     INPROCESS_API_URL: `http://127.0.0.1:${inprocessPort}/api`,
+    ARWEAVE_JWK,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -1094,6 +1131,11 @@ try {
     call('/api/experience/machines', { method: 'POST', body: { ...draft, cover, dryRun: true }, user: ADMIN_USER_TOKEN })))
   check('a cover that is not an Arweave upload, or carries a malformed thumbhash, is refused',
     badCovers.every((r) => r.status === 400 && r.json?.error === 'Invalid cover'), badCovers.map((r) => r.status).join(','))
+
+  const coverless = await call('/api/experience/machines', { method: 'POST', body: { ...draft, id: 'no-cover', cover: undefined }, user: ADMIN_USER_TOKEN })
+  check('a machine cannot be published without a cover', coverless.status === 400 && coverless.json?.error === 'A machine needs a cover', JSON.stringify(coverless.json))
+  const coverlessCheck = await call('/api/experience/machines', { method: 'POST', body: { ...draft, cover: undefined, dryRun: true }, user: ADMIN_USER_TOKEN })
+  check('but can be checked without one — the studio uploads it only to publish', coverlessCheck.status === 200 && coverlessCheck.json?.dryRun === true)
 
   const dry = await call('/api/experience/machines', { method: 'POST', body: { ...draft, dryRun: true }, user: ADMIN_USER_TOKEN })
   check('a dry run passes the live gate', dry.status === 200 && dry.json.dryRun === true && dry.json.problems.length === 0, JSON.stringify(dry.json))
@@ -2389,7 +2431,7 @@ try {
     if (browser) {
       const pageErrors = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2468,6 +2510,22 @@ try {
           await context.route('**/*', (r) =>
             r.request().resourceType() === 'image' ? r.fulfill({ status: 200, contentType: 'image/png', body: ONE_PIXEL_PNG }) : r.fallback())
         }
+        // `uploads`: Arweave's upload service answers, and what it received is
+        // recorded. Everything before it is the app's own path — the file is
+        // prepared, signed by /api/sign with the server's key, and sent.
+        if (uploads) {
+          await context.route(/^https:\/\/(upload|payment)\.ardrive\.(io|dev)\//, async (r) => {
+            const req = r.request()
+            if (req.method() === 'POST' && /\/tx\//.test(new URL(req.url()).pathname)) {
+              const id = `e2eUpload${String(arweaveUploads.length + 1).padStart(34, '0')}`
+              arweaveUploads.push({ id, bytes: req.postDataBuffer()?.length ?? 0 })
+              return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+                id, owner: 'e2e', dataCaches: ['arweave.net'], fastFinalityIndexes: ['arweave.net'], winc: '0', deadlineHeight: 0, timestamp: Date.now(),
+              }) })
+            }
+            return r.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+          })
+        }
         // `storage`: localStorage the page finds on load, as a returning visitor's would be.
         if (storage) {
           await context.addInitScript((entries) => {
@@ -2494,6 +2552,12 @@ try {
       try {
         // ── the list ──
         {
+          // Machines published before covers existed have none in their record.
+          for (const id of ['dry-season', 'new-voices']) {
+            const k = `kismetart:xp:${id}:meta`
+            const { cover: _dropped, ...before } = JSON.parse(strings.get(k))
+            strings.set(k, JSON.stringify(before))
+          }
           const page = await open('/play', { images: true })
           const body = await text(page)
           check('the list page leads with its name and promise', /play capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
@@ -2529,6 +2593,29 @@ try {
           const [p0, p1] = [await phoneCards.nth(0).boundingBox(), await phoneCards.nth(1).boundingBox()]
           check('and one to a row on a phone', !!p0 && !!p1 && p1.y > p0.y + p0.height - 1 && Math.abs(p0.x - p1.x) < 1, JSON.stringify([p0, p1]))
           await phone.context().close()
+        }
+
+        // ── a creator changes a live machine's cover ──
+        {
+          const visitor = await open('/play/spring-season')
+          await visitor.getByText('insert coin').waitFor()
+          await visitor.waitForTimeout(1500)
+          check('a visitor is offered no cover to change', (await visitor.getByRole('button', { name: /cover/ }).count()) === 0)
+          await visitor.context().close()
+          const refused = await Promise.all([
+            call('/api/experience/machines/spring-season', { method: 'POST', user: CURATOR_TOKEN, body: { action: 'cover', cover: TEST_COVER } }),
+            call('/api/experience/machines/spring-season', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'cover', cover: { uri: 'https://example.com/x.png' } } }),
+          ])
+          check('only its creator can change it, and only to an Arweave upload', refused[0].status === 403 && refused[1].status === 400, refused.map((r) => r.status).join())
+          const page = await open('/play/spring-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, uploads: true })
+          await page.getByRole('button', { name: 'change cover' }).waitFor()
+          await page.getByLabel('cover image').setInputFiles({ name: 'new-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await page.getByRole('button', { name: 'save cover' }).click()
+          await page.getByText('Cover updated').waitFor({ timeout: 15_000 }).catch(() => {})
+          const now = (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+          check('its creator changes it from the live machine\'s page, and the machine carries the new one',
+            now === `ar://${arweaveUploads.at(-1)?.id}` && now !== SPRING_COVER.uri, now)
+          await page.context().close()
         }
 
         // ── a machine, on sale ──
@@ -2686,7 +2773,7 @@ try {
 
         // ── the studio, connected: check, then publish to review ──
         {
-          const page = await open('/play/create-capsule', { user: USER_TOKEN, wallet: CREATOR2 })
+          const page = await open('/play/create-capsule', { user: USER_TOKEN, wallet: CREATOR2, uploads: true })
           const dryRuns = []
           const consoleErrs = []
           const failedReqs = []
@@ -2710,6 +2797,10 @@ try {
           const standing = await page.getByText('allowed for capsule machines', { exact: true }).waitFor({ timeout: 8000 }).then(() => true, () => false)
           check('and the piece\'s standing is shown', standing)
           await page.locator('label:has-text("qty") input').fill('0')
+          check('publish waits for a cover', await page.getByRole('button', { name: 'publish' }).isDisabled())
+          await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await page.getByRole('button', { name: 'change cover' }).waitFor()
+          const uploadsBefore = arweaveUploads.length
           await page.getByRole('button', { name: 'check', exact: true }).click()
           // Wait for the result region either way, so a failing check reports the
           // server's verdict instead of timing out blind.
@@ -2726,6 +2817,10 @@ try {
           check('that says where it will live once approved', afterPublish.includes('once approved it will be live at /play/browser-machine'))
           const queued = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
           check('and the machine really is in the review queue', queued.json?.machines?.some((m) => m.machine.id === 'browser-machine' && m.machine.state === 'review'))
+          const coverAt = queued.json?.machines?.find((m) => m.machine.id === 'browser-machine')?.machine?.cover?.uri
+          check('with its cover: uploaded once, on publish — the check uploaded nothing — through the app\'s own signer',
+            arweaveUploads.length === uploadsBefore + 1 && coverAt === `ar://${arweaveUploads.at(-1)?.id}` && arweaveUploads.at(-1)?.bytes > 0,
+            `${arweaveUploads.length - uploadsBefore} upload(s), cover ${coverAt}`)
           await page.context().close()
         }
 
@@ -3010,7 +3105,7 @@ try {
         windowPasses()
         {
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: false } })
-          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR, uploads: true })
           await page.getByText('reveal studio').first().waitFor()
           await page.getByPlaceholder('new-voices').fill('browser-picks')
           await page.getByPlaceholder('New Voices').fill('Browser Picks')
@@ -3037,6 +3132,7 @@ try {
           const ready = await text(page)
           check('once they are gone it is ready, and says what each piece shows as today',
             ready.includes('on sale now · free') && ready.includes('shows up when its sale opens'), ready.match(/the lineup.{0,300}/)?.[0] ?? '')
+          await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
           check('publishing queues it for a curator', (await text(page)).includes('browser picks is queued for a curator'))
@@ -3049,7 +3145,7 @@ try {
         // ── linking a collection in the studio, and the page it makes ──
         {
           windowPasses()
-          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR, uploads: true })
           await page.getByText('reveal studio').first().waitFor()
           await page.getByPlaceholder('new-voices').fill('browser-linked')
           await page.getByPlaceholder('New Voices').fill('Browser Linked')
@@ -3067,6 +3163,7 @@ try {
           check('at most three collections can be linked', (await page.getByRole('button', { name: 'link a collection' }).count()) === 0 && (await link.count()) === 3)
           await page.getByRole('button', { name: 'Unlink collection 3' }).click()
           await page.getByRole('button', { name: 'Unlink collection 2' }).click()
+          await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
           check('publishing queues it with the link and what it took in',
@@ -3258,12 +3355,14 @@ try {
           await visitor.getByText(`Machines (${c2Machines})`).waitFor()
           const vBody = await text(visitor)
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
-          check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0)
+          check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0 &&
+            (await visitor.getByRole('button', { name: /cover/ }).count()) === 0)
           await visitor.context().close()
 
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()
           check('the creator sees each machine in plain words', (await text(page)).includes('on sale'))
+          check('and can change each one\'s cover', (await page.getByRole('button', { name: 'change cover' }).count()) >= 1)
           check('and how to build another', (await page.getByRole('link', { name: 'build another gachapon →' }).getAttribute('href').catch(() => null)) === '/play/create')
           const row = page.locator('div.border', { hasText: 'Browser Machine' }).last()
           await row.getByRole('button', { name: 'end season' }).click()
