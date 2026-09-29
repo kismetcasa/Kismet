@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY } from '@/lib/media/modelMedia'
+import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
 
 /**
  * Mint-form preview for a 3D moment: renders the picked GLB, lets the artist
@@ -118,10 +119,11 @@ export function ModelPreview({ src, background, fileName, onPoster, onError }: P
         const mod = await import('@google/model-viewer')
         // Point Draco/KTX2 at OUR copies. model-viewer otherwise fetches these
         // from www.gstatic.com at render time — an undeclared third-party
-        // origin that would also break under an enforcing CSP. See
+        // origin that would also break under an enforcing CSP. Set on the
+        // global config the element constructor reads (lib/media/
+        // modelViewerConfig — the static setter never held). See
         // public/model-decoders/README.md.
-        mod.ModelViewerElement.dracoDecoderLocation = '/model-decoders/draco/'
-        mod.ModelViewerElement.ktx2TranscoderLocation = '/model-decoders/basis/'
+        configureModelViewerDecoders()
         // Pin the dynamic render scale to full resolution while posing. The
         // renderer degrades scale under load, and toBlob captures at the
         // DEGRADED size — so without this, an artist on a busy machine bakes

@@ -75,7 +75,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
   function handlePick(f: File | null) {
     if (!f) return
     if (f.size > CFILE_MAX_BYTES) {
-      toast.error('File too large', { description: 'The limit is 16 MB per version' })
+      toast.error('File too large', { description: `The limit is ${formatCfileSize(CFILE_MAX_BYTES)} per version` })
       return
     }
     if (!hasAcceptedCfileExt(f.name)) {
@@ -224,7 +224,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
           ) : (
             <p className="text-[10px] font-mono text-muted">
               Attach a file ({CFILE_KIND_LABEL}) that collectors of this artwork can
-              download. Up to 16 MB; replace it any time — collectors get notified
+              download. Up to {formatCfileSize(CFILE_MAX_BYTES)}; replace it any time — collectors get notified
               and can re-download.
               {primaryIsModel && (
                 <>

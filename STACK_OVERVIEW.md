@@ -157,7 +157,7 @@ production defaults in `lib/config.ts`):
 | Container | **Docker** multi-stage (deps→builder→runner), **`node:22.22-alpine` pinned** on all stages, non-root uid 1001, execs `node server.js` directly for SIGTERM | `Dockerfile` |
 | Framework | **Next.js 15.5.19** `output: 'standalone'`, App Router, instrumentation hook | `next.config.mjs`, `package.json` |
 | Memory | V8 heap caps: **build 3072 MB / runtime 4096 MB** (fixes a masked V8-heap OOM at ~2030 MB) | `Dockerfile:62,101` |
-| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`; on Coolify fired by an external scheduler (`CRON_SECRET`) | `vercel.json` |
+| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`, daily `/api/cron/experience-seeds` (00:07 UTC) and daily `/api/cron/referral-payouts` (03:23 UTC); on Coolify each is fired by an external scheduler (`Authorization: Bearer $CRON_SECRET`) | `vercel.json` |
 | CI | GitHub Actions: `npm ci` → assert clone-response patch → `next build` → `npm run check` → blocking critical `npm audit`; Dependabot weekly | `.github/workflows/ci.yml` |
 
 ### 1.6 The full environment-variable surface
@@ -1122,9 +1122,13 @@ they are flagged for follow-up.
    all rate limits and spend quotas silently pass; the planned "global daily cap +
    balance alert" fail-closed backstop is noted as *planned*, not implemented
    (`1bf7b1b`). The operational Arweave wallet balance is the only remaining ceiling.
-6. **The `vercel.json` cron won't fire on Coolify** without an external scheduler
-   hitting `/api/cron/sync-stats` — if unconfigured, artist earnings stats silently
-   stop refreshing.
+6. **The `vercel.json` crons won't fire on Coolify** without an external scheduler
+   hitting each of them — if unconfigured, artist earnings stats silently stop
+   refreshing (`/api/cron/sync-stats`), a machine nobody has viewed can have its
+   seed created only at a play, after the player's capsule transaction — the
+   ordering its commitment exists to rule out (`/api/cron/experience-seeds`), and
+   curators' referral rewards stay escrowed with Zora until they withdraw them
+   themselves (`/api/cron/referral-payouts`).
 7. **Minor label fix (already corrected in this doc):** the marketplace is **Seaport
    1.5** (`lib/seaport.ts:93` EIP-712 domain `version: '1.5'`), not 1.6 as one
    inventory pass guessed.

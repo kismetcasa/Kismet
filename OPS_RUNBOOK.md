@@ -264,11 +264,31 @@ Design + rationale: `COLLECTOR_DOWNLOADS_DESIGN.md`. Bytes live **in Upstash
 Redis** as 4 MiB base64 chunks (`kismetart:cfile-blob:*`); the record
 (`kismetart:cfile:*`) points at them. There is no second copy anywhere.
 
+Per-version cap: `CFILE_MAX_BYTES` = **64 MiB** (`lib/collectorFileTypes.ts`;
+16 MiB until 2026-09-29). Every limit string in the UI and the 413 copy
+derive from it. A version is ~85 MiB resident (base64), and bytes are kept
+for the last 3 versions of an artwork (~256 MiB worst case per artwork).
+Per-identity upload quotas (`lib/userQuota.ts`): 15 versions/day, 256 MiB/day
+(four max-size versions), 1 GiB/week.
+
 ### One-time / deploy
 
-- **No configuration required.** The feature has no secret and no env var.
-  Optional: `CFILE_STORAGE_CEILING_BYTES` (default 512 MiB) caps total
-  resident bytes across all artworks; PUT answers **507** when full.
+- **No secret and no required env var.** Optional:
+  `CFILE_STORAGE_CEILING_BYTES` (default 512 MiB) caps total resident bytes
+  across all artworks; PUT answers **507** when full. With the 64 MiB cap one
+  artwork's three retained versions can hold ~256 MiB, so the default fits
+  only two such artworks — **set 2 GiB (`2147483648`) in Coolify** alongside
+  the cap.
+- **Proxy read timeout — REQUIRED since the 64 MiB cap (2026-09-29).**
+  Traefik's `respondingTimeouts.readTimeout` defaults to 60 s for the WHOLE
+  request body (v2.11.2+), and Coolify's generated proxy configuration sets no
+  override, so any upload slower than ~9 Mbit/s dies mid-body before the app
+  sees its last byte. Add
+  `--entrypoints.https.transport.respondingTimeouts.readTimeout=5m` under
+  Server → Proxy → Configuration (Coolify docs; coollabsio/coolify#5358).
+  Never add a `middleware.ts` to this app: when one exists Next 15.5.5+
+  buffers a request-body clone of at most 10 MB and silently truncates the
+  rest (`app/api/collector-file/route.ts` records both).
 - **Backfill audiences for pre-feature artworks** (otherwise "notify
   collectors" only reaches people who collected after launch):
   `node scripts/backfill-collectors.mjs --address 0x… --token 1` (dry run;
@@ -291,6 +311,12 @@ drift in the `kismetart:cfile-bytes` ledger. `--commit` deletes orphaned
 chunks and rewrites the ledger; it never deletes a chunk a record still
 points at. Recovery for a missing-chunk record is artist re-upload — say so
 plainly rather than implying the file is recoverable.
+
+**A large upload fails after ~60 s with a network error or 408, and the app
+log has nothing.** The proxy, not the app: Traefik's default `readTimeout`
+cut the request before the PUT received the body, so no route code ran. Check
+the `readTimeout=5m` flag from the deploy section first; a 64 MiB body needs
+~9 Mbit/s to fit inside the 60 s default.
 
 **Takedown / DMCA on an attached file.**
 `POST /api/admin/cfile-block { collection, tokenId, blocked: true }` —

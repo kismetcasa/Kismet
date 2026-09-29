@@ -1,5 +1,7 @@
 import {
   encodeAbiParameters,
+  getAddress,
+  isAddress,
   parseAbi,
   parseAbiParameters,
   parseEther,
@@ -52,6 +54,23 @@ export const NATIVE_ETH_SENTINEL: Address = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeee
 // Exported so the agent calldata verifiers assert against THIS value rather than
 // a hand-copied duplicate (the copy is exactly what could silently drift).
 export const KISMET_REFERRAL: Address = '0xc6021D9F09e145a6297f64551aa2eCA6d66F8f75'
+
+/**
+ * Who earns the mint referral on one collect: the curator of the reveal
+ * machine the collector found the piece through, or Kismet. The ONE exception
+ * to KISMET_REFERRAL, and decided here rather than at a callsite.
+ *
+ * Kismet keeps it when no curator is named, when the value is not an address,
+ * and when the curator is a party to the collect (the payer or the recipient):
+ * a self-referral would be a rebate on their own purchase, which is what Sound's
+ * affiliate module refuses too. The protocol itself accepts any address.
+ */
+export function resolveMintReferral(curator: string | null | undefined, parties: string[]): Address {
+  if (!curator || !isAddress(curator, { strict: false })) return KISMET_REFERRAL
+  const c = curator.toLowerCase()
+  if (parties.some((p) => p.toLowerCase() === c)) return KISMET_REFERRAL
+  return getAddress(curator)
+}
 
 // Zora 1155 mint() (post-v2.0.0 contracts). All inprocess and Kismet deploys
 // from the last ~year are new-style; legacy mintWithRewards() is intentionally
@@ -254,7 +273,8 @@ export async function readMintFeeWithBound(
  * bundled path).
  *
  * TREASURY-CRITICAL: this function is the single source of truth for the
- * referral recipient (KISMET_REFERRAL), the strategy address
+ * referral recipient (KISMET_REFERRAL, or a reveal machine's curator as
+ * resolveMintReferral decides), the strategy address
  * (ZORA_FIXED_PRICE_STRATEGY), and the minterArguments encoding on every
  * ETH-priced mint the platform issues. Inlining the args at a callsite
  * instead of going through this helper is a divergence vector that could
@@ -274,6 +294,8 @@ export function buildEthMintCall(params: {
   mintFee: bigint
   pricePerToken: bigint
   comment: string
+  /** From resolveMintReferral; Kismet's when absent. */
+  referral?: Address
 }) {
   return {
     abi: ZORA_1155_MINT_ABI,
@@ -282,7 +304,7 @@ export function buildEthMintCall(params: {
       ZORA_FIXED_PRICE_STRATEGY,
       params.tokenId,
       params.quantity,
-      [KISMET_REFERRAL],
+      [params.referral ?? KISMET_REFERRAL],
       encodeFixedPriceMinterArgs(params.mintTo, params.comment),
     ],
     value: (params.mintFee + params.pricePerToken) * params.quantity,
@@ -313,8 +335,9 @@ export function buildEthMintCall(params: {
  * on the hot collect path. If it turns out non-zero, fix it in this one builder.
  *
  * TREASURY-CRITICAL: same warning as buildEthMintCall — this is the only
- * sanctioned way to construct the args, including the hardcoded
- * KISMET_REFERRAL recipient and the USDC_BASE currency.
+ * sanctioned way to construct the args, including the referral recipient
+ * (KISMET_REFERRAL unless resolveMintReferral names a curator) and the
+ * USDC_BASE currency.
  */
 export function buildUsdcMintCall(params: {
   collection: Address
@@ -323,6 +346,8 @@ export function buildUsdcMintCall(params: {
   quantity: bigint
   pricePerToken: bigint
   comment: string
+  /** From resolveMintReferral; Kismet's when absent. */
+  referral?: Address
 }) {
   return {
     abi: ZORA_ERC20_MINTER_ABI,
@@ -334,7 +359,7 @@ export function buildUsdcMintCall(params: {
       params.tokenId,
       params.pricePerToken * params.quantity,
       USDC_BASE,
-      KISMET_REFERRAL,
+      params.referral ?? KISMET_REFERRAL,
       params.comment,
     ],
   } as const

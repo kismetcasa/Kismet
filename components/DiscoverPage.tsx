@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback, startTransition } from 'react'
+import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { useQueryClient } from '@tanstack/react-query'
 import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
@@ -15,6 +16,7 @@ import { useLongPressDrag } from '@/hooks/useLongPressDrag'
 import type { Moment } from '@/lib/inprocess'
 import { trackFunnel } from '@/lib/funnel'
 import { useAdmin } from '@/contexts/AdminContext'
+import { MachineRows, type MachineRow } from '@/components/MachineRows'
 
 // Mobile-mount context. Server-side UA detection (see app/page.tsx)
 // sets this to `true` on mobile UAs, baking the decision into SSR
@@ -26,16 +28,17 @@ const LazyMountCtx = createContext(false)
 
 // ─── types ───────────────────────────────────────────────────────────────────
 
-type TabId = 'featured' | 'trending' | 'main' | 'roster'
+type TabId = 'featured' | 'trending' | 'main' | 'play' | 'roster'
 
 // Default order — featured leads so a first-time visitor lands on the
-// curated tab. Existing users who reordered keep their saved positions
-// (see loadOrder), so changing this only affects fresh installs.
-const DRAGGABLE: TabId[] = ['featured', 'trending', 'main', 'roster']
+// curated tab. Existing users who reordered keep their saved positions, and a
+// tab added since joins theirs where it sits here (see loadOrder).
+const DRAGGABLE: TabId[] = ['featured', 'trending', 'main', 'play', 'roster']
 const LABEL: Record<TabId, string> = {
   featured: 'featured',
   trending: 'trending',
   main: 'home',
+  play: 'play',
   roster: 'artists',
 }
 
@@ -64,10 +67,11 @@ const PREFETCH_URL: Partial<Record<TabId, string>> = {
 }
 
 // Reconcile a stored tab order with the current DRAGGABLE list: keep
-// recognized entries in their saved positions, drop unknowns, and append
-// any newly-added tabs at the end. Without the reconcile, adding a new
-// draggable tab (like 'roster') would invalidate every existing user's
-// stored order and reset them all to defaults.
+// recognized entries in their saved positions, drop unknowns, and put each
+// newly-added tab right after the tab it follows by default — so 'play'
+// lands after 'home' however someone arranged the rest. Without the
+// reconcile, adding a new draggable tab would invalidate every existing
+// user's stored order and reset them all to defaults.
 function loadOrder(): TabId[] {
   if (typeof window === 'undefined') return DRAGGABLE
   try {
@@ -75,11 +79,13 @@ function loadOrder(): TabId[] {
     if (!raw) return DRAGGABLE
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return DRAGGABLE
-    const valid = parsed.filter(
+    const order = parsed.filter(
       (t): t is TabId => typeof t === 'string' && DRAGGABLE.includes(t as TabId),
     )
-    const missing = DRAGGABLE.filter((t) => !valid.includes(t))
-    return [...valid, ...missing]
+    DRAGGABLE.forEach((t, i) => {
+      if (!order.includes(t)) order.splice(i === 0 ? 0 : order.indexOf(DRAGGABLE[i - 1]) + 1, 0, t)
+    })
+    return order
   } catch {
     return DRAGGABLE
   }
@@ -156,8 +162,9 @@ function TabBar({
                   boxShadow: '0 6px 16px rgba(0, 0, 0, 0.45)',
                 }
               : undefined}
+            // Tighter on phones: five tabs at px-4 overflow every phone width.
             className={`
-              relative px-4 py-2.5 text-xs font-mono tracking-wider uppercase
+              relative px-2.5 sm:px-4 py-2.5 text-xs font-mono tracking-wider uppercase
               transition-colors select-none touch-pan-y
               ${isActive ? 'text-ink' : 'text-subtle hover:text-dim'}
               ${isDragging ? 'opacity-70 cursor-grabbing' : 'cursor-grab'}
@@ -648,6 +655,12 @@ export function DiscoverPage({
           </div>
         )}
 
+        {hydrated && visitedTabs.has('play') && (
+          <div hidden={active !== 'play'}>
+            <PlayFeed />
+          </div>
+        )}
+
         {hydrated && visitedTabs.has('roster') && (
           <div hidden={active !== 'roster'}>
             <ArtistsFeed />
@@ -656,6 +669,52 @@ export function DiscoverPage({
       </div>
     </div>
     </LazyMountCtx.Provider>
+  )
+}
+
+// ─── play feed ───────────────────────────────────────────────────────────────
+
+// The machines on the shelves right now, one row each, opening to the machine.
+// A closed machine cannot be played, so only live ones are listed (/play keeps
+// the closed ones). The way to build one is always here: the tab is where
+// people find machines, so it is where a creator looks for how to build one.
+function PlayFeed() {
+  const [machines, setMachines] = useState<MachineRow[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    fetch('/api/experience/machines')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d: { machines?: MachineRow[] }) => setMachines((d.machines ?? []).filter((m) => m.state === 'live')))
+      .catch(() => setFailed(true))
+  }, [])
+
+  if (failed) return <p className="py-8 text-center text-xs font-mono text-muted">machines could not be loaded</p>
+  if (!machines) return <p className="py-8 text-center text-xs font-mono text-subtle">loading…</p>
+  if (machines.length === 0) {
+    return (
+      <div className="border border-line p-8 sm:p-16 text-center mt-4">
+        <p className="text-sm font-mono text-muted">nothing to play yet</p>
+        <Link
+          href="/play/create"
+          className="inline-block mt-5 px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent"
+        >
+          build gachapon
+        </Link>
+      </div>
+    )
+  }
+  return (
+    <div className="mt-4">
+      <div className="flex justify-end mb-3">
+        <Link
+          href="/play/create"
+          className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
+        >
+          build gachapon
+        </Link>
+      </div>
+      <MachineRows machines={machines} onEnded={(id) => setMachines(machines.filter((m) => m.id !== id))} />
+    </div>
   )
 }
 

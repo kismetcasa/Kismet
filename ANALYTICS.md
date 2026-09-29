@@ -271,6 +271,9 @@ The events, in funnel order, and where they fire:
 | `collect_success` | `useDirectCollect` | Collect confirmed |
 | `mint_attempt` | `MintForm` | Mint submitted |
 | `mint_success` | `MintForm` (both paths) | Mint confirmed |
+| `discover_landing` | `DiscoverMarketView` | `/discover` viewed — once per browser session (same sessionStorage de-dupe as `landing`) |
+| `discover_filter` | `DiscoverMarketView` (`DiscoverPillBar` `onChange`) | A pill or drawer filter refined (sort changes don't count) |
+| `discover_collect_attempt` | `MarketOvals` | Collect tapped on a discover oval — the discover-scoped numerator (`collect_attempt` still fires inside `useDirectCollect`) |
 | `sweep_open` | `SweepButton` | Sweep sheet opened from `/discover` (once per open, not per size toggle) |
 | `sweep_attempt` | `useSweep` | Sweep wallet prompt requested (basket verified and simulated) |
 | `sweep_success` | `useSweep` | Sweep bundle confirmed on-chain |

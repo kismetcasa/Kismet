@@ -23,6 +23,7 @@ import {
   buildEthMintCall,
   buildUsdcMintCall,
   readMintFeeWithBound,
+  resolveMintReferral,
 } from '@/lib/zoraMint'
 
 type CollectStatus =
@@ -80,6 +81,9 @@ export interface CollectArgs {
    *  below." when the artwork carries a collector file). Rides both success
    *  branches; the Mini App share branch keeps its Share action alongside. */
   successDescription?: string
+  /** The curator of the reveal machine this collect came from, who earns the
+   *  mint referral instead of Kismet (lib/zoraMint.resolveMintReferral). */
+  curator?: string | null
 }
 
 interface UseDirectCollectReturn {
@@ -230,6 +234,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
 
         const quantity = BigInt(Math.max(1, Math.floor(amount)))
         const totalPrice = pricePerToken * quantity
+        const referral = resolveMintReferral(args.curator, [account, mintTo])
 
         let hash: Hash
 
@@ -252,6 +257,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               mintFee,
               pricePerToken,
               comment,
+              referral,
             }),
             dataSuffix: BUILDER_DATA_SUFFIX,
           })
@@ -300,6 +306,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
               quantity,
               pricePerToken,
               comment,
+              referral,
             }),
             dataSuffix: BUILDER_DATA_SUFFIX,
           })

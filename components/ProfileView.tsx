@@ -20,6 +20,7 @@ import type { ProfileTheme } from '@/lib/profileTheme'
 import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
+import { ProfileMachines, publicMachines, useCreatorMachines } from './ProfileMachines'
 import { CuratePanel } from './CuratePanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
@@ -109,9 +110,11 @@ function CollectionPreviewImage({ src, alt, thumbhash, priority }: { src?: strin
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 'curate'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 'machines' | 'curate'
 
-// `curate` is intentionally absent from DEFAULT_ORDER — it's appended at
+// `machines` and `curate` are intentionally absent from DEFAULT_ORDER. `machines`
+// is appended only when the profile has capsule machines, so the many profiles
+// without one never carry an empty section. `curate` is appended at
 // render time only on the curator's own profile, pinned last and not
 // drag-reorderable. Keeping it out of the persisted order means it never
 // leaks into a non-curator's localStorage state and never shows up where
@@ -275,6 +278,8 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const { isAdmin, isCurator } = useAdmin()
+  const creatorMachines = useCreatorMachines(address)
+  const shelfMachines = publicMachines(creatorMachines.machines)
 
   const [profile, setProfile] = useState<Profile | null>(null)
 
@@ -1031,6 +1036,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: 'Listings',
     payments: 'Sales',
     airdrops: 'Airdrops',
+    machines: 'Machines',
     curate: 'Curate',
   }
   // Public showcase reframes the owner's raw categories as a curated reel.
@@ -1045,6 +1051,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: loadingListings ? null : displayListings.length,
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
+    machines: creatorMachines.machines.length + creatorMachines.featuredIn.length,
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
   }
@@ -1215,6 +1222,16 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
           </div>
         ))}
       </div>
+    ),
+    machines: (
+      <ProfileMachines
+        machines={isOwner ? creatorMachines.machines : shelfMachines}
+        manage={isOwner}
+        signedIn={creatorMachines.owner}
+        referralPaid={creatorMachines.referralPaid}
+        featuredIn={creatorMachines.featuredIn}
+        onChange={creatorMachines.reload}
+      />
     ),
     curate: <CuratePanel />,
   }
@@ -1804,11 +1821,29 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                 </div>
               )
             })
+            .concat(
+              shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0
+                ? [
+                    <div key="machines" className="border-t border-line">
+                      <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
+                        Machines ({shelfMachines.length + creatorMachines.featuredIn.length})
+                      </h2>
+                      <div className="pb-8">
+                        <ProfileMachines machines={shelfMachines} featuredIn={creatorMachines.featuredIn} manage={false} signedIn={false} onChange={creatorMachines.reload} />
+                      </div>
+                    </div>,
+                  ]
+                : [],
+            )
         ) : (
-          (showCurate ? [...sectionOrder, 'curate' as const] : sectionOrder).map((section) => {
+          ([
+            ...sectionOrder,
+            ...((isOwner ? creatorMachines.machines : shelfMachines).length > 0 || creatorMachines.featuredIn.length > 0 ? ['machines' as const] : []),
+            ...(showCurate ? ['curate' as const] : []),
+          ]).map((section) => {
           const isCollapsed = sectionCollapsed[section] ?? false
-          const count = sectionCount[section]
-          const isReorderable = section !== 'curate'
+          const count = section === 'machines' && !isOwner ? shelfMachines.length + creatorMachines.featuredIn.length : sectionCount[section]
+          const isReorderable = section !== 'curate' && section !== 'machines'
           const isDragging = draggingSection === section
           return (
             <div

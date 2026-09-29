@@ -23,14 +23,14 @@
  * Deliberately NOT wired into `npm run check`: it needs a built app, a
  * running server and a browser (see scripts/e2e/README.md). Run:
  *
- *   npm run build && npm i --no-save playwright@1.56.0
+ *   npm run build
  *   node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
  *     --import ./scripts/register-ts-alias.mjs scripts/e2e/sweep.ts
  *
  * Screenshots land in .e2e/shots/.
  */
 
-import { chromium, type Route } from 'playwright'
+import { chromium, type Route } from 'playwright-core'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createWriteStream, mkdirSync } from 'node:fs'
 import net from 'node:net'

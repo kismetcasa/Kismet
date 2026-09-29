@@ -93,6 +93,39 @@ async function fetchCollectedKeys(owner: string, baseUrl: string): Promise<Set<s
   }
 }
 
+const ERC1155_BALANCE_ABI = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'account', type: 'address' },
+      { name: 'id', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const
+
+/** The candidates `account` already holds `target` or more of, as
+ *  `collection:tokenId` keys — the multi-edition counterpart of the timeline
+ *  set. Returns `null` (FAIL CLOSED) when the read fails, like fetchCollectedKeys. */
+async function ownedAtOrAbove(candidates: readonly Candidate[], account: Address, target: bigint): Promise<Set<string> | null> {
+  const owned = new Set<string>()
+  if (candidates.length === 0) return owned
+  try {
+    const res = await serverBaseClient().multicall({
+      contracts: candidates.map((c) => ({ address: c.collection as Address, abi: ERC1155_BALANCE_ABI, functionName: 'balanceOf' as const, args: [account, BigInt(c.tokenId)] as const })),
+      allowFailure: true,
+    })
+    res.forEach((r, i) => {
+      if (r.status === 'success' && (r.result as bigint) >= target) owned.add(`${candidates[i].collection.toLowerCase()}:${candidates[i].tokenId}`)
+    })
+    return owned
+  } catch {
+    return null
+  }
+}
+
 /** Record one verified collect on the proof-gated /api/collect (it re-checks the
  *  TransferSingle on `txHash` against `account` on-chain, so no session needed). */
 async function recordCollect(
@@ -182,16 +215,14 @@ async function runCore(params: { owner: string; baseUrl: string; spender: ScoutS
 
   // The timeline collected-set is a BINARY (owned/not) pre-filter, correct only
   // for the default 1-edition target — it keeps the engine's item-cap accounting
-  // honest by not planning owned drops. For a multi-edition target it would
-  // wrongly stop at edition 1, so we skip it there and rely on the executor's
-  // authoritative on-chain balance check (balanceOf >= editions) instead.
+  // honest by not planning owned drops. A multi-edition target is judged
+  // against the on-chain balance instead, so a drop already held at the
+  // target is a plan-level skip rather than an execution failure every run.
+  // Either way the executor's in-lock balance re-check stays authoritative.
   const editions = Math.max(1, Math.floor(scout.policy.maxEditionsPerDrop ?? 1))
-  let planOwned: Set<string> = new Set()
-  if (editions === 1) {
-    const owned = await fetchCollectedKeys(owner, baseUrl)
-    if (owned === null) return { collected: 0, skipped: 0, reason: 'could not verify your collected set' }
-    planOwned = owned
-  }
+  const owned = editions === 1 ? await fetchCollectedKeys(owner, baseUrl) : await ownedAtOrAbove(candidates, recipient, BigInt(editions))
+  if (owned === null) return { collected: 0, skipped: 0, reason: 'could not verify your collected set' }
+  const planOwned = owned
   // Anchor the engine's period accounting to the on-chain currentPeriod.start
   // (resolved above), so the off-chain item counter mirrors the SpendPermissionManager
   // exactly and can't drift by a period under clock skew near a boundary.

@@ -16,6 +16,16 @@
 // every render-fallback walk hit a dead host first. Removing it leaves
 // arweave.net (Turbo's optimistic-cache host) as the sole gateway; re-add a
 // curl-verified AR.IO gateway here to restore fallback redundancy.
+//
+// FOLLOW-UP (2026-09-29, needs the curl check above from a machine with
+// egress): ar.io's own docs call arweave.net "a single point of failure" and
+// "performance bottleneck", and the one stall a 3D artist hit was exactly
+// that — a connection accepted, no bytes. The natural second entry is
+// turbo-gateway.com, the ar.io gateway the ArDrive team runs, which serves
+// Turbo uploads (ours) from its optimistic cache before they settle on
+// chain; note it rate-limits with 429s under load (ar-io/ar-io-node#882).
+// Until a verified host is added, the 3D model walk (lib/media/gateway.ts,
+// modelFetchUrls) guarantees /api/img as a second route on every surface.
 const ARWEAVE_GATEWAYS = [
   'https://arweave.net',
 ] as const

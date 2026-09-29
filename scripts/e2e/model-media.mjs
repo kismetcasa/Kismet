@@ -15,6 +15,7 @@
 import { chromium } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import sharp from 'sharp'
 
 const DIR = process.env.E2E_DIR || path.join(process.cwd(), '.e2e')
 const SHOTS = path.join(DIR, 'shots')
@@ -38,6 +39,78 @@ const oldVersion = Buffer.from(GLB); oldVersion.writeUInt32LE(1, 4)
 fs.writeFileSync(path.join(DIR, 'truncated.glb'), truncated)
 fs.writeFileSync(path.join(DIR, 'v1.glb'), oldVersion)
 fs.writeFileSync(path.join(DIR, 'archive.zip'), Buffer.from([0x50,0x4b,0x03,0x04, ...Array(60).fill(0)]))
+
+/**
+ * A textured UV sphere for the "optimize for web" pass: ~29k triangles (so
+ * Draco has something to compress) with one 3000px PNG albedo (over the 2K
+ * cap, so the texture step has something to shrink). Spec-valid glTF 2.0
+ * binary, built the same way scripts/e2e/make-glb.mjs builds the cube.
+ */
+async function makeTexturedGlb(file) {
+  const segs = 120, rings = 120
+  const pos = [], uv = [], idx = []
+  for (let r = 0; r <= rings; r++) {
+    const v = r / rings, phi = v * Math.PI
+    for (let c = 0; c <= segs; c++) {
+      const u = c / segs, th = u * 2 * Math.PI
+      pos.push(Math.sin(phi) * Math.cos(th), Math.cos(phi), Math.sin(phi) * Math.sin(th))
+      uv.push(u, v)
+    }
+  }
+  for (let r = 0; r < rings; r++) for (let c = 0; c < segs; c++) {
+    const a = r * (segs + 1) + c, b = a + segs + 1
+    idx.push(a, b, a + 1, b, b + 1, a + 1)
+  }
+  const P = new Float32Array(pos), T = new Float32Array(uv), I = new Uint16Array(idx)
+  // A smooth gradient with a little structure: compresses to a few MB as
+  // PNG, still clearly larger than its 2K downscale.
+  const side = 3000
+  const raw = Buffer.alloc(side * side * 3)
+  for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) {
+    const o = (y * side + x) * 3
+    raw[o] = (x * 255 / side) | 0
+    raw[o + 1] = (y * 255 / side) | 0
+    raw[o + 2] = ((x ^ y) & 0x3f) << 2
+  }
+  const png = await sharp(raw, { raw: { width: side, height: side, channels: 3 } }).png({ compressionLevel: 6 }).toBuffer()
+  const pad4 = (n) => (n + 3) & ~3
+  const parts = [Buffer.from(I.buffer), Buffer.from(P.buffer), Buffer.from(T.buffer), png]
+  const views = []
+  let off = 0
+  const bins = []
+  for (const part of parts) {
+    views.push({ buffer: 0, byteOffset: off, byteLength: part.length })
+    const padded = Buffer.alloc(pad4(part.length)); part.copy(padded)
+    bins.push(padded); off += padded.length
+  }
+  views[0].target = 34963; views[1].target = 34962; views[2].target = 34962
+  const bin = Buffer.concat(bins)
+  const json = {
+    asset: { version: '2.0', generator: 'kismet-e2e-fixture' },
+    scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 1, TEXCOORD_0: 2 }, indices: 0, material: 0 }] }],
+    materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 }, metallicFactor: 0, roughnessFactor: 0.8 } }],
+    textures: [{ source: 0 }],
+    images: [{ bufferView: 3, mimeType: 'image/png' }],
+    accessors: [
+      { bufferView: 0, componentType: 5123, count: I.length, type: 'SCALAR' },
+      { bufferView: 1, componentType: 5126, count: P.length / 3, type: 'VEC3', min: [-1, -1, -1], max: [1, 1, 1] },
+      { bufferView: 2, componentType: 5126, count: T.length / 2, type: 'VEC2' },
+    ],
+    bufferViews: views,
+    buffers: [{ byteLength: bin.length }],
+  }
+  let jsonBuf = Buffer.from(JSON.stringify(json), 'utf8')
+  if (jsonBuf.length % 4) jsonBuf = Buffer.concat([jsonBuf, Buffer.alloc(4 - (jsonBuf.length % 4), 0x20)])
+  const chunk = (buf, type) => { const h = Buffer.alloc(8); h.writeUInt32LE(buf.length, 0); h.writeUInt32LE(type, 4); return Buffer.concat([h, buf]) }
+  const jsonChunk = chunk(jsonBuf, 0x4e4f534a), binChunk = chunk(bin, 0x004e4942)
+  const header = Buffer.alloc(12)
+  header.write('glTF', 0, 'ascii'); header.writeUInt32LE(2, 4); header.writeUInt32LE(12 + jsonChunk.length + binChunk.length, 8)
+  const out = Buffer.concat([header, jsonChunk, binChunk])
+  fs.writeFileSync(file, out)
+  return out.length
+}
+const TEXTURED_BYTES = await makeTexturedGlb(path.join(DIR, 'textured.glb'))
 
 const MODEL_META = {
   uri: 'ar://meta',
@@ -94,6 +167,34 @@ const pickMedia = async (pg, file, ms = 25000) => {
   return 'timeout'
 }
 
+// One rendered pixel of an element — decoded in the page, since Node has
+// no PNG reader here. 'corner' (4,4) reads a backdrop; 'centre' reads what
+// sits in the middle of the box. The centre read is the only honest test of
+// "the still is visible": a layer can have opacity 1 and still be painted
+// over by an opaque sibling (exactly what happened to the still under
+// model-viewer's backdrop, and what the old opacity check never saw).
+const pixelOf = async (pg, locator, where) => {
+  const buf = await locator.screenshot()
+  const b64 = buf.toString('base64')
+  return pg.evaluate(async ([data, at]) => {
+    const img = new Image()
+    await new Promise((r) => { img.onload = r; img.src = 'data:image/png;base64,' + data })
+    const c = document.createElement('canvas')
+    c.width = img.width; c.height = img.height
+    const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const [x, y] = at === 'centre' ? [Math.floor(img.width / 2), Math.floor(img.height / 2)] : [4, 4]
+    return Array.from(ctx.getImageData(x, y, 1, 1).data).slice(0, 3)
+  }, [b64, where])
+}
+const centerOf = (pg, locator) => pixelOf(pg, locator, 'centre')
+// The poster fixture is a flat green (20,120,90); the backdrop is white.
+const isPosterGreen = (px) => px[0] < 80 && px[1] > 80 && px[2] > 50 && px[1] > px[0]
+// The media box while a model is loading or active: the exit/cancel
+// control's parent is the wrapper that carries the backdrop.
+const mediaBoxOf = (pg) => pg.locator('button[aria-label="Exit 3D view"], button[aria-label="Cancel 3D load"]').first().locator('..')
+const readoutOf = async (pg) => pg.locator('text=/loading 3D…/').first().innerText().catch(() => '')
+
 const stillOpacityOf = async (pg) => pg.evaluate(() => {
   const mv = document.querySelector('model-viewer')
   const layer = mv?.parentElement?.querySelector('div')
@@ -127,10 +228,19 @@ console.log('\nA. Mint form — picking a real GLB')
 await page.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
 // The media picker is hidden by design (a styled drop zone triggers it), so
 // wait for it to be ATTACHED, and target it by the accept list rather than
-// index — there are three file inputs on this form.
-const MEDIA_INPUT = 'input[accept*="model/gltf-binary"]'
+// index — there are three file inputs on this form. Two of them accept
+// model/gltf-binary (the collector-file picker takes a .glb too), so the
+// media input is the one whose list starts with image/*: page.setInputFiles
+// is not strict and would silently feed the first match, which is only the
+// media input while the DOM order holds; a strict locator refuses the
+// ambiguity outright, and the count below keeps the selector honest.
+const MEDIA_INPUT = 'input[type="file"][accept^="image/*"][accept*="model/gltf-binary"]'
 await page.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
-check('media input advertises .glb in its accept list', true)
+{
+  const accept = (await page.locator(MEDIA_INPUT).getAttribute('accept')) ?? ''
+  check('media input is uniquely addressable and advertises .glb in its accept list',
+    (await page.locator(MEDIA_INPUT).count()) === 1 && /model\/gltf-binary/.test(accept) && /\.glb/.test(accept))
+}
 check('a valid GLB is accepted and previewed', (await pickMedia(page, 'cube.glb')) === 'preview')
 
 await page.waitForSelector('model-viewer', { timeout: 30000 })
@@ -162,20 +272,7 @@ console.log(`    capture: ${cap.w}x${cap.h}, ${(cap.size/1024).toFixed(0)} KB`)
 
 // Read a real corner pixel of the RENDERED element — what the artist sees —
 // rather than trusting the CSS declaration.
-const cornerOf = async (pg) => {
-  const buf = await pg.locator('model-viewer').screenshot()
-  // PNG: walk to IDAT-free territory by decoding in the page instead.
-  const b64 = buf.toString('base64')
-  return pg.evaluate(async (data) => {
-    const img = new Image()
-    await new Promise((r) => { img.onload = r; img.src = 'data:image/png;base64,' + data })
-    const c = document.createElement('canvas')
-    c.width = img.width; c.height = img.height
-    const ctx = c.getContext('2d')
-    ctx.drawImage(img, 0, 0)
-    return Array.from(ctx.getImageData(4, 4, 1, 1).data).slice(0, 3)
-  }, b64)
-}
+const cornerOf = (pg) => pixelOf(pg, pg.locator('model-viewer'), 'corner')
 // model-viewer fades out its own loading overlay for about a second after
 // `load`, so an element screenshot taken immediately reads a transient grey.
 // That overlay is DOM-only and never reaches the capture (which reads the
@@ -327,10 +424,18 @@ check('exit control is present and labelled',
   await page.locator('button[aria-label="Exit 3D view"]').isVisible())
 // The whole point of recording kismet_bg: tapping must not swap the artist's
 // backdrop for the page's.
-const viewerBg = await page.evaluate(() =>
-  getComputedStyle(document.querySelector('model-viewer')).backgroundColor)
-check('the live viewer renders on the SAME backdrop as the still, not transparent',
-  viewerBg === 'rgb(255, 255, 255)', viewerBg)
+const viewerBg = await page.evaluate(() => {
+  const mv = document.querySelector('model-viewer')
+  return { wrapper: getComputedStyle(mv.parentElement).backgroundColor, element: getComputedStyle(mv).backgroundColor }
+})
+// On the WRAPPER, behind the still — never on the element. model-viewer's
+// host is position:relative and paints over the absolutely positioned still,
+// so an opaque colour on the element hid the still for the whole download
+// (the empty white box the artist reported).
+check('the live viewer renders on the SAME backdrop as the still, carried by the wrapper',
+  viewerBg.wrapper === 'rgb(255, 255, 255)', JSON.stringify(viewerBg))
+check('the element itself stays transparent so the still shows through until load',
+  viewerBg.element === 'rgba(0, 0, 0, 0)', JSON.stringify(viewerBg))
 // model-viewer ships shadow-intensity at 0; an untextured model reads as a
 // flat silhouette without this, worst of all on the white default.
 check('a grounding shadow is enabled on the viewer',
@@ -364,7 +469,7 @@ await clear.locator('button:has-text("view in 3D")').click()
 await clear.waitForSelector('model-viewer', { timeout: 30000 })
 await clear.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
 const clearBg = await clear.evaluate(() =>
-  getComputedStyle(document.querySelector('model-viewer')).backgroundColor)
+  getComputedStyle(document.querySelector('model-viewer').parentElement).backgroundColor)
 check('`transparent` lets the page show through the viewer',
   clearBg === 'rgba(0, 0, 0, 0)', clearBg)
 await clear.screenshot({ path: path.join(SHOTS, '11-detail-transparent.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
@@ -445,19 +550,313 @@ await slow.route('**/arweave.net/**', async (route) => {
 })
 await slow.goto(ART, { waitUntil: 'domcontentloaded' })
 await slow.locator('button:has-text("view in 3D")').click()
-await slow.waitForSelector('model-viewer', { timeout: 30000 })
 await slow.waitForTimeout(1200)
-const loadingText = await slow.locator('text=/loading 3D…/').first().innerText().catch(() => '')
-check('a progress readout is shown while the model downloads',
-  /loading 3D…\s*\d+%/.test(loadingText), JSON.stringify(loadingText))
-const stillDuringLoad = await stillOpacityOf(slow)
-check('the still is STILL VISIBLE while the model downloads (no empty box)',
-  stillDuringLoad === '1', String(stillDuringLoad))
+// The bytes are 4 s away, so right now the request has no answer. The
+// readout must say so — not "50%", which is what model-viewer's aggregate
+// tracker reported here before a single byte (the lighting environment's
+// half) and what the artist read as a frozen download.
+const loadingText = await readoutOf(slow)
+check('before any byte the readout says "connecting", never a percentage',
+  /loading 3D…\s*connecting/.test(loadingText) && !/\d+%/.test(loadingText), JSON.stringify(loadingText))
+check('no WebGL context exists while the bytes are still on their way',
+  (await slow.locator('model-viewer').count()) === 0)
+const centreDuringLoad = await centerOf(slow, mediaBoxOf(slow))
+check('the still is ACTUALLY VISIBLE while the model downloads — centre pixel is the poster, not the backdrop',
+  isPosterGreen(centreDuringLoad), JSON.stringify(centreDuringLoad))
+check('a cancel control is offered during the download',
+  await slow.locator('button[aria-label="Cancel 3D load"]').isVisible())
 await slow.screenshot({ path: path.join(SHOTS, '09-detail-loading.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+await slow.waitForSelector('model-viewer', { timeout: 30000 })
+const stillDuringParse = await stillOpacityOf(slow)
+check('the still layer stays opaque while model-viewer parses the blob', stillDuringParse === '1', String(stillDuringParse))
+// React 19 sets `src` on a custom element as a PROPERTY (the element has
+// one), so it is read as a property here, not an attribute.
+const viewerSrc = await slow.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+check('the viewer is handed a blob: URL, never a gateway URL model-viewer could cache',
+  typeof viewerSrc === 'string' && viewerSrc.startsWith('blob:'), String(viewerSrc))
 await slow.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 30000 })
 await slow.waitForTimeout(600)
 check('the still fades only AFTER the model paints', await waitStillFaded(slow))
 await slow.close()
+
+// ───────── E2. A gateway that accepts the connection and never answers ─────────
+// The artist's actual failure: arweave.net took the request and sent nothing.
+// model-viewer sat at "50%" forever with no timeout and nowhere to walk. Now
+// the stall watchdog (20 s of silence) aborts the attempt and the walk
+// continues to the proxy, which is guaranteed present as the last URL.
+console.log('\nE2. Stalled gateway — watchdog, then the walk to the proxy')
+const stalled = await ctx.newPage()
+const stalledRequests = []
+stalled.on('request', (r) => { if (r.url().includes('model-txid')) stalledRequests.push(r.url()) })
+let heldRoute = null
+await stalled.route('**/arweave.net/**', async (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) { heldRoute = route; return } // never answered
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await stalled.goto(ART, { waitUntil: 'domcontentloaded' })
+const t0stall = Date.now()
+await stalled.locator('button:has-text("view in 3D")').click()
+await stalled.waitForTimeout(3000)
+check('while the gateway is silent the readout still says "connecting"',
+  /connecting/.test(await readoutOf(stalled)), await readoutOf(stalled))
+check('...and the still is still on screen', isPosterGreen(await centerOf(stalled, mediaBoxOf(stalled))))
+await stalled.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 45000 })
+const stallElapsed = Date.now() - t0stall
+check('the watchdog gave up on the silent gateway and the proxy delivered the model',
+  stalledRequests.some((u) => u.includes('/api/img')), JSON.stringify(stalledRequests))
+check('...within the watchdog window (20 s of silence), not a browser timeout',
+  stallElapsed > 15000 && stallElapsed < 40000, `${stallElapsed} ms`)
+await stalled.screenshot({ path: path.join(SHOTS, '12-detail-after-stall.png'), clip: { x: 0, y: 100, width: 700, height: 760 } })
+if (heldRoute) await heldRoute.abort().catch(() => {})
+await stalled.close()
+
+// ───────── E3. A failed walk, then a retry that really re-fetches ─────────
+// model-viewer caches a failed load as an empty model and exposes no way to
+// clear it: with the old wiring "retry 3D" errored instantly from cache with
+// ZERO requests until a page reload. Every attempt now fetches afresh.
+console.log('\nE3. Failed walk, then retry')
+const retry = await ctx.newPage()
+const retryRequests = []
+retry.on('request', (r) => { if (r.url().includes('model-txid')) retryRequests.push(r.url()) })
+let gatewayUp = false
+await retry.route('**/arweave.net/**', (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) {
+    return gatewayUp
+      ? route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB })
+      : route.fulfill({ status: 404, body: '' })
+  }
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await retry.route('**/api/img**', (route) => {
+  const u = decodeURIComponent(route.request().url())
+  if (u.includes('model-txid')) {
+    return gatewayUp
+      ? route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB })
+      : route.fulfill({ status: 502, body: 'upstream unavailable' })
+  }
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await retry.goto(ART, { waitUntil: 'domcontentloaded' })
+await retry.locator('button:has-text("view in 3D")').click()
+await retry.locator('button:has-text("retry 3D")').waitFor({ timeout: 20000 })
+const firstWalk = retryRequests.length
+check('every URL in the walk was tried before giving up (gateway, then proxy)',
+  firstWalk >= 2 && retryRequests.some((u) => u.includes('/api/img')), JSON.stringify(retryRequests))
+check('the failure is explained and the retry affordance is offered',
+  await retry.locator('text=This 3D model could not be loaded.').isVisible())
+check('...and the still is still on screen behind it',
+  await retry.locator('img[alt="E2E Cube"]').first().isVisible())
+gatewayUp = true
+await retry.locator('button:has-text("retry 3D")').click()
+await retry.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 30000 })
+check('retry re-fetches — new requests were made, nothing served from a failure cache',
+  retryRequests.length > firstWalk, `${firstWalk} -> ${retryRequests.length}`)
+check('...and the model loads once the gateway is back',
+  await retry.evaluate(() => document.querySelector('model-viewer')?.loaded === true))
+await retry.close()
+
+// ───────── E4. Exiting during the download cancels it ─────────
+// Before, the download kept running after exit with no way to stop it (a
+// 30 MB fetch finishing for nobody, on mobile data). Now the exit control
+// aborts the request, and a late response can never mount a viewer.
+console.log('\nE4. Cancel mid-download')
+const cancelPage = await ctx.newPage()
+const cancelFailures = []
+cancelPage.on('requestfailed', (r) => { if (r.url().includes('model-txid')) cancelFailures.push(r.failure()?.errorText ?? 'failed') })
+await cancelPage.route('**/arweave.net/**', async (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) {
+    await new Promise((r) => setTimeout(r, 5000))
+    return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: GLB }).catch(() => {})
+  }
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await cancelPage.goto(ART, { waitUntil: 'domcontentloaded' })
+await cancelPage.locator('button:has-text("view in 3D")').click()
+await cancelPage.waitForTimeout(800)
+await cancelPage.locator('button[aria-label="Cancel 3D load"]').click()
+await cancelPage.waitForTimeout(300)
+check('cancel returns to the idle affordance immediately',
+  await cancelPage.locator('button:has-text("view in 3D")').isVisible())
+await cancelPage.waitForTimeout(6000)
+check('a response arriving after the cancel never mounts a viewer',
+  (await cancelPage.locator('model-viewer').count()) === 0)
+check('the in-flight request was actually aborted (not left to finish for nobody)',
+  cancelFailures.length >= 1, JSON.stringify(cancelFailures))
+await cancelPage.close()
+
+// ───────── E5. Bytes arrive but are not a model ─────────
+// A GLB that passes the magic check and then fails to parse is the MODEL's
+// fault, not the network's: no gateway walk (another host would serve the
+// same bytes), an explanation naming the model, and the still kept.
+console.log('\nE5. A GLB that downloads but cannot be parsed')
+const broken = await ctx.newPage()
+const brokenRequests = []
+broken.on('request', (r) => { if (r.url().includes('model-txid')) brokenRequests.push(r.url()) })
+await broken.route('**/arweave.net/**', (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: corrupt })
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await broken.goto(ART, { waitUntil: 'domcontentloaded' })
+await broken.locator('button:has-text("view in 3D")').click()
+const brokenMsg = broken.locator('text=This 3D model could not be displayed.')
+let brokenShown = true
+try { await brokenMsg.waitFor({ timeout: 30000 }) } catch { brokenShown = false }
+check('a GLB that downloads but cannot be parsed reports the model, not the network', brokenShown)
+check('...no gateway walk for a parse failure (one request; the same bytes would come from any host)',
+  brokenRequests.length === 1, JSON.stringify(brokenRequests))
+check('...the viewer is unmounted and the retry affordance is back',
+  (await broken.locator('model-viewer').count()) === 0 && await broken.locator('button:has-text("retry 3D")').isVisible())
+check('...and the still is still on screen', await broken.locator('img[alt="E2E Cube"]').first().isVisible())
+await broken.close()
+
+// ───────── G. Mint form: "optimize for web" ─────────
+// A textured sphere: ~29k triangles and a 3000px albedo. The pass must
+// shrink it (Draco on the geometry, the texture to 2K), replace the pick
+// through the same gate, re-load the preview from the OPTIMIZED bytes — which
+// is also the proof that the self-hosted Draco decoder decodes what the
+// self-hosted encoder produced — and offer an undo that restores the original.
+console.log('\nG. Mint form — optimize for web')
+const opt = await ctx.newPage()
+// Which decoder actually serves a Draco model. The self-hosted copies in
+// public/model-decoders/ were assumed to be it since the collector-file
+// feature — but model-viewer's constructor re-reads the location from the
+// GLOBAL config and falls back to gstatic, and the static setter the app
+// used never held. Only a request-level check can tell those apart.
+const decoderResponses = []
+opt.on('response', (r) => { if (/model-decoders\/draco\//.test(r.url())) decoderResponses.push(`${r.status()} ${new URL(r.url()).pathname}`) })
+await opt.goto(`${BASE}/mint`, { waitUntil: 'load' })
+await opt.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
+// The fixture is over the 8 MB soft warning, so a toast is EXPECTED here and
+// pickMedia's "a toast means rejection" shortcut does not apply: wait for
+// the preview itself, then check the warning says what it should.
+const texturedOutcome = await pickMedia(opt, 'textured.glb')
+const texturedMounted = await opt.waitForSelector('model-viewer', { timeout: 30000 }).then(() => true).catch(() => false)
+check('the textured fixture is accepted and previewed', texturedMounted, texturedOutcome)
+if (TEXTURED_BYTES > 8 * 1024 * 1024) {
+  const warn = opt.locator('[data-sonner-toast]', { hasText: 'Large 3D model' })
+  let warned = true
+  try { await warn.first().waitFor({ timeout: 10000 }) } catch { warned = false }
+  const warnText = warned ? await warn.first().innerText() : ''
+  check('a model over 8 MB gets the size warning, citing the published guideline',
+    warned && /under 5 MB/.test(warnText) && /optimize for web/.test(warnText), warnText.slice(0, 160))
+}
+await opt.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 60000 })
+const sizeChip = opt.locator('button:has-text("optimize for web")').locator('..')
+check('the size chip offers "optimize for web" on a 3D pick', await sizeChip.isVisible())
+const sizeBefore = await sizeChip.innerText()
+const srcBefore = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+await opt.locator('button:has-text("optimize for web")').click()
+const optToast = opt.locator('[data-sonner-toast]', { hasText: 'Optimized for web' })
+let optimizedOk = true
+try { await optToast.first().waitFor({ timeout: 90000 }) } catch { optimizedOk = false }
+const optToastText = optimizedOk ? await optToast.first().innerText() : (await opt.locator('[data-sonner-toast]').allInnerTexts()).join(' | ')
+check('the pass completes and reports what it did', optimizedOk, optToastText.slice(0, 200))
+check('...Draco compressed the geometry', /Draco/.test(optToastText), optToastText.slice(0, 200))
+check('...and the 3000px texture was downscaled to 2K', /texture.*2048/.test(optToastText), optToastText.slice(0, 200))
+// The pick was replaced, so the preview REMOUNTS on a new blob: URL — wait
+// for that element, not the old one that was already loaded.
+await opt.waitForFunction((prev) => {
+  const mv = document.querySelector('model-viewer')
+  return !!mv && mv.src !== prev && mv.loaded === true
+}, srcBefore, { timeout: 60000 })
+await opt.waitForTimeout(500)
+const sizeAfter = await opt.locator('button:has-text("undo")').locator('..').innerText().catch(() => '')
+const mb = (t) => Number((/([\d.]+) MB/.exec(t) || [])[1])
+check('the chip now shows a smaller live size and what it was',
+  /was/.test(sizeAfter) && mb(sizeAfter) < mb(sizeBefore), `${JSON.stringify(sizeBefore)} -> ${JSON.stringify(sizeAfter)}`)
+console.log(`    optimize: ${(TEXTURED_BYTES / 1024 / 1024).toFixed(2)} MB fixture -> chip ${JSON.stringify(sizeAfter)}`)
+check('the preview re-loads from the OPTIMIZED bytes (our Draco decoder decodes our Draco encoder)',
+  await opt.evaluate(() => document.querySelector('model-viewer')?.loaded === true))
+check('the Draco decoder that served was the SELF-HOSTED one, not gstatic',
+  decoderResponses.some((r) => r.startsWith('200 ') && /draco_wasm_wrapper\.js/.test(r)) &&
+  decoderResponses.some((r) => r.startsWith('200 ') && /draco_decoder\.wasm/.test(r)),
+  JSON.stringify(decoderResponses))
+check('the encoder the pass used was self-hosted too',
+  decoderResponses.some((r) => r.startsWith('200 ') && /draco_encoder_wrapper\.js/.test(r)) &&
+  decoderResponses.some((r) => r.startsWith('200 ') && /draco_encoder\.wasm/.test(r)),
+  JSON.stringify(decoderResponses))
+await opt.screenshot({ path: path.join(SHOTS, '13-mint-optimized.png'), clip: { x: 300, y: 150, width: 680, height: 800 } })
+await opt.locator('button:has-text("undo")').click()
+await opt.waitForTimeout(1500)
+const sizeUndone = await opt.locator('button:has-text("optimize for web")').locator('..').innerText().catch(() => '')
+check('undo restores the original file and size', mb(sizeUndone) === mb(sizeBefore) && !/was/.test(sizeUndone),
+  `${JSON.stringify(sizeBefore)} -> ${JSON.stringify(sizeUndone)}`)
+
+// ───────── G2. An already-Draco pick ─────────
+// Take the optimized bytes and pick them again as a fresh file. Three things
+// have to hold: model-viewer renders a Draco model from a plain pick (the
+// self-hosted decoder again, now on the mint preview), a NEW pick clears the
+// "was" record, and the pass reads Draco input — decoder AND encoder — and
+// answers honestly when there is nothing left to shrink.
+console.log('\nG2. Already-Draco pick')
+// Undo installed the original through replace(), which minted a NEW blob:
+// URL — so "src changed since section G" is already true here. Anchor the
+// wait on the src as it is now, or the read-back below grabs the
+// un-optimized bytes (the first run of this section did exactly that).
+const srcAfterUndo = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+await opt.locator('button:has-text("optimize for web")').click()
+await opt.waitForFunction((prev) => {
+  const mv = document.querySelector('model-viewer')
+  return !!mv && mv.src !== prev && mv.loaded === true
+}, srcAfterUndo, { timeout: 60000 })
+const optimizedSrc = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+// The preview's blob: URL is the optimized File; read it back out.
+const dracoB64 = await opt.evaluate(async (src) => {
+  const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer())
+  let s = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(s)
+}, optimizedSrc)
+const dracoBuffer = Buffer.from(dracoB64, 'base64')
+check('the optimized bytes read back as a GLB carrying KHR_draco_mesh_compression',
+  dracoBuffer.subarray(0, 4).toString('ascii') === 'glTF' && dracoBuffer.includes('KHR_draco_mesh_compression'))
+await opt.setInputFiles(MEDIA_INPUT, { name: 'already-draco.glb', mimeType: 'model/gltf-binary', buffer: dracoBuffer })
+await opt.waitForFunction((prev) => {
+  const mv = document.querySelector('model-viewer')
+  return !!mv && mv.src !== prev && mv.loaded === true
+}, optimizedSrc, { timeout: 60000 })
+const chipAfterPick = await opt.locator('button:has-text("optimize for web")').locator('..').innerText().catch(() => '')
+check('a Draco model picked directly renders in the preview (self-hosted decoder on the mint path)',
+  await opt.evaluate((prev) => {
+    const mv = document.querySelector('model-viewer')
+    return !!mv && mv.loaded === true && mv.src !== prev
+  }, optimizedSrc))
+check('a new pick clears the optimized record — the chip offers the pass again, with no "was"',
+  /optimize for web/i.test(chipAfterPick) && !/was/.test(chipAfterPick), JSON.stringify(chipAfterPick))
+// The answer is a toast, and the stack may still hold the previous pass's.
+// sonner 2.0.7 renders the NEWEST toast first (`[toast, ...toasts]` in the
+// Toaster's subscription, node_modules/sonner/dist/index.js), so "count the
+// stack, then read the tail" reads the OLDEST toast: a run that took the
+// count while the previous toast was still alive read "13.4 MB → 3.2 MB …
+// downscaled" as this pass's answer. The unambiguous precondition is an
+// empty stack — every toast on this page lives 3 s (app/layout.tsx,
+// duration={3000}) plus sonner's 200 ms unmount delay, and nothing hovers
+// it in headless — so wait for that, and then every toast present after
+// the click belongs to this pass. If the stack never empties, that is a
+// finding (a toast that does not expire), not something to wait around.
+await opt.waitForFunction(() => document.querySelectorAll('[data-sonner-toast]').length === 0, undefined, { timeout: 20000 })
+await opt.locator('button:has-text("optimize for web")').click()
+let settledOk = true
+try {
+  await opt.waitForFunction(() => Array.from(document.querySelectorAll('[data-sonner-toast]'))
+    .some((t) => /Already compact|Optimized for web|Could not optimize/.test(t.textContent || '')),
+  undefined, { timeout: 90000 })
+} catch { settledOk = false }
+const passToasts = await opt.locator('[data-sonner-toast]').allInnerTexts()
+const failed = passToasts.some((t) => /Could not optimize/.test(t))
+check('an already-Draco input is read (decoder) and re-written (encoder) without error',
+  settledOk && !failed, passToasts.join(' | ').slice(0, 200))
+// Honest either way: "Already compact" (the usual answer), or a marginally
+// smaller re-encode — but never a claim to have downscaled textures that
+// were already 2K.
+check('...and the answer is honest: nothing left to shrink, or a re-encode that claims no texture work',
+  passToasts.some((t) => /Already compact/.test(t)) || passToasts.some((t) => /Optimized for web/.test(t) && !/downscaled/.test(t)),
+  passToasts.join(' | ').slice(0, 200))
+await opt.close()
 
 // ───────── F. Feed surface: still renders, NO WebGL ─────────
 console.log('\nF. Feed surface — the no-WebGL rule')

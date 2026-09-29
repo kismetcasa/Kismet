@@ -99,9 +99,11 @@ export function decodeCfileChunks(chunks: string[], size: number): Buffer {
 
 // Plaintext size ceiling per version: defined once in lib/collectorFileTypes
 // (client-safe — the pickers pre-check it) and re-exported here for the
-// server + verify-script callers. 2× the MBC5 format ceiling (8 MiB ROM) and
-// 45× the reference bundle; each version is resident Redis storage and a
-// buffered serve, so the cap is a storage + memory dial, not a format need.
+// server + verify-script callers. 8× the MBC5 format ceiling (8 MiB ROM),
+// sized for a print-length PDF booklet; each version is resident Redis
+// storage and a buffered serve, so the cap is a storage + memory dial, not
+// a format need. The deployment obligations that travel with it are on the
+// PUT route's concurrency note.
 export { CFILE_MAX_BYTES }
 
 /**

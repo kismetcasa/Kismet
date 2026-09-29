@@ -10,6 +10,7 @@ type PublicClientLike = {
     abi: readonly unknown[]
     functionName: string
     args: readonly unknown[]
+    blockNumber?: bigint
   }) => Promise<unknown>
 }
 
@@ -52,7 +53,7 @@ export function canEditMomentSale(perms: bigint): boolean {
   return (perms & SALE_EDIT_MASK) !== 0n
 }
 
-const COLLECTION_PERMISSIONS_ABI = [
+export const COLLECTION_PERMISSIONS_ABI = [
   {
     name: 'permissions',
     type: 'function',
@@ -89,13 +90,18 @@ class NonBigIntPermsError extends Error {
  * Returns the permission bitmap. Throws if every retry fails — callers
  * decide whether to treat the throw as 'unknown' (preflight: fall through)
  * or fatal (post-deploy verify: surface to user).
+ *
+ * `blockNumber` pins the read to historical state. Only an archive node can
+ * answer for a block outside its recent window, and a non-archive one throws —
+ * so a caller that pins must be prepared to fall back to the live read, and
+ * should keep `retries` low, since the failure is structural, not transient.
  */
 export async function readPermissions(
   client: PublicClientLike,
   collection: Address,
   tokenId: bigint,
   user: Address,
-  options: { retries?: number } = {},
+  options: { retries?: number; blockNumber?: bigint } = {},
 ): Promise<bigint> {
   const retries = options.retries ?? 4
   const backoffMs = 500
@@ -107,6 +113,7 @@ export async function readPermissions(
         abi: COLLECTION_PERMISSIONS_ABI,
         functionName: 'permissions',
         args: [tokenId, user],
+        ...(options.blockNumber !== undefined ? { blockNumber: options.blockNumber } : {}),
       })
       if (typeof result !== 'bigint') {
         throw new NonBigIntPermsError(

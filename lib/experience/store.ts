@@ -1,0 +1,786 @@
+import 'server-only'
+import { redis } from '../redis'
+import { randomHex } from '../random'
+import { commitmentFor, nextEpoch } from './fairness'
+import { entryKey } from './draw'
+import { isReveal } from './types'
+import type { ClaimRecord, ClaimState, Machine, MachineState, PoolEntry, SnapshotEntry } from './types'
+
+/**
+ * Redis persistence for the Experience. Redis is the platform's only datastore,
+ * so this follows the same conventions as lib/raffle and lib/splits: a `kismetart:`
+ * prefix, lowercased address keys, and every unbounded collection either
+ * write-trimmed or read-bounded.
+ *
+ * ── The one place this deliberately diverges from house style ──
+ *
+ * /api/collect's idempotency is a flat `SET NX '1'` with a 30-day TTL, and that
+ * is right THERE: it guards the RECORDING of something already true on-chain,
+ * so a lost key costs an index entry. Here the claim record IS the obligation —
+ * the player has paid and is owed an artwork — so a bare flag plus a crash
+ * between claim and delivery would leave a paid play with no evidence of what
+ * was owed. Claims are therefore a state machine, and carry NO TTL until they
+ * reach a terminal state.
+ */
+
+const P = 'kismetart:xp'
+
+const kMachine = (id: string) => `${P}:${id}:meta`
+const kPool = (id: string) => `${P}:${id}:pool`
+const kRemaining = (id: string) => `${P}:${id}:remaining`
+const kClaim = (id: string, tx: string, unit: number) => `${P}:${id}:claim:${tx.toLowerCase()}:${unit}`
+const kPlays = (id: string) => `${P}:${id}:plays`
+/** Prizes delivered, newest first — what the artist's profile lists under the
+ *  machine. A prize is minted by Kismet's delivery account with adminMint, the
+ *  same call an airdrop uses, so on-chain the two look alike; this log is what
+ *  keeps them apart. The artist's airdrops (lib/airdrops) never include one. */
+const kPrizes = (id: string) => `${P}:${id}:prizes`
+const kSeed = (id: string, epoch: string) => `${P}:${id}:seed:${epoch}`
+const kSpark = (id: string, addr: string) => `${P}:${id}:spark:${addr.toLowerCase()}`
+/** A creator's machines, newest first — what their profile lists. */
+const kCreator = (addr: string) => `${P}:creator:${addr.toLowerCase()}`
+/** Cross-machine commitment ledger, keyed by the EDITION rather than the
+ *  machine: machineId -> pledged supply. Without this two machines can each
+ *  promise the same last copy of one edition and only one can be honoured. */
+const kCommit = (collection: string, tokenId: string) =>
+  `${P}:commit:${collection.toLowerCase()}:${tokenId}`
+/** One capsule token, one machine — as a KEYED RESERVATION rather than a scan.
+ *  The create route used to look for a conflict by walking the machine index,
+ *  which is write-trimmed to MAX_MACHINES: past that, an older machine is
+ *  invisible to the scan while remaining perfectly playable (the play route
+ *  resolves it by id), so a new machine could take its capsule and one paid
+ *  mint would draw from two pools. A reservation cannot age out of view. */
+const kCapsule = (collection: string, tokenId: string) =>
+  `${P}:capsule:${collection.toLowerCase()}:${tokenId}`
+/** Reveal machines that list a piece. Capsule machines are indexed by the
+ *  pledge ledger above; a reveal machine pledges nothing, so it has its own. */
+const kUses = (collection: string, tokenId: string) =>
+  `${P}:uses:${collection.toLowerCase()}:${tokenId}`
+/** Reveal machines featuring an artist's work — what their profile lists as
+ *  "featured in". Written with the lineup, removed on withdrawal. */
+const kFeaturing = (artist: string) => `${P}:featuring:${artist.toLowerCase()}`
+/** Reveal machines linked to a collection — the ones a new mint into it joins. */
+const kLinked = (collection: string) => `${P}:linked:${collection.toLowerCase()}`
+/** Pieces whose artist has turned reveal machines off, as `collection:tokenId`.
+ *  Membership is the exception: every piece is available until its artist says
+ *  otherwise. */
+const K_OPTOUT = `${P}:optout`
+/** Everyone who has curated a reveal machine — the addresses a collect may
+ *  have named as its mint referral, and so the ones the payout run checks. */
+const K_CURATORS = `${P}:curators`
+
+/** Directory of machines, score = createdAt. Write-trimmed like every other
+ *  index in the codebase (cf. MAX_FEATURED, RAFFLE_ENABLED_KEY). */
+const K_INDEX = `${P}:index`
+
+const MAX_MACHINES = 1000
+/** Bounded read AND write-trim for a machine's play log. Far above what any UI
+ *  shows; the claim records themselves are the durable record, this is a feed. */
+const MAX_PLAYS = 5000
+
+// ─── machines ────────────────────────────────────────────────────────────────
+
+export async function getMachine(id: string): Promise<Machine | null> {
+  const raw = await redis.get<Machine | string>(kMachine(id))
+  if (!raw) return null
+  return typeof raw === 'string' ? (JSON.parse(raw) as Machine) : raw
+}
+
+/**
+ * Reserve a machine id and write its record, atomically. Returns false when the
+ * id is already taken.
+ *
+ * SET NX rather than the read-then-write a caller would otherwise do: two
+ * creators submitting the same id in the same instant both pass a `getMachine`
+ * check, and the loser then silently overwrites the winner's machine — creator,
+ * capsule and all — while the winner's pool entries stay behind under the same
+ * id. A machine record is an identity, so claiming one has to be a single
+ * operation, exactly like `createClaim`.
+ */
+export async function createMachine(m: Machine): Promise<boolean> {
+  const won = await redis.set(kMachine(m.id), JSON.stringify(m), { nx: true })
+  if (won !== 'OK') return false
+  await redis
+    .multi()
+    .zadd(K_INDEX, { score: m.createdAt, member: m.id })
+    .zremrangebyrank(K_INDEX, 0, -(MAX_MACHINES + 1))
+    .zadd(kCreator(m.creator), { score: m.createdAt, member: m.id })
+    .exec()
+  return true
+}
+
+/** One creator's machines, newest first, in every state. Read from their own
+ *  index rather than filtered out of the global one, so a profile costs reads
+ *  proportional to that creator's machines, not the platform's. */
+export async function listMachinesByCreator(creator: string): Promise<Machine[]> {
+  const ids = (await redis.zrange(kCreator(creator), 0, -1, { rev: true })) as string[]
+  return getMachines(ids)
+}
+
+/** Machine records in the order given, missing or unreadable ones skipped. One
+ *  MGET per 500 ids: Redis bills a command per GET, so reading the list a GET
+ *  at a time cost a command per machine on every page and every "play" tab. */
+async function getMachines(ids: string[]): Promise<Machine[]> {
+  const out: Machine[] = []
+  for (let i = 0; i < ids.length; i += 500) {
+    const raws = await redis.mget<(Machine | string | null)[]>(...ids.slice(i, i + 500).map(kMachine))
+    for (const raw of raws) {
+      if (!raw) continue
+      try {
+        out.push(typeof raw === 'string' ? (JSON.parse(raw) as Machine) : raw)
+      } catch {
+        continue
+      }
+    }
+  }
+  return out
+}
+
+/** Atomic compare-and-set, so a stale reservation can be taken over without two
+ *  racing publishes both believing they won. */
+const TAKEOVER_LUA = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`
+
+/**
+ * Claim a capsule token for a machine. False when another EXISTING machine holds
+ * it, whatever state that machine is in.
+ *
+ * A bare SET NX would be correct only if every reservation outlived the request
+ * that took it. It does not: the publish path reserves the capsule and then
+ * creates the machine, so a crash between those two writes left the token
+ * reserved by a machine that does not exist — with no machine record, no admin
+ * surface could target it, and that capsule was unusable forever.
+ *
+ * So a reservation is evidence, not proof: it is honoured only while the machine
+ * it names still exists AND still names this capsule. A reservation pointing at
+ * a vanished machine, or at one that has since moved to another capsule, is
+ * stale and may be taken over — atomically, guarded on the exact holder that was
+ * observed, so two publishes racing to adopt the same stale reservation cannot
+ * both succeed. A machine's LIFECYCLE never makes its reservation stale; see the
+ * body for why delisting in particular must not.
+ */
+export async function reserveCapsule(
+  collection: string,
+  tokenId: string,
+  machineId: string,
+): Promise<boolean> {
+  const key = kCapsule(collection, tokenId)
+  if ((await redis.set(key, machineId, { nx: true })) === 'OK') return true
+
+  const holder = await redis.get<string>(key).catch(() => null)
+  if (!holder) {
+    // Vanished between the NX and the read — try once more, cleanly.
+    return (await redis.set(key, machineId, { nx: true })) === 'OK'
+  }
+  if (holder === machineId) return true
+
+  // A reservation is honoured while the machine behind it still EXISTS and
+  // still names this capsule. Nothing else. In particular a `delisted` machine
+  // keeps its token: delisting stops new listings, it does not settle the
+  // capsules people already bought, and those are discharged by plays and
+  // resumes against THAT machine. Handing the token to a successor would make
+  // one capsule mint honourable by two machines — the postdate rule only sets a
+  // lower bound, so any mint landing after the successor opened would satisfy
+  // both — turning one payment into two artworks from two different artists'
+  // pools. Capsule tokens are cheap to mint; a creator whose machine was pulled
+  // opens the next one on a fresh token.
+  //
+  // What DOES get taken over is a true orphan: the publish that wrote this key
+  // and then died before `createMachine` (no record at that id), or a key left
+  // pointing at a machine that has since been rebuilt around a different
+  // capsule. Without that, a crash in a one-write window stranded the token
+  // forever, with no machine record for any admin surface to target.
+  const owner = await getMachine(holder).catch(() => null)
+  const live =
+    owner !== null &&
+    !isReveal(owner) &&
+    owner.capsule.collection === collection.toLowerCase() &&
+    owner.capsule.tokenId === tokenId
+  if (live) return false
+
+  const taken = await redis.eval(TAKEOVER_LUA, [key], [holder, machineId]).catch(() => 0)
+  return taken === 1
+}
+
+/** Hand a capsule token back. ONE caller: the publish that reserved the token a
+ *  moment ago and then failed to create its machine, compensating for a write
+ *  that never landed. There is deliberately no lifecycle release — see
+ *  `reserveCapsule` for why a machine keeps its capsule even once delisted.
+ *  Guarded by machineId so a compensating release can never free a reservation
+ *  someone else won. */
+export async function releaseCapsule(
+  collection: string,
+  tokenId: string,
+  machineId: string,
+): Promise<void> {
+  const holder = await redis.get<string>(kCapsule(collection, tokenId)).catch(() => null)
+  if (holder === machineId) await redis.del(kCapsule(collection, tokenId)).catch(() => {})
+}
+
+/** Every state change — a curator's or the creator's — happens under this
+ *  lock, so a withdrawal and an approval racing each other cannot interleave:
+ *  one of them sees the other's result and refuses. */
+export const machineStateLockKey = (id: string): string => `${P}:lock:state:${id}`
+
+export async function setMachineState(id: string, state: MachineState): Promise<Machine | null> {
+  const m = await getMachine(id)
+  if (!m) return null
+  const next: Machine = { ...m, state, ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}) }
+  await redis.set(kMachine(id), JSON.stringify(next))
+  return next
+}
+
+/** How many capsule transactions have been opened on a machine. */
+export async function playCount(machineId: string): Promise<number> {
+  return Number(await redis.zcard(kPlays(machineId))) || 0
+}
+
+/**
+ * Take back a machine that was never on sale, freeing everything it held.
+ *
+ * Only a machine that has NEVER been live — a draft left by a failed publish,
+ * or one still waiting for a curator — and has no recorded play. Every other
+ * machine may have sold capsules, and those are owed for life, which is why
+ * the pledge ledger has no general un-pledge and a capsule stays reserved
+ * through delisting. Here nothing can be owed: play refuses draft and review,
+ * so no capsule was ever honourable on it.
+ *
+ * Record first, resources after. Once the record is gone nothing can approve
+ * or play the machine; a crash after that leaves the capsule reservation and
+ * pledges held by a machine that no longer exists, which over-reserves — the
+ * safe direction — and the reservation is then taken over by the next publish
+ * (reserveCapsule treats a missing holder as stale). Releasing first would
+ * leave, on the same crash, a queued machine a curator could approve with no
+ * supply held for it.
+ */
+export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refused' | 'missing'> {
+  const m = await getMachine(id)
+  if (!m) return 'missing'
+  if (m.listedAt || (m.state !== 'draft' && m.state !== 'review')) return 'refused'
+  if ((await playCount(id)) > 0) return 'refused'
+  const pool = await getPool(id)
+  await redis
+    .multi()
+    .del(kMachine(id))
+    .del(kPool(id))
+    .del(kRemaining(id))
+    .zrem(K_INDEX, id)
+    .zrem(kCreator(m.creator), id)
+    .exec()
+  if (isReveal(m)) {
+    await Promise.all((m.collections ?? []).map((c) => redis.srem(kLinked(c), id).catch(() => 0)))
+    await Promise.all(pool.map((e) => redis.srem(kUses(e.collection, e.tokenId), id).catch(() => 0)))
+    const artists = [...new Set(pool.map((e) => e.artist).filter(Boolean))]
+    await Promise.all(artists.map((a) => redis.srem(kFeaturing(a), id).catch(() => 0)))
+    return 'withdrawn'
+  }
+  await releaseCapsule(m.capsule.collection, m.capsule.tokenId, id)
+  await Promise.all(pool.map((e) => redis.hdel(kCommit(e.collection, e.tokenId), id).catch(() => 0)))
+  return 'withdrawn'
+}
+
+/** Machines newest-first, optionally filtered by state. Bounded read. */
+export async function listMachines(states?: MachineState[]): Promise<Machine[]> {
+  const ids = (await redis.zrange(K_INDEX, 0, MAX_MACHINES - 1, { rev: true })) as string[]
+  const out = await getMachines(ids)
+  return states ? out.filter((m) => states.includes(m.state)) : out
+}
+
+// ─── pool ────────────────────────────────────────────────────────────────────
+
+export async function getPool(id: string): Promise<PoolEntry[]> {
+  const raw = (await redis.hgetall<Record<string, PoolEntry | string>>(kPool(id))) ?? {}
+  const out: PoolEntry[] = []
+  for (const v of Object.values(raw)) {
+    try {
+      out.push(typeof v === 'string' ? (JSON.parse(v) as PoolEntry) : v)
+    } catch {
+      // A corrupt row is skipped rather than thrown: one bad write must not
+      // make an entire machine unplayable, and the entry simply cannot be won.
+      continue
+    }
+  }
+  return out
+}
+
+export async function putPoolEntry(id: string, e: PoolEntry): Promise<void> {
+  const key = entryKey(e)
+  await redis.hset(kPool(id), { [key]: JSON.stringify(e) })
+  // Seed the remaining counter. `-1` is the sentinel for unlimited so the hash
+  // holds a number in every slot and HINCRBY never has to special-case a type.
+  await redis.hset(kRemaining(id), { [key]: e.supply === 0 ? -1 : e.supply })
+}
+
+/** A reveal machine's lineup, written whole. No remaining counters — a reveal
+ *  machine hands out nothing; each piece's own sale is its supply — and an
+ *  entry in each piece's index so its artist can see where it is listed. */
+export async function putLineup(id: string, entries: PoolEntry[]): Promise<void> {
+  if (entries.length === 0) return
+  const fields: Record<string, string> = {}
+  for (const e of entries) fields[entryKey(e)] = JSON.stringify(e)
+  await redis.hset(kPool(id), fields)
+  await Promise.all(entries.map((e) => redis.sadd(kUses(e.collection, e.tokenId), id)))
+  const artists = [...new Set(entries.map((e) => e.artist).filter(Boolean))]
+  await Promise.all(artists.map((a) => redis.sadd(kFeaturing(a), id)))
+}
+
+/** Point each linked collection at its machine, so a mint into it can find
+ *  the machines it joins. */
+export async function linkCollections(id: string, collections: string[]): Promise<void> {
+  await Promise.all(collections.map((c) => redis.sadd(kLinked(c), id)))
+}
+
+/** Reveal machines linked to this collection, any state. */
+export async function machinesLinking(collection: string): Promise<string[]> {
+  return ((await redis.smembers(kLinked(collection))) ?? []).map(String)
+}
+
+/**
+ * Add one newly minted piece to a linked machine's lineup. A full lineup makes
+ * room by dropping its oldest linked piece — so a machine that runs for years
+ * holds its newest work, and hand-picked pieces are never the ones to go. A
+ * lineup of nothing but hand-picked pieces has no room to make, and the piece
+ * is not added. Returns whether it was.
+ */
+export async function joinLineup(id: string, entry: PoolEntry, max: number): Promise<boolean> {
+  const pool = await getPool(id)
+  const key = entryKey(entry)
+  if (pool.some((e) => entryKey(e) === key)) return false
+  const linked = pool
+    .filter((e) => e.linkedAt !== undefined)
+    .sort((a, b) => a.linkedAt! - b.linkedAt! || Number(BigInt(a.tokenId) - BigInt(b.tokenId)))
+  const drop = linked.slice(0, Math.max(0, pool.length - max + 1))
+  if (pool.length - drop.length >= max) return false
+  if (drop.length > 0) {
+    await redis.hdel(kPool(id), ...drop.map(entryKey))
+    await Promise.all(drop.map((e) => redis.srem(kUses(e.collection, e.tokenId), id).catch(() => 0)))
+  }
+  await putLineup(id, [entry])
+  return true
+}
+
+/** Reveal machines whose lineup includes this artist's work, any state. */
+export async function machinesFeaturing(artist: string): Promise<string[]> {
+  return ((await redis.smembers(kFeaturing(artist))) ?? []).map(String)
+}
+
+/** Remaining counts by entry key. `null` = unlimited. Upstash round-trips
+ *  numbers as either number or string (the dual-representation trap
+ *  lib/gateFlags and lib/passTaint.parseUnitCount both guard for), so parse
+ *  defensively and treat anything unreadable as exhausted — the safe direction,
+ *  since it can only withhold a prize, never over-issue one. */
+export async function getRemaining(id: string): Promise<Record<string, number | null>> {
+  const raw = (await redis.hgetall<Record<string, number | string>>(kRemaining(id))) ?? {}
+  const out: Record<string, number | null> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10)
+    out[k] = !Number.isFinite(n) ? 0 : n < 0 ? null : n
+  }
+  return out
+}
+
+/**
+ * Atomically consume one copy. Returns the value AFTER the decrement, so a
+ * negative result means this caller lost a race for the last copy and must roll
+ * forward to another entry. Unlimited entries (sentinel -1) are never
+ * decremented — they cannot be exhausted, and letting HINCRBY run would turn
+ * the sentinel into a meaningless -2, -3, …
+ *
+ * THE OVERSHOOT REPAIR IS PART OF THE CONSUME, NOT THE CALLER'S JOB. HINCRBY is
+ * the only atomic primitive available, so a racer necessarily drives the counter
+ * below zero before it can learn it lost. That value is not merely untidy: −1 is
+ * the UNLIMITED SENTINEL, so an exhausted capped edition left at −1 reads back
+ * from getRemaining as `null` and becomes infinitely drawable — over-issuing past
+ * the artist's consented supply and past the edition's on-chain headroom.
+ *
+ * Repairing here rather than in the caller is what makes it correct: only this
+ * function knows the decrement was ours, and the +1 is unconditional on the
+ * capped path, so N concurrent racers each do exactly one −1 and one +1 and the
+ * counter converges to 0 under every interleaving. The caller must therefore NOT
+ * also release on a lost race — see lib/experience/runDraw.
+ */
+export async function consumeOne(id: string, key: string): Promise<number | null> {
+  const current = await redis.hget<number | string>(kRemaining(id), key)
+  const n = typeof current === 'number' ? current : parseInt(String(current ?? '0'), 10)
+  if (n < 0) return null // unlimited
+  const after = await redis.hincrby(kRemaining(id), key, -1)
+  if (after < 0) {
+    // We took a copy that was not there. Put it back immediately; leaving it
+    // negative aliases the entry onto the unlimited sentinel.
+    await redis.hincrby(kRemaining(id), key, 1).catch(() => {})
+  }
+  return after
+}
+
+/** Give a copy back after a SUCCESSFUL consume — used when a draw is
+ *  decremented but the live authority re-check then rejects the piece, so the
+ *  copy was never actually delivered.
+ *
+ *  Never call this for a lost race: `consumeOne` has already repaired that, and
+ *  a second +1 would mint a copy that does not exist. The `n < 0` guard below
+ *  covers only the unlimited sentinel, which was never decremented. */
+export async function releaseOne(id: string, key: string): Promise<void> {
+  const current = await redis.hget<number | string>(kRemaining(id), key)
+  const n = typeof current === 'number' ? current : parseInt(String(current ?? '0'), 10)
+  if (n < 0) return
+  await redis.hincrby(kRemaining(id), key, 1).catch(() => {})
+}
+
+// ─── claims ──────────────────────────────────────────────────────────────────
+
+/**
+ * The single-flight lock for ONE claim, held by whichever request is working on
+ * it — the play that created it, or a resume finishing it. Both routes draw and
+ * deliver, so either overlapping the other can consume two copies or mint twice
+ * for one capsule. The TTL outlasts the slowest legitimate body (a freeze over a
+ * full pool, every redraw's authority reads, and a delivery whose wait alone is
+ * bounded at 60s); a lock that expired mid-flight would admit exactly the
+ * overlap it exists to stop.
+ */
+export const CLAIM_LOCK_TTL_SECONDS = 180
+export const claimLockKey = (machineId: string, txHash: string, unitIndex: number): string =>
+  `${P}:lock:${machineId}:${txHash.toLowerCase()}:${unitIndex}`
+
+/** Take the claim for one unit of one capsule mint. Returns null when another
+ *  request already holds it — the caller then READS that claim and returns its
+ *  recorded outcome, so a retry is idempotent rather than a second draw.
+ *
+ *  NX with no TTL: an undelivered claim must never expire. Only terminal claims
+ *  are eligible for expiry, and even then we keep them (they are the receipt a
+ *  player can verify against). */
+export async function createClaim(rec: ClaimRecord): Promise<boolean> {
+  const res = await redis.set(kClaim(rec.machineId, rec.txHash, rec.unitIndex), JSON.stringify(rec), {
+    nx: true,
+  })
+  return res === 'OK'
+}
+
+export async function getClaim(
+  machineId: string,
+  txHash: string,
+  unitIndex: number,
+): Promise<ClaimRecord | null> {
+  const raw = await redis.get<ClaimRecord | string>(kClaim(machineId, txHash, unitIndex))
+  if (!raw) return null
+  return typeof raw === 'string' ? (JSON.parse(raw) as ClaimRecord) : raw
+}
+
+/** The claim as a player may see it — the ONE projection both the play and the
+ *  resume routes return, so the two cannot drift (they had: one carried the
+ *  commitment, the other did not). The snapshot and its hash are public — they
+ *  are the receipt — but nothing here exposes the epoch seed, which stays secret
+ *  until its epoch closes. */
+export function publicClaim(c: ClaimRecord) {
+  return {
+    state: c.state,
+    prize: c.prize ?? null,
+    attempt: c.attempt ?? 0,
+    epoch: c.epoch ?? null,
+    commitment: c.commitment ?? null,
+    snapshotHash: c.snapshotHash ?? null,
+    unitIndex: c.unitIndex,
+    pendingReason: c.pendingReason ?? null,
+    txDelivered: c.txDelivered ?? null,
+  }
+}
+
+/** Advance the state machine. The caller holds the claim, so this is a plain
+ *  overwrite rather than a CAS — contention is already excluded by createClaim. */
+export async function advanceClaim(
+  rec: ClaimRecord,
+  patch: Partial<ClaimRecord> & { state: ClaimState },
+): Promise<ClaimRecord> {
+  const next = { ...rec, ...patch }
+  await redis.set(kClaim(rec.machineId, rec.txHash, rec.unitIndex), JSON.stringify(next))
+  return next
+}
+
+/** Log a delivered prize. One member per claim (its transaction and unit), so
+ *  a repeated write re-scores rather than duplicates. Write-trimmed like the
+ *  play feed; never load-bearing — the claim is the record. */
+export async function recordPrize(claim: ClaimRecord): Promise<void> {
+  if (!claim.prize) return
+  const member = JSON.stringify({
+    player: claim.claimant,
+    collection: claim.prize.collection,
+    tokenId: claim.prize.tokenId,
+    txHash: claim.txHash.toLowerCase(),
+    unitIndex: claim.unitIndex,
+  })
+  await redis
+    .multi()
+    .zadd(kPrizes(claim.machineId), { score: Date.now(), member })
+    .zremrangebyrank(kPrizes(claim.machineId), 0, -(MAX_PLAYS + 1))
+    .exec()
+}
+
+export interface PrizeRecord {
+  player: string
+  collection: string
+  tokenId: string
+  txHash: string
+  unitIndex: number
+}
+
+/** How many prizes a machine has delivered, and the latest few. */
+export async function prizesDelivered(machineId: string, n = 5): Promise<{ count: number; recent: PrizeRecord[] }> {
+  const [count, raw] = await Promise.all([
+    redis.zcard(kPrizes(machineId)),
+    redis.zrange(kPrizes(machineId), 0, n - 1, { rev: true }) as Promise<(string | PrizeRecord)[]>,
+  ])
+  const recent: PrizeRecord[] = []
+  for (const r of raw) {
+    try {
+      recent.push(typeof r === 'string' ? (JSON.parse(r) as PrizeRecord) : r)
+    } catch {
+      continue
+    }
+  }
+  return { count: Number(count) || 0, recent }
+}
+
+/** Append to the machine's public play feed. Write-trimmed; never load-bearing
+ *  (the claim record is the durable truth). */
+export async function recordPlay(machineId: string, player: string, txHash: string): Promise<void> {
+  await redis
+    .multi()
+    .zadd(kPlays(machineId), {
+      score: Date.now(),
+      member: `${player.toLowerCase()}:${txHash.toLowerCase()}`,
+    })
+    .zremrangebyrank(kPlays(machineId), 0, -(MAX_PLAYS + 1))
+    .exec()
+    .catch(() => {})
+}
+
+export async function recentPlays(machineId: string, n = 12): Promise<{ player: string; txHash: string }[]> {
+  const raw = (await redis.zrange(kPlays(machineId), 0, Math.max(0, n - 1), { rev: true })) as string[]
+  return raw.map((m) => {
+    const i = m.indexOf(':')
+    return { player: m.slice(0, i), txHash: m.slice(i + 1) }
+  })
+}
+
+/** Claims recorded for a machine by one player — the basis for the "you have an
+ *  unopened capsule" reconciliation, which compares this against the capsules
+ *  the chain says they were minted. */
+export async function playedTxHashes(machineId: string, player: string): Promise<Set<string>> {
+  const raw = (await redis.zrange(kPlays(machineId), 0, MAX_PLAYS - 1, { rev: true })) as string[]
+  const p = player.toLowerCase()
+  const out = new Set<string>()
+  for (const m of raw) {
+    const i = m.indexOf(':')
+    if (m.slice(0, i) === p) out.add(m.slice(i + 1))
+  }
+  return out
+}
+
+// ─── fairness epochs ─────────────────────────────────────────────────────────
+
+/**
+ * The server seed for a machine-epoch, created on first use. Returns the seed
+ * and its commitment.
+ *
+ * SET NX is what makes the commitment honest: the first caller to need this
+ * epoch fixes the seed, and no later call — including one that has already seen
+ * a player's transaction — can replace it. The commitment is published from the
+ * same value, so a seed can never be chosen after the fact to steer an outcome.
+ */
+export async function seedForEpoch(machineId: string, epoch: string): Promise<{ seed: string; commitment: string }> {
+  const key = kSeed(machineId, epoch)
+  const fresh = randomHex(32)
+  const won = await redis.set(key, fresh, { nx: true })
+  const seed = won === 'OK' ? fresh : ((await redis.get<string>(key)) ?? fresh)
+  return { seed, commitment: commitmentFor(seed) }
+}
+
+/**
+ * Open the seeds for this epoch AND the next one, and return both commitments.
+ *
+ * This is the function that makes the commitment meaningful. `seedForEpoch` on
+ * its own is lazy, so the first play of a machine-day would mint the seed AFTER
+ * that player's capsule transaction existed — a commitment published after the
+ * client entropy proves nothing, and is exactly the failure commit–reveal is
+ * supposed to prevent. Calling this from every READ path (the public machine
+ * payload) and at publish means a seed is always in place at least one epoch
+ * before anyone could transact against it.
+ *
+ * Both writes are `SET NX` underneath, so this is idempotent and can be called
+ * on every request: the first caller for an epoch fixes it and no later caller —
+ * including one that has already seen a player's transaction — can replace it.
+ */
+export async function openEpochSeeds(
+  machineId: string,
+  epoch: string,
+): Promise<{ epoch: string; commitment: string; next: { epoch: string; commitment: string } }> {
+  const upcoming = nextEpoch(epoch)
+  const [current, ahead] = await Promise.all([
+    seedForEpoch(machineId, epoch),
+    seedForEpoch(machineId, upcoming),
+  ])
+  return {
+    epoch,
+    commitment: current.commitment,
+    next: { epoch: upcoming, commitment: ahead.commitment },
+  }
+}
+
+/** Public commitment for an epoch without exposing the seed. Returns null when
+ *  the epoch has not been opened yet. */
+export async function commitmentForEpoch(machineId: string, epoch: string): Promise<string | null> {
+  const seed = await redis.get<string>(kSeed(machineId, epoch))
+  return seed ? commitmentFor(seed) : null
+}
+
+/** Reveal a PAST epoch's seed so anyone can recompute its draws. Refuses the
+ *  current epoch: revealing a live seed would make every remaining draw in it
+ *  predictable. */
+export async function revealSeed(machineId: string, epoch: string, currentEpoch: string): Promise<string | null> {
+  if (epoch >= currentEpoch) return null
+  return (await redis.get<string>(kSeed(machineId, epoch))) ?? null
+}
+
+// ─── cross-machine commitment ledger ─────────────────────────────────────────
+
+export async function pledgeSupply(
+  collection: string,
+  tokenId: string,
+  machineId: string,
+  supply: number,
+): Promise<void> {
+  await redis.hset(kCommit(collection, tokenId), { [machineId]: supply })
+}
+
+// There is deliberately NO general releasePledge. Its only caller was the
+// delist transition, where it was wrong — an off-the-shelf machine still owes
+// every capsule it sold, and calling those copies free let a second machine
+// promise them too. A pledge moves only two ways: down by a copy that reached
+// the chain (settleDeliveredCopy), or away entirely with a machine that was
+// never on sale and so owes nothing (withdrawMachine, which carries the guard).
+
+/**
+ * Release ONE copy of a machine's pledge on a piece, once that copy is minted.
+ *
+ * The ledger holds what each machine may still hand out of an edition. Live
+ * headroom (maxSupply − totalMinted) already drops with every delivered copy,
+ * so a pledge that never shrank counted each delivered copy twice: a machine
+ * that had pledged 5 and delivered all 5 still blocked 5 more, and a creator's
+ * next season on the same capped edition was refused for supply that was free.
+ *
+ * At DELIVERY, not at draw: a drawn copy whose mint has not landed is still
+ * owed and still absent from totalMinted, so it must stay reserved. Floored at
+ * zero the same way consumeOne is, which also leaves an unlimited entry's 0
+ * untouched. Not a general un-pledge — it moves only by copies that exist on
+ * chain — and a failed call leaves the pledge high, which over-reserves: the
+ * safe direction.
+ */
+export async function settleDeliveredCopy(
+  machineId: string,
+  piece: { collection: string; tokenId: string },
+): Promise<void> {
+  const key = kCommit(piece.collection, piece.tokenId)
+  const after = await redis.hincrby(key, machineId, -1)
+  if (after < 0) await redis.hincrby(key, machineId, 1).catch(() => {})
+}
+
+/** Every machine that has this piece in its pool: capsule machines from the
+ *  pledge ledger (publish writes a field for every entry, unlimited ones as 0,
+ *  and a delivery only decrements), reveal machines from their own index. */
+export async function machinesUsingPiece(collection: string, tokenId: string): Promise<string[]> {
+  const [pledged, listed] = await Promise.all([
+    redis.hgetall<Record<string, unknown>>(kCommit(collection, tokenId)),
+    redis.smembers(kUses(collection, tokenId)),
+  ])
+  return [...new Set([...Object.keys(pledged ?? {}), ...(listed ?? [])])]
+}
+
+/** Remember a reveal machine's curator for the referral payout run. */
+export async function addCurator(address: string): Promise<void> {
+  await redis.sadd(K_CURATORS, address.toLowerCase())
+}
+
+export async function listCurators(): Promise<string[]> {
+  return ((await redis.smembers(K_CURATORS)) ?? []).map(String)
+}
+
+// ─── availability ────────────────────────────────────────────────────────────
+
+/** Turn reveal machines on or off for a piece. The caller has proved the
+ *  signed-in wallet holds admin on it. */
+export async function setPieceAvailable(collection: string, tokenId: string, available: boolean): Promise<void> {
+  const member = entryKey({ collection, tokenId })
+  if (available) await redis.srem(K_OPTOUT, member)
+  else await redis.sadd(K_OPTOUT, member)
+}
+
+/** Which of these pieces their artists have turned off, as entry keys. One
+ *  round trip for a whole lineup. Throws on a failed read so the caller can
+ *  fail closed. */
+export async function optedOutPieces(pieces: { collection: string; tokenId: string }[]): Promise<Set<string>> {
+  if (pieces.length === 0) return new Set()
+  const keys = pieces.map(entryKey)
+  const flags = await redis.smismember(K_OPTOUT, keys)
+  return new Set(keys.filter((_, i) => Number(flags[i]) === 1))
+}
+
+/** Supply pledged for an edition by machines OTHER than `exceptMachineId`. */
+export async function otherPledges(
+  collection: string,
+  tokenId: string,
+  exceptMachineId: string,
+): Promise<number> {
+  const raw = (await redis.hgetall<Record<string, number | string>>(kCommit(collection, tokenId))) ?? {}
+  let sum = 0
+  for (const [mid, v] of Object.entries(raw)) {
+    if (mid === exceptMachineId) continue
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10)
+    if (Number.isFinite(n) && n > 0) sum += n
+  }
+  return sum
+}
+
+// ─── spark ───────────────────────────────────────────────────────────────────
+
+/** Credit earned by playing. Deliberately NOT a currency: it is denominated in
+ *  plays, redeemable only for artwork in the machine that issued it, and never
+ *  transferable or priced in money — an intermediate currency is the exact
+ *  pattern loot-box regulators flag as opaque conversion. */
+export async function addSpark(machineId: string, player: string, n = 1): Promise<number> {
+  return await redis.incrby(kSpark(machineId, player), n)
+}
+
+export async function getSpark(machineId: string, player: string): Promise<number> {
+  const v = await redis.get<number | string>(kSpark(machineId, player))
+  const n = typeof v === 'number' ? v : parseInt(String(v ?? '0'), 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** Build the frozen snapshot: the pool joined to live remaining counts. This is
+ *  the input the draw is a pure function of, and the exact array whose hash is
+ *  committed into the claim.
+ *
+ *  The two nullish cases here mean OPPOSITE things and must not be conflated:
+ *    - key PRESENT and null  -> unlimited (getRemaining's mapping of the -1
+ *      sentinel). Must stay null: isDrawable treats null as always drawable.
+ *    - key ABSENT            -> we have no counter for this entry at all, which
+ *      is a corrupt or half-written pool. Fail closed at 0 so a missing counter
+ *      can only withhold a prize, never over-issue one.
+ *  A `?? 0` collapses the first into the second, which would make every open
+ *  edition — including the creator floor piece the entire solvency model rests
+ *  on — permanently undrawable, and would report a floor-backed machine as
+ *  undercovered forever. Hence the explicit presence test. */
+export function buildSnapshot(
+  pool: PoolEntry[],
+  remaining: Record<string, number | null>,
+): SnapshotEntry[] {
+  return pool.map((e) => {
+    const key = entryKey(e)
+    const has = Object.prototype.hasOwnProperty.call(remaining, key)
+    return { ...e, remaining: has ? remaining[key] : 0 }
+  })
+}

@@ -29,6 +29,8 @@ import {
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
 import { ModelPreview } from './ModelPreview'
+import { ModelOptimizeBar } from './ModelOptimizeBar'
+import type { OptimizeStep } from '@/lib/media/optimizeModel'
 import { ModelPoseBar } from './ModelPoseBar'
 import { uploadJson } from '@/lib/arweave/uploadJson'
 import { verifyArweaveAvailable } from '@/lib/arweave/verifyAvailable'
@@ -307,6 +309,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     onChange: handleFileChange,
     onDrop: handleDrop,
     clear: clearFile,
+    replace: replaceFile,
   } = useFileUpload({
     maxBytes: 420 * 1024 * 1024,
     onTooLarge: () => toast.error('File too large', { description: 'Maximum file size is 420 MB' }),
@@ -329,6 +332,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // reports "could not capture" until B's own capture lands, which is the
   // safe answer rather than a silently mismatched artwork.
   const [modelPoster, setModelPoster] = useState<File | null>(null)
+  // "Optimize for web" (lib/media/optimizeModel): a 2K texture cap plus
+  // Draco geometry compression, offered on the posed preview. The result
+  // goes back through the same pick gate as any drop, so the preview
+  // remounts and the poster is re-captured from what will actually ship;
+  // the original is kept for a one-tap undo.
+  const [optimizing, setOptimizing] = useState<OptimizeStep | null>(null)
+  const [optimized, setOptimized] = useState<{ file: File; original: File; before: number; after: number } | null>(null)
+  // A ref, not the state above, gates re-entry: state only changes on the
+  // next render, so two clicks in one tick would start two passes.
+  const optimizeRunningRef = useRef(false)
+  const fileRef = useRef(file)
+  fileRef.current = file
   // The backdrop the model is shot on. Baked into the captured JPEG, so it is
   // recorded in the metadata (`kismet_bg`) and replayed by the artwork page's
   // viewer — otherwise tapping "view in 3D" would swap the artist's chosen
@@ -340,16 +355,50 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // a faster second drop supersedes, and warning about a file that never
     // became the media would be a lie. By this point `file` is installed.
     if (file && modelPickRef.current === file && file.size > MODEL_SOFT_WARN_BYTES) {
+      // The figures are the published ones: the Khronos real-time asset
+      // guidelines ("ideally less than 5MB") and model-viewer's maintainer
+      // ("any file >20mb is in the danger zone" on phones).
       toast.warning('Large 3D model', {
-        description: `${formatCfileSize(file.size)} may fail to load on phones — consider Draco compression`,
+        description: `${formatCfileSize(file.size)} — the web guideline is under 5 MB, and over 20 MB often fails on phones. Try "optimize for web" on the preview.`,
       })
     }
+    // An optimized file is only "current" while it is the pick; a different
+    // pick (or an undo) drops the record so the chip never claims a "was".
+    setOptimized((o) => (o && o.file !== file ? null : o))
   }, [file])
   // No explicit reset needed on clear: `file` going null makes this false
   // whatever the ref holds, and the effect above drops the poster. That
   // self-cleaning property is the reason the verdict is compared by identity
   // rather than stored as a boolean.
   const isModelPick = !!file && modelPickRef.current === file
+  async function optimizeModelPick() {
+    const source = file
+    if (!source || !isModelPick || optimizeRunningRef.current) return
+    optimizeRunningRef.current = true
+    setOptimizing('reading')
+    try {
+      const { optimizeGlb } = await import('@/lib/media/optimizeModel')
+      const result = await optimizeGlb(source, { onStep: setOptimizing })
+      // The artist picked something else while this ran: discard, never install.
+      if (fileRef.current !== source) return
+      if (result.unchanged) {
+        toast('Already compact', { description: 'No smaller version could be produced.' })
+        return
+      }
+      replaceFile(result.file)
+      setOptimized({ file: result.file, original: source, before: result.before, after: result.after })
+      toast.success('Optimized for web', {
+        description: `${formatCfileSize(result.before)} \u2192 ${formatCfileSize(result.after)} \u00b7 ${result.applied.join(', ')}`,
+      })
+    } catch (err) {
+      toast.error('Could not optimize', {
+        description: err instanceof Error ? err.message : 'Try re-exporting the model as glTF 2.0 binary',
+      })
+    } finally {
+      optimizeRunningRef.current = false
+      setOptimizing(null)
+    }
+  }
   // Verified-upload session caches (see UploadedMediaSession above). Refs,
   // not state: they never drive rendering and must survive across submit
   // attempts. jsonUploadRef maps serialized-JSON content → its uploaded
@@ -1761,6 +1810,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       onError={(msg) => toast.error('3D model', { description: msg })}
                     />
                     <ModelPoseBar value={modelBg} onChange={setModelBg} />
+                    <ModelOptimizeBar
+                      size={file!.size}
+                      busy={optimizing}
+                      optimized={optimized && optimized.file === file ? { before: optimized.before } : null}
+                      onOptimize={() => { void optimizeModelPick() }}
+                      onUndo={() => {
+                        if (!optimized) return
+                        replaceFile(optimized.original)
+                        setOptimized(null)
+                      }}
+                    />
                   </>
                 ) : file?.type.startsWith('video/') ? (
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
@@ -2390,7 +2450,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             const f = e.target.files?.[0] ?? null
             if (!f) return
             if (f.size > CFILE_MAX_BYTES) {
-              toast.error('File too large', { description: 'The limit is 16 MB' })
+              toast.error('File too large', { description: `The limit is ${formatCfileSize(CFILE_MAX_BYTES)}` })
               return
             }
             if (!hasAcceptedCfileExt(f.name)) {

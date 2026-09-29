@@ -63,7 +63,8 @@ const asSpenderCalls = (calls: readonly { to: string; data: string; value: strin
 // pending-revoke queue's hashes/sets/Lua step, and a ZADD log — answered with
 // the base64 wire encoding the real client decodes.
 
-const upstash = createMockUpstash()
+// The watcher index is modelled too, so the drop coordinator can gather watchers.
+const upstash = createMockUpstash({ modelSets: (k) => k.startsWith('kismetart:scout-pending-revoke') || k.startsWith('kismetart:scout-watchers') })
 const { store: redisStore, hashes, sets, zadds } = upstash
 
 // ───────────────────────── mock Base JSON-RPC ─────────────────────────
@@ -213,6 +214,8 @@ const rpcState = {
   mintFee: 0n,
   /** The mock sale's price (RPC `sale` and the app API's sales map). 0 = free. */
   pricePerToken: 0n,
+  /** The mock sale's per-wallet cap. 0 = unlimited. */
+  maxPerAddress: 0n,
   /** Spend already booked in the current period (manager getCurrentPeriod). */
   periodSpend: 0n,
   /** The manager reports the permission revoked (isRevoked true, isValid false). */
@@ -250,7 +253,7 @@ function handleEthCall(to: string, data: Hex): Hex {
       result: {
         saleStart: 0n,
         saleEnd: BigInt(CHAIN_NOW) + 10_000_000n,
-        maxTokensPerAddress: 0n,
+        maxTokensPerAddress: rpcState.maxPerAddress,
         pricePerToken: rpcState.pricePerToken,
         fundsRecipient: '0x0000000000000000000000000000000000000000',
       },
@@ -767,6 +770,145 @@ async function main() {
   const brokeRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
   ok(brokeRun.collected === 0 && captured.length === 0, `an exhausted period allowance attempts nothing (collected ${brokeRun.collected}, submissions ${captured.length}, reason: ${brokeRun.reason})`)
   rpcState.periodSpend = 0n
+  rpcState.pricePerToken = 0n
+
+  // ── 16. A concurrent write between the end-of-run read and its save: the CAS retries onto it ──
+  console.log('\nrunScoutServer — compare-and-set retries onto a concurrent change')
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  let casSeen = 0
+  upstash.setIntercept((cmd) => {
+    if (String(cmd[0]).toUpperCase() === 'EVAL' && String(cmd[1]).includes('== ARGV[1]') && casSeen++ === 0) {
+      const cur = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+      cur.scout.status = 'paused' // a pause lands between the run's re-read and its write
+      redisStore.set(scoutKey, { v: JSON.stringify(cur) })
+    }
+  })
+  captured.length = 0
+  const casRun = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  upstash.setIntercept(null)
+  const afterCas = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  ok(
+    casRun.collected === 2 && casSeen === 2 && afterCas.scout.status === 'paused' && afterCas.usage.itemsThisPeriod === 2,
+    `the first save is refused, the retry merges onto the paused record (CAS attempts ${casSeen}, status ${afterCas.scout.status}, items ${afterCas.usage.itemsThisPeriod})`,
+  )
+
+  // ── 17. Allowance boundaries: remaining == cost collects; one wei short does not ──
+  console.log('\nrunScoutServer — allowance boundaries')
+  rpcState.pricePerToken = 1_000_000_000_000_000n
+  const ALLOWANCE = 1_000_000_000_000_000_000n
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.periodSpend = ALLOWANCE - rpcState.pricePerToken // exactly one edition left
+  captured.length = 0
+  const exact = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(
+    exact.collected === 1 && captured.length === 1 && exact.skips?.['insufficient-budget'] === 1,
+    `remaining == cost → exactly one collect, the second is a budget skip (collected ${exact.collected}, skips ${JSON.stringify(exact.skips)})`,
+  )
+  redisStore.clear()
+  redisStore.set(scoutKey, { v: JSON.stringify(record) })
+  rpcState.periodSpend = ALLOWANCE - rpcState.pricePerToken + 1n
+  captured.length = 0
+  const shortOne = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(shortOne.collected === 0 && captured.length === 0, `one wei short of the price → nothing attempted (collected ${shortOne.collected})`)
+  rpcState.periodSpend = 0n
+
+  // ── 18. Multi-edition drops: target, budget, per-wallet cap, atomicity, already held ──
+  console.log('\nrunScoutServer — multi-edition clamps')
+  const editions3 = { ...record, scout: { ...record.scout, policy: { ...record.scout.policy, maxEditionsPerDrop: 3 } } }
+  const mintValue = (i: number) => captured[i]?.calls[captured[i].calls.length - 1]?.value ?? -1n
+  const seed = () => {
+    redisStore.clear()
+    redisStore.set(scoutKey, { v: JSON.stringify(editions3) })
+    captured.length = 0
+  }
+  seed()
+  const three = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(three.collected === 2 && mintValue(0) === 3n * rpcState.pricePerToken, `target 3 on an atomic spender → 3 editions in one op (value ${mintValue(0)})`)
+  seed()
+  rpcState.periodSpend = ALLOWANCE - 2n * rpcState.pricePerToken // budget for two
+  await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(mintValue(0) === 2n * rpcState.pricePerToken, `budget for 2 → quantity clamped to 2 (value ${mintValue(0)})`)
+  rpcState.periodSpend = 0n
+  seed()
+  rpcState.maxPerAddress = 2n
+  await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(mintValue(0) === 2n * rpcState.pricePerToken, `per-wallet cap 2 → quantity clamped to 2 (value ${mintValue(0)})`)
+  rpcState.maxPerAddress = 0n
+  seed()
+  await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: { ...mockSpender(), atomic: false } })
+  ok(mintValue(0) === rpcState.pricePerToken, `a non-atomic spender mints 1 per run regardless of target (value ${mintValue(0)})`)
+  seed()
+  rpcState.ownedBalance = 3n
+  const atTarget = await runScoutServer({ owner: USER.toLowerCase(), baseUrl: appUrl, spender: mockSpender() })
+  ok(
+    atTarget.collected === 0 && captured.length === 0 && atTarget.skips?.['already-collected'] === 2 && !/failed/.test(atTarget.reason ?? ''),
+    `already holding the target → a plan-level "already collected" skip, no attempt, no failure (reason: ${atTarget.reason}, skips ${JSON.stringify(atTarget.skips)})`,
+  )
+  rpcState.ownedBalance = 0n
+  rpcState.pricePerToken = 0n
+
+  // ── 19. Lock store down: the choke point proceeds (the on-chain allowance still bounds it) ──
+  console.log('\ncollectViaSpendPermission — lock store down')
+  upstash.setFailing(true)
+  captured.length = 0
+  const unlocked = await collectViaSpendPermission({ permission: perm(), spender: mockSpender(), recipient: USER, item: freeItem(9n) })
+  upstash.setFailing(false)
+  ok(unlocked.txHash === '0xabc' && captured.length === 1, 'with Redis down the collect still submits (no lock, allowance-bounded)')
+
+  // ── 20. Drop coordinator: watchers gathered, round-robin, live controls, one-shot ──
+  console.log('\ndropCoordinator — fan-out across watchers')
+  const recB = { ...record, scout: { ...record.scout, id: OTHER.toLowerCase(), owner: OTHER.toLowerCase() }, permission: perm({ account: OTHER }) }
+  const otherKey = `kismetart:scout:${OTHER.toLowerCase()}`
+  const seedDrop = (otherRecord: unknown) => {
+    redisStore.clear()
+    hashes.clear()
+    sets.clear()
+    collectPosts.length = 0
+    captured.length = 0
+    zadds.length = 0
+    redisStore.set(scoutKey, { v: JSON.stringify(record) })
+    redisStore.set(otherKey, { v: JSON.stringify(otherRecord) })
+    sets.set(`kismetart:scout-watchers:${ARTIST.toLowerCase()}`, new Set([USER.toLowerCase(), OTHER.toLowerCase()]))
+    redisStore.set(`kismetart:fc:fid-by-addr:${ARTIST.toLowerCase()}`, { v: '' }) // no Farcaster siblings, resolved offline
+  }
+  rpcState.pricePerToken = 1_000_000_000_000_000n
+  seedDrop(recB)
+  const coord = await runDropCoordination({ collection: COLLECTION, tokenId: '1', creator: ARTIST }, appUrl, async () => mockSpender())
+  ok(
+    coord.watchers === 2 && coord.recipients === 2 && coord.collected === 2 && captured.length === 2,
+    `both watchers collect once (watchers ${coord.watchers}, recipients ${coord.recipients}, collected ${coord.collected}, reason ${coord.reason ?? '-'})`,
+  )
+  ok(collectPosts.length === 2 && new Set(collectPosts.map((p) => (p as { account: string }).account)).size === 2, 'one record per watcher, minted to each watcher')
+  const usageA = JSON.parse(redisStore.get(scoutKey)!.v) as typeof record
+  const historyA = JSON.parse(redisStore.get(`kismetart:scout-lastrun:${USER.toLowerCase()}`)?.v ?? 'null') as { collected: number } | null
+  ok(usageA.usage.itemsThisPeriod === 1 && historyA?.collected === 1, 'each watcher’s item counter and run history are bumped')
+  ok(zadds.filter((z) => z.member.includes('agent_collect')).length === 2, 'each watcher gets an agent_collect notice')
+  const again = await runDropCoordination({ collection: COLLECTION, tokenId: '1', creator: ARTIST }, appUrl, async () => mockSpender())
+  ok(again.reason === 'already coordinated', 'a second trigger for the same drop is a no-op (one-shot lock)')
+  seedDrop(recB)
+  const pauseAll = mockSpender(() => {
+    for (const k of [scoutKey, otherKey]) {
+      const cur = JSON.parse(redisStore.get(k)!.v) as typeof record
+      cur.scout.status = 'paused'
+      redisStore.set(k, { v: JSON.stringify(cur) })
+    }
+  })
+  const pausedCoord = await runDropCoordination({ collection: COLLECTION, tokenId: '2', creator: ARTIST }, appUrl, async () => pauseAll)
+  ok(pausedCoord.recipients === 1 && captured.length === 1, `a watcher who paused during the fan-out is not spent for (recipients ${pausedCoord.recipients})`)
+  seedDrop({ ...recB, permission: perm({ account: OTHER, start: nowSec - 400 * 86_400, end: nowSec - 10 }) })
+  const endedCoord = await runDropCoordination({ collection: COLLECTION, tokenId: '2', creator: ARTIST }, appUrl, async () => mockSpender())
+  ok(endedCoord.watchers === 2 && endedCoord.recipients === 1 && captured.length === 1, `a watcher whose grant ended never bids (recipients ${endedCoord.recipients})`)
+  seedDrop(recB)
+  redisStore.set('kismetart:scout-killswitch', { v: '1' })
+  const killedCoord = await runDropCoordination({ collection: COLLECTION, tokenId: '3', creator: ARTIST }, appUrl, async () => mockSpender())
+  ok(killedCoord.reason === 'kill switch engaged' && captured.length === 0, 'the kill switch stops a coordination at entry')
+  redisStore.delete('kismetart:scout-killswitch')
+  const unconfigured = await runDropCoordination({ collection: COLLECTION, tokenId: '4', creator: ARTIST }, appUrl, async () => {
+    throw new Error('no creds')
+  })
+  ok(unconfigured.reason === 'spender unconfigured' && captured.length === 0, 'no spender → nothing spent, reason reported')
   rpcState.pricePerToken = 0n
 
   console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — scout live-behavior: ${passed} passed, ${failed} failed`)
