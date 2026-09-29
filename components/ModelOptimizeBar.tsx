@@ -3,13 +3,6 @@
 import { formatCfileSize } from '@/lib/collectorFileTypes'
 import type { OptimizeStep } from '@/lib/media/optimizeModel'
 
-const STEP_LABEL: Record<OptimizeStep, string> = {
-  reading: 'reading',
-  textures: 'textures',
-  geometry: 'geometry',
-  writing: 'writing',
-}
-
 /**
  * The size chip on a posed 3D preview, with the one action attached to it:
  * "optimize for web" (lib/media/optimizeModel). Shows the live size of what
@@ -36,7 +29,7 @@ export function ModelOptimizeBar({
     >
       <span className="text-ink">{formatCfileSize(size)}</span>
       {busy ? (
-        <span>optimizing… {STEP_LABEL[busy]}</span>
+        <span>optimizing… {busy}</span>
       ) : optimized ? (
         <>
           <span>was {formatCfileSize(optimized.before)}</span>

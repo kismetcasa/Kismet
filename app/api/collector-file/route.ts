@@ -71,8 +71,9 @@ export const runtime = 'nodejs'
 // the http entrypoint) under Server → Proxy → Configuration. Set that with
 // this cap. Chunked uploads mapped onto the 4 MiB chunk store are the
 // follow-up that removes the dependency (COLLECTOR_DOWNLOADS_DESIGN.md,
-// "Cap raise"). Do NOT add a middleware.ts: Next 15.5.5+ buffers a request
-// body clone at most 10 MB when one exists and silently drops the rest.
+// "Cap raise"). Do NOT add a middleware.ts: when one exists, Next 15.5.5+
+// buffers a request-body clone of at most 10 MB (middlewareClientMaxBodySize)
+// and truncates the rest with only a console warning.
 const MAX_CONCURRENT_PUTS = 1
 let activePuts = 0
 

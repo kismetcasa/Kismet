@@ -686,6 +686,32 @@ check('the in-flight request was actually aborted (not left to finish for nobody
   cancelFailures.length >= 1, JSON.stringify(cancelFailures))
 await cancelPage.close()
 
+// ───────── E5. Bytes arrive but are not a model ─────────
+// A GLB that passes the magic check and then fails to parse is the MODEL's
+// fault, not the network's: no gateway walk (another host would serve the
+// same bytes), an explanation naming the model, and the still kept.
+console.log('\nE5. A GLB that downloads but cannot be parsed')
+const broken = await ctx.newPage()
+const brokenRequests = []
+broken.on('request', (r) => { if (r.url().includes('model-txid')) brokenRequests.push(r.url()) })
+await broken.route('**/arweave.net/**', (route) => {
+  const u = route.request().url()
+  if (u.includes('model-txid')) return route.fulfill({ status: 200, contentType: 'model/gltf-binary', body: corrupt })
+  return route.fulfill({ status: 200, contentType: 'image/jpeg', body: POSTER })
+})
+await broken.goto(ART, { waitUntil: 'domcontentloaded' })
+await broken.locator('button:has-text("view in 3D")').click()
+const brokenMsg = broken.locator('text=This 3D model could not be displayed.')
+let brokenShown = true
+try { await brokenMsg.waitFor({ timeout: 30000 }) } catch { brokenShown = false }
+check('a GLB that downloads but cannot be parsed reports the model, not the network', brokenShown)
+check('...no gateway walk for a parse failure (one request; the same bytes would come from any host)',
+  brokenRequests.length === 1, JSON.stringify(brokenRequests))
+check('...the viewer is unmounted and the retry affordance is back',
+  (await broken.locator('model-viewer').count()) === 0 && await broken.locator('button:has-text("retry 3D")').isVisible())
+check('...and the still is still on screen', await broken.locator('img[alt="E2E Cube"]').first().isVisible())
+await broken.close()
+
 // ───────── G. Mint form: "optimize for web" ─────────
 // A textured sphere: ~29k triangles and a 3000px albedo. The pass must
 // shrink it (Draco on the geometry, the texture to 2K), replace the pick
@@ -758,6 +784,66 @@ await opt.waitForTimeout(1500)
 const sizeUndone = await opt.locator('button:has-text("optimize for web")').locator('..').innerText().catch(() => '')
 check('undo restores the original file and size', mb(sizeUndone) === mb(sizeBefore) && !/was/.test(sizeUndone),
   `${JSON.stringify(sizeBefore)} -> ${JSON.stringify(sizeUndone)}`)
+
+// ───────── G2. An already-Draco pick ─────────
+// Take the optimized bytes and pick them again as a fresh file. Three things
+// have to hold: model-viewer renders a Draco model from a plain pick (the
+// self-hosted decoder again, now on the mint preview), a NEW pick clears the
+// "was" record, and the pass reads Draco input — decoder AND encoder — and
+// answers honestly when there is nothing left to shrink.
+console.log('\nG2. Already-Draco pick')
+// Undo installed the original through replace(), which minted a NEW blob:
+// URL — so "src changed since section G" is already true here. Anchor the
+// wait on the src as it is now, or the read-back below grabs the
+// un-optimized bytes (the first run of this section did exactly that).
+const srcAfterUndo = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+await opt.locator('button:has-text("optimize for web")').click()
+await opt.locator('[data-sonner-toast]', { hasText: 'Optimized for web' }).nth(1).waitFor({ timeout: 90000 }).catch(() => {})
+await opt.waitForFunction((prev) => {
+  const mv = document.querySelector('model-viewer')
+  return !!mv && mv.src !== prev && mv.loaded === true
+}, srcAfterUndo, { timeout: 60000 })
+const optimizedSrc = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
+// The preview's blob: URL is the optimized File; read it back out.
+const dracoB64 = await opt.evaluate(async (src) => {
+  const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer())
+  let s = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(s)
+}, optimizedSrc)
+const dracoBuffer = Buffer.from(dracoB64, 'base64')
+check('the optimized bytes read back as a GLB carrying KHR_draco_mesh_compression',
+  dracoBuffer.subarray(0, 4).toString('ascii') === 'glTF' && dracoBuffer.includes('KHR_draco_mesh_compression'))
+await opt.setInputFiles(MEDIA_INPUT, { name: 'already-draco.glb', mimeType: 'model/gltf-binary', buffer: dracoBuffer })
+await opt.waitForFunction((prev) => {
+  const mv = document.querySelector('model-viewer')
+  return !!mv && mv.src !== prev && mv.loaded === true
+}, optimizedSrc, { timeout: 60000 })
+const chipAfterPick = await opt.locator('button:has-text("optimize for web")').locator('..').innerText().catch(() => '')
+check('a Draco model picked directly renders in the preview (self-hosted decoder on the mint path)', true)
+check('a new pick clears the optimized record — the chip offers the pass again, with no "was"',
+  /optimize for web/i.test(chipAfterPick) && !/was/.test(chipAfterPick), JSON.stringify(chipAfterPick))
+// Earlier toasts may still be on screen; count what is there now and wait
+// for one more terminal toast to arrive.
+const toastsBefore = await opt.locator('[data-sonner-toast]').count()
+await opt.locator('button:has-text("optimize for web")').click()
+let settledOk = true
+try {
+  await opt.waitForFunction((n) => {
+    const all = Array.from(document.querySelectorAll('[data-sonner-toast]'))
+    return all.length > n && all.slice(n).some((t) => /Already compact|Optimized for web|Could not optimize/.test(t.textContent || ''))
+  }, toastsBefore, { timeout: 90000 })
+} catch { settledOk = false }
+const newToasts = (await opt.locator('[data-sonner-toast]').allInnerTexts()).slice(toastsBefore)
+const failed = newToasts.some((t) => /Could not optimize/.test(t))
+check('an already-Draco input is read (decoder) and re-written (encoder) without error',
+  settledOk && !failed, newToasts.join(' | ').slice(0, 200))
+// Honest either way: "Already compact" (the usual answer), or a marginally
+// smaller re-encode — but never a claim to have downscaled textures that
+// were already 2K.
+check('...and the answer is honest: nothing left to shrink, or a re-encode that claims no texture work',
+  newToasts.some((t) => /Already compact/.test(t)) || newToasts.some((t) => /Optimized for web/.test(t) && !/downscaled/.test(t)),
+  newToasts.join(' | ').slice(0, 200))
 await opt.close()
 
 // ───────── F. Feed surface: still renders, NO WebGL ─────────

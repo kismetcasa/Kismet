@@ -682,9 +682,10 @@ readout is three honest steps ("connecting", "14% · 4.0 MB of 28.0 MB" or
 bytes alone when the total is unknown, "preparing"), per NN/g's rule that a
 wait past ten seconds needs a percentage or named steps. No WebGL context
 exists until the bytes are in hand. `verify:model-fetch` pins the module
-against a mocked fetch (32 checks); the E2E adds a stalled gateway that the
+against a mocked fetch (39 checks); the E2E adds a stalled gateway that the
 watchdog escapes to the proxy, a failed walk followed by a retry that
-provably re-fetches, and a cancel that provably aborts.
+provably re-fetches, a cancel that provably aborts, and a model that
+downloads but cannot be parsed.
 
 **27. Size guidance and "optimize for web".** The Khronos real-time asset
 guidelines say "ideally less than 5MB", 100k triangles, 1K–2K textures;
@@ -845,6 +846,164 @@ file now (`.gb`/`.gbc`, COLLECTOR_DOWNLOADS_DESIGN.md), so the concept ships
 without a zip.
 
 ---
+
+## 16. Line-by-line audit — fourth round, pre-merge (2026-09-29)
+
+Every line the branch adds or changes, read against one question: what
+evidence shows it earns its keep? Evidence classes: **V** a named check in a
+`verify:*` suite (`verify:model-fetch` 39, `verify:model-media` 62,
+`verify:collector-file`); **E** a named assertion in the browser E2E
+(`scripts/e2e/model-media.mjs`, run against a production build); **H** a
+result from the standalone harness recorded in "The artist's fourth round";
+**S** a primary source read first-hand this round (file and line where it
+matters). "Reasoned" means the line is justified by an argument and is not
+independently exercised — each such line is listed so the reader can weigh
+it. Anything that had no evidence and no argument was removed in this pass;
+those are listed at the end.
+
+### lib/media/modelFetch.ts
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| Header comment: the four model-viewer defects | keep | H: harness A/B (50%, zero further events), C (88% jump without Content-Length), failcache (second mount, zero requests, instant error); S: `progress-tracker.js` ("no built-in notion of a time-out"), `CachingGLTFLoader.js` 140–162 (failure cached as empty instance), google/model-viewer#2593, three PR #31276 (`abort()` in r179, unused by model-viewer), Chromium `http_cache_transaction.cc` (20 s cache-lock timeout) |
+| `MODEL_FETCH_STALL_MS = 20 s` | keep | E: "the watchdog gave up on the silent gateway…", "…within the watchdog window (20 s of silence)"; V: "stall: gave up within the watchdog window, not the hard timeout". Sized above arweave.net's ordinary time-to-first-byte and below the proxy's own 30 s header race, so a direct-then-proxy walk costs at most ~50 s |
+| `MODEL_FETCH_TIMEOUT_MS = 5 min` | keep | V: "hard timeout bounds a drip the watchdog would tolerate". Arithmetic in the comment: 30 MB at 1 Mbit/s ≈ 4 min |
+| `MODEL_FETCH_MAX_BYTES = 64 MiB` | keep | V: "declared size over the cap is refused before any byte", "undeclared body over the cap is refused mid-stream". Twice the 30 MB mint cap; metadata can point anywhere |
+| `ModelFetchProgress { loaded, total }` | changed | `attempt` removed — nothing read it (grep: no consumer in components/). V: readout checks use only these two fields |
+| `ModelFetchFailure` (six kinds) | keep | each kind produced by a check: http (V3, V5, V11), stall (V5–V7), timeout (V8), too-large (V9a, V9b), not-glb (V4, V4b, V11), network (V "a fetch that throws is a network failure", "a response with no body is a network failure") |
+| `ModelFetchError` | keep | V5, V11 (`instanceof`, `attempts` order) |
+| `describeModelFetchFailure` | keep | V5 ("taking too long"), V9a ("too large"), V11 (generic), V12 (too-large wins over a stall) |
+| `isAbortError` | keep | V: DOMException, plain object, Error, null |
+| `FetchModelOptions` | keep | every field driven by a check: onProgress (V1), signal (V10a/b), stallMs (V5–V7), timeoutMs (V8), maxBytes (V9b), fetchImpl (all) |
+| loop: pre-aborted signal throws | keep | V10b: "an already-aborted signal throws before any fetch" |
+| per-attempt `AbortController`, `fail()` first-cause-wins | keep (guard reasoned) | V5–V8 exercise `fail()`; the "first cause wins" `if` covers a stall and the hard timeout firing in the same tick — not independently observed, one line |
+| outer-abort listener → aborts the attempt | keep | V10a: "cancel mid-download throws an AbortError", "…does not walk", "…releases the body" |
+| `!res.ok` → http, body cancelled | keep | V3, V11 |
+| Content-Length parse, declared too-large | keep | V9a (also asserts the body was cancelled) |
+| `!res.body` → network | keep | V: "a response with no body is a network failure" |
+| stall armed after headers, re-armed per chunk | keep | V6 (no headers = stall), V7 (mid-body silence = stall), V1 (a healthy trickle never stalls) |
+| first progress event `{0, total}` | keep | V1: "first progress event is 0 of the declared total" |
+| body loop: too-large mid-stream | keep | V9b |
+| 12-byte head + magic check at ≥4 bytes, early cancel | keep | V4 ("HTML body… cancelled early"), V11 (`nope`) |
+| `if (!magicOk)` after a clean end | keep | V4b: "an empty body is recorded as not-glb, not as success" |
+| return `Blob` typed `model/gltf-binary` | changed | result object trimmed to the Blob — `url`, `bytes`, `attempts` had no production reader. V1: size, type, leading magic bytes |
+| catch: outer abort rethrown, own watchdog keeps its reason, else network | keep | V10a; V5–V8; V "a fetch that throws is a network failure" |
+| finally: timers cleared, listener removed, attempt recorded | keep | V5 ("error names both reasons in order" — this is the line the first draft got wrong: a `continue` skipped the record until it moved here), V11 |
+| `modelLoadReadout` | keep | V: connecting, preparing, "14% · 4 MB of 28 MB", "15% · 4.3 MB of 28 MB", "4 MB", clamp at 100% |
+
+### lib/media/gateway.ts — `modelFetchUrls`
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| direct pool first, proxy appended once | keep | V: "walk: direct gateway first, proxy guaranteed last…", "…ipfs walks its pool then the proxy", "…a plain https model has exactly one route"; E2 proves the appended proxy is what rescues a stalled direct gateway |
+| `forceProxy` parameter | removed | no caller passed it; the model is fetched after a tap, client-side, so the SSR hint `videoGatewayUrls` needs has no equivalent here |
+
+### lib/media/modelViewerConfig.ts
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| set `self.ModelViewerElement.{draco,ktx2}…Location` | keep | S: `@google/model-viewer/lib/features/loading.js` 243–246 (constructor re-reads the global, falls back to gstatic); H: decode harness with the static setter requested nothing from `/model-decoders/` and failed against gstatic; E: "the Draco decoder that served was the SELF-HOSTED one, not gstatic" (network-level, 200s for the wrapper and the wasm) |
+| `typeof self === 'undefined'` guard | keep (reasoned) | never hit today — every caller runs after a client-only dynamic import — but it is what makes the helper safe to call from any module, the contract the codebase's other client helpers keep |
+
+### components/MomentModel.tsx
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| doc comment (tap-to-load, owned download, still visible, exit aborts) | keep | E sections C, E, E2–E4 |
+| `phase / message / posterFailed / modelLoaded / download / blobUrl` | keep | each drives a rendered state the E2E observes: idle/retry/error copy (E3), loaded fade (C, E), readout (E, E2), `blob:` src (E) |
+| `abortRef`, `blobUrlRef` | keep | E4 ("the in-flight request was actually aborted"); E ("handed a blob: URL") |
+| `sessionRef` token | keep (reasoned) | E4's "a response arriving after the cancel never mounts a viewer" passes via the abort alone; the token is what would still discard a result that resolved in the same tick as the cancel — not separately observed |
+| `lastProgressAtRef` throttle (~10 renders/s) | keep (reasoned) | not measured: a 30 MB body arrives in ~500–2000 stream chunks and each `setDownload` is a render of the media column; the final event is never dropped (`final` bypasses the throttle) |
+| `urls` memo | keep | V walk checks; the memo rationale is inherited (the helper reads `window.top` and sniffs the UA) |
+| `useAllowsMotion` | keep (pre-existing) | E section D |
+| `releaseBlob`, `cancel` | keep | E4; E "exiting unmounts the viewer" |
+| `activate`: element import ∥ fetch, session check, decoder config, blob URL, phases | keep | E sections C, E, E2, E3, G (decoder network check) |
+| `catch`: `controller.abort()` on an element-import failure | keep (reasoned) | a chunk-load failure is not driven in the E2E; the line stops a 30 MB download from finishing for a viewer that cannot exist |
+| `exit` | changed | three dead resets removed (`message` is only set from an error phase, which has no exit control; `modelLoaded`/`download` are reset by the next `activate` and never read in idle). E: "exiting unmounts the viewer…", E4 "cancel returns to the idle affordance immediately" |
+| unmount effect → `cancel()` | keep (reasoned) | navigation mid-download is not driven; one line, releases the fetch and the blob |
+| `attach`: revoke the blob URL on `load` | keep | S: `model-viewer-base.js` `$updateSource` returns early when `src` is unchanged, so a revoked URL is never re-fetched; E: every post-load assertion in C and E runs with the model still rendered |
+| `attach`: `error` → error phase, blob released | keep | E5: "a GLB that downloads but cannot be parsed reports the model, not the network" |
+| `hasStill` / `onAllError` effect | keep (pre-existing) | unchanged behaviour |
+| still element (image or blur) | keep | E: "the still paints before any tap", centre-pixel checks |
+| wrapper carries `backgroundColor` | keep | E: "…SAME backdrop as the still, carried by the wrapper", "the element itself stays transparent…", centre pixel is the poster during load; H: harness F/G/H |
+| still layer fade on `modelLoaded` | keep | E: "still layer faded once the model painted", "the still fades only AFTER the model paints" |
+| `<model-viewer>` attributes | keep | E: shadow (`shadow-intensity`), lighting (`environment-image`), D (auto-rotate) |
+| readout chip, `whitespace-nowrap` | keep | E: "before any byte the readout says connecting, never a percentage"; screenshot 09 shows the single-line chip |
+| exit/cancel button with two labels | keep | E: "exit control is present and labelled", E: "a cancel control is offered during the download" |
+| idle branch: `view in 3D` / `retry 3D`, message | changed | `disabled={urls.length === 0}` removed — `gatewayUrls` returns `[uri]` for any non-empty string and the parent mounts this component only with a non-empty `modelSrc`, so the condition could never be true. E3: retry copy and message |
+
+### components/ModelOptimizeBar.tsx
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| size chip, busy step, "was … undo", "optimize for web" | keep | E G: chip texts before/after, undo restores; G2: chip cleared by a new pick |
+| `STEP_LABEL` map | removed | an identity map (`reading → 'reading'`) — the step ids are already the copy |
+| `aria-live="polite"` | keep (reasoned) | the chip's text changes while the artist waits; announcing it is the standard for a status region. Not covered by `verify:a11y`, which scans contrast classes only |
+
+### components/MintForm.tsx
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| `replace: replaceFile` from the hook | keep | E G (optimized file installed through the gate), G undo |
+| `optimizing`, `optimized`, `fileRef` | keep (`fileRef` reasoned) | E G/G2 drive the two states; the `fileRef` stale check is the same race the hook guards with its pick token, not driven in the E2E |
+| warning copy citing the guidelines | keep | E G: "a model over 8 MB gets the size warning, citing the published guideline"; S: Khronos guidelines, model-viewer discussion #2716 |
+| effect: `setOptimized(o => …)` drops a stale record | keep | E G2: "a new pick clears the optimized record — the chip offers the pass again, with no 'was'" |
+| `optimizeModelPick` success path and toast | keep | E G: "the pass completes and reports what it did", "…Draco compressed the geometry", "…downscaled to 2K" |
+| `optimizeModelPick` "Already compact" path | keep | E G2: "an already-Draco input is read (decoder) and re-written (encoder) without error, and reported honestly" |
+| `optimizeModelPick` error toast | keep (reasoned) | not driven; the pass throws on a meshopt input and on a malformed export, and the toast is the only place that error can surface |
+| `<ModelOptimizeBar>` wiring | keep | E G, G2 |
+| collector-file toast derived from the constant | keep | V: `formatCfileSize(CFILE_MAX_BYTES) === '64 MB'` |
+
+### hooks/useFileUpload.ts — `replace()`
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| `replace: (f) => void accept(f)` | keep | E G: the optimized file is installed through `accept` (size and magic gate) and the preview remounts on a new `blob:` URL; G undo |
+
+### lib/media/optimizeModel.ts
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| header comment (why textures first, why Draco over meshopt, what is not touched) | keep | S: gltfpack README ("designed to produce output that can be compressed further"), Khronos texture guidance; E G |
+| `OPTIMIZE_MAX_TEXTURE_PX = 2048` | keep | E G: "the 3000px texture was downscaled to 2K"; S: Khronos 1K/2K |
+| `loadScript` | keep (two branches reasoned) | E G: `draco_encoder_wrapper.js` served 200 through this path. The `existing`-tag branch is reachable only when the script loaded but the wasm fetch failed and the artist retries; the `error` branch removes the tag so that retry can succeed. Neither is driven |
+| `loadDracoModule` | changed | the promise-style resolution removed: S: Draco 1.5.7's wrapper calls `onModuleLoaded` (and also returns `.ready`); three's `DRACOLoader.js` 510–517 uses the callback alone, so one path suffices. E G (encoder), G2 (decoder) |
+| `declaredExtensions` | keep, now exported | V peek ×5: reads used+required, empty set for none, header-only, wrong chunk type, truncated chunk |
+| meshopt refusal | keep (reasoned) | no meshopt fixture exists (the encoder is not a dependency); the refusal is the honest answer while no meshopt decoder is shipped |
+| `shrinkTexture` | keep | E G: texture downscaled; the "not smaller → keep original" rule is what makes a canvas PNG re-encode safe |
+| `optimizeGlb` steps: read, textures, dedup+prune, draco, write, header check, size check | keep | E G (smaller, Draco, texture), G2 (already-Draco input, honest result); H: Node dry run (geometry 1.77 MB → 81 KB, round-trip decodes) |
+| `maxTexturePx` option | removed | no caller passed it; the constant is the policy |
+
+### components/ModelPreview.tsx, components/CollectorFileViewer.tsx
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| `configureModelViewerDecoders()` in place of the static setters | keep | E G: the mint preview decodes the optimized (Draco) bytes with the self-hosted decoder; G2: a Draco pick renders directly. The collector viewer is not driven (needs a holder session); it calls the same one-line helper |
+
+### Collector-file cap (lib/collectorFileTypes.ts, lib/collectorFileCore.ts, both routes, CollectorFileManagePanel, .env.example, COLLECTOR_DOWNLOADS_DESIGN.md)
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| `CFILE_MAX_BYTES = 64 MiB` | keep | V: the cap is 64 MiB; sixteen 4 MiB chunks; resident bytes 89,478,544 (~85.3 MiB — the figure the docs cite); S: Upstash 10 MB request / 100 MB record limits, 200 GB/month bandwidth |
+| limit strings derived via `formatCfileSize` | keep | V: `'64 MB'`; the formatter change (no trailing `.0`) pinned with `'13.4 MB'`, `'3 MB'`, `'2 KB'`, `'512 B'` |
+| PUT route deployment note (Traefik 60 s, Coolify flag, no middleware) | keep | S: Traefik commit 240b83b (readTimeout default 60 s, "entire request, including the body"); Coolify `bootstrap/helpers/proxy.php` (traefik:v3.7, no `respondingTimeouts`); coollabsio/coolify#5358 (the 5m flag); Next 15.5.25 `config-shared.js:219` (10485760) and `body-streams.js` 85–99 (ends both streams at the cap, `console.warn` only) |
+| memory comments (~150 MB per slot, ~300 MB for two) | keep | arithmetic: 2.3 × 64 MiB ≈ 147 MB, pinned indirectly by the resident-bytes check |
+| `.env.example` ceiling note | keep | arithmetic: 3 retained versions × ~85 MiB ≈ 256 MiB per artwork against a 512 MiB default |
+
+### lib/arweave/gateways.ts (comment only), public/model-decoders/README.md
+
+| Construct | Verdict | Evidence |
+|---|---|---|
+| second-gateway follow-up note | keep | S: ar.io Wayfinder docs (arweave.net "single point of failure"), ar-io/ar-io-node#882 (429s on turbo-gateway.com). The host itself is NOT added: the file's own rule requires a curl check this sandbox cannot make |
+| encoder provenance | keep | sha256 of the repo's `draco_encoder.wasm` equals `draco3d@1.5.7`'s; E G: both files served 200 |
+
+### Removed by this audit
+
+`ModelFetchProgress.attempt`; the `FetchedModel` result object (the function returns the `Blob`); `modelFetchUrls(uri, forceProxy)`'s second parameter; three dead state resets in `MomentModel.exit`; `disabled={urls.length === 0}` on the idle button; `ModelOptimizeBar`'s identity `STEP_LABEL` map; the promise-style branch in `loadDracoModule`; the `maxTexturePx` option of `optimizeGlb`. Each was a line with neither a reader nor an argument.
+
+### Added by this audit
+
+Checks for the paths that had none: an empty 200 body, a fetch that throws, a response with no body, the readout's one-decimal rendering (`verify:model-fetch`); the GLB JSON-chunk peek (`verify:model-media`); the cap's value, chunk count, resident bytes and copy (`verify:collector-file`); in the E2E, a GLB that downloads but cannot be parsed (E5), and a Draco model picked directly, which also proves a new pick clears the optimized record and the pass survives Draco input (G2).
 
 ## Risk register
 

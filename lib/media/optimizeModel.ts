@@ -78,7 +78,9 @@ function loadScript(src: string): Promise<void> {
 /**
  * Load an Emscripten module the way three's DRACOLoader does: the wrapper
  * script defines a global factory, we fetch the wasm ourselves and hand it
- * over as `wasmBinary` so the wrapper never has to locate a file. Memoized:
+ * over as `wasmBinary` so the wrapper never has to locate a file, and the
+ * module arrives through `onModuleLoaded` (the callback three uses; Draco
+ * 1.5.7's wrapper also returns a promise, but one path is enough). Memoized:
  * the encoder is ~420 KB and one page load needs it at most once.
  */
 const modules = new Map<string, Promise<unknown>>()
@@ -95,18 +97,7 @@ function loadDracoModule(global: 'DracoEncoderModule' | 'DracoDecoderModule', wr
       ])
       const factory = (globalThis as unknown as Record<string, EmscriptenFactory | undefined>)[global]
       if (typeof factory !== 'function') throw new Error(`${global} did not define itself`)
-      // Both module styles: newer Emscripten builds return a promise, older
-      // ones call `onModuleLoaded`. Whichever fires first resolves.
-      return new Promise<unknown>((resolve, reject) => {
-        try {
-          const result = factory({ wasmBinary, onModuleLoaded: resolve }) as { then?: unknown } | undefined
-          if (result && typeof result.then === 'function') {
-            void (result as Promise<unknown>).then(resolve, reject)
-          }
-        } catch (err) {
-          reject(err)
-        }
-      })
+      return new Promise<unknown>((resolve) => factory({ wasmBinary, onModuleLoaded: resolve }))
     })().catch((err) => {
       modules.delete(global)
       throw err
@@ -117,8 +108,9 @@ function loadDracoModule(global: 'DracoEncoderModule' | 'DracoDecoderModule', wr
 }
 
 /** The extensions a GLB declares, read from its JSON chunk without a full
- *  parse — cheap, and it decides which decoders are worth loading. */
-function declaredExtensions(bytes: Uint8Array): Set<string> {
+ *  parse — cheap, and it decides which decoders are worth loading. Exported
+ *  for verify:model-media, which pins the chunk offsets. */
+export function declaredExtensions(bytes: Uint8Array): Set<string> {
   const out = new Set<string>()
   if (bytes.length < 20) return out
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -165,9 +157,8 @@ async function shrinkTexture(image: Uint8Array, mime: string, maxPx: number): Pr
 
 export async function optimizeGlb(
   input: File,
-  opts: { maxTexturePx?: number; onStep?: (step: OptimizeStep) => void } = {},
+  opts: { onStep?: (step: OptimizeStep) => void } = {},
 ): Promise<OptimizeResult> {
-  const maxTexturePx = opts.maxTexturePx ?? OPTIMIZE_MAX_TEXTURE_PX
   const step = (s: OptimizeStep) => opts.onStep?.(s)
 
   step('reading')
@@ -203,13 +194,13 @@ export async function optimizeGlb(
   for (const texture of doc.getRoot().listTextures()) {
     const image = texture.getImage()
     if (!image) continue
-    const smaller = await shrinkTexture(image, texture.getMimeType(), maxTexturePx)
+    const smaller = await shrinkTexture(image, texture.getMimeType(), OPTIMIZE_MAX_TEXTURE_PX)
     if (smaller) {
       texture.setImage(smaller)
       shrunk++
     }
   }
-  if (shrunk > 0) applied.push(`${shrunk} texture${shrunk === 1 ? '' : 's'} downscaled to ${maxTexturePx}px`)
+  if (shrunk > 0) applied.push(`${shrunk} texture${shrunk === 1 ? '' : 's'} downscaled to ${OPTIMIZE_MAX_TEXTURE_PX}px`)
 
   step('geometry')
   await doc.transform(dedup(), prune())

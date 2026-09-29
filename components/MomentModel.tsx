@@ -152,7 +152,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
     try {
       // The element definition and the bytes are independent; fetch both at
       // once so the ~475 KB chunk is not serialized behind a 30 MB download.
-      const [, fetched] = await Promise.all([
+      const [, blob] = await Promise.all([
         import('@google/model-viewer'),
         fetchModelBlob(urls, {
           signal: controller.signal,
@@ -179,7 +179,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
       // A fresh blob: URL per attempt. model-viewer caches loads by URL —
       // including failed ones — so the element must never see the same URL
       // twice; and nothing here has touched its cache with a gateway URL.
-      const url = URL.createObjectURL(fetched.blob)
+      const url = URL.createObjectURL(blob)
       blobUrlRef.current = url
       setBlobUrl(url)
       setPhase('active')
@@ -198,12 +198,12 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
     }
   }, [urls, cancel])
 
+  // Only `phase` matters to the idle branch; every per-load state is reset
+  // by the next activate(), and `message` is only ever set from an error
+  // phase, which has no exit control.
   const exit = useCallback(() => {
     cancel()
     setPhase('idle')
-    setMessage(null)
-    setModelLoaded(false)
-    setDownload(null)
   }, [cancel])
 
   // Unmount (navigation, a scrolled-away sticky column) stops the download
@@ -330,8 +330,7 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
         <button
           type="button"
           onClick={activate}
-          disabled={urls.length === 0}
-          className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors disabled:opacity-60"
+          className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors"
         >
           <Box size={13} strokeWidth={1.5} />
           {phase === 'error' ? 'retry 3D' : 'view in 3D'}

@@ -42,7 +42,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (78)
+## What it asserts (88)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -73,13 +73,19 @@ node scripts/e2e/model-media.mjs
   cached a failed load and could never re-fetch).
 - **Cancel** — exiting mid-download aborts the request, returns to idle at
   once, and a response arriving afterwards never mounts a viewer.
+- **Unparseable model** — a GLB that downloads but cannot be parsed reports
+  the model rather than the network, makes no further gateway requests,
+  unmounts the viewer, offers retry, and keeps the still.
 - **Optimize for web** — a textured sphere (~29k tris, 3000px albedo) is
   Draco-compressed and its texture downscaled to 2K, the chip shows the new
   size and what it was, the preview re-loads from the optimized bytes (the
   self-hosted decoder decoding the self-hosted encoder's output), the decoder
   and encoder requests are proven to hit `/model-decoders/` rather than
   gstatic (the static-setter form the app used never held — see
-  `lib/media/modelViewerConfig.ts`), and undo restores the original.
+  `lib/media/modelViewerConfig.ts`), and undo restores the original. Then the
+  optimized bytes are picked again as a fresh file: a Draco model renders
+  directly in the preview, the new pick clears the "was" record, and the pass
+  reads Draco input (decoder and encoder) and answers honestly.
 - **Backdrop** — all three options are offered, the preview renders on the
   artist's colour, switching it changes the render, the swatches meet the
   24px target-size minimum, `transparent` lets the page through the viewer

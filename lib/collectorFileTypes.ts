@@ -71,11 +71,14 @@ export function hasAcceptedCfileExt(name: string): boolean {
   return CFILE_ACCEPT_EXTS.some((ext) => lower.endsWith(ext))
 }
 
-/** One shared B/KB/MB formatter for the card + manage panel + mint form. */
+/** One shared B/KB/MB formatter for the card + manage panel + mint form and
+ *  every limit string derived from CFILE_MAX_BYTES. One decimal, dropped
+ *  when it is zero: "13.4 MB", "3 MB", "64 MB" — never "64.0 MB" in a
+ *  limit message. */
 export function formatCfileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`
 }
 
 /** The public descriptor: display facts only — never storage internals. */

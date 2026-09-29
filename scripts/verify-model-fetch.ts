@@ -131,12 +131,12 @@ const body = glb(10_000)
   const { impl, calls } = mockFetch({ 'a://1': { chunks: split(body, 4), gapMs: 2 } })
   const events: ModelFetchProgress[] = []
   const got = await fetchModelBlob(['a://1', 'a://2'], { fetchImpl: impl, onProgress: (p) => events.push(p) })
-  check('success: one fetch, first url', calls.length === 1 && got.url === 'a://1' && got.attempts === 1)
-  check('success: blob has every byte and the GLB MIME', got.bytes === 10_000 && got.blob.size === 10_000 && got.blob.type === GLB_MIME)
+  check('success: one fetch, the first url, nothing else tried', calls.length === 1 && calls[0] === 'a://1')
+  check('success: blob has every byte and the GLB MIME', got.size === 10_000 && got.type === GLB_MIME)
   check('success: first progress event is 0 of the declared total', events[0]?.loaded === 0 && events[0]?.total === 10_000)
   const monotonic = events.every((e, i) => i === 0 || e.loaded >= events[i - 1].loaded)
   check('success: progress is monotonic and ends at the total', monotonic && events.at(-1)?.loaded === 10_000)
-  check('success: blob bytes start with the glTF magic', new Uint8Array(await got.blob.slice(0, 4).arrayBuffer()).every((b, i) => b === GLB_MAGIC[i]))
+  check('success: blob bytes start with the glTF magic', new Uint8Array(await got.slice(0, 4).arrayBuffer()).every((b, i) => b === GLB_MAGIC[i]))
 }
 
 // ---- 2. No Content-Length: total is null, never a fake percentage ----
@@ -145,14 +145,14 @@ const body = glb(10_000)
   const events: ModelFetchProgress[] = []
   const got = await fetchModelBlob(['a://1'], { fetchImpl: impl, onProgress: (p) => events.push(p) })
   check('no Content-Length: total is null on every event', events.length > 0 && events.every((e) => e.total === null))
-  check('no Content-Length: still succeeds with all bytes', got.bytes === 10_000)
+  check('no Content-Length: still succeeds with all bytes', got.size === 10_000)
 }
 
 // ---- 3. HTTP failure walks to the next url ----
 {
   const { impl, calls } = mockFetch({ 'a://1': { status: 502 }, 'a://2': { chunks: [body] } })
   const got = await fetchModelBlob(['a://1', 'a://2'], { fetchImpl: impl })
-  check('502 on the first url walks to the second', calls.length === 2 && got.url === 'a://2' && got.attempts === 2)
+  check('502 on the first url walks to the second', calls.length === 2 && calls[1] === 'a://2' && got.size === 10_000)
 }
 
 // ---- 4. An HTML landing page is rejected on its first bytes, then walked ----
@@ -160,8 +160,39 @@ const body = glb(10_000)
   const html = new TextEncoder().encode('<!doctype html><html><body>gateway</body></html>'.repeat(40))
   const { impl, calls, cancelled } = mockFetch({ 'a://1': { chunks: split(html, 5), gapMs: 5 }, 'a://2': { chunks: [body] } })
   const got = await fetchModelBlob(['a://1', 'a://2'], { fetchImpl: impl })
-  check('HTML body is not accepted as a model; the walk continues', got.url === 'a://2' && calls.length === 2)
+  check('HTML body is not accepted as a model; the walk continues', calls.length === 2 && got.size === 10_000)
   check('HTML body was cancelled early rather than downloaded whole', cancelled.includes('a://1'))
+}
+
+// ---- 4b. An empty 200 body is not a model either ----
+{
+  const { impl } = mockFetch({ 'a://1': { chunks: [] } })
+  let err: unknown
+  try {
+    await fetchModelBlob(['a://1'], { fetchImpl: impl })
+  } catch (e) {
+    err = e
+  }
+  check('an empty body is recorded as not-glb, not as success', (err as ModelFetchError)?.attempts?.[0]?.failure.kind === 'not-glb')
+}
+
+// ---- 4c. Network-class failures: a throwing fetch, a bodyless response ----
+{
+  const calls: string[] = []
+  const impl: typeof fetch = async (input) => {
+    calls.push(String(input))
+    if (calls.length === 1) throw new TypeError('Failed to fetch')
+    return new Response(null, { status: 200 })
+  }
+  let err: unknown
+  try {
+    await fetchModelBlob(['a://1', 'a://2'], { fetchImpl: impl })
+  } catch (e) {
+    err = e
+  }
+  const kinds = (err as ModelFetchError)?.attempts?.map((a) => a.failure.kind) ?? []
+  check('a fetch that throws is a network failure, and the walk continues', kinds[0] === 'network' && calls.length === 2, JSON.stringify(kinds))
+  check('a response with no body is a network failure', kinds[1] === 'network', JSON.stringify(kinds))
 }
 
 // ---- 5. Headers then silence: the stall watchdog fires and walks ----
@@ -295,13 +326,15 @@ check('describe: too-large wins over a stall elsewhere in the walk',
     { url: 'b', failure: { kind: 'too-large', bytes: 70 * 1024 * 1024 } },
   ]).startsWith('This 3D model is too large'))
 check('readout: connecting before headers', modelLoadReadout(null, false) === 'connecting')
-check('readout: preparing while model-viewer parses', modelLoadReadout({ loaded: 5, total: 5, attempt: 0 }, true) === 'preparing')
+check('readout: preparing while model-viewer parses', modelLoadReadout({ loaded: 5, total: 5 }, true) === 'preparing')
 check('readout: percentage plus bytes when the total is known',
-  modelLoadReadout({ loaded: 4 * 1024 * 1024, total: 28 * 1024 * 1024, attempt: 0 }, false) === '14% · 4.0 MB of 28.0 MB')
+  modelLoadReadout({ loaded: 4 * 1024 * 1024, total: 28 * 1024 * 1024 }, false) === '14% · 4 MB of 28 MB')
+check('readout: a fractional size keeps its one decimal',
+  modelLoadReadout({ loaded: 4.25 * 1024 * 1024, total: 28 * 1024 * 1024 }, false) === '15% · 4.3 MB of 28 MB')
 check('readout: bytes only when the total is unknown — never a fake percentage',
-  modelLoadReadout({ loaded: 4 * 1024 * 1024, total: null, attempt: 0 }, false) === '4.0 MB')
+  modelLoadReadout({ loaded: 4 * 1024 * 1024, total: null }, false) === '4 MB')
 check('readout: never past 100% on a lying Content-Length',
-  modelLoadReadout({ loaded: 200, total: 100, attempt: 0 }, false).startsWith('100%'))
+  modelLoadReadout({ loaded: 200, total: 100 }, false).startsWith('100%'))
 check('isAbortError: recognises DOMException and plain objects, rejects others',
   isAbortError(new DOMException('x', 'AbortError')) && isAbortError({ name: 'AbortError' }) && !isAbortError(new Error('x')) && !isAbortError(null))
 
@@ -312,9 +345,6 @@ const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.strin
 check('walk: direct gateway first, proxy guaranteed last on a top-level page',
   eq(modelFetchUrls('ar://abc'), ['https://arweave.net/abc', '/api/img?u=ar%3A%2F%2Fabc']),
   JSON.stringify(modelFetchUrls('ar://abc')))
-check('walk: proxy-first contexts keep the proxy first and never duplicate it',
-  eq(modelFetchUrls('ar://abc', true), ['/api/img?u=ar%3A%2F%2Fabc', 'https://arweave.net/abc']),
-  JSON.stringify(modelFetchUrls('ar://abc', true)))
 check('walk: ipfs walks its pool then the proxy',
   eq(modelFetchUrls('ipfs://cid'), ['https://ipfs.io/ipfs/cid', 'https://dweb.link/ipfs/cid', '/api/img?u=ipfs%3A%2F%2Fcid']))
 check('walk: a plain https model has exactly one route (the proxy is gateway-only)',

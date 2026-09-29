@@ -93,8 +93,10 @@ export function videoGatewayUrls(uri: string, forceProxy = false): string[] {
  * 30 s header budget and caches immutably, which makes it a genuinely
  * different second route rather than a repeat of the first.
  */
-export function modelFetchUrls(uri: string, forceProxy = false): string[] {
-  const urls = videoGatewayUrls(uri, forceProxy)
+export function modelFetchUrls(uri: string): string[] {
+  // No SSR escape hatch here: the model is fetched after a tap, on the
+  // client, so the context checks inside videoGatewayUrls always run.
+  const urls = videoGatewayUrls(uri)
   if (isProxiable(uri)) {
     const proxy = proxyUrl(uri)
     if (!urls.includes(proxy)) urls.push(proxy)

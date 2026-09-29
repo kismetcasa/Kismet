@@ -62,6 +62,15 @@ when a new version lands — and "playing live with online emu"._
 > magic-checks); the right long-term home is object storage with short-lived
 > links (R2, or OCI Object Storage in-region with the Ampere box) — both
 > remain follow-ups.
+>
+> _Pre-merge audit (2026-09-29):_ the cap's value, its chunk count (16), its
+> resident bytes (89,478,544 — the "~85 MiB") and the copy it renders
+> (`'64 MB'`) are pinned in `verify:collector-file`; the proxy and framework
+> claims above were read first-hand (Traefik commit 240b83b, Coolify
+> `bootstrap/helpers/proxy.php`, Next 15.5.25 `body-streams.js`). The size
+> formatter now drops a zero decimal so limit copy reads "64 MB", never
+> "64.0 MB". Per-construct evidence for the whole branch is in
+> `GLB_3D_VIEWER_DESIGN.md` §16.
 
 > **ROM KINDS (2026-09-02).** `.gb` / `.gbc` are first-class collector-file
 > kinds (`lib/collectorFileTypes`, `lib/collectorFileCore`): detected by the

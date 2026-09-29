@@ -32,6 +32,7 @@ import {
   storedBlobRefs,
   type CfileRecord,
 } from '../lib/collectorFileCore.ts'
+import { CFILE_MAX_BYTES, formatCfileSize } from '../lib/collectorFileTypes.ts'
 
 const COLLECTION = '0x00000000000000000000000000000000000000AB'
 
@@ -281,5 +282,22 @@ assert.equal(
   'nextBlobSeq must survive history trimming (trimmed rows are not the ledger)',
 )
 assert.equal([...storedBlobRefs(record!)].length, CFILE_BYTES_RETENTION, 'churn broke the retention window')
+
+// ---- The cap (2026-09-29: 64 MiB) and the numbers the design doc cites ----
+// Every user-facing limit string derives from the constant through
+// formatCfileSize, so both the value and its rendering are pinned here: a
+// drift in either would change what artists are told or what the ceiling
+// ledger meters, silently.
+assert.equal(CFILE_MAX_BYTES, 64 * 1024 * 1024, 'the per-version cap is 64 MiB')
+assert.equal(cfileChunkCount(CFILE_MAX_BYTES), 16, 'a max-size version is sixteen 4 MiB chunks')
+// 16 chunks × (1 prefix byte + 4·ceil(4 MiB / 3) base64 chars) — the
+// "~85 MiB resident per version" the design doc and the type's comment cite.
+assert.equal(cfileStoredBytes(CFILE_MAX_BYTES), 89_478_544, 'resident bytes at the cap drifted from the documented ~85 MiB')
+assert.ok(cfileStoredBytes(CFILE_MAX_BYTES) / (1024 * 1024) > 85 && cfileStoredBytes(CFILE_MAX_BYTES) / (1024 * 1024) < 86)
+assert.equal(formatCfileSize(CFILE_MAX_BYTES), '64 MB', 'the limit copy renders without a trailing .0')
+assert.equal(formatCfileSize(14_024_484), '13.4 MB', 'fractional sizes keep one decimal')
+assert.equal(formatCfileSize(3 * 1024 * 1024), '3 MB')
+assert.equal(formatCfileSize(2048), '2 KB')
+assert.equal(formatCfileSize(512), '512 B')
 
 console.log('verify-collector-file: all assertions passed')

@@ -29,6 +29,7 @@ import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
 import { checkCoverImage, checkMintMedia } from '../lib/media/mintMedia.ts'
+import { declaredExtensions } from '../lib/media/optimizeModel.ts'
 import {
   DEFAULT_MODEL_BACKGROUND,
   MODEL_BACKGROUNDS,
@@ -262,6 +263,50 @@ check('resolve: text is unaffected',
   resolveMomentMedia({ content: { uri: 'ar://t', mime: 'text/plain' } }).kind === 'text')
 check('resolve: nothing renderable is still `none`',
   resolveMomentMedia({}).kind === 'none')
+
+// ---- optimize: the extension peek that decides which decoders to load ----
+// lib/media/optimizeModel reads a GLB's declared extensions from its JSON
+// chunk (offset 12 = chunk length, 16 = chunk type 'JSON', 20 = payload)
+// before any parser runs — so it can refuse meshopt input honestly and load
+// the Draco decoder only when the input already uses it. The offsets are
+// the glTF 2.0 binary layout; a slip would silently load nothing.
+const glbWithJson = (json: object): Uint8Array => {
+  let payload = new TextEncoder().encode(JSON.stringify(json))
+  if (payload.length % 4) {
+    const padded = new Uint8Array(payload.length + (4 - (payload.length % 4))).fill(0x20)
+    padded.set(payload)
+    payload = padded
+  }
+  const out = new Uint8Array(12 + 8 + payload.length)
+  out.set(GLB_MAGIC)
+  const view = new DataView(out.buffer)
+  view.setUint32(4, 2, true)
+  view.setUint32(8, out.length, true)
+  view.setUint32(12, payload.length, true)
+  view.setUint32(16, 0x4e4f534a, true) // 'JSON'
+  out.set(payload, 20)
+  return out
+}
+{
+  const both = declaredExtensions(glbWithJson({
+    asset: { version: '2.0' },
+    extensionsUsed: ['KHR_draco_mesh_compression', 'KHR_texture_transform'],
+    extensionsRequired: ['EXT_meshopt_compression'],
+  }))
+  check('peek: reads extensionsUsed and extensionsRequired from the JSON chunk',
+    both.has('KHR_draco_mesh_compression') && both.has('KHR_texture_transform') && both.has('EXT_meshopt_compression') && both.size === 3)
+  check('peek: a model with no extensions yields an empty set',
+    declaredExtensions(glbWithJson({ asset: { version: '2.0' } })).size === 0)
+  check('peek: a header-only buffer (no JSON chunk) yields an empty set, not a throw',
+    declaredExtensions(glbBytes(12)).size === 0)
+  const wrongType = glbWithJson({ extensionsUsed: ['KHR_draco_mesh_compression'] })
+  new DataView(wrongType.buffer).setUint32(16, 0x004e4942, true) // 'BIN\0' where JSON should be
+  check('peek: a first chunk that is not JSON yields an empty set',
+    declaredExtensions(wrongType).size === 0)
+  const truncated = glbWithJson({ extensionsUsed: ['KHR_draco_mesh_compression'] }).subarray(0, 30)
+  check('peek: a JSON chunk that claims more bytes than exist yields an empty set',
+    declaredExtensions(truncated).size === 0)
+}
 
 console.log(
   failures === 0

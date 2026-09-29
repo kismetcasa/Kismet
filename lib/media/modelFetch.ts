@@ -52,8 +52,6 @@ export interface ModelFetchProgress {
   loaded: number
   /** Total bytes when the response declared a Content-Length, else null. */
   total: number | null
-  /** 0-based index into `urls` of the attempt reporting. */
-  attempt: number
 }
 
 export type ModelFetchFailure =
@@ -111,31 +109,23 @@ export interface FetchModelOptions {
   fetchImpl?: typeof fetch
 }
 
-export interface FetchedModel {
-  blob: Blob
-  /** The URL that succeeded. */
-  url: string
-  bytes: number
-  /** How many URLs were tried, the successful one included. */
-  attempts: number
-}
-
 function abortError(): DOMException {
   return new DOMException('The 3D model load was cancelled', 'AbortError')
 }
 
 /**
  * Download a GLB, trying each URL in order until one yields a whole, valid
- * body. Per attempt: one fetch with its own AbortController, a stall
- * watchdog reset on every chunk, a hard timeout, a byte cap, and a magic-byte
- * check on the first four bytes (a gateway's HTML landing page must never be
- * handed to model-viewer as a model). A failure records why and moves on; the
- * caller's `signal` aborting stops the walk immediately.
+ * body, and return it as a Blob typed `model/gltf-binary`. Per attempt: one
+ * fetch with its own AbortController, a stall watchdog reset on every chunk,
+ * a hard timeout, a byte cap, and a magic-byte check on the first four bytes
+ * (a gateway's HTML landing page must never be handed to model-viewer as a
+ * model). A failure records why and moves on; the caller's `signal` aborting
+ * stops the walk immediately.
  */
 export async function fetchModelBlob(
   urls: readonly string[],
   opts: FetchModelOptions = {},
-): Promise<FetchedModel> {
+): Promise<Blob> {
   const {
     onProgress,
     signal,
@@ -189,7 +179,7 @@ export async function fetchModelBlob(
       // Headers are in: the connection is real. From here the watchdog
       // measures bytes, not the handshake.
       armStall()
-      onProgress?.({ loaded: 0, total, attempt: i })
+      onProgress?.({ loaded: 0, total })
 
       const reader = res.body.getReader()
       const chunks: Uint8Array[] = []
@@ -224,7 +214,7 @@ export async function fetchModelBlob(
           magicOk = true
         }
         chunks.push(value)
-        onProgress?.({ loaded, total, attempt: i })
+        onProgress?.({ loaded, total })
       }
       if (failure) continue
       if (!magicOk) {
@@ -232,7 +222,7 @@ export async function fetchModelBlob(
         failure = { kind: 'not-glb' }
         continue
       }
-      return { blob: new Blob(chunks, { type: GLB_MIME }), url, bytes: loaded, attempts: i + 1 }
+      return new Blob(chunks, { type: GLB_MIME })
     } catch (err) {
       // The caller cancelled: propagate, and do not try another URL.
       if (signal?.aborted) throw signal.reason ?? abortError()
