@@ -213,7 +213,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 Screenshots land in `.e2e/shots/sweep-*.png`. `E2E_CHROMIUM` overrides the
 browser binary.
 
-## What it asserts (51)
+## What it asserts (52)
 
 - **Header** — the button renders once `/api/sweep` answers with a pool; at
   375 px the row does not overflow and the stats block wraps under the toggle
