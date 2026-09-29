@@ -75,7 +75,7 @@ the primary/secondary market toggle, with the stats block pushed to the right
 (`ml-auto`); the row wraps (`flex-wrap`), so on a narrow phone the stats block
 drops under the toggle and the button instead of squeezing all three. It is the
 first thing on the page after the market choice. Styling follows the header's
-own `stats` button (rounded-full, `border-line`, mono uppercase, `hover:border-accent`)
+own `stats` button (rounded-full, `border-line`, mono uppercase, `hover:border-accent/40`)
 but with an accent border and text (`border-accent/40`, `text-accent`) so it
 reads as an action rather than a filter; no icon, no `aria-pressed`. Rendered
 only while `/api/sweep` answers `enabled: true` with a non-empty pool
