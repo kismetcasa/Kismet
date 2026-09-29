@@ -213,7 +213,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 Screenshots land in `.e2e/shots/sweep-*.png`. `E2E_CHROMIUM` overrides the
 browser binary.
 
-## What it asserts (43)
+## What it asserts (51)
 
 - **Header** — the button renders once `/api/sweep` answers with a pool; at
   375 px the row does not overflow and the stats block wraps under the toggle
@@ -236,7 +236,12 @@ browser binary.
   the two reserve rows); re-opening is not a new `sweep_open`.
 - **Needs more ETH** — an empty wallet reads "add ETH, then re-check", the
   footnote counts the rows, the button stays enabled; Escape closes.
-- **Flag off** — after the admin POST the header renders no button.
+- **Flag off** — after the admin POST the header renders no button, and the
+  row and stats block carry their original classes (the two-child layout is
+  byte-identical to before the feature).
+- **Replaced in the wallet** — a cancel replacement (success status, no mint
+  in the receipt) is an error, never "swept": no row marked, nothing
+  recorded; retry re-verifies and the row is back.
 - **Single item** — a lone row is a direct `1155.mint` to the collection with
   the suffix, decodes to `mint(FPSS, 1, 1, [referral], (user, comment))`,
   reaches "swept 1 artwork" and is recorded.

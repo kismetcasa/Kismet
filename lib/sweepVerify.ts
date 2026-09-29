@@ -65,7 +65,7 @@ export const toBasketItem = (r: SweepRow): SweepBasketItem => ({
 export const sumOutlay = (rows: readonly SweepRow[]): bigint => rows.reduce((s, r) => s + r.outlayWei, 0n)
 
 export type Verified =
-  | { ok: true; rows: SweepRow[]; gasCostWei: bigint | null }
+  | { ok: true; rows: SweepRow[]; gasCostWei: bigint }
   | { ok: false; reason: 'rpc' }
 
 /**
@@ -85,7 +85,7 @@ export async function verifyBasket(
   n: number,
 ): Promise<Verified> {
   // Nothing to verify is "nothing to sweep", not a failed read.
-  if (pending.length === 0) return { ok: true, rows: [], gasCostWei: null }
+  if (pending.length === 0) return { ok: true, rows: [], gasCostWei: 0n }
   const refs = pending.map((r) => ({ collection: r.item.address as Address, tokenId: BigInt(r.item.tokenId) }))
   const { items: live, ethBalance } = await fetchEligibleTokensMulti(client, refs, account, 1n)
   // Null balance = the aggregate itself failed (see fetchEligibleTokensMulti):
@@ -182,12 +182,14 @@ export async function verifyBasket(
     basket = [...basket, ...refill]
   }
 
-  // Gas refinement on the final strict bundle: one estimate upper-bounds every
-  // shorter prefix, so shedding never needs a second estimate. Without an
-  // estimate the constant headroom stands in, so the check never silently skips.
+  // Gas on the final STRICT bundle — the exact thing the wallet will be asked
+  // to sign. One estimate upper-bounds every shorter prefix, so shedding never
+  // needs a second one. A bundle that cannot be estimated (an RPC failure, or
+  // one that would revert) is never presented as ready: "could not verify",
+  // and retry re-verifies from the top.
   const gasCostWei = await estimateSweepGasCost(client, account, buildSweepCalls(basket.map(toBasketItem), account))
-  const gasReserve = gasCostWei ?? SWEEP_GAS_HEADROOM_WEI
-  while (basket.length > 0 && ethBalance < sumOutlay(basket) + gasReserve) {
+  if (gasCostWei === null) return { ok: false, reason: 'rpc' }
+  while (basket.length > 0 && ethBalance < sumOutlay(basket) + gasCostWei) {
     unaffordable.push(basket.pop()!)
   }
 

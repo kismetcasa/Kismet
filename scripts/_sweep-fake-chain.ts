@@ -101,6 +101,9 @@ export interface FakeChain {
   simPolicy: ((simulation: number, key: string) => boolean) | null
   /** Drop the last Result from every aggregate3Value answer (a malformed node). */
   simTruncate: boolean
+  /** The next sent transaction is replaced by a wallet-side cancel: mined as a
+   *  0-value self-transfer under a different hash — success status, no mints. */
+  replaceNextWithCancel: boolean
   /** Transactions "mined" by mineTransaction, by hash. */
   receipts: Map<string, Record<string, unknown>>
   txs: Map<string, { from: Address; to: Address; value: bigint; data: Hex }>
@@ -127,6 +130,7 @@ export function createFakeChain(over: Partial<FakeChain> = {}): FakeChain {
     baseFeePerGas: 10_000_000n, // 0.01 gwei — Base-like
     simPolicy: null,
     simTruncate: false,
+    replaceNextWithCancel: false,
     receipts: new Map(),
     txs: new Map(),
     log: [],
@@ -292,6 +296,29 @@ function handleEthCall(chain: FakeChain, call: { to?: string; data?: Hex; value?
 export function mineTransaction(chain: FakeChain, tx: { from: Address; to: Address; value: bigint; data: Hex }): Hex {
   const hash = keccak256(`${tx.data}${tx.from.slice(2)}${numberToHex(chain.txs.size + 1).slice(2)}` as Hex)
   chain.txs.set(hash, tx)
+  if (chain.replaceNextWithCancel) {
+    // The wallet cancelled it: the receipt found under the wallet's hash is the
+    // replacement's (a self-transfer), as viem's wait returns for a replaced tx.
+    chain.replaceNextWithCancel = false
+    const replacement = keccak256(`${hash}ff` as Hex)
+    chain.receipts.set(hash, {
+      blockHash: `0x${'11'.repeat(32)}`,
+      blockNumber: '0x10',
+      contractAddress: null,
+      cumulativeGasUsed: '0x5208',
+      effectiveGasPrice: numberToHex(chain.baseFeePerGas + 1n),
+      from: tx.from,
+      gasUsed: '0x5208',
+      logs: [],
+      logsBloom: `0x${'00'.repeat(256)}`,
+      status: '0x1',
+      to: tx.from,
+      transactionHash: replacement,
+      transactionIndex: '0x0',
+      type: '0x2',
+    })
+    return hash
+  }
   const to = tx.to.toLowerCase()
   // Trailing bytes (an ERC-8021 builder suffix) are ignored by the ABI decoder, as on-chain.
   const mints: { collection: Address; tokenId: bigint; quantity: bigint; recipient: Address; value: bigint; allowFailure: boolean }[] = []

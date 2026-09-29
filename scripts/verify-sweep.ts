@@ -50,11 +50,12 @@ import {
   type SweepCandidate,
   type SweepIndexItem,
 } from '../lib/sweepIndexCore.ts'
-import { MAX_COLLECT_ALL_BATCH, OPEN_EDITION_MINT_SIZE } from '../lib/zoraMint.ts'
+import { MAX_COLLECT_ALL_BATCH, MULTICALL3_ADDRESS, OPEN_EDITION_MINT_SIZE } from '../lib/zoraMint.ts'
 import {
   SWEEP_GAS_HEADROOM_WEI,
   applySimulation,
   buildSweepCalls,
+  countSweepMints,
   sweepBundle,
   sweepSimulationArgs,
   trimToBudget,
@@ -65,9 +66,9 @@ import { SWEEP_INDEX_MAX_AGE_MS, isSweepIndexStale, type SweepResponseItem } fro
 import { fetchEligibleTokensMulti, readMintFeesWithBound } from '../lib/saleConfig.ts'
 import { estimateSweepGasCost, simulateSweep } from '../lib/sweepSimulate.ts'
 import { MAX_SIMULATIONS, pendingRow, verifyBasket, type SweepRow } from '../lib/sweepVerify.ts'
-import { createFakeChain, fakeClient, liveSale, tokenKey } from './_sweep-fake-chain.ts'
+import { createFakeChain, fakeClient, liveSale, mineTransaction, tokenKey } from './_sweep-fake-chain.ts'
 import { FPSS, MINT_1155_ABI, REFERRAL } from './_agent-verify-helpers.ts'
-import { decodeAbiParameters, decodeFunctionData, getAddress, parseAbiParameters, parseEther } from 'viem'
+import { decodeAbiParameters, decodeFunctionData, encodeFunctionData, getAddress, parseAbiParameters, parseEther } from 'viem'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -612,7 +613,7 @@ async function main() {
     check('S7 a real estimate above the headroom sheds rows until outlay + gas fits', v1.ok && v1.gasCostWei === gasCost && rowsOf(v1.rows, 'basket').length < 3 && (rowsOf(v1.rows, 'basket').length === 0 || spike.chain.ethBalance >= rowsOf(v1.rows, 'basket').reduce((s, r) => s + r.outlayWei, 0n) + gasCost))
     const noEst = stage(3, { ethBalance: HEADROOM + three, gas: 'error' })
     const v2 = await verifyBasket(noEst.client, USER, noEst.pending, 3)
-    check('S7 no estimate → the constant headroom stands in (trim already satisfied it)', v2.ok && v2.gasCostWei === null && ids(rowsOf(v2.rows, 'basket')) === '1,2,3')
+    check('S7 a strict bundle that cannot be estimated is never presented as ready ("could not verify")', !v2.ok)
   }
   {
     // S8 — an RPC failure at each step is "could not verify", never an empty basket
@@ -659,6 +660,33 @@ async function main() {
     // interleaves — so the two slots go to two DIFFERENT artists, never X twice.
     const basket = v.ok ? rowsOf(v.rows, 'basket') : []
     check('S11 within one price tier a two-slot basket takes one row from each artist', v.ok && basket.length === 2 && new Set(basket.map((r) => r.item.artist)).size === 2, ids(basket))
+  }
+
+  // ── 11b. countSweepMints: success is the receipt showing the mints ────────
+  console.log('countSweepMints (fake chain receipts)')
+  {
+    const chain = createFakeChain({ now: NOW, ethBalance: ETH })
+    chain.fees.set(COL_A_HEX, FEE)
+    chain.fees.set(COL_B_HEX, FEE)
+    chain.tokens.set(tokenKey(COL_A_HEX, 1n), { sale: liveSale(1_000n) })
+    chain.tokens.set(tokenKey(COL_B_HEX, 2n), { sale: liveSale(2_000n) })
+    const items: SweepBasketItem[] = [
+      { address: COL_A_HEX, tokenId: 1n, priceWei: 1_000n, feeWei: FEE },
+      { address: COL_B_HEX, tokenId: 2n, priceWei: 2_000n, feeWei: FEE },
+    ]
+    const calls = buildSweepCalls(items, USER)
+    const bundle = sweepBundle(calls)
+    const data = encodeFunctionData({ abi: bundle.abi, functionName: bundle.functionName, args: bundle.args })
+    const hash = mineTransaction(chain, { from: USER, to: MULTICALL3_ADDRESS, value: bundle.value, data })
+    const logs = chain.receipts.get(hash)!.logs as Parameters<typeof countSweepMints>[0]
+    check('a mined bundle counts one mint per basket item', countSweepMints(logs, items, USER) === 2)
+    check('logs to another recipient do not count', countSweepMints(logs, items, getAddress('0x00000000000000000000000000000000000000AA')) === 0)
+    check('a basket the receipt does not cover counts 0', countSweepMints(logs, [{ address: COL_A_HEX, tokenId: 9n, priceWei: 1n, feeWei: FEE }], USER) === 0)
+    check('the same log never counts twice', countSweepMints([...logs, ...logs], items, USER) === 2)
+    chain.replaceNextWithCancel = true
+    const cancelled = mineTransaction(chain, { from: USER, to: MULTICALL3_ADDRESS, value: bundle.value, data })
+    const r = chain.receipts.get(cancelled)!
+    check('a wallet-side cancel mines as success with no mints under another hash', r.status === '0x1' && countSweepMints(r.logs as Parameters<typeof countSweepMints>[0], items, USER) === 0 && r.transactionHash !== cancelled)
   }
 
   // ── 12. pool staleness ──────────────────────────────────────────────────

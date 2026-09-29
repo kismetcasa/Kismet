@@ -110,7 +110,10 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 | Situation | Behavior |
 |---|---|
 | Not connected | The sheet opens at once and runs `useEnsureConnected` (host wallet inside Mini App / Coinbase WebView, RainbowKit modal on web); a declined connect leaves it on `connect wallet`, which re-runs the connect |
-| Wrong chain / wallet | `useEnsureBase` prompts the switch; a chain guard runs right before the send (as `useCollectAll`). A wallet **account** switched between verification and the tap is re-verified, never signed for: the ownership, balance and simulation checks were for the other signer |
+| Wrong chain / wallet | Verification is read-only against the Base client, so the wallet is asked to switch only when the user taps sweep (`useEnsureBase`, then a chain guard right before the send, as `useCollectAll`). A wallet **account** switched between verification and the tap is re-verified, never signed for: the ownership, balance and simulation checks were for the other signer |
+| Wallet replaces the pending transaction | Success is the receipt SHOWING the mints (one TransferSingle to the user per row), never `status` alone. A speed-up carries the same mints under a new hash → done, recorded under the hash that mined. A cancel mines nothing → error `The transaction was replaced in the wallet — check it before trying again`, nothing marked swept, nothing recorded |
+| Receipt wait times out (5 min) | Error. The next open checks that hash once before anything can be re-sent: still pending → `Your last sweep is still pending — check your wallet before trying again`; mined → proceeds, and verification excludes whatever it minted (no double mint) |
+| The strict bundle cannot be gas-estimated | Never presented as ready: `Could not verify the sweep on-chain — try again` (an RPC failure or a bundle that would revert), retry re-verifies |
 | Pool empty / index missing | Button hidden; if opened via a stale render, the sheet shows `nothing to sweep right now` with a `re-check` button |
 | Fewer than N eligible after verification | Sheet shows what is available (`sweep 4 for Ξ x`); no error |
 | Exactly 1 eligible | Direct `1155.mint` via `useDirectCollect`'s builder path (keeps `Purchased.sender` = user); the sheet still shows one row |
@@ -516,7 +519,7 @@ N records instead of N fetches of the same receipt.
 
 Four layers, three of them in `npm run check`:
 
-- **`verify:sweep`** (`scripts/verify-sweep.ts`, 157 assertions) — the pure rules
+- **`verify:sweep`** (`scripts/verify-sweep.ts`, 162 assertions) — the pure rules
   (window, supply, admission, ranking incl. the artist-interleave and a property
   sweep, pool cut, serve selection, `clampSweepN`, the Moment projection, the
   bundle builders decoded back to `mint(FPSS, id, 1, [KISMET_REFERRAL], (mintTo,
@@ -529,7 +532,8 @@ Four layers, three of them in `npm run check`:
   `verifyBasket` end to end — live values over index values, every drop reason,
   the balance-trim boundary to the wei, simulation drop + refill, the
   simulation cap, insufficient-funds shedding, the gas refinement, an RPC
-  failure at each step, a malformed node answer — plus the pool staleness rule.
+  failure at each step, a malformed node answer — the receipt-side success
+  test (`countSweepMints`, incl. a wallet-side cancel) and the pool staleness rule.
 - **`verify:sweep-index`** (`scripts/verify-sweep-index.ts`, 25 assertions) —
   `rebuildSweepIndex` on the real modules against the fake chain over HTTP and
   the mock Upstash: every candidate rule, both chain passes, the chunking (200 /
@@ -542,7 +546,7 @@ Four layers, three of them in `npm run check`:
   seeded pool with `n` clamping and the serve-time hide filter → a pool older
   than a day serving empty (`stale: true` on the admin read) → off again with
   the memo invalidated by the write.
-- **`scripts/e2e/sweep.ts`** (43 assertions; a built app, a server and Chromium,
+- **`scripts/e2e/sweep.ts`** (52 assertions; a built app, a server and Chromium,
   so outside `check` — see `scripts/e2e/README.md`) — the button in the
   discover header at 375 px (no overflow, the stats block wraps under) and
   1280 px, the sheet's painted states, the exact transaction the wallet is asked
@@ -550,8 +554,9 @@ Four layers, three of them in `npm run check`:
   ERC-8021 suffix appended), the receipt-driven finish, nine `/api/collect`
   records verified server-side against the same fake chain, the three funnel
   beacons counted once each in Redis, ownership exclusion on the next round,
-  "add ETH, then re-check", the hidden button with the flag off, and the
-  direct-mint path for a single item.
+  "add ETH, then re-check", the hidden button with the flag off (the header's
+  two-child layout byte-identical to before), a wallet-side cancel that must
+  never read as swept, and the direct-mint path for a single item.
 
 Existing checks cover the rest: `typecheck`, `lint`, `verify:a11y` (the
 sheet's text), `check:bundle` (the sheet lazy-loads behind the button).

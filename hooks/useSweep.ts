@@ -15,7 +15,7 @@ import { reportClientError } from '@/lib/clientError'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import { SWEEP_DEFAULT_N, type SweepApiResponse } from '@/lib/sweepIndexCore'
 import { MULTICALL3_ADDRESS, buildEthMintCall } from '@/lib/zoraMint'
-import { buildSweepCalls, sweepBundle } from '@/lib/sweepBatch'
+import { buildSweepCalls, countSweepMints, sweepBundle } from '@/lib/sweepBatch'
 import {
   pendingRow,
   sumOutlay,
@@ -142,6 +142,9 @@ export function useSweep(): UseSweepReturn {
   // confirm() can refuse a basket that was verified for a different wallet.
   const verifiedForRef = useRef<Address | null>(null)
   const nRef = useRef<number>(SWEEP_DEFAULT_N)
+  // A sweep that was sent but never seen mined (the receipt wait timed out).
+  // open() checks it once before anything can be re-sent.
+  const pendingHashRef = useRef<Hash | null>(null)
 
   const open = useCallback(
     async (size: number = SWEEP_DEFAULT_N) => {
@@ -164,6 +167,19 @@ export function useSweep(): UseSweepReturn {
         toast.error('Network unavailable')
         return
       }
+      // Never re-send over a sweep that may still land: one receipt check,
+      // then either proceed (verification excludes whatever it minted) or ask
+      // the user to look at the wallet.
+      if (pendingHashRef.current) {
+        const mined = await publicClient.getTransactionReceipt({ hash: pendingHashRef.current }).catch(() => null)
+        if (seq !== openSeqRef.current) return
+        if (!mined) {
+          setStatus('error')
+          toast.error('Your last sweep is still pending — check your wallet before trying again')
+          return
+        }
+        pendingHashRef.current = null
+      }
 
       let data: SweepApiResponse
       try {
@@ -185,16 +201,8 @@ export function useSweep(): UseSweepReturn {
       setRows(pending)
       setStatus('verifying')
 
-      try {
-        await ensureBase()
-      } catch (err) {
-        if (seq !== openSeqRef.current) return
-        setRows([]) // pending rows would otherwise keep reading "verifying…"
-        setStatus('error')
-        showError(err, false, () => void open(size))
-        return
-      }
-
+      // Verification is read-only against the Base client, so the wallet is
+      // not asked to switch chains until the user actually taps sweep.
       const verified = await verifyBasket(publicClient, account, pending, size)
       if (seq !== openSeqRef.current) return
       if (!verified.ok) {
@@ -207,7 +215,7 @@ export function useSweep(): UseSweepReturn {
       setRows(verified.rows)
       setStatus(verified.rows.some((r) => r.state === 'basket') ? 'ready' : 'empty')
     },
-    [ensureBase, ensureConnected, publicClient, setRows, showError],
+    [ensureConnected, publicClient, setRows],
   )
 
   const remove = useCallback(
@@ -286,25 +294,35 @@ export function useSweep(): UseSweepReturn {
         })
       }
 
+      pendingHashRef.current = hash
       setStatus('confirming')
       toast.loading('Confirming on-chain…', { id: TOAST_ID })
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 300_000 })
+      pendingHashRef.current = null
       if (receipt.status !== 'success') {
         throw new Error('Sweep reverted on-chain — nothing was charged')
+      }
+      // Success is the receipt SHOWING the mints, not its status: a wallet can
+      // replace a pending transaction (a speed-up carries the same mints under
+      // a new hash; a cancel mints nothing), and the receipt returned is the
+      // replacement's. Everything downstream uses the hash that actually mined.
+      const minedHash = receipt.transactionHash
+      if (countSweepMints(receipt.logs, items, account) !== items.length) {
+        throw new Error('The transaction was replaced in the wallet — check it before trying again')
       }
 
       setStatus('recording')
       toast.loading('Finalizing…', { id: TOAST_ID })
-      await Promise.all(basket.map((row) => recordOne(row, account, hash)))
+      await Promise.all(basket.map((row) => recordOne(row, account, minedHash)))
 
       setRows(rowsRef.current.map((r) => (r.state === 'basket' ? { ...r, state: 'swept' } : r)))
       const minted = basket.length
-      setResult({ hash, minted })
+      setResult({ hash: minedHash, minted })
       setStatus('done')
       toast.success(`Swept ${minted} artwork${minted === 1 ? '' : 's'}!`, { id: TOAST_ID })
       trackFunnel('sweep_success')
       ackSuccess()
-      return { hash, minted }
+      return { hash: minedHash, minted }
     } catch (err) {
       setStatus('error')
       showError(err, isRetryAfterRecovery, () => {

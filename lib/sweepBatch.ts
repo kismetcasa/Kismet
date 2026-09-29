@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Address, type Hex } from 'viem'
+import { encodeFunctionData, parseAbi, parseEventLogs, type Address, type Hex, type Log, type RpcLog } from 'viem'
 import { DEFAULT_COLLECT_COMMENT } from './inprocess'
 import { buildEthMintCall, buildMulticall3Batch } from './zoraMint'
 
@@ -118,4 +118,29 @@ export function applySimulation<T>(items: readonly T[], ok: readonly boolean[]):
     else dropped.push(it)
   })
   return { kept, dropped }
+}
+
+const TRANSFER_SINGLE_ABI = parseAbi([
+  'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
+])
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+/**
+ * How many of `items` a receipt actually minted to `account`: one
+ * TransferSingle(0x0 → account, id) emitted by the item's own collection, each
+ * counted once. This is the client's success test — a wallet can replace a
+ * pending transaction (a speed-up carries the same mints under a new hash; a
+ * cancel mints nothing), so `receipt.status` alone is not proof. It is the
+ * same log /api/collect verifies server-side.
+ */
+export function countSweepMints(logs: readonly (Log | RpcLog)[], items: readonly SweepBasketItem[], account: Address): number {
+  const wanted = new Set(items.map((it) => `${it.address.toLowerCase()}:${it.tokenId}`))
+  const seen = new Set<string>()
+  for (const log of parseEventLogs({ abi: TRANSFER_SINGLE_ABI, eventName: 'TransferSingle', logs: [...logs] })) {
+    const { from, to, id } = log.args
+    if (from.toLowerCase() !== ZERO_ADDRESS || to.toLowerCase() !== account.toLowerCase()) continue
+    const key = `${log.address.toLowerCase()}:${id}`
+    if (wanted.has(key)) seen.add(key)
+  }
+  return seen.size
 }

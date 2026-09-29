@@ -47,10 +47,11 @@ function isInsufficientFunds(err: unknown): boolean {
 }
 
 /**
- * Gas cost of the STRICT bundle in wei (gas × maxFeePerGas), or null when the
- * estimate is unavailable — the caller then keeps the constant headroom.
- * Estimated on the strict bundle because that is what gets signed; a smaller
- * prefix of it costs less, so one estimate upper-bounds every trim of it.
+ * Gas cost of the STRICT bundle in wei (gas × maxFeePerGas), or null when it
+ * cannot be estimated — an RPC failure, or a bundle that would revert — which
+ * the caller treats as "could not verify". Estimated on the strict bundle
+ * because that is what gets signed; a smaller prefix of it costs less, so one
+ * estimate upper-bounds every trim of it.
  */
 export async function estimateSweepGasCost(
   client: PublicClient,

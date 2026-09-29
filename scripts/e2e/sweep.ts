@@ -416,9 +416,21 @@ async function main() {
     await sweepBtn.click()
     await dialog.waitFor({ state: 'visible', timeout: 15_000 })
     ok(await until(async () => (await label()) === `sweep 1 for ${formatPrice(outlay(1).toString(), 'eth')}`, 30_000), 'one row: "sweep 1 for …"', await label())
+    // First attempt: the wallet cancels the pending transaction (a 0-value
+    // self-transfer mines under another hash). Status alone would read as
+    // success; the receipt shows no mint, so the sheet must not.
+    chain.replaceNextWithCancel = true
     await primary.click()
     ok(await until(() => wallet.sent.length === 2, 20_000), 'the transaction reaches the wallet')
-    const single = wallet.sent[1]
+    ok(await until(async () => (await label()) === 'retry', 45_000), 'a cancelled replacement is an error, never "swept"', await label())
+    ok(await until(async () => (await page.getByText(/replaced in the wallet/).count()) > 0, 5_000), 'the toast names the replacement')
+    ok((await dialog.getByText(/^swept$/).count()) === 0, 'no row is marked swept')
+    ok([...upstash.store.keys()].filter((k) => k.startsWith('verify:collect:')).length === 9, 'no record was posted for it')
+    await primary.click() // retry → re-verify (the cancel's receipt exists, so nothing is "still pending")
+    ok(await until(async () => (await label()) === `sweep 1 for ${formatPrice(outlay(1).toString(), 'eth')}`, 30_000), 'retry re-verifies and the row is back', await label())
+    await primary.click()
+    ok(await until(() => wallet.sent.length === 3, 20_000), 'the real transaction reaches the wallet')
+    const single = wallet.sent[2]
     ok(single.to.toLowerCase() === COL_A.toLowerCase() && single.value === outlay(1) && single.data.endsWith(SUFFIX), 'a lone item is a direct 1155.mint to the collection (Purchased.sender stays the user), with the builder suffix', { to: single.to, value: single.value })
     try {
       const { functionName, args } = decodeFunctionData({ abi: MINT_1155_ABI, data: single.data.slice(0, single.data.length - SUFFIX.length) as Hex })
@@ -428,7 +440,7 @@ async function main() {
       ok(false, 'the direct mint calldata decodes', String(e))
     }
     ok(await until(async () => /swept 1 artwork\b/.test((await dialog.textContent()) ?? ''), 45_000), 'the sheet reaches "swept 1 artwork"')
-    ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${[...chain.receipts.keys()][1].toLowerCase()}:`)).length === 1, 30_000), 'the record is verified server-side')
+    ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${[...chain.receipts.keys()][2].toLowerCase()}:`)).length === 1, 30_000), 'the record is verified server-side under the mined hash')
 
     ok(pageErrors.length === 0, 'no uncaught page errors during the run', pageErrors)
     console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — sweep browser e2e: ${passed} passed, ${failed} failed`)
