@@ -97,5 +97,9 @@ export function useFileUpload(
       setUrl(null)
       if (inputRef.current) inputRef.current.value = ''
     },
+    /** Install a file produced in code (an optimized re-export, an undo)
+     *  through the SAME size and type gate as a pick, so nothing can bypass
+     *  the checks by arriving programmatically. */
+    replace: (f: File) => { void accept(f) },
   }
 }

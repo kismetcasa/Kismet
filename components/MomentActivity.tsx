@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import Link from 'next/link'
-import { formatRelativeTime, isPlatformCollectComment, normalizeMomentComments, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
+import { formatRelativeTime, isFoldedActivityRow, isPlatformCollectComment, normalizeMomentComments, normalizeTimestampMs, shortAddress, type MomentComment } from '@/lib/inprocess'
 import { fetchCreatorProfilesBatch, invalidateUnresolvedProfiles } from '@/lib/profileCache'
 import { getCachedComments, getCachedCommentsHasMore, setCachedComments } from '@/lib/momentCache'
 import { ProfileAvatar } from './ProfileAvatar'
@@ -22,10 +22,10 @@ import { ProfileAvatar } from './ProfileAvatar'
 // keep it that way — an object/callback prop would silently void it.
 
 // Stable identity for one activity row across paginated fetches. Collect
-// comments and the airdrop rows the route folds onto page 0 share the
-// sender+timestamp space, so `kind` disambiguates. Used as the React key AND
-// for cross-page dedup, so a new collect shifting the newest-first feed can't
-// surface a boundary row twice.
+// comments and the rows the route folds onto page 0 (airdrops, Kismet-
+// recorded collects) share the sender+timestamp space, so `kind`
+// disambiguates. Used as the React key AND for cross-page dedup, so a new
+// collect shifting the newest-first feed can't surface a boundary row twice.
 //
 // Dereferences `sender` unguarded, which is safe for one reason only: every
 // path that turns a response into MomentComment[] goes through
@@ -75,21 +75,22 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
   )
   const [loadingMoreComments, setLoadingMoreComments] = useState(false)
   // Seeded from the shared cache under the same rule fetchComments applies to
-  // a live page 0: a real (non-airdrop) comment row must exist for the offset
-  // cursor to advance past, and the route's hasMore (recorded by the cache
-  // writer — MomentCard's hover-prefetch or a prior visit here) must not have
-  // said "no". An entry whose writer never saw the field (response predates
-  // it) passes the second check and degrades to the old self-terminating
-  // behavior. A cold page-0 fetch overwrites this either way.
+  // a live page 0: a real upstream (non-folded) comment row must exist for
+  // the offset cursor to advance past, and the route's hasMore (recorded by
+  // the cache writer — MomentCard's hover-prefetch or a prior visit here)
+  // must not have said "no". An entry whose writer never saw the field
+  // (response predates it) passes the second check and degrades to the old
+  // self-terminating behavior. A cold page-0 fetch overwrites this either way.
   const [hasMoreComments, setHasMoreComments] = useState(() => {
     const cached = getCachedComments(address, tokenId)
     return (
-      (cached?.some((c) => c.kind !== 'airdrop') ?? false) &&
+      (cached?.some((c) => !isFoldedActivityRow(c)) ?? false) &&
       getCachedCommentsHasMore(address, tokenId) !== false
     )
   })
   // Row offset into inprocess's comment feed for the NEXT page. Excludes the
-  // airdrop rows the route folds onto page 0, and advances by each page's RAW
+  // rows the route folds onto page 0 (airdrops, Kismet-recorded collects —
+  // lib/inprocess isFoldedActivityRow), and advances by each page's RAW
   // returned count (never the deduped/displayed count) so a boundary re-fetch
   // can't stall it. null until page 0 (or a cache-restore load-more) seeds it.
   const commentOffsetRef = useRef<number | null>(null)
@@ -112,17 +113,17 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
         const fetched: MomentComment[] = normalizeMomentComments(data.comments)
         const deduped = dedupeActivity(fetched)
         seenCommentsRef.current = new Set(deduped.map(activityRowKey))
-        // Next page starts after page 0's real comments; airdrop rows live only
+        // Next page starts after page 0's real comments; folded rows live only
         // in Kismet's fold, not inprocess's offset space, so exclude them.
-        commentOffsetRef.current = fetched.filter((c) => c.kind !== 'airdrop').length
+        commentOffsetRef.current = fetched.filter((c) => !isFoldedActivityRow(c)).length
         // More pages exist only when the route's raw-page-length signal says so
         // (hasMore — computed upstream of its hidden-user filter, so a
         // shortened page can't read as feed-end) AND page 0 carries a real
-        // comment for the offset cursor to advance past — an airdrop-only page
+        // comment for the offset cursor to advance past — a folded-only page
         // 0 would refetch offset 0 forever. A response without the field (older
         // route during a deploy) degrades to the any-real-comment heuristic,
         // which load-more self-terminates.
-        const hasMore = fetched.some((c) => c.kind !== 'airdrop') && data.hasMore !== false
+        const hasMore = fetched.some((c) => !isFoldedActivityRow(c)) && data.hasMore !== false
         setHasMoreComments(hasMore)
         setCachedComments(address, tokenId, deduped, hasMore)
         setComments(deduped)
@@ -148,7 +149,7 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
     }
     const seen = seenInit
     const startOffset =
-      commentOffsetRef.current ?? comments.filter((c) => c.kind !== 'airdrop').length
+      commentOffsetRef.current ?? comments.filter((c) => !isFoldedActivityRow(c)).length
     setLoadingMoreComments(true)
     try {
       const params = new URLSearchParams({
@@ -184,13 +185,14 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
         if (fresh.length > 0) {
           setComments((prev) => {
             const next = [...prev, ...fresh]
-            // Airdrop rows are folded onto page 0 only, so a later (older)
-            // comment page can carry rows that belong BELOW an already-shown
-            // airdrop. Re-sort by normalized timestamp — the exact comparator
-            // the route applies to page 0 (lib inprocess normalizeTimestampMs,
-            // `|| 0` NaN guard) — but only when an airdrop is present, so pure-
-            // comment feeds keep inprocess's order untouched and never reflow.
-            if (next.some((c) => c.kind === 'airdrop')) {
+            // Folded rows (airdrops, Kismet-recorded collects) sit on page 0
+            // only, so a later (older) comment page can carry rows that belong
+            // BELOW an already-shown folded row. Re-sort by normalized
+            // timestamp — the exact comparator the route applies to page 0
+            // (lib inprocess normalizeTimestampMs, `|| 0` NaN guard) — but only
+            // when a folded row is present, so pure-comment feeds keep
+            // inprocess's order untouched and never reflow.
+            if (next.some((c) => isFoldedActivityRow(c))) {
               next.sort(
                 (x, y) =>
                   (normalizeTimestampMs(y.timestamp) || 0) -
@@ -296,6 +298,9 @@ function MomentActivityImpl({ address, tokenId, refreshNonce }: Props) {
           // `comment` per collection — "invited to kismet" for the
           // patron/mint-pass collection, "airdropped on kismet"
           // otherwise — so just render it. `sender` is the recipient.
+          // (A folded Kismet-recorded collect carries the collector's own
+          // comment or the platform default, so it takes the collect
+          // branches below like any upstream row.)
           const isAirdrop = c.kind === 'airdrop'
           const isDefault = isPlatformCollectComment(c.comment)
           return (

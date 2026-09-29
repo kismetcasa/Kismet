@@ -5,6 +5,7 @@ import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { serverBaseClient } from '@/lib/rpc'
 import { ERC20_ABI, USDC_BASE, ZORA_ERC20_MINTER, readMintFeeWithBound } from '@/lib/zoraMint'
+import { defaultCollectComment } from '@/lib/inprocess'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getMomentMeta } from '@/lib/notifications'
 import { getDisplayName } from '@/lib/ensCache'
@@ -78,8 +79,12 @@ async function prepareCollect(req: NextRequest, body: PrepareCollectParams, asPa
   const amountNum = Number(body.amount ?? 1)
   const quantity =
     Number.isFinite(amountNum) && amountNum > 0 ? BigInt(Math.min(Math.floor(amountNum), MAX_COLLECT_QUANTITY)) : 1n
-  // Truncate (don't silently drop) an over-long comment.
-  const comment = typeof body.comment === 'string' ? body.comment.slice(0, 1000) : ''
+  // Truncate (don't silently drop) an over-long comment. A blank one takes the
+  // platform default the web client sends — never '': Zora's sale strategies
+  // emit the MintComment event only for a non-empty comment, and In Process
+  // builds its collect feed from that event, so a comment-less mint is a real
+  // sale that never shows a collector in the artwork's activity list.
+  const comment = defaultCollectComment(typeof body.comment === 'string' ? body.comment.slice(0, 1000) : '')
 
   const client = serverBaseClient()
 

@@ -21,6 +21,7 @@ import { redis } from '@/lib/redis'
 import { serverBaseClient, sdkRpcOptions } from '@/lib/rpc'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { readMintFeeWithBound } from '@/lib/zoraMint'
+import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { expandToFidSiblings } from '@/lib/addressUnion'
 import type { BatchCollectItem } from '@/lib/agent/collectBatch'
@@ -267,7 +268,9 @@ export async function runDropCoordination(
       currency,
       pricePerToken: price,
       mintFee,
-      comment: '',
+      // The platform default, never '': an empty comment emits no MintComment
+      // event, so In Process would never list the agent's owner as a collector.
+      comment: DEFAULT_COLLECT_COMMENT,
     }
     try {
       const { txHash, quantity } = await collectViaSpendPermission({ permission: liveRec.permission, spender, recipient: b.owner, item, editionTarget: BigInt(b.target) })

@@ -7,7 +7,9 @@
  * actually served (link, summary, record.getUrl, caps), the on-chain liveness
  * guard on buy, the session-bound scout config lifecycle including turn-off
  * with the revoke queue, and record-by-GET delegating in-process to the
- * on-chain-verified record handler (with its after() work running).
+ * on-chain-verified record handler (with its after() work running) — for a
+ * fresh mint (sale event: ranked, logged, artist notified) and for a mint
+ * older than the idempotency window (backfill: logged, no notice).
  *
  * Needs a build first (`next build`). Run:
  *   node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
@@ -67,6 +69,9 @@ const FILL_TX = `0x${'7c'.repeat(32)}` as Hex
 const REVERTED_TX = `0x${'7d'.repeat(32)}` as Hex
 /** A mint whose TransferSingle goes to OTHER, not USER. */
 const OTHERS_TX = `0x${'7e'.repeat(32)}` as Hex
+/** A mint whose receipt sits in a block 40 days old — past /api/collect's
+ *  30-day idempotency window, so its record is a BACKFILL (lib/collectRecord). */
+const RECORD_TX_OLD = `0x${'7f'.repeat(32)}` as Hex
 const OTHER = getAddress(`0x${'ac'.repeat(20)}`)
 const PRICE = 1_000_000_000_000_000n // 0.001 ETH
 const USDC_PRICE = 5_000_000n // $5
@@ -229,10 +234,23 @@ const MOCK_BLOCK = {
   baseFeePerGas: '0x1',
 }
 
+// The old mint's block: real-clock 40 days ago (the stale rule compares the
+// block time against the server's wall clock, not against CHAIN_NOW).
+const OLD_BLOCK_NUMBER = '0x0f'
+const OLD_BLOCK = {
+  ...MOCK_BLOCK,
+  number: OLD_BLOCK_NUMBER,
+  hash: `0x${'12'.repeat(32)}`,
+  timestamp: `0x${(Math.floor(Date.now() / 1000) - 40 * 24 * 60 * 60).toString(16)}`,
+}
+/** The old tx lands in OLD_BLOCK; every other one in MOCK_BLOCK (CHAIN_NOW). */
+const blockFor = (hash: Hex) => (hash.toLowerCase() === RECORD_TX_OLD ? OLD_BLOCK : MOCK_BLOCK)
+
 function receiptShell(hash: Hex, from: string, to: string, logs: unknown[], status: '0x1' | '0x0' = '0x1') {
+  const block = blockFor(hash)
   return {
-    blockHash: MOCK_BLOCK.hash,
-    blockNumber: '0x10',
+    blockHash: block.hash,
+    blockNumber: block.number,
     contractAddress: null,
     cumulativeGasUsed: '0x5208',
     effectiveGasPrice: '0x1',
@@ -258,8 +276,8 @@ function mockReceipt(hash: Hex, to = USER) {
   return receiptShell(hash, to, COLLECTION, [
     {
       address: COLLECTION,
-      blockHash: MOCK_BLOCK.hash,
-      blockNumber: '0x10',
+      blockHash: blockFor(hash).hash,
+      blockNumber: blockFor(hash).number,
       data: encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [42n, 1n]),
       logIndex: '0x0',
       removed: false,
@@ -299,7 +317,13 @@ function startRpcServer(): Promise<string> {
           if (rpcState.failing) return { jsonrpc: '2.0', id: rpc.id, error: { code: -32000, message: 'mock: chain read failure' } }
           if (rpc.method === 'eth_chainId') return { jsonrpc: '2.0', id: rpc.id, result: '0x2105' }
           if (rpc.method === 'eth_blockNumber') return { jsonrpc: '2.0', id: rpc.id, result: '0x10' }
-          if (rpc.method === 'eth_getBlockByNumber') return { jsonrpc: '2.0', id: rpc.id, result: MOCK_BLOCK }
+          if (rpc.method === 'eth_getBlockByNumber') {
+            // viem sends the minimal hex ('0xf'), the fixture spells '0x0f' —
+            // compare numerically, and let 'latest' fall through to MOCK_BLOCK.
+            const which = String((rpc.params as [string])[0])
+            const isOld = /^0x[0-9a-f]+$/i.test(which) && BigInt(which) === BigInt(OLD_BLOCK_NUMBER)
+            return { jsonrpc: '2.0', id: rpc.id, result: isOld ? OLD_BLOCK : MOCK_BLOCK }
+          }
           if (rpc.method === 'eth_getCode') {
             // Only USER is a deployed smart wallet; anyone else is an EOA.
             const addr = String((rpc.params as [string])[0]).toLowerCase()
@@ -373,6 +397,7 @@ async function main() {
   const upstash = createMockUpstash({ modelSets: (k) => k.startsWith('kismetart:scout-pending-revoke') || k === 'kismetart:hidden-listings' })
   receipts.set(RECORD_TX, mockReceipt(RECORD_TX))
   receipts.set(RECORD_TX2, mockReceipt(RECORD_TX2))
+  receipts.set(RECORD_TX_OLD, mockReceipt(RECORD_TX_OLD))
   receipts.set(OTHERS_TX, mockReceipt(OTHERS_TX, OTHER))
   receipts.set(REVERTED_TX, receiptShell(REVERTED_TX, USER, COLLECTION, [], '0x0'))
   // Cached Farcaster misses, so the gate's sibling expansion never leaves the sandbox.
@@ -951,7 +976,23 @@ async function main() {
     ok(noCurrency.status === 400 && /currency/.test(String(noCurrency.body?.error)), 'a price without its currency is refused (the handler would store it unverified)', noCurrency.body)
     const rec = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX}`)
     ok(rec.status === 200 && rec.body?.ok === true, 'a collect whose receipt shows the TransferSingle is recorded (200 ok)', rec.text.slice(0, 200))
+    ok(rec.body?.backfill === undefined, 'a fresh mint is a sale event, not a backfill', rec.body)
     ok(rec.headers.get('cache-control') === 'private, no-store', 'record response is private, no-store')
+    // The sale's rank and the artwork's activity log are keyed on the mint
+    // itself: the latest-sales member and one deterministic collect-log row
+    // carrying the tx, so the activity list can show the collector even when
+    // In Process has no comment row for the mint.
+    const collectLogKey = `kismetart:collects:moment:${COLLECTION.toLowerCase()}:42`
+    const logRows = () => upstash.zadds.filter((z) => z.key === collectLogKey)
+    ok(
+      upstash.zadds.some((z) => z.key === 'kismetart:trending-latest' && z.member === `${COLLECTION.toLowerCase()}:42`),
+      'the record ranks the piece in latest sales',
+    )
+    ok(
+      logRows().length === 1 && logRows()[0].member.includes(`"txHash":"${RECORD_TX}"`) && logRows()[0].member.includes(`"collector":"${USER.toLowerCase()}"`),
+      "the record appends one row to the artwork's collect log, carrying the tx and the collector",
+      logRows().map((z) => z.member),
+    )
     // after() work (receipt re-verification + the artist's notice) lands
     // asynchronously; poll for it rather than sleeping a fixed time.
     const artistNotices = () => upstash.zadds.filter((z) => z.key === `kismetart:notif:${ARTIST.toLowerCase()}` && z.member.includes('"collect"'))
@@ -974,6 +1015,23 @@ async function main() {
     rpcState.pendingReceipts = 2
     const lagged = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX2}`)
     ok(lagged.status === 200 && rpcState.pendingReceipts === 0, 'a receipt the RPC has not indexed yet is retried in-route until it lands (200)', { status: lagged.status, pending: rpcState.pendingReceipts })
+    // A mint whose block is 40 days old — a pasted record URL for an old
+    // collect, a reconcile, a replay past the expired idempotency lock. It is
+    // real (the receipt proves it), so the durable indexes take it, but it is
+    // not a sale EVENT: no artist notice, and the response says backfill.
+    // Let the lagged record's after() notice land (or be burst-deduped) before
+    // taking the baseline the backfill must not move.
+    await until(() => artistNotices().length >= 2, 1_500)
+    const noticesBefore = artistNotices().length
+    const old = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&amount=1&currency=eth&pricePerToken=${PRICE}&txHash=${RECORD_TX_OLD}`)
+    ok(old.status === 200 && old.body?.ok === true && old.body?.backfill === true, 'a mint older than the idempotency window records as a BACKFILL (200, backfill: true)', old.text.slice(0, 160))
+    ok(
+      logRows().some((z) => z.member.includes(`"txHash":"${RECORD_TX_OLD}"`)),
+      "…its row still lands in the artwork's collect log (the activity list can show it)",
+      logRows().map((z) => z.member),
+    )
+    await until(() => artistNotices().length > noticesBefore, 1_000) // must NOT happen; give it a moment to be sure
+    ok(artistNotices().length === noticesBefore, 'a backfill sends the artist no "collected" notice', { before: noticesBefore, after: artistNotices().length })
     const wrongTx = await json(`/api/agent/record?verb=collect&collection=${COLLECTION}&tokenId=42&account=${USER}&txHash=0x${'99'.repeat(32)}`)
     ok(wrongTx.status === 403 && /not verified/.test(String(wrongTx.body?.error)), 'a tx with no matching receipt is refused by the verified handler (403)', wrongTx.body)
     ok(

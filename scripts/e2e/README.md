@@ -6,7 +6,8 @@ parts of the GLB feature that only exist on screen.
 ## Why this is separate from `npm run check`
 
 The 150px-strip bug (GLB_3D_VIEWER_DESIGN.md, finding 15) passed typecheck,
-lint, the 44-assertion `verify:model-media` oracle **and** the bundle guard.
+lint, the `verify:model-media` oracle (44 assertions at the time) **and** the
+bundle guard.
 None of those render a layout, so none of them could have caught a preview
 that displayed — and captured its poster — at the wrong size. That is the gap
 this file covers, and it is why it asserts pixel geometry and capture output
@@ -29,7 +30,8 @@ UPSTASH_REDIS_REST_URL=http://localhost:6399 \
 UPSTASH_REDIS_REST_TOKEN=stub \
 npx next start -p 3100 &
 
-# 3. Fixtures: a spec-valid glTF 2.0 cube plus a still.
+# 3. Fixtures: a spec-valid glTF 2.0 cube plus a still. The script writes the
+#    rest itself (a zip, a textured sphere, truncated / old-version / corrupt GLBs).
 mkdir -p .e2e && node scripts/e2e/make-glb.mjs .e2e/cube.glb
 node -e "require('sharp')({create:{width:600,height:600,channels:3,background:{r:20,g:120,b:90}}}).jpeg().toFile('.e2e/poster.jpg')"
 
@@ -42,7 +44,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (51)
+## What it asserts (88)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -53,12 +55,39 @@ node scripts/e2e/model-media.mjs
 - **Gate** — a zip, a truncated GLB and a glTF 1.0 binary are each rejected
   with the right copy and leave no preview mounted.
 - **Detail** — the still paints first, no WebGL exists before the tap, tapping
-  mounts exactly one viewer, the still fades only after the model paints,
-  exiting unmounts the viewer and restores the affordance.
+  mounts exactly one viewer, the artist's backdrop sits on the WRAPPER behind
+  the still (never on the element, whose `position: relative` host would paint
+  over it), the still fades only after the model paints, exiting unmounts the
+  viewer and restores the affordance.
 - **Reduced motion** — `auto-rotate` is off under `prefers-reduced-motion` and
   on without it.
-- **Slow load** — the progress readout appears and the still stays visible
-  throughout, so a big model on a slow link never shows an empty box.
+- **Slow load** — before any byte the readout says "connecting" (never a
+  percentage: model-viewer's aggregate tracker used to read "50%" here), no
+  WebGL context exists yet, the still is visible by CENTRE PIXEL (not by CSS
+  opacity, which passed vacuously while an opaque backdrop covered it), a
+  cancel control is offered, the viewer is handed a `blob:` URL, and the still
+  fades only after the model paints.
+- **Stalled gateway** — a gateway that accepts the request and never answers
+  is abandoned by the 20 s watchdog and the walk reaches `/api/img`, which
+  delivers the model; the readout stays honest throughout.
+- **Failed walk, then retry** — every URL is tried, the failure is explained
+  with the still behind it, and "retry 3D" makes NEW requests (model-viewer
+  cached a failed load and could never re-fetch).
+- **Cancel** — exiting mid-download aborts the request, returns to idle at
+  once, and a response arriving afterwards never mounts a viewer.
+- **Unparseable model** — a GLB that downloads but cannot be parsed reports
+  the model rather than the network, makes no further gateway requests,
+  unmounts the viewer, offers retry, and keeps the still.
+- **Optimize for web** — a textured sphere (~29k tris, 3000px albedo) is
+  Draco-compressed and its texture downscaled to 2K, the chip shows the new
+  size and what it was, the preview re-loads from the optimized bytes (the
+  self-hosted decoder decoding the self-hosted encoder's output), the decoder
+  and encoder requests are proven to hit `/model-decoders/` rather than
+  gstatic (the static-setter form the app used never held — see
+  `lib/media/modelViewerConfig.ts`), and undo restores the original. Then the
+  optimized bytes are picked again as a fresh file: a Draco model renders
+  directly in the preview, the new pick clears the "was" record, and the pass
+  reads Draco input (decoder and encoder) and answers honestly.
 - **Backdrop** — all three options are offered, the preview renders on the
   artist's colour, switching it changes the render, the swatches meet the
   24px target-size minimum, `transparent` lets the page through the viewer
@@ -104,7 +133,13 @@ is trivially true when `x` is absent.
   session and an on-chain write, so it is not driven here. Its pieces are the
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
   `modelMomentFields` builder — each of which this file or `verify:model-media`
-  covers; the wiring itself is unverified in a browser.
+  covers; the wiring itself is unverified in a browser. The "optimize for web"
+  pass is mint-only (`ModelOptimizeBar` is mounted by `MintForm` alone).
+- The collector-file 3D viewer (`components/CollectorFileViewer`) needs a
+  holder session, so it is not driven here either. It calls the same
+  `configureModelViewerDecoders()` the mint preview proves at the network level
+  (section G) and mounts `<model-viewer>` with the same shadow and lighting
+  attributes; only its wiring is unverified in a browser.
 
 # HTTP end-to-end check — profile identity (ENS)
 

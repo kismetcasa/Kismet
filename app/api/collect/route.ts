@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse, after } from 'next/server'
-import { decodeEventLog, parseAbi, type Address, type Hex } from 'viem'
+import { type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
+import { verifyMintOnChain } from '@/lib/verifyMint'
 import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis, TRENDING_KEY, TRENDING_LATEST_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
-import { recordCollected } from '@/lib/collected'
+import { recordCollected, recordMomentCollect } from '@/lib/collected'
+import { COLLECT_IDEMPOTENCY_TTL_SECONDS, isStaleCollectRecord } from '@/lib/collectRecord'
 import { grantDownloadGrace, recordCollectorAudience } from '@/lib/collectorFile'
 import { getMomentMeta, writeNotification } from '@/lib/notifications'
 import { serverBaseClient } from '@/lib/rpc'
@@ -22,118 +24,45 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { isPassBlacklisted } from '@/lib/pass-blacklist'
 import { getSessionAddress } from '@/lib/session'
 
-// All mint paths in this app emit ERC1155 TransferSingle: per-token
-// 1155.mint() (single + collect-all ETH legs) and ERC20Minter.mint()
-// (single + collect-all USDC legs). We don't decode TransferBatch since
-// nothing in this codebase produces it. Add it here only when a code
-// path that emits it is introduced.
-const ERC1155_TRANSFER_ABI = parseAbi([
-  'event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)',
-])
-
-// Cache verification verdict so atomic-bundle batches (where N records share
-// one txHash) only hit RPC once per (tx, collection, token, account) tuple.
-const VERIFY_CACHE_TTL_SECONDS = 300
-
 // Idempotency window for (tx, collection, token, account). After a successful
 // record, repeat POSTs return ok-without-side-effects so an attacker (or buggy
 // client) can't inflate trending or flood notifications by replaying the same
-// legitimate mint. 30 days covers the realistic re-submit horizon while
-// keeping the keyspace bounded.
-const IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60
+// legitimate mint. Shared with the stale-record rule below (lib/collectRecord):
+// past this window the lock has expired, so a record of an older mint is
+// treated as a backfill rather than a fresh sale.
+const IDEMPOTENCY_TTL_SECONDS = COLLECT_IDEMPOTENCY_TTL_SECONDS
 
-// Confirm the on-chain receipt shows `account` minting `tokenId` from
-// `collection`, and return the tx's payer (`receipt.from`) so a gift claim can
-// be proved against it. Fail-closed: any RPC, decode, or no-match path returns
-// { ok: false }.
-async function verifyMintOnChain(
-  txHash: Hex,
-  collection: string,
-  tokenId: string,
-  account: string,
-): Promise<{ ok: false } | { ok: true; from: string; units: number }> {
-  // Cache the receipt's `from` alongside the verdict so the gift-claim proof
-  // below survives a cache hit. Legacy '1'/'0' entries written before this
-  // change still parse: '1' means verified with an unknown payer, which only
-  // costs an unproven gift claim its attribution for one TTL window (the
-  // collect itself, its credit, and its collected-list entry are unaffected).
-  //
-  // String() normalization is load-bearing, not defensive: Upstash SETs '1'
-  // unchanged but JSON-PARSES it back on GET as the NUMBER 1, so the previous
-  // `cached === '1'` never matched and this cache never hit — every verified
-  // collect re-fetched its receipt from RPC. Same trap lib/gateFlags.isFlagSet
-  // exists for (see scripts/verify-gate-flags.ts). The `1:<payer>` form below
-  // is non-numeric so it round-trips as a string either way.
-  const cacheKey = `verify:collect:${txHash}:${collection}:${tokenId}:${account}`
-  const cached = await redis.get<string | number>(cacheKey).catch(() => null)
-  const cachedStr = cached == null ? null : String(cached)
-  if (cachedStr === '0') return { ok: false }
-  // Legacy '1' — verified, payer and quantity unknown. Costs an unproven gift
-  // claim its attribution, and makes a denial mark the minimum 1 unit, for one
-  // 5-minute TTL window after deploy.
-  if (cachedStr === '1') return { ok: true, from: '', units: 1 }
-  if (cachedStr?.startsWith('1:')) {
-    const [, payer = '', units = '1'] = cachedStr.split(':')
-    return { ok: true, from: payer, units: Math.max(1, parseInt(units, 10) || 1) }
-  }
-
-  try {
-    const receipt = await serverBaseClient().getTransactionReceipt({ hash: txHash })
-    if (receipt.status !== 'success') {
-      await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
-      return { ok: false }
-    }
-    const payer = receipt.from.toLowerCase()
-
-    const expectedTokenId = BigInt(tokenId)
-    for (const log of receipt.logs) {
-      // The matching log MUST originate from the collection contract — this
-      // blocks an attacker from passing a txHash whose only TransferSingle
-      // is on an unrelated 1155.
-      if (log.address.toLowerCase() !== collection) continue
-      let decoded
-      try {
-        decoded = decodeEventLog({
-          abi: ERC1155_TRANSFER_ABI,
-          data: log.data,
-          topics: log.topics,
-        })
-      } catch {
-        continue
-      }
-      const { from, to, id, value } = decoded.args
-      if (
-        from === '0x0000000000000000000000000000000000000000' &&
-        to.toLowerCase() === account &&
-        id === expectedTokenId
-      ) {
-        // The ON-CHAIN quantity, not the client's `amount`. Used only to size a
-        // policy denial (denyUnsanctionedAcquisition), where a client-supplied
-        // number must never decide how many units get marked. Clamped to >= 1
-        // (a zero-value log can't match a real mint, and 0 would mark nothing)
-        // and bounded so a pathological value can't write an absurd count.
-        const units = value > 0n && value < 1_000_000n ? Number(value) : 1
-        await redis
-          .set(cacheKey, `1:${payer}:${units}`, { ex: VERIFY_CACHE_TTL_SECONDS })
-          .catch(() => {})
-        return { ok: true, from: payer, units }
-      }
-    }
-
-    await redis.set(cacheKey, '0', { ex: VERIFY_CACHE_TTL_SECONDS }).catch(() => {})
-    return { ok: false }
-  } catch {
-    // RPC failure: don't cache (transient).
-    return { ok: false }
-  }
-}
+// The on-chain proof itself now lives in lib/verifyMint, shared with the
+// Experience draw (/api/experience/play), which has to prove a capsule mint
+// against exactly the same rules before it will dispense an artwork. Extracted
+// rather than copied so the receipt logic cannot drift between the path that
+// records a collect and the path that pays one out.
+//
+// Not shared with the airdrop path: /api/airdrop/notify answers a different
+// question (per-recipient unit counts across a multi-recipient transaction) via
+// lib/passTaint.aggregateMintUnits, and folding the two together would widen
+// this function's contract for no caller.
+//
+// Behaviour here is unchanged except that multiple matching logs in one
+// transaction now SUM rather than reporting only the first — matching
+// aggregateMintUnits' treatment of the same situation, and reachable only by a
+// transaction that mints the same token to the same recipient more than once.
+// The proof also carries the mint's block time (`mintedAtMs`), which this route
+// ranks and ages the sale by.
 
 /**
  * Records a successful direct mint. The on-chain mint is submitted by the
- * user's wallet (useDirectCollect or useCollectAll); this endpoint bumps
- * trending, appends to the collector's owned list, and notifies the creator.
- * Every claim is verified against the on-chain receipt before crediting —
- * an unsigned POST cannot inflate trending or fake notifications.
+ * user's wallet (useDirectCollect or useCollectAll) or the agent paths
+ * (Base MCP send_calls, the scout); this endpoint bumps trending, appends to
+ * the collector's owned list and the artwork's collect log, and notifies the
+ * creator. Every claim is verified against the on-chain receipt before
+ * crediting — an unsigned POST cannot inflate trending or fake notifications.
+ *
+ * The sale is ranked and aged by the mint's BLOCK time, never by when this
+ * request arrived: a late or replayed record of an old mint (a pasted record
+ * URL, a stale tab, a reconcile) lands where the sale really happened and,
+ * past the idempotency window, is a backfill — indexes only, no trending
+ * increment, no notifications (lib/collectRecord.isStaleCollectRecord).
  */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
@@ -400,30 +329,74 @@ export async function POST(req: NextRequest) {
     ? Math.min(Math.floor(amount), 1000)
     : 1
 
+  // WHEN the sale happened: the mint's block time (read with the receipt and
+  // cached with the verdict). Falls back to now only when the block couldn't
+  // be read — a legacy verdict from before the field, an RPC miss — which is
+  // the pre-existing behavior and never reads as stale.
+  const mintedAtMs = verified.mintedAtMs ?? Date.now()
+  const member = `${collectionLower}:${tokenId}`
+  // Past the idempotency window a record is a BACKFILL: the lock that would
+  // have flagged a replay has expired, so a months-old mint arriving here (a
+  // pasted record URL, a stale tab, a reconcile) must update only the durable
+  // per-fact indexes and never re-fire the event-shaped effects — that is
+  // what put an old piece at the top of latest sales with no recent
+  // collector in its activity, and sent the artist a stale "collected" notice.
+  const stale = isStaleCollectRecord(mintedAtMs)
+  if (stale) {
+    console.log('[collect] backfill — mint predates the idempotency window', {
+      txHash,
+      collection: collectionLower,
+      tokenId,
+      account,
+      mintedAt: new Date(mintedAtMs).toISOString(),
+    })
+  }
+
   await Promise.all([
     // Inline trim: keep the trending zset capped at top 10K alongside the
     // increment. Pattern: BullMQ-style write-side bounding, replaces the
     // per-5min trimTrending background task with a per-collect operation.
     // The trim is a no-op when the zset is under cap (cheap) and is
     // amortized across every collect event — vastly fewer than 288/day
-    // background-task fires.
-    // Latest-sales rides the same multi: zadd overwrites the member's score
-    // with this collect's timestamp (last sale wins), trimmed identically.
-    // Rank 0 is the LOWEST score in both zsets — fewest collects / oldest
-    // sale — so both trims evict the least-feed-worthy members first.
-    redis
-      .multi()
-      .zincrby(TRENDING_KEY, 1, `${collectionLower}:${tokenId}`)
-      .zremrangebyrank(TRENDING_KEY, 0, -10_001)
-      .zadd(TRENDING_LATEST_KEY, { score: Date.now(), member: `${collectionLower}:${tokenId}` })
-      .zremrangebyrank(TRENDING_LATEST_KEY, 0, -10_001)
-      .exec()
-      .catch(() => {}),
-    recordCollected(account, collectionLower, tokenId).catch(() => {}),
+    // background-task fires. The increment is an EVENT (one more sale), so a
+    // backfill skips it: it can't tell a lost record from a replay, and an
+    // under-count is the lesser harm.
+    // Latest-sales rides the same multi: the member's score is the mint's
+    // block time under GT — the newest sale wins, and a late record of an
+    // older mint can neither lower the score nor, with a wall clock, fake a
+    // fresh sale. Trimmed identically. Rank 0 is the LOWEST score in both
+    // zsets — fewest collects / oldest sale — so both trims evict the
+    // least-feed-worthy members first.
+    (() => {
+      const tx = redis.multi()
+      if (!stale) tx.zincrby(TRENDING_KEY, 1, member).zremrangebyrank(TRENDING_KEY, 0, -10_001)
+      return tx
+        .zadd(TRENDING_LATEST_KEY, { gt: true }, { score: mintedAtMs, member })
+        .zremrangebyrank(TRENDING_LATEST_KEY, 0, -10_001)
+        .exec()
+        .catch(() => {})
+    })(),
+    // The collector's own list, scored by the mint time (GT inside — see
+    // lib/collected) so their Collected tab orders by acquisition, not by
+    // when the record landed.
+    recordCollected(account, collectionLower, tokenId, mintedAtMs).catch(() => {}),
+    // The artwork's collect log — what the activity route (the moment comments
+    // proxy) folds into the activity list when In Process has no comment row
+    // for this mint (an empty on-chain comment emits no MintComment event;
+    // indexer lag).
+    // Deterministic member per (tx, collector), so a re-record is a no-op.
+    recordMomentCollect(collectionLower, tokenId, {
+      collector: account,
+      txHash,
+      amount: safeAmount,
+      timestamp: mintedAtMs,
+      ...(comment && !isPlatformCollectComment(comment) ? { comment } : {}),
+      ...(giftedBy ? { giftedBy } : {}),
+    }).catch(() => {}),
     // Collector-file audience + erasure indexes (COLLECTOR_DOWNLOADS_DESIGN.md
     // §6.1 site 1) — the reverse of recordCollected, per-artwork instead of
     // per-collector, so a file update can enumerate who to notify.
-    recordCollectorAudience(account, collectionLower, tokenId).catch(() => {}),
+    recordCollectorAudience(account, collectionLower, tokenId, mintedAtMs).catch(() => {}),
     // Post-collect download grace: this exact (recipient, artwork) was
     // receipt-verified above, so the download gate honors it for 15 minutes
     // while the server RPC catches up — without it the "your download is
@@ -447,7 +420,9 @@ export async function POST(req: NextRequest) {
   }
   const finalPrice = derivedPrice !== null ? derivedPrice.toString() : pricePerToken
 
-  after(async () => {
+  // Notifications are event-shaped ("X just collected"), so a backfill sends
+  // none: a months-late ping is noise at best and a duplicate at worst.
+  if (!stale) after(async () => {
     try {
       const meta = await getMomentMeta(collectionLower, tokenId)
 
@@ -491,5 +466,5 @@ export async function POST(req: NextRequest) {
     }
   })
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, ...(stale ? { backfill: true } : {}) })
 }

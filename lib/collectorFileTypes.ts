@@ -6,9 +6,19 @@ import { GLB_EXT, GLB_MIME } from './glbFormat.ts'
 
 /** Plaintext size ceiling per version — the ONE definition every picker and
  *  the server enforce (a "dial" per the design; changing it here changes it
- *  everywhere). Client-safe so the mint form and manage panel can pre-check
- *  without importing server code. */
-export const CFILE_MAX_BYTES = 16 * 1024 * 1024
+ *  everywhere, and every user-facing string derives from it through
+ *  formatCfileSize — never hardcode the number in copy). Client-safe so the
+ *  mint form and manage panel can pre-check without importing server code.
+ *
+ *  64 MiB (2026-09-29, raised from 16 MiB for a 213-page PDF booklet): the
+ *  cap is a storage + memory dial, not a format need. At this size one
+ *  version is ~85 MiB resident in Redis (base64), an upload buffers ~150 MB
+ *  in the PUT slot and a download ~150 MB per reassembly slot — all inside
+ *  the 6 GB container budget (OPS_RUNBOOK.md). Two things must travel with
+ *  it (COLLECTOR_DOWNLOADS_DESIGN.md, "Cap raise"): the proxy's request
+ *  read timeout, because Traefik cuts any upload slower than 60 s by default,
+ *  and the global storage ceiling env, which the default fits only twice. */
+export const CFILE_MAX_BYTES = 64 * 1024 * 1024
 
 /** The accepted formats. Extension + MIME live HERE (client-safe) and
  *  lib/collectorFileCore builds its detection registry from this map by
@@ -61,11 +71,14 @@ export function hasAcceptedCfileExt(name: string): boolean {
   return CFILE_ACCEPT_EXTS.some((ext) => lower.endsWith(ext))
 }
 
-/** One shared B/KB/MB formatter for the card + manage panel + mint form. */
+/** One shared B/KB/MB formatter for the card + manage panel + mint form and
+ *  every limit string derived from CFILE_MAX_BYTES. One decimal, dropped
+ *  when it is zero: "13.4 MB", "3 MB", "64 MB" — never "64.0 MB" in a
+ *  limit message. */
 export function formatCfileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`
 }
 
 /** The public descriptor: display facts only — never storage internals. */

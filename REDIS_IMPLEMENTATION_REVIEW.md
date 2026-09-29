@@ -293,7 +293,8 @@ on focus; panel-open fires markAllRead (SET + 2 DEL).
 | Key | Type | Writes | Reads | Bounds | Fail |
 |---|---|---|---|---|---|
 | `kismetart:trending` | zset member `coll:tid`, score=collect count | ▶ MULTI zincrby+trim(10k) per collect (`collect:255-256`) | ZRANGE 0..9999 rev per trending feed (`timeline:558`) | 10k cap both sides | write S; read raw |
-| `kismetart:trending-latest` | zset score=last-collect ms | same MULTI zadd+trim (`:257-258`) | same read (latest-sales) | 10k | same |
+| `kismetart:trending-latest` | zset score=mint BLOCK time ms of the last collect | same MULTI zadd **GT** (newest sale wins; a late/replayed record of an older mint can't lower it or fake a fresh sale) + trim | same read (latest-sales) | 10k | same |
+| `kismetart:collects:moment:<coll>:<tid>` | zset member=JSON `{collector,txHash,amount,timestamp[,comment,giftedBy]}` (deterministic per tx+collector → re-record is a no-op), score=mint block time ms | ▶ zadd + trim(500) per collect (`lib/collected.recordMomentCollect`) | ZRANGE rev ≤100 on page 0 of the moment comments proxy, folded into the activity list where In Process has no row (`lib/activityFold`) | 500/artwork | write S; read O→∅ |
 | `kismetart:sale-ends` | zset score=saleEnd (s) | ▶ ONE MULTI per browse batch: zadd active + zrem inactive + throttled sweeps (score>24h-old, rank>10k) (`saleEnds.ts:124-151`); per-pod seen-cache; via `after()` from `/api/moments` + `/api/moment` | ZRANGE BYSCORE now→+inf LIMIT 10k per ending-soon feed (`:172`) | 10k | S / O→∅ |
 | `kismetart:sale-free` | zset-as-set score=index-time | same MULTI (`:132-149`) | **ZRANGE 0 -1 (whole set)** per trending/latest feed (`:193`) | 10k cap; unbounded read ≤10k | S / O→∅ |
 | `kismetart:featured` | zset | 🔧 MULTI zaddCapped(1000) (`featured:111`); zrem | ZRANGE 0..999 per GET /api/featured (**no cache header**) + timeline featured=1 pre-fan-out (`:39`; `timeline:189`) | 1000 | raw |
@@ -524,7 +525,7 @@ config, collections/created-collections/**created-mints** registries,
 collection/moment meta + moment content, authorized-creators, hidden-* +
 blacklists (moderation), gate flags, featured sets, creator-lists,
 earnings-visibility, scout records + watchers + killswitch, `fc:identity`,
-`collected` zsets (event-sourced, not rebuildable), trending/trending-latest
+`collected` zsets + per-artwork `collects:moment` logs (event-sourced, not rebuildable), trending/trending-latest
 (technically derived, but the collect event stream isn't stored anywhere else —
 loss = counters reset; decide product-side whether that's acceptable or worth a
 periodic dump).
@@ -903,6 +904,37 @@ review's budget model:
   be used here: its auto-pipeline is client-global, so two CONCURRENT
   requests' chunk GETs in the same tick would batch into one over-cap
   reply. Do not "optimize" chunk I/O onto the shared client or into MGET.
-- Commands: +`chunks` (≤4) per upload/download — noise at any plausible
-  volume. The previous `cfile-global-bytes` day meter is deleted; the
-  fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.
+- Commands: +`chunks` (≤4 at the 16 MiB cap of the time; ≤16 since the
+  2026-09-29 raise to 64 MiB, below) per upload/download — noise at any
+  plausible volume. The previous `cfile-global-bytes` day meter is deleted;
+  the fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.
+
+### Addendum update (2026-09-29) — per-version cap raised to 64 MiB
+
+`CFILE_MAX_BYTES` went from 16 MiB to 64 MiB (`lib/collectorFileTypes.ts`;
+rationale and validation in `COLLECTOR_DOWNLOADS_DESIGN.md`, "Cap raise").
+What that changes for this review's budget model, and what it does not:
+
+- **Per-request shape is unchanged.** Chunks are still 4 MiB of plaintext
+  (≤ ~5.4 MB encoded), one command per HTTP request on the dedicated
+  non-pipelining client, so the 10 MB request cap and the 100 MB record
+  limit are untouched. A max-size version is 16 chunks instead of 4.
+- **Storage per version is 4×**: ~85 MiB resident (89,478,544 bytes,
+  pinned in `verify:collector-file`), so one artwork's three retained
+  versions can hold ~256 MiB. The 512 MiB default ceiling therefore fits
+  two such artworks; the runbook now asks for `CFILE_STORAGE_CEILING_BYTES`
+  = 2 GiB in Coolify, which sits past the first free storage GB (billed at
+  $0.25/GB-month beyond it — a cost dial, still not a cliff).
+- **Bandwidth per download is 4× at the cap**: ~1.33 × 64 MiB ≈ 85 MB out
+  of the metered 200 GB/month, so ~2,300 max-size downloads a month reach
+  the free line. The bound remains the per-identity `cfile-download` quota
+  (100/day) and per-IP rate limits, unalerted — the same accepted line as
+  before, with a shorter fuse for a popular large file. The view route's
+  one-hour `private, max-age` cache is what keeps repeat views off it.
+- **Working memory**: ~2.3× the file per slot (~150 MB at the cap) for the
+  one PUT, two downloads and two views the app allows at once — against the
+  6 GB container limit, not the V8 heap. Not a Redis concern; recorded here
+  because the slot counts are what bound the concurrent chunk I/O above.
+- **Upload wall-clock**: a 64 MiB body no longer fits Traefik's 60 s default
+  read timeout on ordinary uplinks; the proxy flag is an ops obligation
+  (`OPS_RUNBOOK.md` §5), not a Redis one.
