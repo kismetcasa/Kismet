@@ -634,6 +634,100 @@ commit already accepted.
 
 Oracle 52 → 53 assertions; browser check 49 → 51.
 
+### The artist's fourth round — "3D loading is stuck at 50%" (2026-09-29)
+
+The artist's own GB cartridge sat on an empty white box reading
+"loading 3D… 50%". Reproduced against the installed `@google/model-viewer`
+4.3.1 in a headless-Chromium harness with the same DOM layering as
+`MomentModel` and a local server that could stall, trickle or fail the GLB;
+every finding below was confirmed there before it was fixed, and the
+browser E2E now pins each one.
+
+**24. The still was hidden, not shown.** model-viewer's host stylesheet sets
+`:host { position: relative }`, so the element paints AFTER the absolutely
+positioned still layer, and the backdrop colour was set on the element
+itself — an opaque white (or `#111`) over the still from the first frame.
+Only the `transparent` option ever showed the still. The E2E's "still stays
+visible" assertion read the layer's CSS opacity, not a pixel, on the white
+fixture: it passed vacuously for as long as it existed. Fix: the backdrop is
+on the wrapper behind everything; the check samples the centre pixel.
+
+**25. "50%" was never download progress.** model-viewer's `ProgressTracker`
+aggregates activities; the lighting environment is generated in the
+renderer and completes in milliseconds, which alone moves `totalProgress`
+to exactly 0.5. A stalled request therefore reads "50%" forever; a body
+without Content-Length jumps to 88% on its first chunk. Upstream knows
+(google/model-viewer#3214, closed by adding `event.detail.reason`).
+
+**26. No timeout, no cancel, and a retry that could never re-fetch.** The
+tracker's source says "there is no built-in notion of a time-out";
+#2593 (open since 2021) confirms removing the element does not stop the
+download; three.js gained `FileLoader.abort()` in r179 and model-viewer
+never calls it. Worse, a failed load is CACHED as an empty model, keyed by
+URL, with no exposed way to clear it — a second mount of the same `src`
+errored instantly with zero network requests, so "retry 3D" was dead for
+the rest of the page session. Chrome adds a smaller effect: a second
+identical GET waits on the HTTP cache lock for up to 20 s.
+
+**What shipped.** `lib/media/modelFetch.ts` downloads the GLB itself: an
+AbortController the exit button fires, a 20 s no-bytes watchdog and a
+5-minute hard timeout that abort the attempt and walk on, a 64 MiB cap,
+a magic-byte check on the first four bytes (a gateway's HTML landing page
+is walked past after a few KB), byte-counted progress from the stream, and
+one `blob:` URL per attempt so model-viewer's caches never see a gateway URL
+or a failure. `modelFetchUrls` (lib/media/gateway.ts) keeps the video
+context rule and guarantees `/api/img` as the last URL on every surface —
+the Arweave pool is one host, and the artist's stall had nowhere to go. The
+readout is three honest steps ("connecting", "14% · 4.0 MB of 28.0 MB" or
+bytes alone when the total is unknown, "preparing"), per NN/g's rule that a
+wait past ten seconds needs a percentage or named steps. No WebGL context
+exists until the bytes are in hand. `verify:model-fetch` pins the module
+against a mocked fetch (32 checks); the E2E adds a stalled gateway that the
+watchdog escapes to the proxy, a failed walk followed by a retry that
+provably re-fetches, and a cancel that provably aborts.
+
+**27. Size guidance and "optimize for web".** The Khronos real-time asset
+guidelines say "ideally less than 5MB", 100k triangles, 1K–2K textures;
+model-viewer's maintainer calls ">20mb the danger zone" on phones. The
+8 MB warning now cites those figures and points at a new optional pass on
+the posed preview (`lib/media/optimizeModel.ts`): raster textures over
+2048px are downscaled in their own format, glTF-Transform's `dedup` and
+`prune` run, and Draco compresses the geometry — Draco rather than meshopt
+because meshopt is designed to be gzipped in transit and neither
+arweave.net nor the proxy promise that for `model/gltf-binary`, while
+Draco is self-contained and its decoder is already self-hosted. The
+encoder (`draco_encoder_wrapper.js` + `draco_encoder.wasm`, Draco 1.5.7,
+byte-identical to `draco3d@1.5.7`) is self-hosted beside the decoder and
+loaded by script tag on click; glTF-Transform is a lazy chunk. The result
+goes back through the pick gate, the preview re-captures the poster from
+what will ship, the original stays one tap away ("undo"), and a result that
+is not smaller is refused with a toast. The E2E optimizes a textured
+sphere and proves the self-hosted decoder decodes the self-hosted encoder's
+output.
+
+**28. The self-hosted decoders were never the ones loading.** Found by the
+E2E's optimize section in a sandbox with no egress: the first Draco model
+the suite ever loaded failed with "Failed to fetch" against
+www.gstatic.com. model-viewer's element constructor re-reads
+`self.ModelViewerElement.dracoDecoderLocation` (the GLOBAL config object)
+on every construction and falls back to gstatic when it is unset; the ESM
+build never assigns that global, so the static setter on the imported
+class — `mod.ModelViewerElement.dracoDecoderLocation = …`, used at all three
+mount sites since the collector-file feature — held only until the next
+element was constructed. In production, with gstatic reachable, every Draco
+model quietly decoded from Google's CDN, which is exactly the third-party
+origin the self-hosting was meant to remove. Fix:
+`lib/media/modelViewerConfig.ts` sets the global config the documented way
+at every mount site; the E2E now asserts, at the network level, that the
+decoder AND the encoder requests hit `/model-decoders/`.
+
+**Still open from this round.** A second Arweave gateway
+(turbo-gateway.com is the candidate — the ar.io gateway that serves Turbo
+uploads optimistically; it rate-limits with 429s) needs the curl check in
+`lib/arweave/gateways.ts` from a machine with egress; the ar.io Wayfinder
+SDK is the fuller answer to gateway selection. The mint-time pass does not
+run in the edit flow's media replacement yet.
+
 ### Post-merge verification
 
 Verified against the merged `main` (PR #680), not the branch: the merged tree
@@ -761,11 +855,11 @@ Status as shipped. "Closed" means the code and an assertion both hold it;
 |---|---|---|---|
 | 1 | Any file type mints as `image:`, permanently | **High** | **Closed.** `checkMintMedia` gates the mint picker; the same audit closed the edit-media and three cover pickers. Oracle-pinned. |
 | 2 | WebGL in a feed grid OOMs the iOS Mini App | **High** | **Closed by shape.** Feeds read `media.src`, which for a model is the still — a viewer cannot be mounted there by accident. `MomentModel` is imported by the detail view alone. |
-| 3 | Large GLB OOMs mobile even on the detail view | Medium | **Mitigated.** Tap-to-load (nothing downloads or parses until asked), 30 MB hard cap, 8 MB soft warning naming the phone consequence, Draco guidance, exit button that unmounts the context. |
+| 3 | Large GLB OOMs mobile even on the detail view | Medium | **Mitigated.** Tap-to-load (nothing downloads or parses until asked), 30 MB hard cap, 8 MB soft warning naming the phone consequence and the published figures, an in-form "optimize for web" pass (Draco + 2K textures), a 64 MiB fetch cap, exit/cancel that aborts the download and unmounts the context. Cost accepted 2026-09-29: one transient extra copy of the file (the blob) during parse. |
 | 4 | Missing `content.mime` → moment attempted as video | Medium | **Closed.** Always emitted; the shape is oracle-pinned, and the `.glb` extension covers external mints that lack it. |
 | 5 | Static import blows the bundle guard (+37%) | Medium | **Closed.** Both viewers dynamic-import behind an interaction; `bundle-baseline.json` unchanged. |
 | 6 | Poster capture fails → invisible on every static surface | Medium | **Closed.** The mint refuses rather than shipping a posterless 3D moment; capture is re-run on every pose, and a stale capture from a swapped-out model can't be adopted. |
 | 7 | GLB reaches `sharp` via `/api/img` or the theme route | Low | **Closed.** `model/` excluded from the resize path; the theme route reads a model's still and never falls back to `md.image`. |
 | 8 | Poster resolution tracks the preview's rendered size | Low | **Accepted, now deterministic (2026-09-02).** Capture is the element's CSS size × devicePixelRatio, no longer load-dependent: the renderer's dynamic scale is pinned to 1 while `ModelPreview` is mounted (restored on unmount, so the live viewer stays adaptive) after an E2E run under CPU load caught a 755 px capture where 956 px was expected. A fixed-size capture would still need a second parse or visible resize jank — worse trades against risk 3. |
 | 9 | A 3D moment can't be created by the edit flow or the agent API | Low | **Closed (2026-09-02).** The edit flow reuses the mint form's pose-and-capture; the agent API requires a caller-supplied poster. One builder (`modelMomentFields`) writes the shape for all three producers, oracle-pinned. |
-| 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing.** A GLB inherits it and adds nothing; `MomentModel` walks the same pool and leads with the proxy in Mini App contexts. |
+| 10 | `arweave.net` is the sole gateway (`gateways.ts`) | Low | **Pre-existing, now bounded.** A GLB inherits it; `MomentModel` walks the pool with a 20 s stall watchdog and always has `/api/img` as a second route (finding 26). A verified second host remains the follow-up. |

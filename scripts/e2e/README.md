@@ -42,7 +42,7 @@ node scripts/e2e/model-media.mjs
 (`npm i --no-save playwright`) or point `E2E_CHROMIUM` at a browser you have.
 `E2E_BASE_URL` and `E2E_DIR` override the server and fixture locations.
 
-## What it asserts (51)
+## What it asserts (78)
 
 - **Mint** — the preview is square (not model-viewer's 150px `:host` default),
   a real GLB loads, `toBlob` yields a square JPEG large enough for the 800×800
@@ -53,12 +53,33 @@ node scripts/e2e/model-media.mjs
 - **Gate** — a zip, a truncated GLB and a glTF 1.0 binary are each rejected
   with the right copy and leave no preview mounted.
 - **Detail** — the still paints first, no WebGL exists before the tap, tapping
-  mounts exactly one viewer, the still fades only after the model paints,
-  exiting unmounts the viewer and restores the affordance.
+  mounts exactly one viewer, the artist's backdrop sits on the WRAPPER behind
+  the still (never on the element, whose `position: relative` host would paint
+  over it), the still fades only after the model paints, exiting unmounts the
+  viewer and restores the affordance.
 - **Reduced motion** — `auto-rotate` is off under `prefers-reduced-motion` and
   on without it.
-- **Slow load** — the progress readout appears and the still stays visible
-  throughout, so a big model on a slow link never shows an empty box.
+- **Slow load** — before any byte the readout says "connecting" (never a
+  percentage: model-viewer's aggregate tracker used to read "50%" here), no
+  WebGL context exists yet, the still is visible by CENTRE PIXEL (not by CSS
+  opacity, which passed vacuously while an opaque backdrop covered it), a
+  cancel control is offered, the viewer is handed a `blob:` URL, and the still
+  fades only after the model paints.
+- **Stalled gateway** — a gateway that accepts the request and never answers
+  is abandoned by the 20 s watchdog and the walk reaches `/api/img`, which
+  delivers the model; the readout stays honest throughout.
+- **Failed walk, then retry** — every URL is tried, the failure is explained
+  with the still behind it, and "retry 3D" makes NEW requests (model-viewer
+  cached a failed load and could never re-fetch).
+- **Cancel** — exiting mid-download aborts the request, returns to idle at
+  once, and a response arriving afterwards never mounts a viewer.
+- **Optimize for web** — a textured sphere (~29k tris, 3000px albedo) is
+  Draco-compressed and its texture downscaled to 2K, the chip shows the new
+  size and what it was, the preview re-loads from the optimized bytes (the
+  self-hosted decoder decoding the self-hosted encoder's output), the decoder
+  and encoder requests are proven to hit `/model-decoders/` rather than
+  gstatic (the static-setter form the app used never held — see
+  `lib/media/modelViewerConfig.ts`), and undo restores the original.
 - **Backdrop** — all three options are offered, the preview renders on the
   artist's colour, switching it changes the render, the swatches meet the
   24px target-size minimum, `transparent` lets the page through the viewer
