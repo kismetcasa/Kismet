@@ -3020,7 +3020,7 @@ try {
           await rows.first().waitFor({ timeout: 10_000 }).catch(() => {})
           const shown = (await rows.evaluateAll((as) => as.map((a) => a.getAttribute('href')))).sort()
           check('it lists every live machine, each opening that machine, and no closed one', live.length > 0 && shown.join() === live.join(), `${shown.length} shown vs ${live.length} live`)
-          check('and always offers to build one', (await pg.getByRole('link', { name: 'build gachapon' }).getAttribute('href')) === '/play/create')
+          check('and always offers to build one', (await pg.getByRole('link', { name: 'build gachapon' }).getAttribute('href').catch(() => null)) === '/play/create')
           check('and is remembered as the tab to return to', (await pg.evaluate(() => localStorage.getItem('kismetart:active-tab'))) === 'play')
           await pg.context().close()
 
