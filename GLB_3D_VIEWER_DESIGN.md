@@ -1005,6 +1005,10 @@ those are listed at the end.
 
 Checks for the paths that had none: an empty 200 body, a fetch that throws, a response with no body, the readout's one-decimal rendering (`verify:model-fetch`); the GLB JSON-chunk peek (`verify:model-media`); the cap's value, chunk count, resident bytes and copy (`verify:collector-file`); in the E2E, a GLB that downloads but cannot be parsed (E5), and a Draco model picked directly, which also proves a new pick clears the optimized record and the pass survives Draco input (G2).
 
+### Second pass (same day)
+
+A fresh line-by-line read of the diff with this section's conclusions set aside, recorded in full in `MODEL_LOAD_AND_CFILE_CAP_REVIEW.md` (one row per hunk, with the evidence for each verdict). It found five more things, all in test code or defensive surface: three E2E assertions whose condition was the literal `true` (two of this branch's, one pre-existing) — the pre-existing one, once made real, exposed that the media-input selector behind every pick also matched the collector-file input and was working by DOM order alone; a swallowed, redundant wait in G2, whose removal exposed a toast read that had been passing on timing (it sliced the tail of the toast stack, and sonner renders the newest toast first — it now waits for an empty stack); two copies of the pixel reader; a same-tick re-entry window in the mint form's optimize handler (state-gated, now ref-gated); a duplicated `.env.example` sentence and an optional callback type that is always supplied. `grep -n "check(.*, true)" scripts/e2e/` is the standing check for the first class and returns nothing.
+
 ## Risk register
 
 Status as shipped. "Closed" means the code and an assertion both hold it;

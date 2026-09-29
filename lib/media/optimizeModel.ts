@@ -49,7 +49,7 @@ const JSON_CHUNK = 0x4e4f534a
 
 type EmscriptenFactory = (config: {
   wasmBinary: ArrayBuffer
-  onModuleLoaded?: (module: unknown) => void
+  onModuleLoaded: (module: unknown) => void
 }) => unknown
 
 function loadScript(src: string): Promise<void> {

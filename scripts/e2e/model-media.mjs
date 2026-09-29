@@ -167,23 +167,27 @@ const pickMedia = async (pg, file, ms = 25000) => {
   return 'timeout'
 }
 
-// The colour at the CENTRE of an element as rendered — the only honest test
-// of "the still is visible": a layer can have opacity 1 and still be painted
-// over by an opaque sibling (which is exactly what happened to the still
-// under model-viewer's backdrop, and what the old opacity check never saw).
-const centerOf = async (pg, locator) => {
+// One rendered pixel of an element — decoded in the page, since Node has
+// no PNG reader here. 'corner' (4,4) reads a backdrop; 'centre' reads what
+// sits in the middle of the box. The centre read is the only honest test of
+// "the still is visible": a layer can have opacity 1 and still be painted
+// over by an opaque sibling (exactly what happened to the still under
+// model-viewer's backdrop, and what the old opacity check never saw).
+const pixelOf = async (pg, locator, where) => {
   const buf = await locator.screenshot()
   const b64 = buf.toString('base64')
-  return pg.evaluate(async (data) => {
+  return pg.evaluate(async ([data, at]) => {
     const img = new Image()
     await new Promise((r) => { img.onload = r; img.src = 'data:image/png;base64,' + data })
     const c = document.createElement('canvas')
     c.width = img.width; c.height = img.height
     const ctx = c.getContext('2d')
     ctx.drawImage(img, 0, 0)
-    return Array.from(ctx.getImageData(Math.floor(img.width / 2), Math.floor(img.height / 2), 1, 1).data).slice(0, 3)
-  }, b64)
+    const [x, y] = at === 'centre' ? [Math.floor(img.width / 2), Math.floor(img.height / 2)] : [4, 4]
+    return Array.from(ctx.getImageData(x, y, 1, 1).data).slice(0, 3)
+  }, [b64, where])
 }
+const centerOf = (pg, locator) => pixelOf(pg, locator, 'centre')
 // The poster fixture is a flat green (20,120,90); the backdrop is white.
 const isPosterGreen = (px) => px[0] < 80 && px[1] > 80 && px[2] > 50 && px[1] > px[0]
 // The media box while a model is loading or active: the exit/cancel
@@ -224,10 +228,19 @@ console.log('\nA. Mint form — picking a real GLB')
 await page.goto(`${BASE}/mint`, { waitUntil: 'domcontentloaded' })
 // The media picker is hidden by design (a styled drop zone triggers it), so
 // wait for it to be ATTACHED, and target it by the accept list rather than
-// index — there are three file inputs on this form.
-const MEDIA_INPUT = 'input[accept*="model/gltf-binary"]'
+// index — there are three file inputs on this form. Two of them accept
+// model/gltf-binary (the collector-file picker takes a .glb too), so the
+// media input is the one whose list starts with image/*: page.setInputFiles
+// is not strict and would silently feed the first match, which is only the
+// media input while the DOM order holds; a strict locator refuses the
+// ambiguity outright, and the count below keeps the selector honest.
+const MEDIA_INPUT = 'input[type="file"][accept^="image/*"][accept*="model/gltf-binary"]'
 await page.waitForSelector(MEDIA_INPUT, { state: 'attached', timeout: 30000 })
-check('media input advertises .glb in its accept list', true)
+{
+  const accept = (await page.locator(MEDIA_INPUT).getAttribute('accept')) ?? ''
+  check('media input is uniquely addressable and advertises .glb in its accept list',
+    (await page.locator(MEDIA_INPUT).count()) === 1 && /model\/gltf-binary/.test(accept) && /\.glb/.test(accept))
+}
 check('a valid GLB is accepted and previewed', (await pickMedia(page, 'cube.glb')) === 'preview')
 
 await page.waitForSelector('model-viewer', { timeout: 30000 })
@@ -259,20 +272,7 @@ console.log(`    capture: ${cap.w}x${cap.h}, ${(cap.size/1024).toFixed(0)} KB`)
 
 // Read a real corner pixel of the RENDERED element — what the artist sees —
 // rather than trusting the CSS declaration.
-const cornerOf = async (pg) => {
-  const buf = await pg.locator('model-viewer').screenshot()
-  // PNG: walk to IDAT-free territory by decoding in the page instead.
-  const b64 = buf.toString('base64')
-  return pg.evaluate(async (data) => {
-    const img = new Image()
-    await new Promise((r) => { img.onload = r; img.src = 'data:image/png;base64,' + data })
-    const c = document.createElement('canvas')
-    c.width = img.width; c.height = img.height
-    const ctx = c.getContext('2d')
-    ctx.drawImage(img, 0, 0)
-    return Array.from(ctx.getImageData(4, 4, 1, 1).data).slice(0, 3)
-  }, b64)
-}
+const cornerOf = (pg) => pixelOf(pg, pg.locator('model-viewer'), 'corner')
 // model-viewer fades out its own loading overlay for about a second after
 // `load`, so an element screenshot taken immediately reads a transient grey.
 // That overlay is DOM-only and never reaches the capture (which reads the
@@ -653,7 +653,8 @@ await retry.locator('button:has-text("retry 3D")').click()
 await retry.waitForFunction(() => document.querySelector('model-viewer')?.loaded === true, { timeout: 30000 })
 check('retry re-fetches — new requests were made, nothing served from a failure cache',
   retryRequests.length > firstWalk, `${firstWalk} -> ${retryRequests.length}`)
-check('...and the model loads once the gateway is back', true)
+check('...and the model loads once the gateway is back',
+  await retry.evaluate(() => document.querySelector('model-viewer')?.loaded === true))
 await retry.close()
 
 // ───────── E4. Exiting during the download cancels it ─────────
@@ -798,7 +799,6 @@ console.log('\nG2. Already-Draco pick')
 // un-optimized bytes (the first run of this section did exactly that).
 const srcAfterUndo = await opt.evaluate(() => document.querySelector('model-viewer')?.src ?? null)
 await opt.locator('button:has-text("optimize for web")').click()
-await opt.locator('[data-sonner-toast]', { hasText: 'Optimized for web' }).nth(1).waitFor({ timeout: 90000 }).catch(() => {})
 await opt.waitForFunction((prev) => {
   const mv = document.querySelector('model-viewer')
   return !!mv && mv.src !== prev && mv.loaded === true
@@ -820,30 +820,42 @@ await opt.waitForFunction((prev) => {
   return !!mv && mv.src !== prev && mv.loaded === true
 }, optimizedSrc, { timeout: 60000 })
 const chipAfterPick = await opt.locator('button:has-text("optimize for web")').locator('..').innerText().catch(() => '')
-check('a Draco model picked directly renders in the preview (self-hosted decoder on the mint path)', true)
+check('a Draco model picked directly renders in the preview (self-hosted decoder on the mint path)',
+  await opt.evaluate((prev) => {
+    const mv = document.querySelector('model-viewer')
+    return !!mv && mv.loaded === true && mv.src !== prev
+  }, optimizedSrc))
 check('a new pick clears the optimized record — the chip offers the pass again, with no "was"',
   /optimize for web/i.test(chipAfterPick) && !/was/.test(chipAfterPick), JSON.stringify(chipAfterPick))
-// Earlier toasts may still be on screen; count what is there now and wait
-// for one more terminal toast to arrive.
-const toastsBefore = await opt.locator('[data-sonner-toast]').count()
+// The answer is a toast, and the stack may still hold the previous pass's.
+// sonner 2.0.7 renders the NEWEST toast first (`[toast, ...toasts]` in the
+// Toaster's subscription, node_modules/sonner/dist/index.js), so "count the
+// stack, then read the tail" reads the OLDEST toast: a run that took the
+// count while the previous toast was still alive read "13.4 MB → 3.2 MB …
+// downscaled" as this pass's answer. The unambiguous precondition is an
+// empty stack — every toast on this page lives 3 s (app/layout.tsx,
+// duration={3000}) plus sonner's 200 ms unmount delay, and nothing hovers
+// it in headless — so wait for that, and then every toast present after
+// the click belongs to this pass. If the stack never empties, that is a
+// finding (a toast that does not expire), not something to wait around.
+await opt.waitForFunction(() => document.querySelectorAll('[data-sonner-toast]').length === 0, undefined, { timeout: 20000 })
 await opt.locator('button:has-text("optimize for web")').click()
 let settledOk = true
 try {
-  await opt.waitForFunction((n) => {
-    const all = Array.from(document.querySelectorAll('[data-sonner-toast]'))
-    return all.length > n && all.slice(n).some((t) => /Already compact|Optimized for web|Could not optimize/.test(t.textContent || ''))
-  }, toastsBefore, { timeout: 90000 })
+  await opt.waitForFunction(() => Array.from(document.querySelectorAll('[data-sonner-toast]'))
+    .some((t) => /Already compact|Optimized for web|Could not optimize/.test(t.textContent || '')),
+  undefined, { timeout: 90000 })
 } catch { settledOk = false }
-const newToasts = (await opt.locator('[data-sonner-toast]').allInnerTexts()).slice(toastsBefore)
-const failed = newToasts.some((t) => /Could not optimize/.test(t))
+const passToasts = await opt.locator('[data-sonner-toast]').allInnerTexts()
+const failed = passToasts.some((t) => /Could not optimize/.test(t))
 check('an already-Draco input is read (decoder) and re-written (encoder) without error',
-  settledOk && !failed, newToasts.join(' | ').slice(0, 200))
+  settledOk && !failed, passToasts.join(' | ').slice(0, 200))
 // Honest either way: "Already compact" (the usual answer), or a marginally
 // smaller re-encode — but never a claim to have downscaled textures that
 // were already 2K.
 check('...and the answer is honest: nothing left to shrink, or a re-encode that claims no texture work',
-  newToasts.some((t) => /Already compact/.test(t)) || newToasts.some((t) => /Optimized for web/.test(t) && !/downscaled/.test(t)),
-  newToasts.join(' | ').slice(0, 200))
+  passToasts.some((t) => /Already compact/.test(t)) || passToasts.some((t) => /Optimized for web/.test(t) && !/downscaled/.test(t)),
+  passToasts.join(' | ').slice(0, 200))
 await opt.close()
 
 // ───────── F. Feed surface: still renders, NO WebGL ─────────

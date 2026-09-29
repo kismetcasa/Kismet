@@ -339,6 +339,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // the original is kept for a one-tap undo.
   const [optimizing, setOptimizing] = useState<OptimizeStep | null>(null)
   const [optimized, setOptimized] = useState<{ file: File; original: File; before: number; after: number } | null>(null)
+  // A ref, not the state above, gates re-entry: state only changes on the
+  // next render, so two clicks in one tick would start two passes.
+  const optimizeRunningRef = useRef(false)
   const fileRef = useRef(file)
   fileRef.current = file
   // The backdrop the model is shot on. Baked into the captured JPEG, so it is
@@ -370,7 +373,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const isModelPick = !!file && modelPickRef.current === file
   async function optimizeModelPick() {
     const source = file
-    if (!source || !isModelPick || optimizing) return
+    if (!source || !isModelPick || optimizeRunningRef.current) return
+    optimizeRunningRef.current = true
     setOptimizing('reading')
     try {
       const { optimizeGlb } = await import('@/lib/media/optimizeModel')
@@ -391,6 +395,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         description: err instanceof Error ? err.message : 'Try re-exporting the model as glTF 2.0 binary',
       })
     } finally {
+      optimizeRunningRef.current = false
       setOptimizing(null)
     }
   }
