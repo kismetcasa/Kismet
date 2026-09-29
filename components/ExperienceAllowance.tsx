@@ -187,7 +187,7 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
               <ul className="flex flex-col gap-1">
                 {standing.machines.map((m) => (
                   <li key={m.id} className="text-xs font-mono">
-                    <Link href={`/experience/${m.id}`} className="text-dim hover:text-ink underline">
+                    <Link href={`/play/${m.id}`} className="text-dim hover:text-ink underline">
                       {m.name}
                     </Link>{' '}
                     <span className="text-subtle">· {m.kind} · {m.state}</span>
@@ -227,7 +227,7 @@ export function MachineCallout({ collection, tokenId }: { collection: string; to
       {machines.map((m, i) => (
         <span key={m.id}>
           {i > 0 && ' · '}
-          <Link href={`/experience/${m.id}`} className="text-dim hover:text-ink underline">
+          <Link href={`/play/${m.id}`} className="text-dim hover:text-ink underline">
             {m.name}
           </Link>
           <span className="text-subtle"> ({m.kind === 'reveal' ? 'pull to reveal' : 'capsule prize'})</span>

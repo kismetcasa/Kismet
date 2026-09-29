@@ -126,7 +126,7 @@ export function RevealStudio() {
         if (!dryRun && body?.machine) {
           if (body.machine.state === 'live') {
             toast.success('Machine is live')
-            router.push(`/experience/${body.machine.id}`)
+            router.push(`/play/${body.machine.id}`)
             return
           }
           toast.success('Submitted for review')

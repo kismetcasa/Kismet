@@ -30,6 +30,13 @@ const LEGACY_MOMENT_URL = '^\\/moment\\/'
 const LEGACY_MOMENT_ABS = 'kismet\\.art\\/moment\\/'
 const LEGACY_URL_MSG = 'Build /artwork links — /moment is a redirect-only legacy path (see the rename redirect in next.config.mjs).'
 
+// /experience and /admin/experience are redirect-only legacy since the /play
+// move (see next.config.mjs): app code must build /play and /admin/play links.
+// Start-anchored, so /api/experience/* (the API, which did not move) stays legal.
+const LEGACY_PLAY_URL = '^\\/(admin\\/)?experience(\\/|\\?|$)'
+const LEGACY_PLAY_ABS = 'kismet\\.art\\/experience'
+const LEGACY_PLAY_MSG = 'Build /play links — /experience is a redirect-only legacy path (see the /play redirects in next.config.mjs).'
+
 // The page rename did NOT move the API: Kismet's internal routes stay
 // /api/moment/* by design (lib/inprocess.ts TERMINOLOGY), and no redirect
 // covers /api/*, so a phantom /api/artwork/* fetch 404s silently. The
@@ -70,6 +77,10 @@ const config = [
         { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_URL}/]`, message: LEGACY_URL_MSG },
         { selector: `Literal[value=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
         { selector: `TemplateElement[value.raw=/${LEGACY_MOMENT_ABS}/]`, message: LEGACY_URL_MSG },
+        { selector: `Literal[value=/${LEGACY_PLAY_URL}/]`, message: LEGACY_PLAY_MSG },
+        { selector: `TemplateElement[value.raw=/${LEGACY_PLAY_URL}/]`, message: LEGACY_PLAY_MSG },
+        { selector: `Literal[value=/${LEGACY_PLAY_ABS}/]`, message: LEGACY_PLAY_MSG },
+        { selector: `TemplateElement[value.raw=/${LEGACY_PLAY_ABS}/]`, message: LEGACY_PLAY_MSG },
         { selector: `Literal[value=/${PHANTOM_ARTWORK_API}/]`, message: PHANTOM_API_MSG },
         { selector: `TemplateElement[value.raw=/${PHANTOM_ARTWORK_API}/]`, message: PHANTOM_API_MSG },
       ],

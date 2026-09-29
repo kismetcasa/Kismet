@@ -8,7 +8,7 @@ export type MachineRow = { id: string; name: string; creator: string; state: str
   | { kind: 'capsule'; capsule: { collection: string; tokenId: string } }
 )
 
-/** The machine list as /experience and the Discover "play" tab show it. Its
+/** The machine list as /play and the Discover "play" tab show it. Its
  *  creator also sees how to end a live machine, beside it. */
 export function MachineRows({ machines, onEnded }: { machines: MachineRow[]; onEnded?: (id: string) => void }) {
   return (
@@ -16,7 +16,7 @@ export function MachineRows({ machines, onEnded }: { machines: MachineRow[]; onE
       {machines.map((m) => (
         <div key={m.id} className="flex flex-wrap items-center">
           <Link
-            href={`/experience/${m.id}`}
+            href={`/play/${m.id}`}
             className="flex-1 min-w-0 flex items-center gap-3 px-4 py-3.5 hover:bg-raised transition-colors"
           >
             <span className="flex-1 min-w-0 text-sm font-mono text-ink truncate">{m.name}</span>

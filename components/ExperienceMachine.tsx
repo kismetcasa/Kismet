@@ -780,7 +780,7 @@ export function ExperienceMachine({ id }: { id: string }) {
             any play from it can be recomputed from the revealed seed.
           </p>
           <Link
-            href={`/experience/${id}/verify${lastTx ? `?txHash=${lastTx}` : ''}`}
+            href={`/play/${id}/verify${lastTx ? `?txHash=${lastTx}` : ''}`}
             className="inline-block mt-2 text-[11px] font-mono text-dim hover:text-ink underline"
           >
             verify a play →

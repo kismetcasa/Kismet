@@ -892,7 +892,7 @@ console.log('\nstudio: artwork references')
   check('an address and id with a slash or a colon', want(parseArtworkRef(`${C}/12`)) && want(parseArtworkRef(`${C}:12`)))
   check('the token id is canonical, as every key is', parseArtworkRef(`${C}/012`)?.tokenId === '12')
   check('a bare address is not a piece', parseArtworkRef(C) === null)
-  check('nor is anything else', parseArtworkRef('https://kismet.art/experience') === null && parseArtworkRef('') === null)
+  check('nor is anything else', parseArtworkRef('https://kismet.art/play') === null && parseArtworkRef('') === null)
 }
 
 console.log(

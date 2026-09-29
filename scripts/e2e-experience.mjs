@@ -1052,6 +1052,11 @@ try {
   const unauth = await call('/api/experience/machines', { method: 'POST', body: draft })
   check('publishing needs a session', unauth.status === 401)
 
+  const pageIds = await Promise.all(['create', 'create-capsule', 'create-reveal'].map((id) =>
+    call('/api/experience/machines', { method: 'POST', body: { ...draft, id, dryRun: true }, user: ADMIN_USER_TOKEN })))
+  check('an id that one of the /play pages already uses is refused, so no machine can sit behind it',
+    pageIds.every((r) => r.status === 400 && /Kismet’s own pages/.test(r.json?.error ?? '')), pageIds.map((r) => r.status).join(','))
+
   const dry = await call('/api/experience/machines', { method: 'POST', body: { ...draft, dryRun: true }, user: ADMIN_USER_TOKEN })
   check('a dry run passes the live gate', dry.status === 200 && dry.json.dryRun === true && dry.json.problems.length === 0, JSON.stringify(dry.json))
   check('and reports the on-chain capsule supply', dry.json?.capsule?.maxSupply === 100 && dry.json?.capsule?.minted === 12)
@@ -1088,11 +1093,32 @@ try {
   check("and tomorrow's is already fixed", detail.json?.fairness?.next?.epoch === dayShift(today, 1) && detail.json.fairness.next.commitment.length === 64)
   check('the seed itself is never in the payload', !JSON.stringify(detail.json).includes(strings.get(`kismetart:xp:spring-season:seed:${today}`)))
 
-  const listPage = await call('/experience')
+  const listPage = await call('/play')
   check('the list page renders the live machine', listPage.status === 200 && listPage.text.includes('Spring Season'))
-  check('the machine page renders', (await call('/experience/spring-season')).status === 200)
-  check('the verify page renders', (await call('/experience/spring-season/verify')).status === 200)
-  check('the studio renders', (await call('/experience/new')).status === 200)
+  check('the machine page renders', (await call('/play/spring-season')).status === 200)
+  check('the verify page renders', (await call('/play/spring-season/verify')).status === 200)
+  check('the studio renders: the choice, then each kind', [(await call('/play/create')).status, (await call('/play/create-capsule')).status, (await call('/play/create-reveal')).status].join() === '200,200,200')
+  // Every old /experience address still lands, permanently, on its /play page.
+  /* eslint-disable no-restricted-syntax -- the legacy addresses under test */
+  const moved = [
+    ['/experience', '/play'],
+    ['/experience/new', '/play/create'],
+    ['/experience/new?kind=capsule', '/play/create-capsule'],
+    ['/experience/new?kind=reveal', '/play/create-reveal'],
+    ['/experience/spring-season', '/play/spring-season'],
+    [`/experience/spring-season/verify?txHash=${TX_A}`, `/play/spring-season/verify?txHash=${TX_A}`],
+    ['/admin/experience', '/admin/play'],
+  ]
+  /* eslint-enable no-restricted-syntax */
+  const landed = await Promise.all(moved.map(async ([from]) => {
+    const r = await fetch(`http://127.0.0.1:${PORT}${from}`, { redirect: 'manual', signal: AbortSignal.timeout(30_000) })
+    const to = new URL(r.headers.get('location') ?? '', `http://127.0.0.1:${PORT}`)
+    // The studio's old ?kind= carries over harmlessly; the new pages ignore it.
+    if (to.pathname.startsWith('/play/create-')) to.searchParams.delete('kind')
+    return `${r.status} ${to.pathname}${to.search}`
+  }))
+  check('every old /experience address redirects permanently to its /play page, query and all',
+    landed.join() === moved.map(([, to]) => `308 ${to}`).join(), landed.join(' | '))
 
   // ═══ 3. a play, with delivery stalled ══════════════════════════════════════
   console.log('\n3. a two-capsule play, delivered')
@@ -1661,7 +1687,7 @@ try {
   } })
   check('a non-admin publish lands in review', rev.status === 200 && rev.json.machine.state === 'review', JSON.stringify(rev.json))
   check('a reviewed machine is not public', (await call('/api/experience/machines/field-recordings')).status === 404)
-  check('nor is its page', (await call('/experience/field-recordings')).status === 404)
+  check('nor is its page', (await call('/play/field-recordings')).status === 404)
   check('the review API needs the admin cookie', (await call('/api/admin/experience?state=review')).status === 401)
   const queue = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
   check('the queue shows it with a live solvency verdict', queue.status === 200 && queue.json.machines.length === 1 && queue.json.machines[0].problems.length === 0, JSON.stringify(queue.json).slice(0, 300))
@@ -2421,11 +2447,11 @@ try {
       try {
         // ── the list ──
         {
-          const page = await open('/experience')
+          const page = await open('/play')
           const body = await text(page)
-          check('the list page leads with its name and promise', /experience capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
-          check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/experience/new')
-          const rows = page.locator('a[href^="/experience/"]:not([href="/experience/new"])')
+          check('the list page leads with its name and promise', /play capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
+          check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/play/create')
+          const rows = page.locator('a[href^="/play/"]:not([href="/play/create"])')
           const shelved = (await call('/api/experience/machines')).json.machines.length
           check('every machine on the shelves is a row', (await rows.count()) === shelved, `${await rows.count()} vs ${shelved}`)
           check('each renders its kind and a state badge', (await rows.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed)\b/i.test(t)))
@@ -2434,7 +2460,7 @@ try {
 
         // ── a machine, on sale ──
         {
-          const page = await open('/experience/spring-season')
+          const page = await open('/play/spring-season')
           await page.getByText('insert coin').waitFor()
           const body = await text(page)
           check('the face says insert coin', body.includes('insert coin'))
@@ -2466,7 +2492,7 @@ try {
           await page.getByPlaceholder('paste its transaction hash (0x…)').fill(TX_B)
           check('and enabled once one is', await redeem.isEnabled())
           check('recent plays are shown', body.includes('recent plays'))
-          check('the verifier is linked', (await page.getByRole('link', { name: /verify a play/ }).getAttribute('href'))?.startsWith('/experience/spring-season/verify'))
+          check('the verifier is linked', (await page.getByRole('link', { name: /verify a play/ }).getAttribute('href'))?.startsWith('/play/spring-season/verify'))
           await page.context().close()
         }
 
@@ -2474,7 +2500,7 @@ try {
         {
           const saved = chain.sales.get(key(CAPSULE, 1))
           chain.sales.delete(key(CAPSULE, 1))
-          const page = await open('/experience/spring-season')
+          const page = await open('/play/spring-season')
           await page.getByText('insert coin').waitFor()
           const btn = page.getByRole('button', { name: 'price unavailable' })
           check('an unreadable price disables the button and says so', (await btn.count()) === 1 && (await btn.isDisabled()))
@@ -2485,7 +2511,7 @@ try {
         }
         {
           await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'ended' } })
-          const page = await open('/experience/field-recordings')
+          const page = await open('/play/field-recordings')
           await page.getByText('insert coin').waitFor()
           const btn = page.getByRole('button', { name: 'season closed' })
           check('an ended machine renders, with the button reading season closed', (await btn.count()) === 1 && (await btn.isDisabled()))
@@ -2497,7 +2523,7 @@ try {
         // ── the verifier ──
         {
           // Section 5 left this claim under a tampered commitment.
-          const page = await open(`/experience/spring-season/verify?txHash=${TX_A}`)
+          const page = await open(`/play/spring-season/verify?txHash=${TX_A}`)
           await page.getByText('MISMATCH').waitFor()
           check('a tampered commitment renders MISMATCH in red', (await text(page)).includes('mismatch'))
           strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256(seed) }))
@@ -2516,16 +2542,16 @@ try {
 
         // ── the studio, disconnected ──
         {
-          const chooser = await open('/experience/new')
+          const chooser = await open('/play/create')
           const kinds = await text(chooser)
           check('the studio first asks which kind of machine',
             kinds.includes('capsule machine your own work at one price') && kinds.includes('reveal machine any artist’s work'), kinds.slice(0, 300))
           check('and each kind is a link to its studio',
-            (await chooser.getByRole('link', { name: /capsule machine/ }).getAttribute('href')) === '/experience/new?kind=capsule' &&
-            (await chooser.getByRole('link', { name: /reveal machine/ }).getAttribute('href')) === '/experience/new?kind=reveal')
+            (await chooser.getByRole('link', { name: /capsule machine/ }).getAttribute('href')) === '/play/create-capsule' &&
+            (await chooser.getByRole('link', { name: /reveal machine/ }).getAttribute('href')) === '/play/create-reveal')
           await chooser.context().close()
 
-          const page = await open('/experience/new?kind=capsule')
+          const page = await open('/play/create-capsule')
           await page.getByText('capsule studio').first().waitFor()
           check('a capsule machine has no artist to name — it is your own work', (await page.getByPlaceholder('artist 0x…').count()) === 0)
           await page.getByPlaceholder('spring-season').fill('browser-machine')
@@ -2574,7 +2600,7 @@ try {
 
         // ── the studio, connected: check, then publish to review ──
         {
-          const page = await open('/experience/new?kind=capsule', { user: USER_TOKEN, wallet: CREATOR2 })
+          const page = await open('/play/create-capsule', { user: USER_TOKEN, wallet: CREATOR2 })
           const dryRuns = []
           const consoleErrs = []
           const failedReqs = []
@@ -2610,8 +2636,8 @@ try {
           await page.getByText('is queued for a curator').waitFor()
           const afterPublish = await text(page)
           check('a non-admin publish lands on a confirmation, not a 404',
-            page.url() === `${origin}/experience/new?kind=capsule` && afterPublish.includes('browser machine is queued for a curator'), page.url())
-          check('that says where it will live once approved', afterPublish.includes('once approved it will be live at /experience/browser-machine'))
+            page.url() === `${origin}/play/create-capsule` && afterPublish.includes('browser machine is queued for a curator'), page.url())
+          check('that says where it will live once approved', afterPublish.includes('once approved it will be live at /play/browser-machine'))
           const queued = await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })
           check('and the machine really is in the review queue', queued.json?.machines?.some((m) => m.machine.id === 'browser-machine' && m.machine.state === 'review'))
           await page.context().close()
@@ -2619,7 +2645,7 @@ try {
 
         // ── the curator's queue ──
         {
-          const page = await open('/admin/experience', { admin: ADMIN_TOKEN })
+          const page = await open('/admin/play', { admin: ADMIN_TOKEN })
           await page.getByText('Browser Machine').waitFor()
           await page.getByRole('button', { name: /Browser Machine/ }).click()
           await page.getByRole('button', { name: 'approve · live' }).waitFor()
@@ -2667,7 +2693,7 @@ try {
               listed.every((m) => vText.includes(`${m.name.toLowerCase()} (capsule prize)`)),
             `${publicLookups} ${JSON.stringify(listed)} ${vText.match(/in (a|\d+) machines?:.{0,120}/)?.[0] ?? ''}`)
           const callout = visitor.getByRole('link', { name: listed[0]?.name ?? '-' })
-          check('each linking to its machine', (await callout.getAttribute('href')) === `/experience/${listed[0]?.id}`)
+          check('each linking to its machine', (await callout.getAttribute('href')) === `/play/${listed[0]?.id}`)
           await visitor.context().close()
 
           const page = await open(`/artwork/${POOL}/99`, { wallet: ADMIN, onChain: true, moment })
@@ -2718,7 +2744,7 @@ try {
 
         // ── a reveal machine: pull for free, see a piece, collect it at its price ──
         {
-          const page = await open('/experience/new-voices')
+          const page = await open('/play/new-voices')
           await page.getByText('free to pull').waitFor()
           const body = await text(page)
           check('the face says the pull is free', body.includes('free to pull') && body.includes('pull for free, collect what you reveal at its price'))
@@ -2747,7 +2773,7 @@ try {
           // One piece, so the reveal is known: the collect is the artwork's own,
           // sent from the player's wallet with the right value and referral.
           await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: { kind: 'reveal', id: 'solo-piece', name: 'Solo Piece', entries: [{ collection: REVEAL, tokenId: '1' }] } })
-          const solo = await open('/experience/solo-piece', { wallet: PLAYER, onChain: true })
+          const solo = await open('/play/solo-piece', { wallet: PLAYER, onChain: true })
           await solo.getByText('free to pull').waitFor()
           check('a one-piece lineup says so', (await text(solo)).includes("what's inside · one piece, always revealed"))
           await solo.getByRole('button', { name: 'pull', exact: true }).click()
@@ -2773,7 +2799,7 @@ try {
           await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: { kind: 'reveal', id: 'curator-solo', name: 'Curator Solo', entries: [{ collection: REVEAL, tokenId: '1' }] } })
           await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'curator-solo', state: 'live' } })
           const collectFrom = async (wallet) => {
-            const pg = await open('/experience/curator-solo', { wallet, onChain: true })
+            const pg = await open('/play/curator-solo', { wallet, onChain: true })
             await pg.getByText('free to pull').waitFor()
             await pg.getByRole('button', { name: 'pull', exact: true }).click()
             await pg.getByRole('button', { name: 'collect · 0.002 ETH' }).click()
@@ -2792,7 +2818,7 @@ try {
           // Sold out in the moment between the reveal and the collect: nothing
           // is charged or minted, and the page does not claim it was collected.
           {
-            const pg = await open('/experience/curator-solo', { wallet: PLAYER, onChain: true })
+            const pg = await open('/play/curator-solo', { wallet: PLAYER, onChain: true })
             await pg.getByText('free to pull').waitFor()
             await pg.getByRole('button', { name: 'pull', exact: true }).click()
             const btn = pg.getByRole('button', { name: 'collect · 0.002 ETH' })
@@ -2813,7 +2839,7 @@ try {
           {
             await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: { kind: 'reveal', id: 'curator-usdc', name: 'Curator USDC', entries: [{ collection: REVEAL, tokenId: '6' }] } })
             await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'curator-usdc', state: 'live' } })
-            const pg = await open('/experience/curator-usdc', { wallet: PLAYER, onChain: true })
+            const pg = await open('/play/curator-usdc', { wallet: PLAYER, onChain: true })
             await pg.getByText('free to pull').waitFor()
             await pg.getByRole('button', { name: 'pull', exact: true }).click()
             const btn = pg.getByRole('button', { name: /^collect · \$1/ })
@@ -2843,7 +2869,7 @@ try {
         // nothing at all once it is empty — each saying why.
         {
           const face = async () => {
-            const pg = await open('/experience/dry-season')
+            const pg = await open('/play/dry-season')
             await pg.getByText('Dry Season').first().waitFor()
             await pg.waitForTimeout(500)
             return pg
@@ -2877,7 +2903,7 @@ try {
         windowPasses()
         {
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: false } })
-          const page = await open('/experience/new?kind=reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
           await page.getByText('reveal studio').first().waitFor()
           await page.getByPlaceholder('new-voices').fill('browser-picks')
           await page.getByPlaceholder('New Voices').fill('Browser Picks')
@@ -2916,7 +2942,7 @@ try {
         // ── linking a collection in the studio, and the page it makes ──
         {
           windowPasses()
-          const page = await open('/experience/new?kind=reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR })
           await page.getByText('reveal studio').first().waitFor()
           await page.getByPlaceholder('new-voices').fill('browser-linked')
           await page.getByPlaceholder('New Voices').fill('Browser Linked')
@@ -2940,7 +2966,7 @@ try {
             (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-linked' && r.machine.collections?.join() === LINKED && r.pool.length === 2))
           await page.context().close()
 
-          const pg = await open('/experience/fresh-ink')
+          const pg = await open('/play/fresh-ink')
           await pg.getByText('Fresh Ink').first().waitFor()
           await pg.getByText('auto-updating').waitFor({ timeout: 8000 }).catch(() => {})
           check('a linked machine\'s page says new work joins by itself', (await text(pg)).includes('auto-updating · new work minted into 0xeeee…0002 joins by itself'), (await text(pg)).match(/curated by.{0,160}/)?.[0] ?? '')
@@ -2989,11 +3015,12 @@ try {
           let pg = await home()
           check('a first visit shows play right after home', (await tabsOf(pg)) === 'featured,trending,home,play,artists', await tabsOf(pg))
           await pg.locator('[data-tab="play"]').click()
-          const live = ((await call('/api/experience/machines')).json?.machines ?? []).filter((m) => m.state === 'live').map((m) => `/experience/${m.id}`).sort()
-          const rows = pg.locator('div:not([hidden]) > div.mt-4 a[href^="/experience/"]')
+          const live = ((await call('/api/experience/machines')).json?.machines ?? []).filter((m) => m.state === 'live').map((m) => `/play/${m.id}`).sort()
+          const rows = pg.locator('div:not([hidden]) > div.mt-4 a[href^="/play/"]:not([href="/play/create"])')
           await rows.first().waitFor({ timeout: 10_000 }).catch(() => {})
           const shown = (await rows.evaluateAll((as) => as.map((a) => a.getAttribute('href')))).sort()
           check('it lists every live machine, each opening that machine, and no closed one', live.length > 0 && shown.join() === live.join(), `${shown.length} shown vs ${live.length} live`)
+          check('and always offers to build one', (await pg.getByRole('link', { name: 'build gachapon' }).getAttribute('href').catch(() => null)) === '/play/create')
           check('and is remembered as the tab to return to', (await pg.evaluate(() => localStorage.getItem('kismetart:active-tab'))) === 'play')
           await pg.context().close()
 
@@ -3027,7 +3054,7 @@ try {
             pg = await home({ storage: { 'kismetart:active-tab': 'play' } })
             const build = pg.getByRole('link', { name: 'build gachapon' })
             await build.waitFor({ timeout: 10_000 }).catch(() => {})
-            check('with no machine to play, it offers to build one', (await text(pg)).includes('nothing to play yet') && (await build.getAttribute('href')) === '/experience/new')
+            check('with no machine to play, it offers to build one', (await text(pg)).includes('nothing to play yet') && (await build.getAttribute('href')) === '/play/create')
             await pg.context().close()
           } finally {
             zsets.set('kismetart:xp:index', index)
@@ -3049,7 +3076,7 @@ try {
         // No Experience item; a machine page sits under Discover, as every
         // page outside Mint and Market does.
         {
-          const desk = await open('/experience/spring-season')
+          const desk = await open('/play/spring-season')
           await desk.getByText('Spring Season').first().waitFor()
           // textContent, not innerText: the nav is styled uppercase.
           const items = await desk.locator('header nav a:visible').evaluateAll((as) => as.map((a) => a.textContent.trim()))
@@ -3057,7 +3084,7 @@ try {
           const discover = await desk.locator('header nav a:visible', { hasText: 'Discover' }).getAttribute('class')
           check('and on a machine page Discover is the active item', /font-bold/.test(discover ?? ''), discover)
           await desk.context().close()
-          const phone = await open('/experience/spring-season', { viewport: { width: 390, height: 800 } })
+          const phone = await open('/play/spring-season', { viewport: { width: 390, height: 800 } })
           await phone.getByText('Spring Season').first().waitFor()
           const current = (await phone.locator('header nav button[aria-haspopup="menu"]').textContent()).trim()
           const others = await phone.locator('header nav [role="menu"] a').evaluateAll((as) => as.map((a) => a.textContent.trim()))
@@ -3086,7 +3113,7 @@ try {
           const kismet = await bell(ADMIN_USER_TOKEN, ADMIN)
           const review = kismet.pg.locator('a', { hasText: /is waiting for review/i }).first()
           await review.waitFor({ timeout: 10_000 }).catch(() => {})
-          check('Kismet\'s review notice opens the review queue', (await review.getAttribute('href').catch(() => null)) === '/admin/experience')
+          check('Kismet\'s review notice opens the review queue', (await review.getAttribute('href').catch(() => null)) === '/admin/play')
           await kismet.pg.context().close()
         }
 
@@ -3143,27 +3170,27 @@ try {
           const listed = (await call('/api/experience/machines')).json.machines
           const liveBy = (addr) => listed.filter((m) => m.state === 'live' && m.creator === addr.toLowerCase()).length
           const endControls = (pg) => pg.getByRole('button', { name: /^(end season|close machine)$/ })
-          const rowOf = (pg, id) => pg.locator('div.divide-y > div').filter({ has: pg.locator(`a[href="/experience/${id}"]`) })
+          const rowOf = (pg, id) => pg.locator('div.divide-y > div').filter({ has: pg.locator(`a[href="/play/${id}"]`) })
           const stateOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.machine?.state
 
-          const visitor = await open('/experience')
+          const visitor = await open('/play')
           await visitor.getByRole('link', { name: 'open a machine' }).waitFor()
           await visitor.waitForTimeout(1500)
           check('a visitor sees no way to end anyone\'s machine', (await endControls(visitor).count()) === 0)
           await visitor.context().close()
-          const other = await open('/experience/spring-season', { wallet: PLAYER })
+          const other = await open('/play/spring-season', { wallet: PLAYER })
           await other.getByText('Spring Season').first().waitFor()
           await other.waitForTimeout(1500)
           check('nor does anyone else on a machine\'s page', (await endControls(other).count()) === 0)
           await other.context().close()
-          const admin = await open('/experience', { user: ADMIN_USER_TOKEN, wallet: ADMIN })
+          const admin = await open('/play', { user: ADMIN_USER_TOKEN, wallet: ADMIN })
           await endControls(admin).first().waitFor({ timeout: 10_000 }).catch(() => {})
           check('a creator sees one on each of their live machines in the list, and on no one else\'s',
             liveBy(ADMIN) > 0 && (await endControls(admin).count()) === liveBy(ADMIN), `${await endControls(admin).count()} vs ${liveBy(ADMIN)}`)
           await admin.context().close()
 
           // From the list.
-          const list = await open('/experience', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const list = await open('/play', { user: CURATOR_TOKEN, wallet: CURATOR })
           const row = rowOf(list, 'curator-usdc')
           await row.getByRole('button', { name: 'close machine' }).click()
           check('the first tap says what closing does, and changes nothing yet',
@@ -3179,12 +3206,12 @@ try {
           const nv = rowOf(tab, 'new-voices')
           await nv.getByRole('button', { name: 'close machine' }).click()
           await nv.getByRole('button', { name: 'confirm close' }).click()
-          await tab.locator('a[href="/experience/new-voices"]').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
-          check('closed from the play tab, it leaves the tab', (await stateOf('new-voices')) === 'ended' && (await tab.locator('a[href="/experience/new-voices"]').count()) === 0)
+          await tab.locator('a[href="/play/new-voices"]').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+          check('closed from the play tab, it leaves the tab', (await stateOf('new-voices')) === 'ended' && (await tab.locator('a[href="/play/new-voices"]').count()) === 0)
           await tab.context().close()
 
           // From a capsule machine's page: one signature closes the capsule's sale.
-          const capsulePage = await open('/experience/dry-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, onChain: true })
+          const capsulePage = await open('/play/dry-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, onChain: true })
           await capsulePage.getByRole('button', { name: 'end season' }).click()
           const signed = chain.walletTxs.length
           await capsulePage.getByRole('button', { name: 'confirm end season' }).click()
@@ -3197,7 +3224,7 @@ try {
           await capsulePage.context().close()
 
           // From a reveal machine's page.
-          const revealPage = await open('/experience/fresh-ink', { user: CURATOR_TOKEN, wallet: CURATOR })
+          const revealPage = await open('/play/fresh-ink', { user: CURATOR_TOKEN, wallet: CURATOR })
           await revealPage.getByRole('button', { name: 'close machine' }).click()
           await revealPage.getByRole('button', { name: 'confirm close' }).click()
           await revealPage.getByText('this machine is closed').waitFor({ timeout: 10_000 }).catch(() => {})

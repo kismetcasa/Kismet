@@ -88,6 +88,31 @@ const nextConfig = {
         destination: '/learn#who-runs-kismet',
         permanent: true,
       },
+      // /experience → /play (2026-09). Permanent (308) and kept forever for
+      // the same reason as /moment: machine links live in casts, Farcaster
+      // notifications already sent, and search results. First match wins, so
+      // the studio's two old ?kind= forms come before its bare form, and all
+      // three before the catch-all, which carries a machine's page and its
+      // verifier (query strings, e.g. ?txHash=, pass through). In-app code
+      // must build /play links directly (eslint.config.mjs).
+      /* eslint-disable no-restricted-syntax -- the legacy redirect sources themselves */
+      {
+        source: '/experience/new',
+        has: [{ type: 'query', key: 'kind', value: 'capsule' }],
+        destination: '/play/create-capsule',
+        permanent: true,
+      },
+      {
+        source: '/experience/new',
+        has: [{ type: 'query', key: 'kind', value: 'reveal' }],
+        destination: '/play/create-reveal',
+        permanent: true,
+      },
+      { source: '/experience/new', destination: '/play/create', permanent: true },
+      { source: '/experience', destination: '/play', permanent: true },
+      { source: '/experience/:path+', destination: '/play/:path+', permanent: true },
+      { source: '/admin/experience', destination: '/admin/play', permanent: true },
+      /* eslint-enable no-restricted-syntax */
     ]
   },
 
