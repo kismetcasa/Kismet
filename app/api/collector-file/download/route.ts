@@ -42,8 +42,9 @@ export const runtime = 'nodejs'
  * same reason.
  *
  * Buffer-then-send: chunk strings and the reassembled file are briefly
- * co-resident (~2.3× file size, capped 16 MiB). MAX_CONCURRENT 2 bounds
- * concurrent reassembly work (≤75 MB of working memory) and brackets ONLY
+ * co-resident (~2.3× file size, capped at CFILE_MAX_BYTES — ~150 MB at the
+ * 64 MiB cap). MAX_CONCURRENT 2 bounds concurrent reassembly work (~300 MB
+ * of working memory at the cap) and brackets ONLY
  * the chunk-read/reassemble section — auth/gate reads run outside the slot
  * so a slow RPC can't starve it. Response bodies additionally live until
  * each client drains them, which the per-IP rate limit and per-identity

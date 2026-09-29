@@ -2390,7 +2390,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             const f = e.target.files?.[0] ?? null
             if (!f) return
             if (f.size > CFILE_MAX_BYTES) {
-              toast.error('File too large', { description: 'The limit is 16 MB' })
+              toast.error('File too large', { description: `The limit is ${formatCfileSize(CFILE_MAX_BYTES)}` })
               return
             }
             if (!hasAcceptedCfileExt(f.name)) {

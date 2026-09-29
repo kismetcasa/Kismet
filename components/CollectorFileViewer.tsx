@@ -90,7 +90,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
     return () => {
       cancelled = true
       // Release the object URL, or every open leaks its bytes for the life
-      // of the document — these are up to 16 MB each.
+      // of the document — these are up to CFILE_MAX_BYTES (64 MiB) each.
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current)
         urlRef.current = null

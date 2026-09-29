@@ -40,6 +40,29 @@ when a new version lands — and "playing live with online emu"._
 
 ---
 
+> **CAP RAISE (2026-09-29) — 16 MiB → 64 MiB per version.** For a
+> 213-page PDF booklet (62.7 MB as exported) that the cap rejected while the
+> artwork media cap sat at 420 MB. Validated against the documented limits:
+> Upstash caps a request at 10 MB and a record at 100 MB (the 4 MiB chunks
+> touch neither), meters 200 GB/month of bandwidth free then $0.03/GB, and
+> bills storage at $0.25/GB-month past the first GB; a version is ~85 MiB
+> resident, ~150 MB in the PUT slot, ~150 MB per download slot (6 GB
+> container budget, OPS_RUNBOOK.md). Every user-facing "16 MB" string now
+> derives from `CFILE_MAX_BYTES` via `formatCfileSize`. Two obligations
+> travel with the raise and are recorded on the PUT route: (1) Traefik's
+> `respondingTimeouts.readTimeout` defaults to 60 s for the WHOLE request
+> body since v2.11.2 and Coolify's proxy sets no override — set it to 5m
+> under Server → Proxy → Configuration, or a 64 MiB upload needs ~9 Mbit/s
+> to survive; (2) `CFILE_STORAGE_CEILING_BYTES` should move to 2 GiB, since
+> the 512 MiB default fits two such artworks. Guardrail: never add a
+> `middleware.ts` — Next 15.5.5+ buffers a body clone of at most 10 MB when
+> one exists and silently truncates. The shape that removes the proxy
+> dependency entirely is a chunked upload mapped onto the existing 4 MiB
+> chunk store (one short request per part, a commit that hashes and
+> magic-checks); the right long-term home is object storage with short-lived
+> links (R2, or OCI Object Storage in-region with the Ampere box) — both
+> remain follow-ups.
+
 > **ROM KINDS (2026-09-02).** `.gb` / `.gbc` are first-class collector-file
 > kinds (`lib/collectorFileTypes`, `lib/collectorFileCore`): detected by the
 > Nintendo logo at `0x104` plus the CGB flag at `0x143`, served download-only
@@ -930,8 +953,8 @@ explicitly scheduled for a re-vote.
 
 ### 10.1 Numbers (corrected)
 
-- **Cap 16 MiB/version** — 2× the MBC5 format ceiling (8 MiB), 45× today's
-  file. Costs at Turbo retail (~$32.56/GiB): Sylvester ≈ **$0.011**/version;
+- **Cap 64 MiB/version** (16 MiB until 2026-09-29; the Turbo figures below
+  are from the 16 MiB era) — 8× the MBC5 format ceiling (8 MiB). Costs at Turbo retail (~$32.56/GiB): Sylvester ≈ **$0.011**/version;
   worst case ≈ **$0.51**/version, permanent. Per-identity quota
   (`cfile-upload` 15/day, `cfile-bytes` 256 MiB/day) bounds one identity at
   ≈ $7.6/day of permanent spend — Sybil-multiplied, hence the **fail-closed
@@ -1232,7 +1255,7 @@ redistributes untrusted binaries) even though most of the app sits at L1.
 
 | # | Deviation / risk | Standard | Why we accept it | What would change it |
 |---|---|---|---|---|
-| 1 | **No antivirus/malware scanning** of uploads | ASVS V12 (L2) | Uploaders are on-chain-accountable artists holding ADMIN/METADATA on the token, not anonymous. Files are never executed or extracted server-side, always served `attachment` + `nosniff`, capped at 16 MiB, and revocable via the audited kill-switch. This is the standard indie-platform posture. | Opening artist onboarding beyond curated/known creators. Then: ClamAV or a VirusTotal lookup at upload, quarantining until clean. |
+| 1 | **No antivirus/malware scanning** of uploads | ASVS V12 (L2) | Uploaders are on-chain-accountable artists holding ADMIN/METADATA on the token, not anonymous. Files are never executed or extracted server-side, always served `attachment` + `nosniff`, capped at 64 MiB, and revocable via the audited kill-switch. This is the standard indie-platform posture. | Opening artist onboarding beyond curated/known creators. Then: ClamAV or a VirusTotal lookup at upload, quarantining until clean. |
 | 2 | **Uploads keep a sanitized artist filename** instead of a random ID | ASVS V12 / OWASP file-upload guidance | Collectors should receive `Pixel Art Gallery - Sylvester.zip`, not a UUID. Compensating controls: `normalizeCfileName` is a strict `[A-Za-z0-9 ._-]` whitelist that forces the DETECTED kind's extension (verify-pinned against traversal, CRLF, bidi-override and double-extension cases), and storage keys are ref-derived, never filename-derived. | Nothing foreseeable; the compensating controls address every risk the rule targets. |
 | 3 | **RPO ≈ 24 h on a single copy**; restore never exercised | NIST SP 800-34 | Post-pivot the bytes exist only in Upstash (daily backup enabled). Blast radius is artist re-upload, not irrecoverable loss — artists hold their originals, and the reconciler reports exactly which records lost bytes. | Real adoption. Then: an exercised restore test, and R2 as a second copy at the CDN cutover. |
 | 4 | **Download bandwidth is metered and unalerted** | — (self-imposed) | Each download ships ~1.33× the file out of Upstash bandwidth, counting toward the $20 cap that hard-stops the database. Bounded by per-identity quotas and per-IP rate limits, not by a hard meter. Accepted on the low-adoption premise. | First sustained download traffic. Then: usage alerting, and R2 (zero egress fees) — the schema's opaque `uri`-free pointer makes that a `fetchSealedCfile`-shaped change. |
@@ -1241,7 +1264,7 @@ redistributes untrusted binaries) even though most of the app sits at L1.
 | 7 | **`looksLikeZip`-class detection is a typo filter, not a content control** | OWASP file-upload | JAR/DOCX share the zip magic; a PDF's tail matters more than its head. Real controls are the forced extension, `attachment`, `nosniff`, and the kill-switch. | Extraction/preview of archive contents (§7), which would need real per-entry validation. |
 | 8 | **View is session-only; download also accepts a signed wallet proof** | — | Viewing happens inside our page where the patched `window.fetch` carries the session/JWT; a per-view wallet signature would be hostile. A holder without a session can still download, and the viewer says so explicitly instead of dead-ending. | A material number of sessionless holders. |
 | 9 | **The "update available" badge needs a prior download** | — | `downloadedV` is stamped by downloads only, because the view route must not tell a v2 holder they are current on v3, nor count lookers in the artist's downloader stat. View-only collectors still receive the push/bell notification. | Evidence that view-only collectors are missing updates. Then: a separate `viewedV` marker with the badge computed from `max(downloaded, viewed)`. |
-| 10 | **The 16 MiB cap is server-shaped, not device-shaped** | — | It was sized for Redis storage and server memory. A max-size GLB means ~32 MB of browser buffers plus GPU memory — rough on a low-end phone in a Mini App webview (practical mobile ceiling is nearer 5–10 MB). | Artist reports of failed mobile views. Then: a soft warning at upload for large models. |
+| 10 | **The 64 MiB cap is server-shaped, not device-shaped** | — | It was sized for Redis storage and server memory (raised from 16 MiB for a PDF booklet, 2026-09-29). A max-size GLB means ~130 MB of browser buffers plus GPU memory — rough on a low-end phone in a Mini App webview (practical mobile ceiling is nearer 5–10 MB). PDFs and zips download rather than render, so the viewer exposure is GLB/SVG only. | Artist reports of failed mobile views. Then: a soft warning at upload for large models, or a kind-specific cap for viewable kinds. |
 | 11 | **No focus trap → CLOSED** | WCAG 2.2 SC 2.1.1 / 2.4.3 | Was a real conformance gap, not polish: the repo's `verify:a11y` gate only checks text-contrast classes and gave false assurance. The viewer now moves focus in on open, cycles Tab within the dialog, and restores focus to the opener on close, with Escape and a labelled close button as the required exits. | — |
 | 12 | **Sunset promise is unresolved** | — (product) | The Arweave design promised per-file key release if Kismet wound down. Post-pivot there are no keys to publish and collector files cease to exist with the platform. Takedown got stronger; the wind-down story got weaker, and that fell out of the pivot rather than being decided. | **Open product decision** — an export path, or an explicit statement of what collectors keep. |
 
