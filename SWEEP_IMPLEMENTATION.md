@@ -88,7 +88,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 `PatronInfoModal` pattern (`role="dialog"`, `useBodyScrollLock`,
 `useEscapeKey`, backdrop click closes). Contents, top to bottom:
 
-1. **Header**: `sweep` · subtitle `one of each of the cheapest ETH mints`.
+1. **Header**: `sweep the floor` · subtitle `Kismet patrons always bring a broom`.
    A size toggle `10 | 20`.
 2. **Rows** (one per candidate, in rank order): thumbnail (`MomentImage`,
    thumbhash placeholder), artwork name, artist name (enriched the
@@ -102,7 +102,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
    `confirm in wallet…` → `confirming…` → `finalizing…` → `swept N!`, then
    `sweep the next N` (re-runs discovery, which now excludes what was just
    collected) and `done`.
-5. **Footnotes**: `ETH mints only · one edition each · you pay gas` and the
+5. **Footnotes**: `one edition each` and the
    count of candidates the wallet balance cannot cover, if any.
 
 ### 1.3 States and edge cases
@@ -126,10 +126,12 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 
 ### 1.4 Copy rules
 
-Never say "cheapest on Kismet" without "ETH mints": USDC-priced work is
-invisible to this surface by decision (§8, item 5). The sheet, not the wallet,
-is the trust surface, so it must show the exact `value` and every recipient
-artwork before the prompt.
+The sheet's copy is the brand's, not a spec: `sweep the floor` / `Kismet
+patrons always bring a broom`, and a footnote of `one edition each` (plus the
+count of rows the wallet cannot cover). The ETH-only scope is a product
+decision recorded here (§0, §8), not something the sheet has to announce.
+The sheet, not the wallet, is the trust surface, so it must show the exact
+`value` and every recipient artwork before the prompt.
 
 ---
 

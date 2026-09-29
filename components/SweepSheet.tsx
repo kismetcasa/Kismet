@@ -164,7 +164,7 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
       ref={dialogRef}
       role="dialog"
       aria-modal="true"
-      aria-label="Sweep"
+      aria-label="Sweep the floor"
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-4 sm:items-center"
       onClick={onClose}
     >
@@ -174,8 +174,8 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
       >
         <div className="flex items-start justify-between gap-3 p-5 pb-3 sm:p-6 sm:pb-3">
           <div>
-            <h2 className="font-mono text-sm uppercase tracking-widest text-ink">sweep</h2>
-            <p className="mt-1 font-mono text-xs text-muted">one of each of the cheapest ETH mints</p>
+            <h2 className="font-mono text-sm uppercase tracking-widest text-ink">sweep the floor</h2>
+            <p className="mt-1 font-mono text-xs text-muted">Kismet patrons always bring a broom</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="inline-flex overflow-hidden rounded-full border border-line p-0.5" role="group" aria-label="Basket size">
@@ -257,7 +257,7 @@ export function SweepSheet({ onClose, initialN = SWEEP_DEFAULT_N }: { onClose: (
             {label}
           </button>
           <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-muted">
-            ETH mints only · one edition each · you pay gas
+            one edition each
             {unaffordable > 0 ? ` · ${unaffordable} more need more ETH` : ''}
           </p>
         </div>
