@@ -69,8 +69,8 @@ when a new version lands — and "playing live with online emu"._
 > claims above were read first-hand (Traefik commit 240b83b, Coolify
 > `bootstrap/helpers/proxy.php`, Next 15.5.25 `body-streams.js`). The size
 > formatter now drops a zero decimal so limit copy reads "64 MB", never
-> "64.0 MB". Per-construct evidence for the whole branch is in
-> `GLB_3D_VIEWER_DESIGN.md` §16.
+> "64.0 MB". Line-by-line evidence for the whole branch is in
+> `MODEL_LOAD_AND_CFILE_CAP_REVIEW.md` (summary: `GLB_3D_VIEWER_DESIGN.md` §16).
 
 > **ROM KINDS (2026-09-02).** `.gb` / `.gbc` are first-class collector-file
 > kinds (`lib/collectorFileTypes`, `lib/collectorFileCore`): detected by the
@@ -161,38 +161,48 @@ known production bug (§4.1).
 
 ```
 ARTIST (creator or on-chain METADATA admin)
-  │  PUT /api/collector-file  (zip ≤16 MiB + optional release note)
+  │  PUT /api/collector-file  (zip / PDF / GLB / SVG / .gb / .gbc ≤64 MiB + optional release note)
   ▼
-[server] session → canEditMomentMetadata (RPC throw ⇒ 503) → pass gate
-  → platform pause → blacklist → per-identity quota → FAIL-CLOSED platform day-ceiling
-  → acquire SET NX lock (before any spend; concurrent PUT ⇒ 409)
-  → bounded body read (16 MiB actual bytes) → zip sanity + filename normalize → sha256
-  → AES-256-GCM encrypt  (key = HKDF(master, keyId); AAD = coll:id:keyId; tag 16B)
-  → uploadBytesToArweave(ciphertext) with AbortSignal timeout   ← platform pays
-  → poll gateway until readable (else activate-later) → Redis: v+1, append history
-  → optional notify: SET NX 24h cooldown-lock → paced fanout (§6.2)
+[server] per-IP rate limit → session → canEditMomentMetadata (RPC throw ⇒ 503; false ⇒ 403)
+  → platform pause → blacklist → Content-Type filter (415) → Content-Length pre-check (413)
+  → the one PUT slot platform-wide (MAX_CONCURRENT_PUTS = 1; busy ⇒ 503)
+  → bounded body read (64 MiB ACTUAL bytes; over ⇒ 413) → magic-byte kind detection (415)
+  → filename normalize → acquire SET NX lock (concurrent PUT ⇒ 409) → STRICT record read (blip ⇒ 503)
+  → sha256 dedup (identical bytes ⇒ `unchanged`, nothing spent) → plan version v+1
+  → FAIL-CLOSED global storage ceiling (ledger read fails ⇒ 503; full ⇒ 507)
+  → per-identity quotas (cfile-upload 15/day, cfile-bytes 256 MiB/day)
+  → 4 MiB base64 chunks written in parallel, one request each, EX 3600 (60 s budget)
+  → commit MULTI: PERSIST chunks + record write + retention prune + ledger rewrite
+  → release lock → optional notify: SET NX 24h cooldown-lock → paced fanout (§6.2)
 
 COLLECTOR
-  │  GET /api/collector-file/download?collection=&tokenId=
+  │  GET /api/collector-file/download?collection=&tokenId=   (web: session navigation)
+  │  POST /api/collector-file/ticket → GET …/download?ticket=  (Mini App / share link:
+  │       the full gate runs at mint time, the single-use URL then needs no auth)
   ▼
 [server] path 1: session → planUnionCheck(expandToFidSiblings) ≤10 wallets → holdsAny
          path 2 (fallback): raffle-style signed message (ERC-1271) → holdsEdition(signer)
          plus: 15-min grace marker minted by /api/collect's receipt-verified path
-  → kill-switch check → fetch ciphertext (budgeted, size-capped, failure-memoized)
-  → decrypt (verify tag) → send with Content-Length
-    Content-Disposition: attachment; filename="<normalized>.zip"
+  → kill-switch check → reassembly slot (MAX_CONCURRENT_DOWNLOADS = 2; busy ⇒ 503, nothing consumed)
+  → parallel 4 MiB chunk reads on the dedicated client (strict; a missing chunk ⇒ 500, never bytes)
+  → send with Content-Length (buffer-then-send; ~2.3× the file briefly co-resident)
+    Content-Disposition: attachment; filename="<normalized>.<detected ext>"
     Cache-Control: private, no-store; X-Content-Type-Options: nosniff
-  → record wallet's downloaded version (powers "update available" badge)
+  → consume the ticket at the last safe moment → record wallet's downloaded version
+    (powers "update available" badge)
+  VIEW (GLB / SVG, in-page): GET /api/collector-file/view — session only, no ticket,
+    never stamps a download; `private, max-age=3600` with `?v=` as the cache key;
+    its own reassembly slot (MAX_CONCURRENT_VIEWS = 2)
 
 EVERYONE (artwork page)
   "⬇ Includes a collector download · Sylvester.zip · 357 KB · v2 · updated Aug 25"
    └─ not holder → "Collect to download"   └─ holder → Download (+Update badge)
    └─ creator  → Manage panel: replace / history / notify / unique-downloader count
 
-PLAY (order per §12):  [▶ Play] → /artwork/…/play  (full page, no iframe)
+PLAY (PLANNED — §7; no rom route or play page has shipped):  [▶ Play] → /artwork/…/play  (full page, no iframe)
    → binjgb (single-threaded wasm, no SharedArrayBuffer)
    → public mode: plaintext ROM, CDN-cacheable path — a storage decision at attach
-   → collectors mode: gated decrypt route, private/no-store
+   → collectors mode: gated ROM route, private/no-store
 ```
 
 **What this is NOT:** DRM. A collector can share the zip after downloading —
@@ -442,11 +452,16 @@ New route family `app/api/collector-file/` (no existing route can be reused:
 | `/api/collector-file?collection=&tokenId=` | PUT | session + `canEditMomentMetadata` | Attach or replace. Raw zip body, `x-file-name` header (normalized, §10.2), optional `?note=`. Full guard ladder below. Returns the new public descriptor. |
 | same | GET | session + creator/admin | Manage view: descriptor + history + unique-downloader count. |
 | same | DELETE | session + `canEditMomentMetadata` | Detach: clears the pointer AND tombstones serving (kept history stays artist-visible only). |
-| `/api/collector-file/download?collection=&tokenId=` | GET | two-path gate (§5.1) | Decrypt-and-send (buffer, then respond with `Content-Length` — GCM cannot stream-verify). `Content-Disposition: attachment`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`. Writes `cfile-dl`. 401 / 403 not-holder / 404 none / 423 blocked / 503 verify-unavailable. |
+| `/api/collector-file/download?collection=&tokenId=` | GET | two-path gate (§5.1), or a single-use `?ticket=` | Reassemble-and-send: parallel chunk reads on the dedicated client, buffer, then respond with `Content-Length` (~2.3× the file briefly co-resident; `MAX_CONCURRENT_DOWNLOADS = 2`, busy ⇒ 503 with nothing consumed). `Content-Disposition: attachment`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`. Consumes the ticket after the bytes are read and checked; writes `cfile-dl`. 401 / 403 not-holder / 404 none / 423 blocked / 503 verify-unavailable. |
+| `/api/collector-file/ticket?collection=&tokenId=` | POST | full gate (§5.1) | Mints a single-use download URL for a Mini App to hand to the device browser (in-app navigations carry no credentials); `?share=1` mints the longer-TTL copy-link variant, whose bare GET answers a confirmation page so unfurlers cannot redeem it. |
+| `/api/collector-file/view?collection=&tokenId=` | GET | session only — no tickets | The same gated bytes shaped for the in-page viewer (GLB / SVG). Never stamps a download; `Cache-Control: private, max-age=3600` with the client's `?v=` as a cache key; its own `MAX_CONCURRENT_VIEWS = 2` slot. |
+| `/api/collector-file/status?collection=&tokenId=` | GET | public (+ session for viewer state) | The public descriptor for the artwork-page card plus, for a signed-in viewer, the version they last downloaded (the "update available" badge). Ownership is not decided here. |
 | `/api/collector-file/notify` | POST | session + `canEditMomentMetadata` | Explicit "tell collectors" (also a checkbox on PUT). The 24 h cooldown **is** a `SET NX EX 86400` lock — no read-then-write race; returns reach estimate. |
-| `/api/collector-file/rom?collection=&tokenId=` | GET | per `playable.access` | Collectors-mode ROM for the web player (§7). Public mode never touches this route. |
+| `/api/collector-file/rom?collection=&tokenId=` _(planned, §7 — not shipped)_ | GET | per `playable.access` | Collectors-mode ROM for the web player (§7). Public mode never touches this route. |
 
-**The PUT guard ladder, in order** (each item exists today except the last):
+**The PUT guard ladder, in order** _(validated pre-pivot; the storage pivot
+replaced two of its items — see the note at its end — and the shipped order is
+the §2 picture)_:
 `checkRateLimit('cfile-put:<ip>', 5, 60)` → session → `canEditMomentMetadata`
 (RPC throw ⇒ 503; permission false ⇒ 403) → `isPlatformPausedFor` (per
 `update-uri:116` — note update-uri has *only* the pause check; the blacklist
@@ -473,8 +488,15 @@ backstop on permanent Arweave spend (`PLATFORM_SIGN_DAILY_CAP` covers only
 `acquireLock('cfile-lock:…')` **before any spend** (second PUT ⇒ 409; the
 draft's post-upload commit meant a double-click paid for an orphaned permanent
 ciphertext) → bounded body read via the `lib/boundedBody.ts` doctrine
-(Content-Length pre-check, then actual-bytes enforcement) → zip sanity (§10.2)
-→ encrypt → upload (timeout) → verify → commit → release lock.
+(Content-Length pre-check, then actual-bytes enforcement) → magic-byte kind
+detection + filename normalize (§10.2) → chunk writes (60 s budget) → commit
+MULTI → release lock. (The ladder's exact shipped order, including where the
+lock, the dedup and the ceiling sit relative to the meters, is the §2 picture.
+Two items above are pre-pivot: the fail-closed *platform day-ceiling* on
+permanent Arweave spend became the fail-closed *global storage ceiling*
+(`CFILE_STORAGE_CEILING_BYTES`, a strict ledger read whose failure answers 503
+and whose overflow answers 507), and encrypt → upload → verify became chunk
+writes → commit MULTI.)
 
 **Session-only on PUT (no signed message) is a deliberate asymmetry** from
 `update-uri`'s signature+nonce, and it matches the closer precedent: spending
@@ -483,12 +505,16 @@ and `/api/sign`. update-uri's signature exists because it mutates
 inprocess-side token state through the platform key; this route mutates only
 Kismet-side state.
 
-**Concurrency and memory (corrected by validation):** PUT holds ~64 MB peak
-(body + cipher output + Turbo's signed data item) ⇒ **`MAX_CONCURRENT = 1`**
+**Concurrency and memory (corrected by validation; figures updated for the
+shipped Redis design and the 64 MiB cap):** PUT holds ~2.3× the file at peak —
+the buffered body, its concat and the base64 chunk strings, ~150 MB at the cap
+— ⇒ **`MAX_CONCURRENT_PUTS = 1`**
 (the transcode-gif precedent, `app/api/transcode-gif/route.ts:37`), increment
 before the first await (`app/api/img/route.ts:278-288` discipline). Download
-holds ciphertext + plaintext simultaneously (~32 MB) ⇒ **`MAX_CONCURRENT = 2`**
-(~64 MB worst case). Both budgets live against the **6 GB container limit**
+holds the chunk strings and the reassembled file simultaneously (~2.3×, ~150 MB
+at the cap) ⇒ **`MAX_CONCURRENT_DOWNLOADS = 2`** (~300 MB worst case), and the
+view route has its own `MAX_CONCURRENT_VIEWS = 2` slot of the same shape. All
+three budgets live against the **6 GB container limit**
 alongside `/api/img`'s and transcode-gif's existing appetites — not against
 the 4 GB V8 heap (Buffers are off-heap).
 
@@ -744,7 +770,7 @@ cat). Play is a page affordance, not a new media kind; nothing in
   zip parser is a **new server-side dependency** (fflate-class, or ~200 lines
   over `zlib.inflateRaw` — either way, say it; §3's "no new dependency" claim
   is Phase-1-only). Enforce on *actual inflated bytes* with mid-inflate abort
-  (cap 16 MiB), cap entry count (~2,000) and central-directory size, reject
+  (cap `CFILE_MAX_BYTES`), cap entry count (~2,000) and central-directory size, reject
   non-normalizing entry names, store the chosen **entry index** (not a name a
   duplicate could shadow), and filter macOS junk by **prefix `__MACOSX/` and
   basename `._`** — the naive name filter fails on the actual test file,
@@ -752,14 +778,15 @@ cat). Play is a page affordance, not a new media kind; nothing in
   AppleDouble fork with a `.gb` extension that would be detected as a second
   ROM (or served as one, 4 KB of resource fork).
 - **Access is the artist's dial, and it is a *storage* decision at attach
-  time, not a header decision at read time** (validation): `'public'` mode
+  time, not a header decision at read time** (validation; Play itself is
+  planned, §7 — no rom route or player has shipped): `'public'` mode
   uploads the extracted ROM as its **own plaintext Arweave object** and serves
   it through the existing CDN-ready public byte path (`/api/img?u=ar://…` —
   it already streams arbitrary `ar://` with content-type passthrough and
   `public, immutable` caching, `app/api/img/route.ts:399-401,518-520`);
-  `'collectors'` mode serves through the gated decrypt route with
+  `'collectors'` mode serves through the gated ROM route with
   `private, no-store`. The two must never share a cacheable route — a
-  decrypted ROM cached public cannot be un-cached by flipping a flag. The
+  gated ROM cached public cannot be un-cached by flipping a flag. The
   manage panel says plainly: **public play is irreversible for that version**.
 - **Later polish:** render the artist's own overlay art (the zip ships
   Kismet-branded bezels) as the player chrome.
@@ -810,9 +837,9 @@ download (they hold the token). Both notification copies gain one clause
 naming the included file.
 
 **Downloading — web, signed in:** one click. The `__Host-` session cookie
-rides the same-site navigation; the server verifies, decrypts, sends;
-Sylvester's 357 KB arrives sub-second (a 16 MiB worst case takes a few
-seconds of gateway fetch + decrypt).
+rides the same-site navigation; the server verifies, reassembles, sends;
+Sylvester's 357 KB arrives sub-second (a 64 MiB worst case is sixteen parallel
+chunk reads plus the join — seconds, not minutes).
 
 **Downloading — web, signed out:** exactly one wallet interaction, matching
 the product's DNA: every transactional collector surface today avoids
@@ -862,8 +889,8 @@ badge, pass badge, pin — `MomentCard.tsx:586-616`).
 section renders **adjacent to, not inside,** the metadata panel's save path —
 the metadata save drags Arweave propagation waits, a second wallet signature,
 and an on-chain write behind it (`:1207,:1245,:1248`); attaching a zip is
-session-only and must not inherit that pipeline. Attach = drag-drop, `.zip`,
-≤16 MiB, ~seconds for real files; a concurrent co-admin upload gets a clean
+session-only and must not inherit that pipeline. Attach = drag-drop, any accepted kind,
+≤64 MiB, ~seconds for real files; a concurrent co-admin upload gets a clean
 409 `someone else is updating this file`. Replace shows the version history
 (with one-click rollback, §4.2), the release-note field, *notify collectors*
 with a live reach estimate — or the over-ceiling message (`this edition is
@@ -952,7 +979,7 @@ explicitly scheduled for a re-vote.
 | Plaintext zip on Arweave, txid held server-side | **Rejected — rationale rewritten** | The draft's "enumerable by owner wallet" is a one-line fix (dedicated upload wallet; the server path already omits the File-Name tag). The real reason: the pointer lives one careless serialization away from a public page payload, this team has shipped that bug class twice (`VIDEO_PLAYBACK_RCA.md`, `PATRON_GATE_MINIAPP_RCA.md`), and with plaintext that bug is a **permanent unrevocable public URL**. Encryption converts it to a non-event (§3.1) — at the cost of a worse worst case and the buffering ceiling. For the *public-play* ROM, plaintext is exactly what we use (§7). |
 | Zip in `animation_url` / token metadata | **Rejected — stands as written** | Public by definition; every update = artist signature + inprocess PATCH + the `created_at` re-rank scar; contradicts "not on-chain". The Phase-3 metadata *mirror* is additionally dead (§4.1): nested-key passthrough is unproven and a frozen version descriptor is stale by construction. |
 | Bytes in Redis (base64) | **Rejected — rationale replaced** | The draft's "per-download bandwidth billing" was **false** (Upstash PAYG bandwidth is free ≤200 GB/mo; 500 downloads of Sylvester ≈ $0.00). The real killers: base64 of a "music added" zip lands against the **10 MB hard request cap**, and — decisive — a user-controlled byte path coupled to the **$20 budget cap that hard-stops the platform's only datastore** (`REDIS_IMPLEMENTATION_REVIEW.md:580`) is a total-outage vector, not a degraded feature. |
-| **Cloudflare R2 + presigned URLs** | **Deferred, scheduled re-vote — no longer "rejected"** | The steel-man is strong and the draft undersold it: zero-egress, deletable versions (permanence is an *anti-feature* for a file whose defining property is that it changes), presigned URLs delete the whole decrypt-buffer path, `aws4fetch` is ~5 KB, and `OPS_RUNBOOK.md:205` already contemplates R2. What keeps it out **today**: Cloudflare is *not yet* fronting this stack (`SCALING.md:27` — "CDN not yet fronted"; the `cf-connecting-ip` handling is defensive), so R2 now genuinely is a sixth external dependency with new credentials on a stack that counts to five. **The decision is sequenced, not closed: when `OPS_RUNBOOK.md §3` (the CDN cutover — the repo's own #1 infra move) executes, re-take this choice; the gate/versioning/notification layers are storage-agnostic behind `putFile/getFile`, so the swap is contained.** Trigger for an early re-vote: version churn (frequent large replacements), not file size — each superseded 16 MiB version is ~$0.51 forever on Arweave and $0 on R2. |
+| **Cloudflare R2 + presigned URLs** | **Deferred, scheduled re-vote — no longer "rejected"** | The steel-man is strong and the draft undersold it: zero-egress, deletable versions (permanence is an *anti-feature* for a file whose defining property is that it changes), presigned URLs delete the whole decrypt-buffer path, `aws4fetch` is ~5 KB, and `OPS_RUNBOOK.md:205` already contemplates R2. What keeps it out **today**: Cloudflare is *not yet* fronting this stack (`SCALING.md:27` — "CDN not yet fronted"; the `cf-connecting-ip` handling is defensive), so R2 now genuinely is a sixth external dependency with new credentials on a stack that counts to five. **The decision is sequenced, not closed: when `OPS_RUNBOOK.md §3` (the CDN cutover — the repo's own #1 infra move) executes, re-take this choice; the gate/versioning/notification layers are storage-agnostic behind `putFile/getFile`, so the swap is contained.** Trigger for an early re-vote, post-pivot: sustained download bandwidth — Upstash egress is metered against the $20 hard-stop while R2 egress is free; version churn stopped being a permanent cost when the bytes moved to Redis, where retention prunes superseded versions. _(Pre-pivot the trigger was version churn, not file size: each superseded 16 MiB version was ~$0.51 forever on Arweave and $0 on R2.)_ |
 | Lit Protocol / client-side token-gated decryption | **Rejected — stands** | New protocol dependency + wallet decryption ceremony for a perk; the server already holds a simpler trust position. |
 | One-day MVP: plaintext txid in `MomentMeta`, gate the pointer | **Noted as the honest spike** (the draft omitted it) | If the goal were "validate the UX with Andrea this week": one plaintext upload + the ownership gate + a pointer field, no crypto, no index, no notifications. Everything in it survives into the full design except the storage call. Kept on the table for sequencing (§12), not as the destination. |
 
@@ -965,20 +992,26 @@ explicitly scheduled for a re-vote.
 - **Cap 64 MiB/version** (16 MiB until 2026-09-29; the Turbo figures below
   are from the 16 MiB era) — 8× the MBC5 format ceiling (8 MiB). Costs at Turbo retail (~$32.56/GiB): Sylvester ≈ **$0.011**/version;
   worst case ≈ **$0.51**/version, permanent. Per-identity quota
-  (`cfile-upload` 15/day, `cfile-bytes` 256 MiB/day) bounds one identity at
+  (`cfile-upload` 15/day, `cfile-bytes` 256 MiB/day — four max-size versions a
+  day at the 64 MiB cap, 1 GiB/week) bounds one identity at
   ≈ $7.6/day of permanent spend — Sybil-multiplied, hence the **fail-closed
-  platform day-ceiling** (§5), which is the only true backstop
-  (`consumeUserQuota` and `checkRateLimit` both fail open;
-  `PLATFORM_SIGN_DAILY_CAP` never covered the server-JWK path).
-- **Memory:** PUT ≈ 64 MB × `MAX_CONCURRENT 1`; download ≈ 32 MB ×
-  `MAX_CONCURRENT 2` — budgeted against the **6 GB container limit** next to
+  platform day-ceiling** of the Arweave design (§5), which was the only true
+  backstop (`consumeUserQuota` and `checkRateLimit` both fail open;
+  `PLATFORM_SIGN_DAILY_CAP` never covered the server-JWK path). Post-pivot
+  nothing is permanent or paid per byte: the same fail-closed role is played
+  by the global storage ceiling (`CFILE_STORAGE_CEILING_BYTES`, strict ledger
+  read in PUT — 503 on a read failure, 507 when full), and the open-ended cost
+  axis is download bandwidth (§14 row 4).
+- **Memory:** PUT ≈ 150 MB × `MAX_CONCURRENT_PUTS 1`; download ≈ 150 MB ×
+  `MAX_CONCURRENT_DOWNLOADS 2`; view ≈ 150 MB × `MAX_CONCURRENT_VIEWS 2` (each
+  ~2.3× the file at the 64 MiB cap) — budgeted against the **6 GB container limit** next to
   `/api/img` (4×100 MB resizes) and transcode-gif (1×300 MB), not against the
   4 GB V8 heap (Buffers are off-heap; `OPS_RUNBOOK.md:96-104,128-129`).
 - **Fanout:** ≤2,000 recipients ≈ ≤24 K Redis commands per notify (~4% of
   current monthly volume) — with the ceiling-refusal, pacing, and
   budget-table row from §6.2.
 - **Fail-closed on authorization** (`strictRead`, `holdsEdition`, kill-switch,
-  the day-ceiling); **fail-open on cost guards** (rate limit, quota) by
+  the storage ceiling); **fail-open on cost guards** (rate limit, quota) by
   platform convention. RPC-down and Redis-down produce 503 "temporary",
   distinguishable from 403 "not a collector".
 - **Gateway risk:** the Arweave pool is `arweave.net` alone
@@ -993,26 +1026,32 @@ skipped:
 
 - **Filename hygiene:** never echo `x-file-name`. Normalize to
   `[A-Za-z0-9 ._-]{1,64}`, strip control chars, quotes, path separators, and
-  bidi overrides (U+202E can render `galleryexe.gb` as `bg.exe`), force a
-  terminal `.zip`, RFC 6266-encode. The header value is artist-controlled
+  bidi overrides (U+202E can render `galleryexe.gb` as `bg.exe`), force the
+  DETECTED kind's extension (`.zip` / `.pdf` / `.glb` / `.svg` / `.gb` /
+  `.gbc` — `normalizeCfileName`), RFC 6266-encode. The header value is artist-controlled
   input into a response header — treat it like one.
 - **Zip sanity, honestly scoped:** the `PK\x03\x04` sniff is a typo filter,
   not a content control (JAR/APK/DOCX share it; readers parse from the end of
-  the central directory). v1 stores bytes as-authored and relies on: `.zip`
-  forced extension + `attachment` + `nosniff` + the kill-switch. Phase 2's
+  the central directory). v1 stores bytes as-authored and relies on: the
+  detected kind's forced extension + `attachment` + `nosniff` + the
+  kill-switch. Phase 2's
   extraction applies the real caps (§7).
 - **Kill-switch + tombstone:** `kismetart:cfile-blocked` checked on
   **download** (blacklisting an artist must be able to stop an
-  already-attached file, not just future PUTs); DELETE tombstones serving.
-  The ciphertext on Arweave is permanent either way — the key never leaving
-  the server *is* the takedown mechanism, which is itself an argument
-  encryption wins over plaintext.
-- **The sunset promise, re-scoped:** the draft's "if Kismet winds down we
-  publish the master key" would republish **every moderated and malicious
-  payload ever uploaded, forever**. Corrected commitment: *publish per-file
-  keys for files not under moderation hold* (per-`keyId` derivation makes
-  selective release trivial), or escrow key release per artist. Still a
-  strong collector-protection story — now one we can actually keep (§11 Q3).
+  already-attached file, not just future PUTs — and, post-extension, on
+  **view** as well); the artist's DELETE is a real deletion post-pivot (the
+  chunk keys go, the metadata rows stay). _Pre-pivot this read: the
+  ciphertext on Arweave is permanent either way, so the key never leaving the
+  server was the takedown mechanism — the argument for encryption over
+  plaintext, which the pivot retired._
+- **The sunset promise — unresolved post-pivot (§14 row 12).** The draft's
+  "if Kismet winds down we publish the master key" would have republished
+  **every moderated and malicious payload ever uploaded, forever**; the
+  validated correction was *per-file keys for files not under moderation
+  hold*. The storage pivot retired the keys along with the encryption, so
+  there is nothing to publish: collector files cease to exist with the
+  platform unless an export path or an explicit statement of what collectors
+  keep is decided (§11 Q3, §14 row 12).
 
 ---
 
@@ -1209,7 +1248,8 @@ kind's MIME, and every file still ships as `attachment` + `nosniff` (a PDF
 is never rendered inline on the origin). `CfileVersion.kind` is optional —
 records written before the extension are all zips and read as such. The
 chunk store, gate, tickets, retention, ceiling and notifications are
-format-agnostic and unchanged; the 16 MiB cap stays uniform. Client pickers
+format-agnostic and unchanged; the per-version cap stays uniform across kinds
+(16 MiB then, 64 MiB since 2026-09-29). Client pickers
 share one accept-list (`lib/collectorFileTypes.ts`) and upload as explicit
 `application/octet-stream`, leaving the magic bytes as the single authority.
 

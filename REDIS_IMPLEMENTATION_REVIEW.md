@@ -904,6 +904,37 @@ review's budget model:
   be used here: its auto-pipeline is client-global, so two CONCURRENT
   requests' chunk GETs in the same tick would batch into one over-cap
   reply. Do not "optimize" chunk I/O onto the shared client or into MGET.
-- Commands: +`chunks` (≤4) per upload/download — noise at any plausible
-  volume. The previous `cfile-global-bytes` day meter is deleted; the
-  fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.
+- Commands: +`chunks` (≤4 at the 16 MiB cap of the time; ≤16 since the
+  2026-09-29 raise to 64 MiB, below) per upload/download — noise at any
+  plausible volume. The previous `cfile-global-bytes` day meter is deleted;
+  the fail-CLOSED posture moved to the storage-ceiling ledger read in PUT.
+
+### Addendum update (2026-09-29) — per-version cap raised to 64 MiB
+
+`CFILE_MAX_BYTES` went from 16 MiB to 64 MiB (`lib/collectorFileTypes.ts`;
+rationale and validation in `COLLECTOR_DOWNLOADS_DESIGN.md`, "Cap raise").
+What that changes for this review's budget model, and what it does not:
+
+- **Per-request shape is unchanged.** Chunks are still 4 MiB of plaintext
+  (≤ ~5.4 MB encoded), one command per HTTP request on the dedicated
+  non-pipelining client, so the 10 MB request cap and the 100 MB record
+  limit are untouched. A max-size version is 16 chunks instead of 4.
+- **Storage per version is 4×**: ~85 MiB resident (89,478,544 bytes,
+  pinned in `verify:collector-file`), so one artwork's three retained
+  versions can hold ~256 MiB. The 512 MiB default ceiling therefore fits
+  two such artworks; the runbook now asks for `CFILE_STORAGE_CEILING_BYTES`
+  = 2 GiB in Coolify, which sits past the first free storage GB (billed at
+  $0.25/GB-month beyond it — a cost dial, still not a cliff).
+- **Bandwidth per download is 4× at the cap**: ~1.33 × 64 MiB ≈ 85 MB out
+  of the metered 200 GB/month, so ~2,300 max-size downloads a month reach
+  the free line. The bound remains the per-identity `cfile-download` quota
+  (100/day) and per-IP rate limits, unalerted — the same accepted line as
+  before, with a shorter fuse for a popular large file. The view route's
+  one-hour `private, max-age` cache is what keeps repeat views off it.
+- **Working memory**: ~2.3× the file per slot (~150 MB at the cap) for the
+  one PUT, two downloads and two views the app allows at once — against the
+  6 GB container limit, not the V8 heap. Not a Redis concern; recorded here
+  because the slot counts are what bound the concurrent chunk I/O above.
+- **Upload wall-clock**: a 64 MiB body no longer fits Traefik's 60 s default
+  read timeout on ordinary uplinks; the proxy flag is an ops obligation
+  (`OPS_RUNBOOK.md` §5), not a Redis one.

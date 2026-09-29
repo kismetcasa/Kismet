@@ -92,14 +92,14 @@ Line numbers are those of the files as committed by this review.
 | 27–30 | the global's shape | keep | typed to the two keys written |
 | 32–38 | `configureModelViewerDecoders()` | keep; L33 **R** | **E** as above, at all three mount sites (the collector viewer is not driven; it calls the same function). L33's `typeof self` guard is unreachable today (every caller runs after a client-only dynamic import) and is what makes the function safe to call from any module — the contract `lib/media/gateway.ts`'s helpers keep with their `typeof window` guards |
 
-## components/MomentModel.tsx (rewritten, 349 lines)
+## components/MomentModel.tsx (rewritten, 346 lines)
 
 | Lines | What | Verdict | Evidence |
 |---|---|---|---|
-| 1–14 | imports | keep | each used: `Box`/`X` (buttons), `MomentImage` (still), `modelFetchUrls`, `thumbhashToBlurDataURL`, the three `modelMedia` exports, the four `modelFetch` exports, `configureModelViewerDecoders` |
-| 16–57 | component comment | keep — claims checked | tap-to-load rationale is inherited; "no WebGL context exists until the model is in hand": **E** "no WebGL context exists while the bytes are still on their way"; "host is position:relative": **S** `template.js` 21–27; "empty white box": **H** harness A (centre pixel 255,255,255); "pixel-checked": **E** centre-pixel assertions; "exiting aborts": **E** E4 |
-| 59–79 | `Phase`, `Props` | keep | every prop read (`background` at L252, `onAllError` via ref at L246) |
-| 81–96 | `useAllowsMotion` (unchanged) | keep | **E** D |
+| 1–16 | imports | keep | each used: `Box`/`X` (buttons), `MomentImage` (still), `modelFetchUrls`, `thumbhashToBlurDataURL`, the three `modelMedia` exports, the four `modelFetch` exports, `configureModelViewerDecoders` |
+| 18–57 | component comment | keep — claims checked | tap-to-load rationale is inherited; "no WebGL context exists until the model is in hand": **E** "no WebGL context exists while the bytes are still on their way"; "host is position:relative": **S** `template.js` 21–27; "empty white box": **H** harness A (centre pixel 255,255,255); "pixel-checked": **E** centre-pixel assertions; "exiting aborts": **E** E4 |
+| 59–76 | `Phase`, `Props` | keep | every prop read (`background` at L252, `onAllError` via ref at L246) |
+| 78–96 | `useAllowsMotion` (unchanged) | keep | **E** D |
 | 99–109 | six state values | keep | each drives a rendered outcome the E2E observes: `phase` (all sections), `message` (E3, E5), `posterFailed` (still fallback), `modelLoaded` (fade), `download` (readout), `blobUrl` (src) |
 | 113–115 | `abortRef`, `blobUrlRef`, `sessionRef` | keep; `sessionRef` **R** | abort: **E** "the in-flight request was actually aborted"; blob URL: **E** "handed a blob: URL"; session token: E4's "a response arriving after the cancel never mounts a viewer" passes via the abort alone — the token is what would still discard a result resolved in the same tick as the cancel |
 | 116–118 | `lastProgressAtRef` | keep **R** | not measured: a 30 MB body arrives as roughly 500–2000 stream chunks and each `setDownload` re-renders the media column; the final event bypasses the throttle (L162–163), so the last state is never lost |
@@ -124,7 +124,7 @@ Line numbers are those of the files as committed by this review.
 | 288–303 | `<model-viewer>` only with a blob URL; attributes | keep | **E** "tapping mounts exactly one viewer", shadow-intensity, environment-image, D (auto-rotate), "handed a blob: URL"; `touch-action="pan-y"` inherited |
 | 304–311 | readout chip | keep | **E** "before any byte the readout says connecting…", "a cancel control is offered…"; `whitespace-nowrap` keeps "14% · 4.3 MB of 28 MB" on one line (screenshot 09). The chip's contrast reasoning is inherited from finding 16 |
 | 312–319 | exit / cancel control with two labels | keep | **E** "exit control is present and labelled", "a cancel control is offered during the download", E4 |
-| 323–349 | idle/error branch: still, `view in 3D` / `retry 3D`, message | keep (trimmed) | **E** "idle state offers view in 3D", E3 "the failure is explained and the retry affordance is offered", E5. The first pass removed `disabled={urls.length === 0}`: `gatewayUrls` returns `[uri]` for any non-empty string and the parent mounts this component only with a non-empty `modelSrc` |
+| 324–346 | idle/error branch: still, `view in 3D` / `retry 3D`, message | keep (trimmed) | **E** "idle state offers view in 3D", E3 "the failure is explained and the retry affordance is offered", E5. The first pass removed `disabled={urls.length === 0}`: `gatewayUrls` returns `[uri]` for any non-empty string and the parent mounts this component only with a non-empty `modelSrc` |
 
 ## components/ModelOptimizeBar.tsx (new, 55 lines)
 
@@ -132,7 +132,7 @@ Line numbers are those of the files as committed by this review.
 |---|---|---|---|
 | 1–4 | client directive; imports (`formatCfileSize`, `OptimizeStep` type) | keep | both used; the type import erases at build |
 | 6–11 | comment | keep | matches the three rendered states below |
-| 12–25 | props | keep | each rendered or wired: `size`, `busy`, `optimized.before`, `onOptimize`, `onUndo` — **E** G chip texts, G undo, G2 |
+| 12–24 | props | keep | each rendered or wired: `size`, `busy`, `optimized.before`, `onOptimize`, `onUndo` — **E** G chip texts, G undo, G2 |
 | 26–29 | container; `aria-live="polite"` | keep; `aria-live` **R** | the chip's text changes while the artist waits (reading → textures → geometry → writing) and is the only status the form shows; announcing a status region is the standard, and `verify:a11y` cannot see it (it scans contrast classes) |
 | 30 | live size | keep | **E** "the chip now shows a smaller live size and what it was" (`3.2 MB`) |
 | 31–32 | busy step | keep (trimmed) | rendered during the pass (the step ids are the copy; the identity map that used to translate them was removed) |
@@ -170,8 +170,8 @@ Line numbers are those of the files as committed by this review.
 | 47–48 | `DRACO_DIR`, `JSON_CHUNK` | keep | L90–91, L118 |
 | 50–53 | `EmscriptenFactory` (callback required) | keep (tightened) | the callback is always passed (L100); the first pass removed the promise branch |
 | 55–76 | `loadScript` | keep; two branches **R** | **E** "the encoder the pass used was self-hosted too" (the wrapper served 200 through this path). The `existing` branch (L57–59, L70–74) is reached only if the script loaded but the wasm fetch failed and the artist retries; the `error` branch removes the tag so that retry can succeed. Neither is driven |
-| 78–100 | `loadDracoModule`: memoized; script ∥ wasm; factory with `onModuleLoaded` | keep (simplified) | **E** G (encoder), G2 (decoder path — "an already-Draco input is read (decoder)…"); **S** Draco 1.5.7 `draco_encoder_wrapper.js` calls `a.onModuleLoaded(a)`; three's `DRACOLoader.js` 510–517 relies on that callback alone. L96–97's `typeof factory` check turns a wrong global into a message instead of a TypeError |
-| 102–108 | cache eviction on failure | keep **R** | a failed load must not be memoized as a permanent failure (the exact model-viewer defect this branch fixes elsewhere); not driven |
+| 78–100 | `loadDracoModule`: memoized; script ∥ wasm; factory called with `onModuleLoaded` | keep (simplified) | **E** G (encoder), G2 (decoder path — "an already-Draco input is read (decoder)…"); **S** Draco 1.5.7 `draco_encoder_wrapper.js` calls `a.onModuleLoaded(a)`; three's `DRACOLoader.js` 510–517 relies on that callback alone. L96–97's `typeof factory` check turns a wrong global into a message instead of a TypeError |
+| 101–108 | cache eviction on failure; the memo entry; return | keep **R** | a failed load must not be memoized as a permanent failure (the exact model-viewer defect this branch fixes elsewhere); not driven |
 | 110–129 | `declaredExtensions` (exported for the oracle) | keep | **V:M** five checks: used+required, none, header-only, wrong chunk type, truncated chunk |
 | 131–156 | `shrinkTexture` | keep | **E** "…3000px texture was downscaled to 2K"; L134 skips KTX2/other; L138 leaves ≤2K alone; L152 keeps the original when a canvas re-encode is larger (a PNG with a palette re-encodes as RGBA and can grow) |
 | 158–169 | signature; `reading`; meshopt refusal | keep; refusal **R** | **E** G; no meshopt fixture (the encoder is not a dependency) — the refusal is the honest answer while no decoder is shipped |

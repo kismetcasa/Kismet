@@ -6,7 +6,8 @@ parts of the GLB feature that only exist on screen.
 ## Why this is separate from `npm run check`
 
 The 150px-strip bug (GLB_3D_VIEWER_DESIGN.md, finding 15) passed typecheck,
-lint, the 44-assertion `verify:model-media` oracle **and** the bundle guard.
+lint, the `verify:model-media` oracle (44 assertions at the time) **and** the
+bundle guard.
 None of those render a layout, so none of them could have caught a preview
 that displayed — and captured its poster — at the wrong size. That is the gap
 this file covers, and it is why it asserts pixel geometry and capture output
@@ -29,7 +30,8 @@ UPSTASH_REDIS_REST_URL=http://localhost:6399 \
 UPSTASH_REDIS_REST_TOKEN=stub \
 npx next start -p 3100 &
 
-# 3. Fixtures: a spec-valid glTF 2.0 cube plus a still.
+# 3. Fixtures: a spec-valid glTF 2.0 cube plus a still. The script writes the
+#    rest itself (a zip, a textured sphere, truncated / old-version / corrupt GLBs).
 mkdir -p .e2e && node scripts/e2e/make-glb.mjs .e2e/cube.glb
 node -e "require('sharp')({create:{width:600,height:600,channels:3,background:{r:20,g:120,b:90}}}).jpeg().toFile('.e2e/poster.jpg')"
 
@@ -131,7 +133,13 @@ is trivially true when `x` is absent.
   session and an on-chain write, so it is not driven here. Its pieces are the
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
   `modelMomentFields` builder — each of which this file or `verify:model-media`
-  covers; the wiring itself is unverified in a browser.
+  covers; the wiring itself is unverified in a browser. The "optimize for web"
+  pass is mint-only (`ModelOptimizeBar` is mounted by `MintForm` alone).
+- The collector-file 3D viewer (`components/CollectorFileViewer`) needs a
+  holder session, so it is not driven here either. It calls the same
+  `configureModelViewerDecoders()` the mint preview proves at the network level
+  (section G) and mounts `<model-viewer>` with the same shadow and lighting
+  attributes; only its wiring is unverified in a browser.
 
 # HTTP end-to-end check — profile identity (ENS)
 
