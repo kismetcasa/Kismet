@@ -2779,17 +2779,17 @@ try {
             metadata: { name: 'Piece Ninety Nine', description: 'An artwork used to validate the allowance panel.', image: '' },
           }
           const visitor = await open(`/artwork/${POOL}/99`, { moment })
-          let visitorLookups = 0
-          let publicLookups = 0
-          visitor.on('request', (r) => {
-            if (!r.url().includes('/api/experience/piece')) return
-            if (new URL(r.url()).searchParams.get('public') === '1') publicLookups++
-            else visitorLookups++
-          })
           await visitor.getByText('Piece Ninety Nine').first().waitFor()
           // Absence is only evidence once the panel has had time to appear: an
           // immediate count passes even when it would render a moment later.
           await visitor.waitForTimeout(2500)
+          // Counted from the page's own resource timing, which holds every
+          // request since it loaded. A listener attached once open() returns
+          // misses a lookup the page made while it was hydrating.
+          const lookups = await visitor.evaluate(() =>
+            performance.getEntriesByType('resource').map((e) => e.name).filter((u) => u.includes('/api/experience/piece')))
+          const publicLookups = lookups.filter((u) => new URL(u).searchParams.get('public') === '1').length
+          const visitorLookups = lookups.length - publicLookups
           check('a visitor sees no machines panel, and never asks for the artist\'s controls',
             visitorLookups === 0 && (await visitor.getByRole('button', { name: /^machines/i }).count()) === 0)
           const listed = (await call(`/api/experience/piece?collection=${POOL}&tokenId=99&public=1`)).json?.machines ?? []
