@@ -227,6 +227,14 @@ export type MachineState = 'draft' | 'review' | 'live' | 'ended' | 'delisted'
  *  weight the draw reads is simply the one stored — nothing is derived later. */
 export type Rarity = 'manual' | 'supply'
 
+/** A machine's cover: the still its card and its share preview show. Uploaded
+ *  the way a collection's cover is (Arweave, first frame of a gif), so it is
+ *  always an `ar://` URI, with the thumbhash the card blurs in from. */
+export interface MachineCover {
+  uri: string
+  thumbhash?: string
+}
+
 interface MachineCommon {
   id: string
   /** Lowercased creator address — artist, or a host who owns no art. */
@@ -238,6 +246,9 @@ interface MachineCommon {
    *  that has ever been live may have sold capsules, and every one of them is
    *  owed for life, so it can never be withdrawn — only ended or delisted. */
   listedAt?: number
+  /** Absent on machines published before covers existed; their cards fall
+   *  back to art the machine already has (lib/experience/cards). */
+  cover?: MachineCover
 }
 
 /** A machine that sells capsules: a player pays the capsule price once and a

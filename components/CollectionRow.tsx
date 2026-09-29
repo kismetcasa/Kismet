@@ -10,6 +10,7 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { MomentCard } from './MomentCard'
 import { MomentImage } from './MomentImage'
 import { CollectAllAction } from './CollectAllAction'
+import { CoverCard } from './CoverCard'
 import { LazyMount } from './LazyMount'
 
 export interface FeaturedCollectionRow {
@@ -72,12 +73,15 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
   }, [adminAddr, initialUsername])
 
   const coverCard = (
-    <article className="flex flex-col bg-[#161616] border border-line overflow-hidden h-full">
-      <Link
-        href={`/collection/${c.contractAddress}`}
-        className="relative aspect-square w-full block overflow-hidden bg-surface group/img"
-      >
-        {isAdmin && (
+    <CoverCard
+      href={`/collection/${c.contractAddress}`}
+      image={c.metadata?.image}
+      thumbhash={c.metadata?.kismet_thumbhash}
+      alt={name}
+      sizes="(max-width: 1024px) 320px, 288px"
+      priority={priority}
+      overlay={
+        isAdmin && (
           <button
             onClick={(e) => {
               e.preventDefault()
@@ -91,42 +95,24 @@ export function CollectionRow({ collection, priority, isMobile }: CollectionRowP
           >
             <Star size={16} fill={isFeatured ? 'currentColor' : 'none'} strokeWidth={1.5} />
           </button>
-        )}
-        {c.metadata?.image && !imgFailed ? (
-          <MomentImage
-            src={c.metadata.image}
-            alt={name}
-            fill
-            className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-            sizes="(max-width: 1024px) 320px, 288px"
-            onAllError={() => setImgFailed(true)}
-            priority={priority}
-            preferProxy
-            thumbhash={c.metadata.kismet_thumbhash}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="text-line font-mono text-xs">no preview</span>
-          </div>
-        )}
+        )
+      }
+    >
+      <h3 className="text-sm font-mono text-ink truncate">{name}</h3>
+      <Link
+        href={`/collection/${c.contractAddress}`}
+        className="w-full px-3 py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+      >
+        view collection
       </Link>
-      <div className="flex flex-col gap-2 p-3 flex-1">
-        <h3 className="text-sm font-mono text-ink truncate">{name}</h3>
-        <Link
-          href={`/collection/${c.contractAddress}`}
-          className="w-full px-3 py-1.5 text-center text-xs font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
-        >
-          view collection
-        </Link>
-        <CollectAllAction
-          collectionAddress={c.contractAddress}
-          ethEligibleTokenIds={c.ethEligibleTokenIds}
-          ethEligibleTotalWei={c.ethEligibleTotalWei}
-          usdcEligibleTokenIds={c.usdcEligibleTokenIds}
-          usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
-        />
-      </div>
-    </article>
+      <CollectAllAction
+        collectionAddress={c.contractAddress}
+        ethEligibleTokenIds={c.ethEligibleTokenIds}
+        ethEligibleTotalWei={c.ethEligibleTotalWei}
+        usdcEligibleTokenIds={c.usdcEligibleTokenIds}
+        usdcEligibleTotalUsdc={c.usdcEligibleTotalUsdc}
+      />
+    </CoverCard>
   )
 
   return (

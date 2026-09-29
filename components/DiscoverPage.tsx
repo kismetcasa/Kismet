@@ -16,7 +16,8 @@ import { useLongPressDrag } from '@/hooks/useLongPressDrag'
 import type { Moment } from '@/lib/inprocess'
 import { trackFunnel } from '@/lib/funnel'
 import { useAdmin } from '@/contexts/AdminContext'
-import { MachineRows, type MachineRow } from '@/components/MachineRows'
+import { MachineCards } from '@/components/MachineCards'
+import type { MachineCardData } from '@/lib/experience/cards'
 
 // Mobile-mount context. Server-side UA detection (see app/page.tsx)
 // sets this to `true` on mobile UAs, baking the decision into SSR
@@ -674,17 +675,17 @@ export function DiscoverPage({
 
 // ─── play feed ───────────────────────────────────────────────────────────────
 
-// The machines on the shelves right now, one row each, opening to the machine.
+// The machines on the shelves right now, a cover card each, opening to the machine.
 // A closed machine cannot be played, so only live ones are listed (/play keeps
 // the closed ones). The way to build one is always here: the tab is where
 // people find machines, so it is where a creator looks for how to build one.
 function PlayFeed() {
-  const [machines, setMachines] = useState<MachineRow[] | null>(null)
+  const [machines, setMachines] = useState<MachineCardData[] | null>(null)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     fetch('/api/experience/machines')
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d: { machines?: MachineRow[] }) => setMachines((d.machines ?? []).filter((m) => m.state === 'live')))
+      .then((d: { machines?: MachineCardData[] }) => setMachines((d.machines ?? []).filter((m) => m.state === 'live')))
       .catch(() => setFailed(true))
   }, [])
 
@@ -713,7 +714,7 @@ function PlayFeed() {
           build gachapon
         </Link>
       </div>
-      <MachineRows machines={machines} onEnded={(id) => setMachines(machines.filter((m) => m.id !== id))} />
+      <MachineCards machines={machines} onEnded={(id) => setMachines(machines.filter((m) => m.id !== id))} />
     </div>
   )
 }

@@ -72,6 +72,9 @@ const TX_REDRAW = '0x' + '9f'.repeat(32) // its first draw is refused, so attemp
 const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refused and resume lands it
 const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was revoked
+const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+/** Spring Season's cover: an Arweave upload, as the studio makes one. */
+const SPRING_COVER = { uri: 'ar://' + 'Sp1ngC0ver'.repeat(4) + 'abc' }
 /** A fresh capsule for the machine the browser publishes in section 9. */
 const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
 /** The capsule of the machine whose play needs a redraw (section 5b). */
@@ -767,6 +770,11 @@ const dayShift = (epoch, d) => { const [y, m, dd] = epoch.split('-').map(Number)
 // with no metadata see exactly what they did before.
 const ARTWORK_META = new Map([
   [key(POOL, 8), { name: 'Piece Eight', image: 'ar://piece-eight' }],
+  // Art that machines published before covers fall back to on their cards: a
+  // capsule machine's capsule, a reveal machine's first piece.
+  [key(CAPSULE_D, 1), { name: 'Dry Season Capsule', image: 'ar://dry-season-capsule' }],
+  [key(REVEAL, 1), { name: 'Reveal One', image: 'ar://reveal-one' }],
+  [key(REVEAL, 2), { name: 'Reveal Two', image: 'ar://reveal-two' }],
 ])
 const inprocessServer = createServer((req, res) => {
   const u = new URL(req.url, 'http://stub')
@@ -1067,6 +1075,7 @@ try {
 
   const draft = {
     id: 'spring-season', name: 'Spring Season',
+    cover: SPRING_COVER,
     capsule: { collection: CAPSULE, tokenId: '1' },
     entries: [
       { collection: POOL, tokenId: '7', artist: ADMIN, weight: 30, supply: 0 },
@@ -1080,6 +1089,11 @@ try {
     call('/api/experience/machines', { method: 'POST', body: { ...draft, id, dryRun: true }, user: ADMIN_USER_TOKEN })))
   check('an id that one of the /play pages already uses is refused, so no machine can sit behind it',
     pageIds.every((r) => r.status === 400 && /Kismet’s own pages/.test(r.json?.error ?? '')), pageIds.map((r) => r.status).join(','))
+
+  const badCovers = await Promise.all([{ uri: 'https://example.com/cover.png' }, { uri: SPRING_COVER.uri, thumbhash: '<svg>' }, 'ar://x'].map((cover) =>
+    call('/api/experience/machines', { method: 'POST', body: { ...draft, cover, dryRun: true }, user: ADMIN_USER_TOKEN })))
+  check('a cover that is not an Arweave upload, or carries a malformed thumbhash, is refused',
+    badCovers.every((r) => r.status === 400 && r.json?.error === 'Invalid cover'), badCovers.map((r) => r.status).join(','))
 
   const dry = await call('/api/experience/machines', { method: 'POST', body: { ...draft, dryRun: true }, user: ADMIN_USER_TOKEN })
   check('a dry run passes the live gate', dry.status === 200 && dry.json.dryRun === true && dry.json.problems.length === 0, JSON.stringify(dry.json))
@@ -2375,7 +2389,7 @@ try {
     if (browser) {
       const pageErrors = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2445,6 +2459,15 @@ try {
             Object.defineProperty(window, 'ethereum', { value: provider, configurable: true })
           }, wallet)
         }
+        // `images`: every image loads, as it would with the network up. Nothing
+        // can load in this sandbox, and an image whose every source fails is
+        // taken off the page (MomentImage) — so without this, whether an image
+        // is there to assert on depends on how fast its sources fail. Anything
+        // that is not an image falls through to the routes above.
+        if (images) {
+          await context.route('**/*', (r) =>
+            r.request().resourceType() === 'image' ? r.fulfill({ status: 200, contentType: 'image/png', body: ONE_PIXEL_PNG }) : r.fallback())
+        }
         // `storage`: localStorage the page finds on load, as a returning visitor's would be.
         if (storage) {
           await context.addInitScript((entries) => {
@@ -2471,15 +2494,41 @@ try {
       try {
         // ── the list ──
         {
-          const page = await open('/play')
+          const page = await open('/play', { images: true })
           const body = await text(page)
           check('the list page leads with its name and promise', /play capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
           check('and offers the studio', (await page.getByRole('link', { name: 'build gachapon' }).getAttribute('href').catch(() => null)) === '/play/create')
-          const rows = page.locator('a[href^="/play/"]:not([href="/play/create"])')
-          const shelved = (await call('/api/experience/machines')).json.machines.length
-          check('every machine on the shelves is a row', (await rows.count()) === shelved, `${await rows.count()} vs ${shelved}`)
-          check('each renders its kind and a state badge', (await rows.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed)\b/i.test(t)))
+          const cards = page.locator('article', { has: page.locator('a[href^="/play/"]') })
+          const shelved = (await call('/api/experience/machines')).json.machines
+          check('every machine on the shelves is a card', (await cards.count()) === shelved.length, `${await cards.count()} vs ${shelved.length}`)
+          check('each names its kind and whether it is live', (await cards.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed)\b/i.test(t)))
+          const [a, b] = [await cards.nth(0).boundingBox(), await cards.nth(1).boundingBox()]
+          check('two to a row on a wide screen', !!a && !!b && Math.abs(a.y - b.y) < 1 && b.x > a.x, JSON.stringify([a, b]))
+          const card = (id) => cards.filter({ has: page.locator(`a[href="/play/${id}"]`) })
+          // Scrolled to first, as a visitor would: a card far down the list
+          // renders its image only as it nears the viewport.
+          const coverOf = async (id) => {
+            await card(id).scrollIntoViewIfNeeded().catch(() => {})
+            const img = card(id).locator('img').first()
+            await img.waitFor({ timeout: 5000 }).catch(() => {})
+            return decodeURIComponent((await img.getAttribute('src').catch(() => null)) ?? '')
+          }
+          check('a machine shows its cover', (await coverOf('spring-season')).includes(SPRING_COVER.uri.slice(5)), await coverOf('spring-season'))
+          check('one published before covers shows its capsule instead', (await coverOf('dry-season')).includes('dry-season-capsule'),
+            `${await coverOf('dry-season')} | ${JSON.stringify(shelved.find((m) => m.id === 'dry-season'))}`)
+          const cardText = async (id) => (await card(id).innerText()).toLowerCase()
+          check('a capsule machine\'s card shows the price of a play, as its page does', /[\d.]+ eth per play/.test(await cardText('spring-season')), await cardText('spring-season'))
+          const reveals = shelved.filter((m) => m.kind === 'reveal')
+          check('a reveal machine\'s card shows no price — each piece has its own',
+            reveals.length > 0 && (await Promise.all(reveals.map((m) => cardText(m.id)))).every((t) => !t.includes('per play')))
+          check('and one published before covers shows its first piece',
+            reveals.some((m) => /reveal-(one|two)/.test(m.cover?.image ?? '')), JSON.stringify(reveals.map((m) => [m.id, m.cover])))
           await page.context().close()
+          const phone = await open('/play', { viewport: { width: 390, height: 844 }, images: true })
+          const phoneCards = phone.locator('article', { has: phone.locator('a[href^="/play/"]') })
+          const [p0, p1] = [await phoneCards.nth(0).boundingBox(), await phoneCards.nth(1).boundingBox()]
+          check('and one to a row on a phone', !!p0 && !!p1 && p1.y > p0.y + p0.height - 1 && Math.abs(p0.x - p1.x) < 1, JSON.stringify([p0, p1]))
+          await phone.context().close()
         }
 
         // ── a machine, on sale ──
@@ -2701,7 +2750,7 @@ try {
         // Pay, open, reveal: the one path every player takes. Its lineup is one
         // piece, so the win is known — and must show that artwork, not its id.
         {
-          const page = await open('/play/browser-machine', { wallet: PLAYER, onChain: true })
+          const page = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true })
           await page.getByText('insert coin').waitFor()
           const paid = chain.walletTxs.length
           await page.getByRole('button', { name: 'play', exact: true }).click()
@@ -3074,7 +3123,7 @@ try {
           check('a first visit shows play right after home', (await tabsOf(pg)) === 'featured,trending,home,play,artists', await tabsOf(pg))
           await pg.locator('[data-tab="play"]').click()
           const live = ((await call('/api/experience/machines')).json?.machines ?? []).filter((m) => m.state === 'live').map((m) => `/play/${m.id}`).sort()
-          const rows = pg.locator('div:not([hidden]) > div.mt-4 a[href^="/play/"]:not([href="/play/create"])')
+          const rows = pg.locator('div:not([hidden]) > div.mt-4 article > a[href^="/play/"]')
           await rows.first().waitFor({ timeout: 10_000 }).catch(() => {})
           const shown = (await rows.evaluateAll((as) => as.map((a) => a.getAttribute('href')))).sort()
           check('it lists every live machine, each opening that machine, and no closed one', live.length > 0 && shown.join() === live.join(), `${shown.length} shown vs ${live.length} live`)
@@ -3234,7 +3283,7 @@ try {
           const listed = (await call('/api/experience/machines')).json.machines
           const liveBy = (addr) => listed.filter((m) => m.state === 'live' && m.creator === addr.toLowerCase()).length
           const endControls = (pg) => pg.getByRole('button', { name: /^(end season|close machine)$/ })
-          const rowOf = (pg, id) => pg.locator('div.divide-y > div').filter({ has: pg.locator(`a[href="/play/${id}"]`) })
+          const rowOf = (pg, id) => pg.locator('article').filter({ has: pg.locator(`a[href="/play/${id}"]`) })
           const stateOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.machine?.state
 
           const visitor = await open('/play')
@@ -3270,7 +3319,7 @@ try {
           const nv = rowOf(tab, 'new-voices')
           await nv.getByRole('button', { name: 'close machine' }).click()
           await nv.getByRole('button', { name: 'confirm close' }).click()
-          await tab.locator('a[href="/play/new-voices"]').waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+          await tab.locator('a[href="/play/new-voices"]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
           check('closed from the play tab, it leaves the tab', (await stateOf('new-voices')) === 'ended' && (await tab.locator('a[href="/play/new-voices"]').count()) === 0)
           await tab.context().close()
 
