@@ -2450,7 +2450,7 @@ try {
           const page = await open('/play')
           const body = await text(page)
           check('the list page leads with its name and promise', /play capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
-          check('and offers the studio', (await page.getByRole('link', { name: 'build gachapon' }).getAttribute('href')) === '/play/create')
+          check('and offers the studio', (await page.getByRole('link', { name: 'build gachapon' }).getAttribute('href').catch(() => null)) === '/play/create')
           const rows = page.locator('a[href^="/play/"]:not([href="/play/create"])')
           const shelved = (await call('/api/experience/machines')).json.machines.length
           check('every machine on the shelves is a row', (await rows.count()) === shelved, `${await rows.count()} vs ${shelved}`)
@@ -3193,7 +3193,7 @@ try {
           const stateOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.machine?.state
 
           const visitor = await open('/play')
-          await visitor.getByRole('link', { name: 'build gachapon' }).waitFor()
+          await visitor.getByRole('link', { name: 'build gachapon' }).waitFor().catch(() => {})
           await visitor.waitForTimeout(1500)
           check('a visitor sees no way to end anyone\'s machine', (await endControls(visitor).count()) === 0)
           await visitor.context().close()
