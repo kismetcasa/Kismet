@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { Address } from 'viem'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
@@ -11,6 +11,7 @@ import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CoverEditor } from './CoverField'
+import { CollectedLine, MachineStage, motionAllowed } from './MachineStage'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -44,18 +45,15 @@ interface Payload {
   collections: string[]
 }
 
-/** Long enough to read as a capsule opening, short enough not to be a wait. */
-const REVEAL_MS = 700
-
 export function RevealMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()
   const { collect, status } = useDirectCollect()
   const [data, setData] = useState<Payload | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [pick, setPick] = useState<LineupRow | null>(null)
-  const [pulling, setPulling] = useState(false)
+  // The pick is made; the capsule is still opening over it.
+  const [opening, setOpening] = useState(false)
   const [collected, setCollected] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const load = useCallback(() => {
     fetch(`/api/experience/machines/${id}`)
@@ -64,16 +62,14 @@ export function RevealMachine({ id }: { id: string }) {
       .catch(() => setLoadError(true))
   }, [id])
   useEffect(load, [load])
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
 
   const pull = useCallback(() => {
-    if (!data || data.lineup.length === 0 || pulling) return
-    setPulling(true)
-    setPick(null)
+    if (!data || data.lineup.length === 0) return
     setCollected(null)
-    const next = data.lineup[pickIndex(data.lineup.length)]
-    timer.current = setTimeout(() => { setPick(next); setPulling(false) }, REVEAL_MS)
-  }, [data, pulling])
+    setPick(data.lineup[pickIndex(data.lineup.length)])
+    setOpening(motionAllowed())
+  }, [data])
+  const opened = useCallback(() => setOpening(false), [])
 
   const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
   const collectPick = useCallback(async () => {
@@ -127,7 +123,9 @@ export function RevealMachine({ id }: { id: string }) {
       </header>
 
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        {pick ? (
+        {pick && opening ? (
+          <MachineStage stage="open" cover={data.machine.cover} onOpened={opened} />
+        ) : pick ? (
           <div>
             <p className="text-xs font-mono uppercase tracking-widest accent-grad">you revealed</p>
             <Link href={`/artwork/${pick.collection}/${pick.tokenId}`} className="group block mt-5">
@@ -140,15 +138,21 @@ export function RevealMachine({ id }: { id: string }) {
                   </div>
                 )}
               </div>
-              <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
-                {artworkTitle(pick.name, pick.tokenId)}
-              </p>
-              <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(pick.artist)}</p>
+              {collected === pick.key ? (
+                <div className="mt-3">
+                  <CollectedLine title={artworkTitle(pick.name, pick.tokenId)} artist={pick.artist} />
+                </div>
+              ) : (
+                <>
+                  <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
+                    {artworkTitle(pick.name, pick.tokenId)}
+                  </p>
+                  <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(pick.artist)}</p>
+                </>
+              )}
             </Link>
             <div className="mt-5 flex flex-wrap gap-2 justify-center">
-              {collected === pick.key ? (
-                <p className="px-4 py-2 text-xs font-mono tracking-widest uppercase text-[#7ee787]">collected</p>
-              ) : (
+              {collected !== pick.key && (
                 <button
                   onClick={() => void collectPick()}
                   disabled={collecting}
@@ -175,15 +179,16 @@ export function RevealMachine({ id }: { id: string }) {
           </div>
         ) : (
           <div>
+            <MachineStage stage="idle" cover={data.machine.cover} />
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
-              {pulling ? 'opening…' : !live ? 'this machine is closed' : n === 0 ? 'nothing on sale right now' : 'free to pull'}
+              {!live ? 'this machine is closed' : n === 0 ? 'nothing on sale right now' : 'free to pull'}
             </p>
             <button
               onClick={pull}
-              disabled={!live || n === 0 || pulling}
+              disabled={!live || n === 0}
               className="mt-5 px-6 py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
             >
-              {pulling ? 'working…' : 'pull'}
+              pull
             </button>
             {live && n === 0 && data.waiting > 0 && (
               <p className="mt-2.5 text-[11px] font-mono text-muted">

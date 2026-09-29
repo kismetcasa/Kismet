@@ -138,6 +138,7 @@ const CURATOR = '0x7777000000000000000000000000000000007777'
 const CURATOR_TOKEN = 'e2e-curator-session-token'
 const TX_BOX = '0x' + '2d'.repeat(32) // a play on the machine whose rarity is by supply
 const TX_BOX_2 = '0x' + '3e'.repeat(32) // the next play on it, after a copy has gone
+const TX_ELSEWHERE = '0x' + '4f'.repeat(32) // a capsule bought elsewhere, redeemed on the machine's page
 const ADMIN_USER_TOKEN = 'e2e-admin-user-session-token'
 const ADMIN_TOKEN = 'e2e-admin-session-token'
 const CRON_SECRET = 'e2e-cron-secret'
@@ -2431,7 +2432,7 @@ try {
     if (browser) {
       const pageErrors = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads, reducedMotion } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2450,6 +2451,8 @@ try {
             ? { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) CoinbaseWallet/1.0 Mobile Safari/604.1', viewport: { width: 390, height: 844 } }
             : { viewport: viewport ?? { width: 1024, height: 900 } }),
           ...(cookieHeader ? { extraHTTPHeaders: { cookie: cookieHeader } } : {}),
+          // `reducedMotion`: the viewer has asked their system for less motion.
+          ...(reducedMotion ? { reducedMotion: 'reduce' } : {}),
         })
         context.setDefaultTimeout(20_000)
         // `onChain`: the page reads and writes the mock chain. Its wagmi
@@ -2548,6 +2551,30 @@ try {
       // label reads back uppercased. Lowercase the haystack so an assertion tests
       // the words, not the CSS; getByText (raw DOM text) is used where case matters.
       const text = async (page) => (await page.locator('body').innerText()).replace(/\s+/g, ' ').toLowerCase()
+      // Every stage a machine's window passes through from now on, in order:
+      // [stage, when, the capsule's animation]. A MutationObserver runs before
+      // the next paint, so even a stage shown for one frame is recorded; null
+      // is a face with no window (a win, a reveal).
+      const watchStages = (page) => page.evaluate(() => {
+        window.__stages = []
+        let last
+        const note = () => {
+          const el = document.querySelector('[data-stage]')
+          const stage = el?.getAttribute('data-stage') ?? null
+          if (stage === last) return
+          last = stage
+          const svg = el?.querySelector('svg')
+          window.__stages.push([stage, performance.now(), svg ? getComputedStyle(svg).animationName : null])
+        }
+        note()
+        new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-stage'] })
+      })
+      const stagesOf = (page) => page.evaluate(() => window.__stages)
+      // How long the stage `name` was shown, the nth time it was.
+      const stageMs = (stages, name, nth = 0) => {
+        const i = stages.map(([s], j) => (s === name ? j : -1)).filter((j) => j >= 0)[nth]
+        return i === undefined || !stages[i + 1] ? null : stages[i + 1][1] - stages[i][1]
+      }
 
       try {
         // ── the list ──
@@ -2877,19 +2904,73 @@ try {
         {
           const page = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true })
           await page.getByText('insert coin').waitFor()
+          const cover = (await call('/api/experience/machines/browser-machine')).json?.machine?.cover ?? '-'
+          const idle = (await page.locator('[data-stage="idle"] img').getAttribute('src').catch(() => null)) ?? ''
+          check('the machine stands on its cover', decodeURIComponent(idle).includes(cover.replace('ar://', '')), `${cover} | ${idle.slice(0, 120)}`)
+          const oddsLine = page.getByText(/^1 artwork ·/)
+          check('the odds are summed up beside the price, with a link to the table',
+            (await oddsLine.count()) === 1 && (await oddsLine.getByRole('link', { name: 'see odds' }).getAttribute('href')) === '#odds' &&
+              (await page.locator('section#odds').getByText("what's inside · published odds").count()) === 1)
+          await watchStages(page)
           const paid = chain.walletTxs.length
           await page.getByRole('button', { name: 'play', exact: true }).click()
-          await page.getByText('you won').waitFor({ timeout: 60_000 }).catch(() => {})
+          await page.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           check('a capsule is paid for in one signature from the player\'s wallet',
             chain.walletTxs.length === paid + 1 && String(chain.walletTxs.at(-1)?.to).toLowerCase() === CAPSULE_A)
           // The first link to it is the win; the odds table below links it too.
           const win = page.locator(`a[href="/artwork/${POOL}/8"]`).first()
-          const winText = (await win.innerText().catch(() => '')).toLowerCase()
+          const winText = (await win.innerText().catch(() => '')).replace(/\s+/g, ' ')
           const winImage = (await win.locator('img').getAttribute('src').catch(() => null)) ?? ''
           check('and opens to the artwork it won: its image and its title, not its token id',
-            winText.includes('piece eight') && !winText.includes('#8') && decodeURIComponent(winImage).includes('piece-eight'),
-            `${winText.replace(/\s+/g, ' ')} | ${winImage.slice(0, 120)} | page: ${(await text(page)).match(/(you won|on its way|opening|still|insert coin).{0,200}/)?.[0] ?? ''}`)
+            winText.includes('Piece Eight') && !winText.includes('#8') && decodeURIComponent(winImage).includes('piece-eight'),
+            `${winText} | ${winImage.slice(0, 120)} | page: ${(await text(page)).match(/(you've|on its way|opening|still|insert coin).{0,200}/)?.[0] ?? ''}`)
+          check('saying the player has collected it, and whose it is',
+            /^you've collected Piece Eight by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(winText), winText)
+          let stages = await stagesOf(page)
+          check('the capsule rocks while the wallet and the draw work, then opens, once, before the win',
+            stages.map(([s]) => s).join() === 'idle,dispense,open,' && stages[1][2] === 'kf-stage-rock' && stages[2][2] === 'kf-stage-shake',
+            JSON.stringify(stages))
+          check('and the open plays out in full when nobody skips it', stageMs(stages, 'open') >= 1100, String(stageMs(stages, 'open')))
+
+          // A multi-pull opens once, for everything it won.
+          await page.getByRole('button', { name: '×5' }).click()
+          await page.getByRole('button', { name: 'play again ×5' }).click()
+          await page.getByText("you've collected 5 artworks").waitFor({ timeout: 60_000 }).catch(() => {})
+          stages = await stagesOf(page)
+          check('a pull of five opens once, then shows all five',
+            stages.map(([s]) => s).join() === 'idle,dispense,open,,dispense,open,' &&
+              (await page.getByText("you've collected 5 artworks").count()) === 1 &&
+              (await page.locator(`a[href="/artwork/${POOL}/8"]`).count()) === 5 + 1,
+            JSON.stringify(stages.map(([s]) => s)))
           await page.context().close()
+
+          // A viewer who asked for less motion sees a still capsule, and no open.
+          const still = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, reducedMotion: true })
+          await still.getByText('insert coin').waitFor()
+          await watchStages(still)
+          await still.getByRole('button', { name: 'play', exact: true }).click()
+          await still.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          stages = await stagesOf(still)
+          check('under reduced motion the capsule stands still, and the win is shown without the open',
+            stages.map(([s]) => s).join() === 'idle,dispense,' && stages[1][2] === 'none' &&
+              (await still.getByText(/^you've collected Piece Eight by /).count()) === 1,
+            JSON.stringify(stages))
+          await still.context().close()
+
+          // A capsule bought elsewhere, redeemed here, opens the same way.
+          setHead(chain.head + 5n)
+          addMint({ tx: TX_ELSEWHERE, collection: CAPSULE_A, to: PLAYER, id: 1n, value: 1n, block: chain.head - 2n })
+          const redeemed = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true })
+          await redeemed.getByText('insert coin').waitFor()
+          await watchStages(redeemed)
+          await redeemed.getByPlaceholder('paste its transaction hash (0x…)').fill(TX_ELSEWHERE)
+          await redeemed.getByRole('button', { name: 'redeem' }).click()
+          await redeemed.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          stages = await stagesOf(redeemed)
+          check('a capsule bought elsewhere and redeemed here opens the same way',
+            stages.map(([s]) => s).join() === 'idle,open,' && (await redeemed.getByText(/^you've collected Piece Eight by /).count()) === 1,
+            JSON.stringify(stages.map(([s]) => s)))
+          await redeemed.context().close()
         }
 
         // ── an artist allows capsule machines on their piece ──
@@ -2985,9 +3066,20 @@ try {
           const rowText = (await rows.allInnerTexts()).join(' | ').toLowerCase()
           check('each piece on sale is listed with its own price', (await rows.count()) === 3 && rowText.includes('0.002 eth') && rowText.includes('free') && rowText.includes('$1'), rowText)
           check('with a line on what comes and goes', body.includes('one that sells out or closes leaves by itself, and 1 more joins when its sale opens'), body.match(/one that sells out.{0,80}/)?.[0] ?? '')
+          await watchStages(page)
           await page.getByRole('button', { name: 'pull', exact: true }).click()
           await page.getByText('you revealed').waitFor()
           const revealed = await page.locator('a[href^="/artwork/"]').first().getAttribute('href')
+          let stages = await stagesOf(page)
+          check('a pull opens the capsule, then shows what it held',
+            stages.map(([s]) => s).join() === 'idle,open,' && stages[1][2] === 'kf-stage-shake' && stageMs(stages, 'open') >= 1100,
+            JSON.stringify(stages))
+          await page.getByRole('button', { name: 'pull again' }).click()
+          await page.getByRole('button', { name: 'skip' }).click({ timeout: 5000 }).catch(() => {})
+          await page.getByText('you revealed').waitFor()
+          stages = await stagesOf(page)
+          check('and the open can be skipped', stages.map(([s]) => s).join() === 'idle,open,,open,' && stageMs(stages, 'open', 1) < 600,
+            JSON.stringify(stages))
           check('a pull reveals one of the pieces on sale', [1, 2, 6].some((id) => revealed === `/artwork/${REVEAL}/${id}`), revealed)
           check('and offers to collect it or pull again',
             (await page.getByRole('button', { name: /^collect · / }).count()) === 1 && (await page.getByRole('button', { name: 'pull again' }).count()) === 1)
@@ -3002,6 +3094,15 @@ try {
           check('pulls land on different pieces', seen.size >= 2, [...seen].join(' '))
           await page.context().close()
 
+          const still = await open('/play/new-voices', { reducedMotion: true })
+          await still.getByText('free to pull').waitFor()
+          await watchStages(still)
+          await still.getByRole('button', { name: 'pull', exact: true }).click()
+          await still.getByText('you revealed').waitFor()
+          stages = await stagesOf(still)
+          check('under reduced motion a pull shows its piece without the open', stages.map(([s]) => s).join() === 'idle,', JSON.stringify(stages))
+          await still.context().close()
+
           // One piece, so the reveal is known: the collect is the artwork's own,
           // sent from the player's wallet with the right value and referral.
           await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: { kind: 'reveal', id: 'solo-piece', name: 'Solo Piece', entries: [{ collection: REVEAL, tokenId: '1' }] } })
@@ -3014,7 +3115,7 @@ try {
           const minted = chain.mints.length
           const before = chain.tokens.get(key(REVEAL, 1)).totalMinted
           await collectBtn.click()
-          await solo.getByText('collected', { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {})
+          await solo.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
           const m = chain.mints.at(-1)
           check('collecting sends one mint of the revealed piece from the player\'s wallet',
             chain.mints.length === minted + 1 && m?.collection === REVEAL && m.tokenId === 1n && m.quantity === 1n && m.mintTo === PLAYER.toLowerCase(),
@@ -3023,7 +3124,9 @@ try {
             m?.value === MINT_FEE + 2_000_000_000_000_000n && m.strategy === FPSS.toLowerCase())
           check('naming Kismet as the mint referral', m?.rewardsRecipients?.length === 1 && m.rewardsRecipients[0] === KISMET_REFERRAL)
           check('and the edition really grew by one', chain.tokens.get(key(REVEAL, 1)).totalMinted === before + 1n)
-          check('the page says it is collected', (await solo.getByText('collected', { exact: true }).count()) === 1)
+          const said = (await solo.locator(`a[href="/artwork/${REVEAL}/1"]`).first().innerText()).replace(/\s+/g, ' ')
+          check('the page says the player has collected it, and whose it is', /^you've collected Reveal One by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(said), said)
+          check('with nothing left to pay', (await solo.getByRole('button', { name: /^collect/ }).count()) === 0)
           await solo.context().close()
 
           // A curator's machine: the curator earns the referral on the collect —
@@ -3035,7 +3138,7 @@ try {
             await pg.getByText('free to pull').waitFor()
             await pg.getByRole('button', { name: 'pull', exact: true }).click()
             await pg.getByRole('button', { name: 'collect · 0.002 ETH' }).click()
-            await pg.getByText('collected', { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {})
+            await pg.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
             await pg.context().close()
             return chain.mints.at(-1)
           }
@@ -3061,7 +3164,7 @@ try {
             await btn.click()
             await pg.waitForTimeout(3000)
             check('a piece that sells out between the reveal and the collect is not minted, and not shown as collected',
-              chain.mints.length === minted && (await pg.getByText('collected', { exact: true }).count()) === 0)
+              chain.mints.length === minted && (await pg.getByText("you've collected").count()) === 0)
             chain.tokens.set(key(REVEAL, 1), t)
             await pg.context().close()
           }
@@ -3079,7 +3182,7 @@ try {
             const sent = chain.walletTxs.length
             const minted = chain.mints.length
             await btn.click()
-            await pg.getByText('collected', { exact: true }).waitFor({ timeout: 20_000 }).catch(() => {})
+            await pg.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
             const txs = chain.walletTxs.slice(sent)
             const m = chain.mints.at(-1)
             check('a USDC piece asks to approve exactly its price to Zora\'s ERC20Minter, then mints',
@@ -3090,7 +3193,7 @@ try {
               chain.mints.length === minted + 1 && m?.collection === REVEAL && m.tokenId === 6n && m.mintTo === PLAYER.toLowerCase() && m.value === 1_000_000n && m.currency === 'usdc',
               JSON.stringify(m, (_, v) => (typeof v === 'bigint' ? v.toString() : v)))
             check('with the curator as the mint referral', m?.rewardsRecipients?.[0] === CURATOR.toLowerCase())
-            check('and the page says it is collected', (await pg.getByText('collected', { exact: true }).count()) === 1)
+            check('and the page says it is collected', (await pg.getByText("you've collected").count()) === 1)
             await pg.context().close()
           }
         }
@@ -3117,6 +3220,23 @@ try {
           const sizes = (await pg.getByRole('button', { name: /^×\d+$/ }).allInnerTexts()).join(',')
           check('with two artworks left, it offers only a single pull — never more capsules than artworks', sizes === '×1' && (await pg.getByRole('button', { name: 'play', exact: true }).isEnabled()), sizes)
           await pg.context().close()
+
+          const t17 = chain.tokens.get(key(POOL, 17))
+          chain.tokens.set(key(POOL, 17), { maxSupply: 3n, totalMinted: 2n })
+          pg = await face()
+          check('beside the price, how many artworks it holds and, at even odds, each one\'s', (await text(pg)).includes('2 artworks · each 1 in 2 · see odds'),
+            (await text(pg)).match(/\d+ artworks? ·[^·]*· see odds/)?.[0] ?? '')
+          await pg.context().close()
+          // Weighted three to one, the line leads with the rarest.
+          const pool = hashes.get('kismetart:xp:dry-season:pool')
+          const e18 = pool.get(`${POOL}:18`)
+          pool.set(`${POOL}:18`, JSON.stringify({ ...JSON.parse(e18), weight: 3 }))
+          pg = await face()
+          check('and at uneven odds, the rarest pull\'s', (await text(pg)).includes('2 artworks · rarest 1 in 4 · see odds'),
+            (await text(pg)).match(/\d+ artworks? ·[^·]*· see odds/)?.[0] ?? '')
+          await pg.context().close()
+          pool.set(`${POOL}:18`, e18)
+          chain.tokens.set(key(POOL, 17), t17)
 
           chain.failMulticall = true
           pg = await face()

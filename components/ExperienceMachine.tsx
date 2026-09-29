@@ -10,6 +10,7 @@ import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CoverEditor } from './CoverField'
+import { CollectedLine, MachineStage, motionAllowed } from './MachineStage'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -152,6 +153,8 @@ export function ExperienceMachine({ id }: { id: string }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [pull, setPull] = useState<number>(1)
   const [won, setWon] = useState<Prize[]>([])
+  // Prizes landed and the capsule is still opening over them.
+  const [toOpen, setToOpen] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [pendingReason, setPendingReason] = useState<string | null>(null)
   const [lastTx, setLastTx] = useState<string | null>(null)
@@ -201,6 +204,7 @@ export function ExperienceMachine({ id }: { id: string }) {
   )
 
   useEffect(() => { load() }, [load])
+  const opened = useCallback(() => setToOpen(false), [])
   useEffect(() => { setLocal(listPendingCapsules(id)) }, [id])
   useEffect(() => {
     if (connectedAddress) setAccount(connectedAddress.toLowerCase())
@@ -296,6 +300,8 @@ export function ExperienceMachine({ id }: { id: string }) {
       setLocal(listPendingCapsules(id))
 
       if (prizes.length > 0) {
+        // One open for the whole pull, played once everything has landed.
+        setToOpen(motionAllowed())
         setPhase('won')
         if (prizes.length < units) {
           setPendingReason(
@@ -381,6 +387,7 @@ export function ExperienceMachine({ id }: { id: string }) {
 
         if (recovered.length > 0) {
           setWon((w) => [...w, ...recovered])
+          setToOpen(motionAllowed())
           setPhase('won')
           setPendingReason(reason)
           if (!reason) clearPendingCapsule(id, txHash)
@@ -469,6 +476,18 @@ export function ExperienceMachine({ id }: { id: string }) {
         })()
       : null
   const busy = phase === 'paying' || phase === 'opening'
+  const cover = data.machine.cover ?? data.machine.capsuleArt?.image ?? null
+  // The odds at the button as well as in the table: on a phone the table is a
+  // scroll away, and a randomized purchase discloses its odds before it is made.
+  const drawn = data.odds.filter((o) => o.probability > 0)
+  const rarest = Math.min(...drawn.map((o) => o.probability))
+  const rarestRatio = formatOddsRatio(rarest)
+  const oddsLine =
+    drawn.length === 0
+      ? null
+      : `${drawn.length} ${drawn.length === 1 ? 'artwork' : 'artworks'}${
+          rarestRatio ? ` · ${drawn.every((o) => o.probability === rarest) ? 'each' : 'rarest'} ${rarestRatio}` : ''
+        }`
   // Everything still owed, from three records that each cover a hole in the
   // others, deduplicated by transaction:
   //   1. the server's claims — durable, cross-device, but only for plays the
@@ -519,12 +538,16 @@ export function ExperienceMachine({ id }: { id: string }) {
       {/* The machine. The reveal replaces this face in place, so the capsule
           appears to open rather than the page appearing to navigate. */}
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        {phase === 'won' && won.length > 0 ? (
+        {phase === 'won' && won.length > 0 && toOpen ? (
+          <MachineStage stage="open" cover={cover} onOpened={opened} />
+        ) : phase === 'won' && won.length > 0 ? (
           <div>
-            <p className="text-xs font-mono uppercase tracking-widest accent-grad">
-              {won.length === 1 ? 'you won' : `you won ${won.length}`}
-            </p>
-            <div className={`mt-5 grid gap-3 ${won.length === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}`}>
+            {won.length > 1 && (
+              <p className="mb-5 text-xs font-mono uppercase tracking-widest accent-grad">
+                you&apos;ve collected {won.length} artworks
+              </p>
+            )}
+            <div className={`grid gap-3 ${won.length === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}`}>
               {won.map((p, i) => (
                 <Link
                   key={`${p.collection}:${p.tokenId}:${i}`}
@@ -540,14 +563,22 @@ export function ExperienceMachine({ id }: { id: string }) {
                       </div>
                     )}
                   </div>
-                  <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
-                    {artworkTitle(p.name, p.tokenId)}
-                  </p>
-                  <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(p.artist)}</p>
+                  {won.length === 1 ? (
+                    <div className="mt-3">
+                      <CollectedLine title={artworkTitle(p.name, p.tokenId)} artist={p.artist} />
+                    </div>
+                  ) : (
+                    <>
+                      <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
+                        {artworkTitle(p.name, p.tokenId)}
+                      </p>
+                      <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(p.artist)}</p>
+                    </>
+                  )}
                 </Link>
               ))}
             </div>
-            <p className="text-[11px] font-mono text-muted mt-4">
+            <p className="text-[11px] font-mono text-muted mt-2">
               {won.length === 1 ? 'it is' : 'they are'} already in your wallet
             </p>
             {pendingReason && (
@@ -563,6 +594,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               label="play again"
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              odds={oddsLine}
               note={null}
             />
           </div>
@@ -593,17 +625,7 @@ export function ExperienceMachine({ id }: { id: string }) {
           </div>
         ) : (
           <div>
-            {data.machine.capsuleArt?.image && (
-              <div className="relative w-28 h-28 sm:w-36 sm:h-36 mx-auto mb-5 overflow-hidden border border-line bg-raised">
-                <MomentImage
-                  src={data.machine.capsuleArt.image}
-                  alt=""
-                  fill
-                  className="object-cover"
-                  sizes="144px"
-                />
-              </div>
-            )}
+            <MachineStage stage={busy ? 'dispense' : 'idle'} cover={cover} />
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
               {phase === 'opening'
                 ? progress && progress.total > 1
@@ -623,6 +645,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               label={playable ? 'play' : closedLabel}
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              odds={oddsLine}
               note={
                 !playable && data.machine.state === 'live'
                   ? !data.machine.saleReadable
@@ -714,7 +737,7 @@ export function ExperienceMachine({ id }: { id: string }) {
 
       {/* The odds. Derived server-side from the same snapshot a play draws from —
           there is no field anywhere a creator can type a percentage into. */}
-      <section className="mt-8">
+      <section id="odds" className="mt-8">
         <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-3">
           what&apos;s inside · published odds
         </h2>
@@ -857,6 +880,7 @@ function PlayControl({
   label,
   unitPrice,
   totalPrice,
+  odds,
   note,
 }: {
   playable: boolean
@@ -869,6 +893,8 @@ function PlayControl({
   label: string
   unitPrice: string | null
   totalPrice: string | null
+  /** What the draw holds, summed up beside the price. */
+  odds: string | null
   note: string | null
 }) {
   return (
@@ -911,6 +937,14 @@ function PlayControl({
             <>{unitPrice} per play</>
           )}
           <span className="text-subtle"> + network fee</span>
+        </p>
+      )}
+      {playable && odds && (
+        <p className="mt-1 text-[11px] font-mono text-muted">
+          {odds} ·{' '}
+          <a href="#odds" className="text-dim hover:text-ink underline">
+            see odds
+          </a>
         </p>
       )}
       {note && <p className="mt-1.5 text-[11px] font-mono text-[#ffcf70]">{note}</p>}
