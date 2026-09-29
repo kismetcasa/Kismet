@@ -33,6 +33,7 @@ import {
   toPublicDescriptor,
   writeCfileBlobChunks,
 } from '@/lib/collectorFile'
+import { formatCfileSize } from '@/lib/collectorFileTypes'
 import { parseCfileParams, requireCfileManager } from '@/lib/collectorFileGate'
 import { notifyCollectorsOfUpdate, CFILE_FANOUT_CEILING } from '@/lib/collectorFileFanout'
 
@@ -42,7 +43,7 @@ export const runtime = 'nodejs'
  * Artist-side management of an artwork's collector file
  * (COLLECTOR_DOWNLOADS_DESIGN.md §5):
  *
- *   PUT    — attach or replace (raw zip/PDF/GLB/SVG body ≤16 MiB — format
+ *   PUT    — attach or replace (raw zip/PDF/GLB/SVG body ≤CFILE_MAX_BYTES — format
  *            detected from magic bytes, or a bounded text sniff for SVG —
  *            x-file-name header, ?note= release note, ?notify=1 to fan out)
  *   GET    — manage view (descriptor + history + downloader count + notify state)
@@ -56,9 +57,23 @@ export const runtime = 'nodejs'
  * readPermissions outage answers 503, never a misleading 403.
  */
 
-// One PUT at a time platform-wide: each holds ~38 MB peak (body buffer +
-// base64 chunk strings). The transcode-gif MAX_CONCURRENT=1 pattern,
+// One PUT at a time platform-wide: each holds roughly 2.3x CFILE_MAX_BYTES
+// at peak (the buffered body, its concat, and the base64 chunk strings —
+// ~150 MB at the 64 MiB cap). The transcode-gif MAX_CONCURRENT=1 pattern,
 // check-then-increment with no await between (app/api/img discipline).
+//
+// DEPLOYMENT NOTE — the body arrives in ONE request, so the reverse proxy's
+// request read timeout bounds the upload: Traefik defaults
+// `respondingTimeouts.readTimeout` to 60 s (v2.11.2+, the whole body
+// included) and Coolify's generated proxy sets no override. A 64 MiB body
+// needs ~9 Mbit/s to land inside that; Coolify's own docs prescribe
+// `--entrypoints.https.transport.respondingTimeouts.readTimeout=5m` (and
+// the http entrypoint) under Server → Proxy → Configuration. Set that with
+// this cap. Chunked uploads mapped onto the 4 MiB chunk store are the
+// follow-up that removes the dependency (COLLECTOR_DOWNLOADS_DESIGN.md,
+// "Cap raise"). Do NOT add a middleware.ts: when one exists, Next 15.5.5+
+// buffers a request-body clone of at most 10 MB (middlewareClientMaxBodySize)
+// and truncates the rest with only a console warning.
 const MAX_CONCURRENT_PUTS = 1
 let activePuts = 0
 
@@ -143,7 +158,7 @@ export async function PUT(req: NextRequest) {
   // Advisory pre-check; the bounded read below enforces on actual bytes.
   const declared = Number(req.headers.get('content-length') ?? 0)
   if (declared > CFILE_MAX_BYTES) {
-    return errorResponse(413, 'File too large — the limit is 16 MB')
+    return errorResponse(413, `File too large — the limit is ${formatCfileSize(CFILE_MAX_BYTES)}`)
   }
   if (!req.body) return errorResponse(400, 'Missing body')
 
@@ -169,7 +184,7 @@ export async function PUT(req: NextRequest) {
     const read = await readBodyBounded(req.body, CFILE_MAX_BYTES)
     if (read.kind === 'overflow') {
       read.reader.cancel().catch(() => {})
-      return errorResponse(413, 'File too large — the limit is 16 MB')
+      return errorResponse(413, `File too large — the limit is ${formatCfileSize(CFILE_MAX_BYTES)}`)
     }
     const plaintext = read.buffer
     // Magic bytes decide the format; the claimed name/extension never does.
