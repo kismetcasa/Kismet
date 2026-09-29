@@ -27,8 +27,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       : `Play ${name} on Kismet. Published odds; every play returns a real artwork.`,
     alternates: { canonical: `${SITE_URL}/play/${id}` },
     other: buildFarcasterEmbed({
-      imageUrl:
-        process.env.NEXT_PUBLIC_FARCASTER_EMBED_IMAGE_URL ?? `${SITE_URL}/embed-default.png`,
+      // Its own card (opengraph-image), led by its cover, as a collection's is.
+      imageUrl: `${SITE_URL}/play/${id}/opengraph-image`,
       buttonTitle: reveal ? 'Pull' : 'See the odds',
       action: { url: `${SITE_URL}/play/${id}` },
     }),

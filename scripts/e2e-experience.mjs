@@ -2618,6 +2618,32 @@ try {
           await page.context().close()
         }
 
+        // ── a machine's share card ──
+        {
+          const html = (await call('/play/spring-season')).text
+          const tag = html.match(/<meta name="fc:miniapp" content="([^"]*)"/)?.[1] ?? ''
+          let embed = null
+          try { embed = JSON.parse(tag.replace(/&quot;/g, '"').replace(/&amp;/g, '&')) } catch { /* reported below */ }
+          check('a machine\'s Farcaster embed shows its own card, led by its cover',
+            /\/play\/spring-season\/opengraph-image$/.test(embed?.imageUrl ?? ''), embed?.imageUrl ?? `no embed: ${tag.slice(0, 120)}`)
+          const png = async (id) => {
+            const r = await fetch(`http://127.0.0.1:${PORT}/play/${id}/opengraph-image`, { signal: AbortSignal.timeout(30_000) })
+            return { status: r.status, type: r.headers.get('content-type'), bytes: Buffer.from(await r.arrayBuffer()) }
+          }
+          const live = await png('spring-season')
+          check('which renders', live.status === 200 && live.type === 'image/png' && live.bytes.length > 0, `${live.status} ${live.type}`)
+          // One waiting for review is not public: its card must be the bare one,
+          // byte for byte the card of a machine that does not exist.
+          strings.delete(`kismetart:rl:xp-publish:${CURATOR.toLowerCase()}`)
+          const queued = await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: {
+            kind: 'reveal', id: 'share-queued', name: 'Share Queued', entries: [{ collection: REVEAL, tokenId: '2' }],
+          } })
+          const [hidden, none] = [await png('share-queued'), await png('no-such-machine')]
+          check('a machine waiting for review shares the bare card — never its name or art',
+            queued.json?.machine?.state === 'review' && hidden.status === 200 && hidden.bytes.equals(none.bytes), `${queued.json?.machine?.state} ${hidden.bytes.length} vs ${none.bytes.length}`)
+          await call('/api/experience/machines/share-queued', { method: 'POST', user: CURATOR_TOKEN, body: { action: 'withdraw' } })
+        }
+
         // ── a machine, on sale ──
         {
           const page = await open('/play/spring-season')

@@ -23,11 +23,11 @@ export type MachineCardData = {
 } & ({ kind: 'reveal' } | { kind: 'capsule'; capsule: { collection: string; tokenId: string } })
 
 /**
- * The play list's cards, in the order given. Costs nothing beyond the list for
- * machines with a cover; one cached metadata read per machine without one; and
- * a single multicall for every capsule price.
+ * Each machine's cover, by id: its own, or — for a machine published before
+ * covers — art it already has (a capsule machine's capsule, a reveal
+ * machine's first piece). One cached metadata read per machine without one.
  */
-export async function machineCards(machines: Machine[]): Promise<MachineCardData[]> {
+export async function machineCovers(machines: Machine[]): Promise<Map<string, MachineCardData['cover']>> {
   const uncovered = machines.filter((m) => !m.cover)
   const standIns = await Promise.all(
     uncovered.map(async (m) => {
@@ -38,24 +38,39 @@ export async function machineCards(machines: Machine[]): Promise<MachineCardData
   )
   const standInOf = new Map(uncovered.map((m, i) => [m.id, standIns[i]]))
   const art = await hydrateArtworkMeta(standIns.filter((p): p is { collection: string; tokenId: string } => p !== null))
-
-  const onSale = machines.flatMap((m) => (!isReveal(m) && m.state === 'live' ? [m] : []))
-  const sales = await resolveOnchainSalesBatch(
-    serverBaseClient(),
-    onSale.map((m) => ({ collection: m.capsule.collection as Address, tokenId: BigInt(m.capsule.tokenId) })),
+  return new Map(
+    machines.map((m) => {
+      if (m.cover) return [m.id, { image: m.cover.uri, thumbhash: m.cover.thumbhash }]
+      const standIn = standInOf.get(m.id)
+      const image = standIn ? art[`${standIn.collection.toLowerCase()}:${standIn.tokenId}`]?.image : null
+      return [m.id, image ? { image } : null]
+    }),
   )
+}
+
+/**
+ * The play list's cards, in the order given: covers (above) and, for every
+ * capsule machine on sale, its price — one multicall for all of them.
+ */
+export async function machineCards(machines: Machine[]): Promise<MachineCardData[]> {
+  const onSale = machines.flatMap((m) => (!isReveal(m) && m.state === 'live' ? [m] : []))
+  const [covers, sales] = await Promise.all([
+    machineCovers(machines),
+    resolveOnchainSalesBatch(
+      serverBaseClient(),
+      onSale.map((m) => ({ collection: m.capsule.collection as Address, tokenId: BigInt(m.capsule.tokenId) })),
+    ),
+  ])
   const now = BigInt(Math.floor(Date.now() / 1000))
 
   return machines.map((m) => {
-    const standIn = standInOf.get(m.id)
-    const standInImage = standIn ? art[`${standIn.collection.toLowerCase()}:${standIn.tokenId}`]?.image : null
     const sale = isReveal(m) ? undefined : sales.get(`${m.capsule.collection.toLowerCase()}:${m.capsule.tokenId}`)
     const card = {
       id: m.id,
       name: m.name,
       state: m.state,
       creator: m.creator,
-      cover: m.cover ? { image: m.cover.uri, thumbhash: m.cover.thumbhash } : standInImage ? { image: standInImage } : null,
+      cover: covers.get(m.id) ?? null,
       price:
         m.state === 'live' && sale && BigInt(sale.saleEnd) > now
           ? { pricePerToken: sale.pricePerToken, currency: sale.type === 'erc20Mint' ? ('usdc' as const) : ('eth' as const) }
