@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
     // the Pass collection — so passing the Pass collection to it, as this did,
     // made the credential check a no-op that never rejected anyone.
     const ok = await holdsValidPass(creator).catch(() => false)
-    if (!ok) return errorResponse(403, 'A Kismet Pass is required to create a machine')
+    if (!ok) return errorResponse(403, 'A Kismet Pass is required to build a gachapon')
   }
 
   const body = (await req.json().catch(() => null)) as {

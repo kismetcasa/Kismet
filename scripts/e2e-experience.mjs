@@ -1793,7 +1793,7 @@ try {
       entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
       dryRun: true,
     } })
-    check('a wallet with no Pass cannot open a machine', noPass.status === 403, JSON.stringify(noPass.json))
+    check('a wallet with no Pass cannot build a gachapon, and is told so', noPass.status === 403 && noPass.json?.error === 'A Kismet Pass is required to build a gachapon', JSON.stringify(noPass.json))
     check('while a Pass holder can', (await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: {
       id: 'has-pass', name: 'Has Pass', capsule: { collection: CAPSULE_6, tokenId: '1' },
       entries: [{ collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 }],
@@ -2450,7 +2450,7 @@ try {
           const page = await open('/play')
           const body = await text(page)
           check('the list page leads with its name and promise', /play capsule machines and reveal machines · published odds/.test(body), body.slice(0, 160))
-          check('and offers the studio', (await page.getByRole('link', { name: 'open a machine' }).getAttribute('href')) === '/play/create')
+          check('and offers the studio', (await page.getByRole('link', { name: 'build gachapon' }).getAttribute('href').catch(() => null)) === '/play/create')
           const rows = page.locator('a[href^="/play/"]:not([href="/play/create"])')
           const shelved = (await call('/api/experience/machines')).json.machines.length
           check('every machine on the shelves is a row', (await rows.count()) === shelved, `${await rows.count()} vs ${shelved}`)
@@ -2546,10 +2546,23 @@ try {
           const kinds = await text(chooser)
           check('the studio first asks which kind of machine',
             kinds.includes('capsule machine your own work at one price') && kinds.includes('reveal machine any artist’s work'), kinds.slice(0, 300))
+          check('it is called what every button leading to it says',
+            (await chooser.getByRole('heading', { level: 1 }).textContent()) === 'build gachapon' && (await chooser.title()) === 'build gachapon — Kismet', await chooser.title())
           check('and each kind is a link to its studio',
             (await chooser.getByRole('link', { name: /capsule machine/ }).getAttribute('href')) === '/play/create-capsule' &&
             (await chooser.getByRole('link', { name: /reveal machine/ }).getAttribute('href')) === '/play/create-reveal')
           await chooser.context().close()
+
+          // Without a Pass, each studio says what building one takes, up front.
+          const gated = await Promise.all(['/play/create-capsule', '/play/create-reveal'].map(async (studio) => {
+            const pg = await open(studio, { wallet: NOPASS })
+            const notice = pg.getByText('a Kismet Pass is required to build a gachapon')
+            await notice.waitFor({ timeout: 10_000 }).catch(() => {})
+            const shown = (await notice.count()) === 1
+            await pg.context().close()
+            return shown
+          }))
+          check('a wallet without a Pass is told, in either studio, that building a gachapon takes one', gated.every(Boolean), gated.join())
 
           const page = await open('/play/create-capsule')
           await page.getByText('capsule studio').first().waitFor()
@@ -3056,6 +3069,11 @@ try {
             await build.waitFor({ timeout: 10_000 }).catch(() => {})
             check('with no machine to play, it offers to build one', (await text(pg)).includes('nothing to play yet') && (await build.getAttribute('href')) === '/play/create')
             await pg.context().close()
+            const list = await open('/play')
+            await list.getByText('no machines running yet').waitFor({ timeout: 10_000 }).catch(() => {})
+            check('and so does the list page', (await text(list)).includes('any pass holder can build one') &&
+              (await list.getByRole('link', { name: 'build one' }).getAttribute('href').catch(() => null)) === '/play/create')
+            await list.context().close()
           } finally {
             zsets.set('kismetart:xp:index', index)
           }
@@ -3146,12 +3164,13 @@ try {
           await visitor.getByText(`Machines (${c2Machines})`).waitFor()
           const vBody = await text(visitor)
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
-          check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0)
+          check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0)
           await visitor.context().close()
 
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()
           check('the creator sees each machine in plain words', (await text(page)).includes('on sale'))
+          check('and how to build another', (await page.getByRole('link', { name: 'build another gachapon →' }).getAttribute('href').catch(() => null)) === '/play/create')
           const row = page.locator('div.border', { hasText: 'Browser Machine' }).last()
           await row.getByRole('button', { name: 'end season' }).click()
           await row.getByRole('button', { name: 'confirm end season' }).click()
@@ -3174,7 +3193,7 @@ try {
           const stateOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.machine?.state
 
           const visitor = await open('/play')
-          await visitor.getByRole('link', { name: 'open a machine' }).waitFor()
+          await visitor.getByRole('link', { name: 'build gachapon' }).waitFor().catch(() => {})
           await visitor.waitForTimeout(1500)
           check('a visitor sees no way to end anyone\'s machine', (await endControls(visitor).count()) === 0)
           await visitor.context().close()

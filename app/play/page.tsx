@@ -40,7 +40,7 @@ export default async function PlayPage() {
           href="/play/create"
           className="shrink-0 px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink"
         >
-          open a machine
+          build gachapon
         </Link>
       </header>
 
@@ -50,7 +50,7 @@ export default async function PlayPage() {
           <p className="text-xs font-mono text-subtle mt-2">
             any Pass holder can{' '}
             <Link href="/play/create" className="text-dim hover:text-ink underline">
-              open one
+              build one
             </Link>
           </p>
         </div>

@@ -677,7 +677,7 @@ export function DiscoverPage({
 // The machines on the shelves right now, one row each, opening to the machine.
 // A closed machine cannot be played, so only live ones are listed (/play keeps
 // the closed ones). The way to build one is always here: the tab is where
-// people find machines, so it is where a creator looks for how to open one.
+// people find machines, so it is where a creator looks for how to build one.
 function PlayFeed() {
   const [machines, setMachines] = useState<MachineRow[] | null>(null)
   const [failed, setFailed] = useState(false)
