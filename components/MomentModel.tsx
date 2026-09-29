@@ -3,9 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
-import { videoGatewayUrls } from '@/lib/media/gateway'
+import { modelFetchUrls } from '@/lib/media/gateway'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/media/modelMedia'
+import {
+  ModelFetchError,
+  fetchModelBlob,
+  isAbortError,
+  modelLoadReadout,
+  type ModelFetchProgress,
+} from '@/lib/media/modelFetch'
+import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
 
 /**
  * The artwork detail view's 3D viewer — the ONE surface in the app that
@@ -27,14 +35,25 @@ import { MODEL_ENVIRONMENT, MODEL_SHADOW_INTENSITY, modelViewerBg } from '@/lib/
  *      path as any still, so the artwork looks right immediately instead of
  *      after a multi-megabyte download.
  *
- * The still STAYS MOUNTED beneath the viewer until the model's own `load`
- * fires — the `showPosterLayer` pattern MomentVideo already uses. Without
- * it, tapping trades a finished artwork for an empty box for as long as a
- * 30 MB download takes, which is worst on exactly the connections this
- * feature is most exposed on. The progress readout covers the same case.
+ * THE DOWNLOAD IS OURS, NOT model-viewer's (lib/media/modelFetch — the
+ * reasons are recorded there: an aggregate progress figure that read "50%"
+ * before a single byte, no timeout, no abort, and a cache that turns a
+ * failed load into an instant failure on every retry). The tap fetches the
+ * GLB with a cancel, a stall watchdog and a gateway walk, shows real bytes,
+ * and only then mounts <model-viewer> on a blob: URL — so no WebGL context
+ * exists until the model is actually in hand, either.
  *
- * Exiting unmounts the element, which is what actually releases the context
- * — worth having on a sticky media column a viewer may scroll past.
+ * The still STAYS VISIBLE beneath the viewer until the model's own `load`
+ * fires — the `showPosterLayer` pattern MomentVideo already uses. The
+ * artist's backdrop lives on the WRAPPER, never on the element: model-viewer's
+ * host is `position: relative`, so it paints over the absolutely positioned
+ * still, and an opaque background on the element itself hid the still from
+ * the first frame on the white and dark backdrops — the empty white box the
+ * artist reported. Pixel-checked in scripts/e2e/model-media.mjs.
+ *
+ * Exiting aborts a download in flight, releases the blob, and unmounts the
+ * element, which is what actually releases the context — worth having on a
+ * sticky media column a viewer may scroll past.
  */
 
 type Phase = 'idle' | 'loading' | 'active' | 'error'
@@ -84,81 +103,142 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
   // degrades to the thumbhash blur in place rather than reporting upward.
   const [posterFailed, setPosterFailed] = useState(false)
   const [modelLoaded, setModelLoaded] = useState(false)
-  const [progress, setProgress] = useState(0)
-  // Gateway walk, mirroring useFallbackUrl. A GLB has the same fetch profile
-  // as a video — one large binary pulled by an element we don't control — so
-  // it takes videoGatewayUrls' rule verbatim: inside an iframe / WebKit-only
-  // / RN webview a direct gateway fetch stalls on the shared HTTP/2 pool, so
-  // lead with /api/img (no `w=`, which streams the bytes through untouched)
-  // and keep the direct gateways behind it. Memoized because that helper
+  // null until the response's headers arrive — the readout says "connecting"
+  // rather than inventing a number for a request nothing has answered yet.
+  const [download, setDownload] = useState<ModelFetchProgress | null>(null)
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  // The in-flight download's cancel, the live object URL, and a session
+  // token: a result from a load the viewer has since exited (or re-tapped)
+  // must never install itself over the newer state.
+  const abortRef = useRef<AbortController | null>(null)
+  const blobUrlRef = useRef<string | null>(null)
+  const sessionRef = useRef(0)
+  // Progress lands per stream chunk (tens of KB), which on a 30 MB model is
+  // a thousand-plus events; the readout only needs ~10 renders a second.
+  const lastProgressAtRef = useRef(0)
+  // Gateway walk, mirroring MomentVideo's — memoized because the helper
   // reads `window.top` and sniffs the UA on every call.
-  const [gatewayIndex, setGatewayIndex] = useState(0)
-  const urls = useMemo(() => videoGatewayUrls(src), [src])
-  const url = gatewayIndex < urls.length ? urls[gatewayIndex] : null
+  const urls = useMemo(() => modelFetchUrls(src), [src])
 
   const allowsMotion = useAllowsMotion()
   const onAllErrorRef = useRef(onAllError)
   onAllErrorRef.current = onAllError
 
+  const releaseBlob = useCallback(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
+    setBlobUrl(null)
+  }, [])
+
+  // Stop whatever is in flight and forget its result.
+  const cancel = useCallback(() => {
+    sessionRef.current++
+    abortRef.current?.abort()
+    abortRef.current = null
+    releaseBlob()
+  }, [releaseBlob])
+
   const activate = useCallback(async () => {
+    cancel()
+    const session = sessionRef.current
+    const controller = new AbortController()
+    abortRef.current = controller
     setPhase('loading')
     setMessage(null)
     setModelLoaded(false)
-    setProgress(0)
-    // Restart the walk. The likeliest real failure here is an Arweave
-    // propagation 404 moments after a mint, which resolves on its own — so a
-    // retry that only re-hit the last exhausted gateway would be the single
-    // attempt least likely to succeed.
-    setGatewayIndex(0)
+    setDownload(null)
     try {
-      // Defined before <model-viewer> renders; see the bundle note above.
-      const mod = await import('@google/model-viewer')
+      // The element definition and the bytes are independent; fetch both at
+      // once so the ~475 KB chunk is not serialized behind a 30 MB download.
+      const [, fetched] = await Promise.all([
+        import('@google/model-viewer'),
+        fetchModelBlob(urls, {
+          signal: controller.signal,
+          onProgress: (p) => {
+            if (sessionRef.current !== session) return
+            const now = Date.now()
+            const final = p.total !== null && p.loaded >= p.total
+            if (!final && now - lastProgressAtRef.current < 100) return
+            lastProgressAtRef.current = now
+            setDownload(p)
+          },
+        }),
+      ])
+      if (sessionRef.current !== session) return
       // Point Draco/KTX2 at OUR copies — model-viewer otherwise fetches them
       // from www.gstatic.com at render time, an undeclared third-party origin
       // that would also break under an enforcing CSP. Draco compression is
-      // the standard optimization for web-delivered GLBs, so this is the
-      // routine path, not an edge case. See public/model-decoders/README.md.
-      mod.ModelViewerElement.dracoDecoderLocation = '/model-decoders/draco/'
-      mod.ModelViewerElement.ktx2TranscoderLocation = '/model-decoders/basis/'
+      // the standard optimization for web-delivered GLBs (the mint form now
+      // offers it), so this is the routine path, not an edge case. Set on the
+      // global config the element constructor reads (lib/media/
+      // modelViewerConfig — the static setter never held). See
+      // public/model-decoders/README.md.
+      configureModelViewerDecoders()
+      // A fresh blob: URL per attempt. model-viewer caches loads by URL —
+      // including failed ones — so the element must never see the same URL
+      // twice; and nothing here has touched its cache with a gateway URL.
+      const url = URL.createObjectURL(fetched.blob)
+      blobUrlRef.current = url
+      setBlobUrl(url)
       setPhase('active')
-    } catch {
+    } catch (err) {
+      // An element-definition failure must not leave the download running.
+      controller.abort()
+      if (sessionRef.current !== session || isAbortError(err)) return
       setPhase('error')
-      setMessage('Could not load the 3D viewer — check your connection and retry.')
+      setMessage(
+        err instanceof ModelFetchError
+          ? err.message
+          : 'Could not load the 3D viewer — check your connection and retry.',
+      )
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null
     }
-  }, [])
+  }, [urls, cancel])
+
+  const exit = useCallback(() => {
+    cancel()
+    setPhase('idle')
+    setMessage(null)
+    setModelLoaded(false)
+    setDownload(null)
+  }, [cancel])
+
+  // Unmount (navigation, a scrolled-away sticky column) stops the download
+  // and drops the blob rather than letting a 30 MB fetch finish for nobody.
+  useEffect(() => () => cancel(), [cancel])
 
   // Events wired with addEventListener via a callback ref, NOT on*-props:
   // React's synthetic event system maps on*-props for known DOM elements,
   // NOT for custom elements, so the prop form would silently never fire.
-  // `gatewayIndex` is read from this closure and declared as a dep, so the
-  // walk keeps ONE source of truth; React re-runs the ref (cleanup first) on
-  // each step, which is also exactly when the element's `src` changes.
   const attach = useCallback((node: HTMLElement | null) => {
     if (!node) return
-    const onLoad = () => setModelLoaded(true)
-    const onProgress = (e: Event) => {
-      const total = (e as CustomEvent<{ totalProgress?: number }>).detail?.totalProgress
-      if (typeof total === 'number') setProgress(total)
+    const onLoad = () => {
+      setModelLoaded(true)
+      // Parsed: the blob's job is done. Revoking now releases the extra copy
+      // while the model stays resident in the element. model-viewer only
+      // re-reads `src` when it changes, and it never does after this.
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
     }
     const onError = () => {
-      // Walk to the next gateway before giving up — a 404 during Arweave
-      // propagation, or one stalled host, shouldn't be terminal.
-      if (gatewayIndex + 1 < urls.length) {
-        setGatewayIndex(gatewayIndex + 1)
-        return
-      }
+      // The bytes passed the GLB magic check, so another gateway would only
+      // serve the same file: this is the model itself, not the network.
+      releaseBlob()
       setPhase('error')
-      setMessage('This 3D model could not be loaded.')
+      setMessage('This 3D model could not be displayed.')
     }
     node.addEventListener('load', onLoad)
-    node.addEventListener('progress', onProgress)
     node.addEventListener('error', onError)
     return () => {
       node.removeEventListener('load', onLoad)
-      node.removeEventListener('progress', onProgress)
       node.removeEventListener('error', onError)
     }
-  }, [gatewayIndex, urls.length])
+  }, [releaseBlob])
 
   // Nothing left to show: the model is unusable AND no still survived.
   const hasStill = !!poster && !posterFailed
@@ -171,10 +251,9 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
   // one baked into the poster. See MODEL_BACKGROUNDS.
   const bg = modelViewerBg(background)
 
-  // One still layer, shared by the idle and active states — so promoting to
-  // 3D never re-fetches it — faded out only once the model has actually
-  // painted (a GLB with a transparent background would otherwise composite
-  // over it).
+  // One still layer, shared by every state — so promoting to 3D never
+  // re-fetches it — faded out only once the model has actually painted (a
+  // GLB with a transparent background would otherwise composite over it).
   const still = hasStill ? (
     <MomentImage
       src={poster!}
@@ -193,9 +272,12 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
     />
   )
 
-  if (phase === 'active' && url) {
+  if (phase === 'loading' || (phase === 'active' && blobUrl)) {
+    const parsing = phase === 'active' && !modelLoaded
     return (
-      <div className="absolute inset-0">
+      // The backdrop is on this wrapper, behind everything, so the still is
+      // visible over it for as long as the download and the parse take.
+      <div className="absolute inset-0" style={{ backgroundColor: bg }}>
         <div
           className={`absolute inset-0 transition-opacity duration-300 ${
             modelLoaded ? 'opacity-0' : 'opacity-100'
@@ -203,30 +285,34 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
         >
           {still}
         </div>
-        {/* @ts-expect-error — custom element registered by the lazy import. */}
-        <model-viewer
-          ref={attach}
-          src={url}
-          alt={alt}
-          camera-controls
-          {...(allowsMotion ? { 'auto-rotate': true } : {})}
-          shadow-intensity={MODEL_SHADOW_INTENSITY}
-          environment-image={MODEL_ENVIRONMENT}
-          touch-action="pan-y"
-          style={{ width: '100%', height: '100%', backgroundColor: bg }}
-        />
+        {phase === 'active' && blobUrl ? (
+          <>
+            {/* @ts-expect-error — custom element registered by the lazy import. */}
+            <model-viewer
+              ref={attach}
+              src={blobUrl}
+              alt={alt}
+              camera-controls
+              {...(allowsMotion ? { 'auto-rotate': true } : {})}
+              shadow-intensity={MODEL_SHADOW_INTENSITY}
+              environment-image={MODEL_ENVIRONMENT}
+              touch-action="pan-y"
+              style={{ width: '100%', height: '100%' }}
+            />
+          </>
+        ) : null}
         {!modelLoaded && (
           // Chipped rather than bare: the backdrop is artist-chosen, so this
           // text can sit on white as easily as on near-black and grey-on-white
           // would be sub-AA.
-          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 px-2.5 py-1 bg-[#0d0d0d]/85 text-[11px] font-mono text-dim pointer-events-none">
-            loading 3D… {Math.round(progress * 100)}%
+          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 px-2.5 py-1 bg-[#0d0d0d]/85 text-[11px] font-mono text-dim pointer-events-none whitespace-nowrap">
+            loading 3D… {modelLoadReadout(download, parsing)}
           </p>
         )}
         <button
           type="button"
-          onClick={() => setPhase('idle')}
-          aria-label="Exit 3D view"
+          onClick={exit}
+          aria-label={phase === 'active' ? 'Exit 3D view' : 'Cancel 3D load'}
           className="absolute top-2 right-2 z-10 w-8 h-8 bg-[#0d0d0d]/80 border border-line flex items-center justify-center text-dim hover:text-ink transition-colors"
         >
           <X size={14} />
@@ -244,11 +330,11 @@ export function MomentModel({ src, poster, thumbhash, alt, background, onAllErro
         <button
           type="button"
           onClick={activate}
-          disabled={phase === 'loading' || !url}
+          disabled={urls.length === 0}
           className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors disabled:opacity-60"
         >
           <Box size={13} strokeWidth={1.5} />
-          {phase === 'loading' ? 'loading 3D…' : phase === 'error' ? 'retry 3D' : 'view in 3D'}
+          {phase === 'error' ? 'retry 3D' : 'view in 3D'}
         </button>
       </div>
       {message && (

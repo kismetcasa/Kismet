@@ -83,6 +83,26 @@ export function videoGatewayUrls(uri: string, forceProxy = false): string[] {
 }
 
 /**
+ * Candidate URLs for the artwork page's own GLB download (lib/media/modelFetch,
+ * components/MomentModel). Same context rule as video — a GLB is one large
+ * binary with the same stall profile on constrained HTTP/2 pools — with one
+ * addition: the proxy is ALWAYS present as the final fallback. The Arweave
+ * pool is a single host (lib/arweave/gateways.ts), so on a top-level desktop
+ * page a gateway that accepted the connection and never sent a byte used to
+ * leave the walk nowhere to go. The proxy races the pool server-side with a
+ * 30 s header budget and caches immutably, which makes it a genuinely
+ * different second route rather than a repeat of the first.
+ */
+export function modelFetchUrls(uri: string, forceProxy = false): string[] {
+  const urls = videoGatewayUrls(uri, forceProxy)
+  if (isProxiable(uri)) {
+    const proxy = proxyUrl(uri)
+    if (!urls.includes(proxy)) urls.push(proxy)
+  }
+  return urls
+}
+
+/**
  * True on Safari (desktop + iOS) and any other WebKit-only context — Chrome
  * iOS (CriOS), Mini App iOS WKWebView, etc. False on Chromium-based browsers
  * (Chrome, Edge, Brave, Opera) which all include "Chrome" in their UA.

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { CFILE_KIND_META, type CfileKind } from '@/lib/collectorFileTypes'
+import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
 
 /**
  * In-page viewer for a collector file (design "Format extension"). Fetches
@@ -59,8 +60,10 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
           // these from www.gstatic.com at render time — an undeclared
           // third-party origin that would also break under an enforcing
           // CSP. See public/model-decoders/README.md.
-          mod.ModelViewerElement.dracoDecoderLocation = '/model-decoders/draco/'
-          mod.ModelViewerElement.ktx2TranscoderLocation = '/model-decoders/basis/'
+          // Set on the global config the element constructor reads — the
+          // static setter this used to assign never held (lib/media/
+          // modelViewerConfig).
+          configureModelViewerDecoders()
         }
         const res = await fetch(
           `/api/collector-file/view?collection=${collection}&tokenId=${tokenId}&v=${v}`,
