@@ -2806,6 +2806,9 @@ try {
           // server's verdict instead of timing out blind.
           await page.locator('section', { hasText: /ready|fix before publishing/i }).first().waitFor().catch(() => {})
           const afterCheck = await text(page)
+          // Counted once the check's answer is shown: an upload would have gone
+          // before the check's request, so any the check made is in by now.
+          const uploadsAtCheck = arweaveUploads.length
           check('check passes against the live gate', afterCheck.includes('every check passed against live on-chain state'),
             `dryRuns=${JSON.stringify(dryRuns).slice(0, 300)} | console=${JSON.stringify(consoleErrs).slice(0, 300)} | failed=${JSON.stringify(failedReqs).slice(0, 200)} | panel=${afterCheck.match(/(ready|fix before publishing).{0,160}/)?.[0] ?? ''}`)
           check('and reports the on-chain capsule and who it pays', afterCheck.includes('on-chain: 20 max · 0 minted') && afterCheck.includes('this capsule has no split, so every play pays you.'), afterCheck.match(/on-chain.{0,40}/)?.[0] ?? '')
@@ -2819,8 +2822,9 @@ try {
           check('and the machine really is in the review queue', queued.json?.machines?.some((m) => m.machine.id === 'browser-machine' && m.machine.state === 'review'))
           const coverAt = queued.json?.machines?.find((m) => m.machine.id === 'browser-machine')?.machine?.cover?.uri
           check('with its cover: uploaded once, on publish — the check uploaded nothing — through the app\'s own signer',
-            arweaveUploads.length === uploadsBefore + 1 && coverAt === `ar://${arweaveUploads.at(-1)?.id}` && arweaveUploads.at(-1)?.bytes > 0,
-            `${arweaveUploads.length - uploadsBefore} upload(s), cover ${coverAt}`)
+            uploadsAtCheck === uploadsBefore && arweaveUploads.length === uploadsBefore + 1 &&
+              coverAt === `ar://${arweaveUploads.at(-1)?.id}` && arweaveUploads.at(-1)?.bytes > 0,
+            `${uploadsAtCheck - uploadsBefore} at the check, ${arweaveUploads.length - uploadsBefore} in all, cover ${coverAt}`)
           await page.context().close()
         }
 
@@ -3117,7 +3121,10 @@ try {
           await addRow(1, `${origin}/artwork/${REVEAL}/5`)
           await addRow(2, `${origin}/artwork/${REVEAL}/4`)
           await addRow(3, `${origin}/artwork/${REVEAL}/3`)
+          // Each row looks its piece up on its own, so wait for both verdicts
+          // before reading: one row answering says nothing about the other.
           await page.getByText('Kismet has no record of who made this').waitFor({ timeout: 8000 }).catch(() => {})
+          await page.getByText('its artist has turned machines off for this piece').waitFor({ timeout: 8000 }).catch(() => {})
           const rows = await text(page)
           check('a pasted piece names its maker', /by 0x[0-9a-f]{4}…[0-9a-f]{4}/.test(rows))
           check('one Kismet has no maker for is flagged as you build', rows.includes('kismet has no record of who made this — only artworks minted on kismet can go in'))
