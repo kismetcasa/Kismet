@@ -10,8 +10,9 @@ import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
-import { CoverEditor } from './CoverField'
 import { CollectedLine, MachineStage, motionAllowed } from './MachineStage'
+import { MachineArtEditors } from './MachineArtEditors'
+import type { MachineFrames } from '@/lib/experience/types'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -35,7 +36,7 @@ interface LineupRow {
 }
 
 interface Payload {
-  machine: { id: string; name: string; state: string; creator: string; cover: string | null }
+  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null }
   /** Who earns the mint referral on collects from this machine: its curator,
    *  or null when Kismet curates (Kismet's own referral then applies). */
   referral: string | null
@@ -119,13 +120,17 @@ export function RevealMachine({ id }: { id: string }) {
         {live && (
           <MachineAction machine={{ id: data.machine.id, kind: 'reveal' }} action="end" creator={data.machine.creator} onDone={load} />
         )}
-        <CoverEditor machineId={data.machine.id} current={data.machine.cover} creator={data.machine.creator} onDone={load} />
+        <MachineArtEditors machine={data.machine} kind="reveal" onDone={load} />
       </header>
 
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        {pick && opening ? (
-          <MachineStage stage="open" cover={data.machine.cover} onOpened={opened} />
-        ) : pick ? (
+        <MachineStage
+          stage={opening ? 'open' : pick ? null : 'idle'}
+          cover={data.machine.cover}
+          frames={data.machine.frames}
+          onOpened={opened}
+        />
+        {pick && !opening ? (
           <div>
             <p className="text-xs font-mono uppercase tracking-widest accent-grad">you revealed</p>
             <Link href={`/artwork/${pick.collection}/${pick.tokenId}`} className="group block mt-5">
@@ -177,9 +182,8 @@ export function RevealMachine({ id }: { id: string }) {
               </p>
             )}
           </div>
-        ) : (
+        ) : !opening && (
           <div>
-            <MachineStage stage="idle" cover={data.machine.cover} />
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
               {!live ? 'this machine is closed' : n === 0 ? 'nothing on sale right now' : 'free to pull'}
             </p>

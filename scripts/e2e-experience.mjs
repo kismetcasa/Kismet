@@ -80,6 +80,37 @@ const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was rev
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
 /** The cover every other publish carries: the route requires one (call()). */
 const TEST_COVER = { uri: 'ar://' + 'e2eCover'.repeat(5) + 'abc' }
+// A stage frame as a publish or its creator's edit carries one (lib/experience/cover).
+const TEST_FRAME = { uri: 'ar://' + 'e2eFrame'.repeat(5) + 'abc', kind: 'video', poster: 'ar://' + 'e2ePostr'.repeat(5) + 'abc' }
+// A two-frame 16×16 animated gif, written out by hand so the suite carries no
+// binary fixture: two colours, `cs` hundredths of a second a frame, and an LZW
+// stream that clears its table every two codes so every code stays 3 bits.
+function tinyGif(cs) {
+  const bytes = []
+  const push = (...b) => bytes.push(...b)
+  const u16 = (n) => [n & 255, n >> 8]
+  push(...Buffer.from('GIF89a'), ...u16(16), ...u16(16), 0x80, 0, 0, 255, 0, 170, 0, 200, 255)
+  push(0x21, 0xff, 0x0b, ...Buffer.from('NETSCAPE2.0'), 0x03, 0x01, 0, 0, 0x00)
+  for (const colour of [0, 1]) {
+    push(0x21, 0xf9, 0x04, 0x00, ...u16(cs), 0x00, 0x00, 0x2c, ...u16(0), ...u16(0), ...u16(16), ...u16(16), 0x00, 0x02)
+    const codes = []
+    for (let i = 0; i < 256; i += 2) codes.push(4, colour, colour)
+    codes.push(5)
+    const data = []
+    let acc = 0
+    let bits = 0
+    for (const c of codes) {
+      acc |= c << bits
+      bits += 3
+      while (bits >= 8) { data.push(acc & 255); acc >>= 8; bits -= 8 }
+    }
+    if (bits) data.push(acc & 255)
+    for (let i = 0; i < data.length; i += 255) push(Math.min(255, data.length - i), ...data.slice(i, i + 255))
+    push(0x00)
+  }
+  push(0x3b)
+  return Buffer.from(bytes)
+}
 /** What the browser uploaded to Arweave's upload service, in order (open()'s `uploads`). */
 const arweaveUploads = []
 /** Spring Season's cover: an Arweave upload, as the studio makes one. */
@@ -2431,8 +2462,35 @@ try {
     check('a Chromium can be launched (npx playwright-core install chromium, or PLAYWRIGHT_BROWSERS_PATH)', !!browser, String(launchErr?.message ?? '').slice(0, 160))
     if (browser) {
       const pageErrors = []
+      // What every artist's clip plays as here. The frames themselves are
+      // H.264, which this Chromium cannot decode, so any video a page asks for
+      // is served as this: a second of VP8 the browser records for itself.
+      const WEBM = await (async () => {
+        const pg = await browser.newPage()
+        const b64 = await pg.evaluate(async () => {
+          const canvas = Object.assign(document.createElement('canvas'), { width: 64, height: 64 })
+          const ctx = canvas.getContext('2d')
+          const rec = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm;codecs=vp8' })
+          const chunks = []
+          rec.ondataavailable = (e) => chunks.push(e.data)
+          let n = 0
+          const paint = setInterval(() => { ctx.fillStyle = n++ % 2 ? '#f0f' : '#0ff'; ctx.fillRect(0, 0, 64, 64) }, 33)
+          rec.start()
+          await new Promise((r) => setTimeout(r, 1000))
+          rec.stop()
+          clearInterval(paint)
+          await new Promise((r) => (rec.onstop = r))
+          const buf = new Uint8Array(await new Blob(chunks).arrayBuffer())
+          let bin = ''
+          for (const b of buf) bin += String.fromCharCode(b)
+          return btoa(bin)
+        })
+        await pg.close()
+        return Buffer.from(b64, 'base64')
+      })()
+      const mediaRequests = []
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads, reducedMotion } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads, reducedMotion, media } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2529,6 +2587,15 @@ try {
             return r.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
           })
         }
+        // `media`: every video loads, as it would with the network up — each
+        // served as WEBM, and what was asked for recorded.
+        if (media) {
+          await context.route('**/*', (r) => {
+            if (r.request().resourceType() !== 'media') return r.fallback()
+            mediaRequests.push(r.request().url())
+            return r.fulfill({ status: 200, contentType: 'video/webm', body: WEBM })
+          })
+        }
         // `storage`: localStorage the page finds on load, as a returning visitor's would be.
         if (storage) {
           await context.addInitScript((entries) => {
@@ -2552,9 +2619,10 @@ try {
       // the words, not the CSS; getByText (raw DOM text) is used where case matters.
       const text = async (page) => (await page.locator('body').innerText()).replace(/\s+/g, ' ').toLowerCase()
       // Every stage a machine's window passes through from now on, in order:
-      // [stage, when, the capsule's animation]. A MutationObserver runs before
-      // the next paint, so even a stage shown for one frame is recorded; null
-      // is a face with no window (a win, a reveal).
+      // [stage, when, the capsule's animation, the artist's frame on show — its
+      // element and source]. A MutationObserver runs before the next paint, so
+      // even a stage shown for one frame is recorded; null is a face with no
+      // window (a win, a reveal).
       const watchStages = (page) => page.evaluate(() => {
         window.__stages = []
         let last
@@ -2564,7 +2632,9 @@ try {
           if (stage === last) return
           last = stage
           const svg = el?.querySelector('svg')
-          window.__stages.push([stage, performance.now(), svg ? getComputedStyle(svg).animationName : null])
+          const frame = stage && el.querySelector(`[data-frame="${stage}"]`)
+          const art = frame ? `${frame.tagName.toLowerCase()} ${frame.getAttribute('src') ?? frame.querySelector('img')?.getAttribute('src') ?? ''}` : null
+          window.__stages.push([stage, performance.now(), svg ? getComputedStyle(svg).animationName : null, art])
         }
         note()
         new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-stage'] })
@@ -2643,6 +2713,31 @@ try {
           check('its creator changes it from the live machine\'s page, and the machine carries the new one',
             now === `ar://${arweaveUploads.at(-1)?.id}` && now !== SPRING_COVER.uri, now)
           await page.context().close()
+        }
+
+        // ── a machine's frames, set by its creator ──
+        {
+          for (const k of [...strings.keys()]) if (k.startsWith('kismetart:rl:xp-owner:')) strings.delete(k)
+          const set = (id, user, frames) => call(`/api/experience/machines/${id}`, { method: 'POST', user, body: { action: 'frames', frames } })
+          const refused = [
+            await set('spring-season', CURATOR_TOKEN, { dispense: TEST_FRAME }),
+            await set('spring-season', ADMIN_USER_TOKEN, { dispense: { ...TEST_FRAME, uri: 'https://example.com/a.mp4' } }),
+            await set('spring-season', ADMIN_USER_TOKEN, { idle: TEST_FRAME }),
+            await set('new-voices', CURATOR_TOKEN, { dispense: TEST_FRAME }),
+          ]
+          check('only its creator sets a machine\'s frames — Arweave uploads, for the stages its kind has',
+            refused.map((r) => r.status).join() === '403,400,400,400', refused.map((r) => r.status).join())
+          const still = { uri: TEST_FRAME.poster, kind: 'image', poster: TEST_FRAME.poster }
+          const set1 = await set('spring-season', ADMIN_USER_TOKEN, { dispense: TEST_FRAME, open: still })
+          const shown = (await call('/api/experience/machines/spring-season')).json?.machine?.frames
+          check('its creator sets them, and the machine\'s page is given them',
+            set1.status === 200 && JSON.stringify(shown) === JSON.stringify({ dispense: TEST_FRAME, open: still }), JSON.stringify(shown))
+          await set('spring-season', ADMIN_USER_TOKEN, {})
+          check('and clears them, back to the platform\'s capsule', (await call('/api/experience/machines/spring-season')).json?.machine?.frames === null)
+          const reveal = await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: {
+            kind: 'reveal', id: 'frames-check', name: 'Frames Check', entries: [{ collection: REVEAL, tokenId: '2' }], frames: { dispense: TEST_FRAME }, dryRun: true,
+          } })
+          check('a reveal machine, whose pull waits on nothing, is refused a dispense frame', reveal.status === 400 && reveal.json?.error === 'Invalid frames', `${reveal.status} ${reveal.json?.error}`)
         }
 
         // ── a machine's share card ──
@@ -2971,6 +3066,80 @@ try {
             stages.map(([s]) => s).join() === 'idle,open,' && (await redeemed.getByText(/^you've collected Piece Eight by /).count()) === 1,
             JSON.stringify(stages.map(([s]) => s)))
           await redeemed.context().close()
+
+          // ── its creator gives it frames of their own ──
+          const studio = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
+          await studio.getByLabel('open frame', { exact: true }).waitFor({ state: 'attached' })
+          const uploadsBefore = arweaveUploads.length
+          const toasted = (t) => studio.getByText(t).waitFor({ timeout: 60_000 }).then(() => true, () => false)
+          // Held to what a stage can afford as each is picked, before any upload.
+          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'long.gif', mimeType: 'image/gif', buffer: tinyGif(250) })
+          const tooLong = await toasted('Keep a frame to 4 seconds — this one runs 5.0')
+          const toastsSeen = (await studio.locator('[data-sonner-toast]').allInnerTexts()).join(' / ')
+          const { default: sharp } = await import('sharp')
+          const wide = await sharp({ create: { width: 1200, height: 10, channels: 3, background: '#ff00aa' } }).png().toBuffer()
+          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'wide.png', mimeType: 'image/png', buffer: wide })
+          const tooWide = await toasted('Keep a frame to 1080 px on its longest side — this one is 1200')
+          check('a frame that runs too long, or is too large, is refused as it is picked — nothing uploaded, nothing to save',
+            tooLong && tooWide && arweaveUploads.length === uploadsBefore && (await studio.getByRole('button', { name: 'save frames' }).count()) === 0,
+            `${tooLong} ${tooWide} ${arweaveUploads.length - uploadsBefore} | ${toastsSeen}`)
+          await studio.getByLabel('dispense frame', { exact: true }).setInputFiles({ name: 'dispense.gif', mimeType: 'image/gif', buffer: tinyGif(50) })
+          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(50) })
+          await studio.getByRole('button', { name: 'save frames' }).click({ timeout: 60_000 })
+          await studio.getByText('Frames updated').waitFor({ timeout: 30_000 }).catch(() => {})
+          const frames = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
+          const sent = arweaveUploads.slice(uploadsBefore).map((u) => `ar://${u.id}`)
+          const parts = [frames?.dispense?.uri, frames?.dispense?.poster, frames?.open?.uri, frames?.open?.poster]
+          check('its creator gives it frames on its page: each gif made a video and its still, all four uploaded through the app\'s own signer',
+            frames?.dispense?.kind === 'video' && frames.open?.kind === 'video' && !!frames.dispense.thumbhash &&
+              sent.length === 4 && parts.every((u) => sent.includes(u)) && new Set(parts).size === 4,
+            `${JSON.stringify(frames)} | ${sent.join(' ')}`)
+          await studio.context().close()
+
+          // ── and the play is theirs ──
+          const idOf = (uri) => uri?.replace('ar://', '') ?? '-'
+          const askedFrom = mediaRequests.length
+          const withFrames = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true })
+          await withFrames.getByText('insert coin').waitFor()
+          const preloadedBy = (end) => [frames?.dispense?.uri, frames?.open?.uri].every((u) => mediaRequests.slice(askedFrom, end).some((r) => r.includes(idOf(u))))
+          for (let i = 0; i < 50 && !preloadedBy(mediaRequests.length); i++) await sleep(100)
+          const asked = mediaRequests.length
+          await watchStages(withFrames)
+          await withFrames.getByRole('button', { name: 'play', exact: true }).click()
+          await withFrames.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          stages = await stagesOf(withFrames)
+          const [, dispensing, opening] = stages
+          check('the capsule dispenses as the artist\'s clip, looping, and opens as their other one',
+            stages.map(([s]) => s).join() === 'idle,dispense,open,' &&
+              dispensing[3]?.startsWith('video ') && dispensing[3].includes(idOf(frames?.dispense?.uri)) &&
+              opening[3]?.startsWith('video ') && opening[3].includes(idOf(frames?.open?.uri)) &&
+              (await withFrames.locator('[data-frame="dispense"]').getAttribute('loop')) !== null,
+            JSON.stringify(stages))
+          check('both clips were loaded before the play needed them', preloadedBy(asked), mediaRequests.slice(askedFrom, asked).join(' '))
+          check('and the open ends when the clip does, not at its bound', stageMs(stages, 'open') < 3000, String(stageMs(stages, 'open')))
+          await withFrames.context().close()
+
+          const calm = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true, reducedMotion: true })
+          await calm.getByText('insert coin').waitFor()
+          await watchStages(calm)
+          await calm.getByRole('button', { name: 'play', exact: true }).click()
+          await calm.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          stages = await stagesOf(calm)
+          check('under reduced motion the artist\'s dispense shows as its still, and nothing opens',
+            stages.map(([s]) => s).join() === 'idle,dispense,' && stages[1][3]?.startsWith('div ') && decodeURIComponent(stages[1][3]).includes(idOf(frames?.dispense?.poster)),
+            JSON.stringify(stages))
+          await calm.context().close()
+
+          // Its creator takes the open back to the capsule's own; the dispense stays.
+          const editing = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
+          await editing.getByRole('button', { name: 'remove open frame' }).click()
+          const uploadsNow = arweaveUploads.length
+          await editing.getByRole('button', { name: 'save frames' }).click()
+          await editing.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
+          const left = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
+          check('its creator removes one frame, and the other stays as it was, uploaded nothing new',
+            JSON.stringify(left) === JSON.stringify({ dispense: frames?.dispense }) && arweaveUploads.length === uploadsNow, JSON.stringify(left))
+          await editing.context().close()
         }
 
         // ── an artist allows capsule machines on their piece ──
@@ -3102,6 +3271,27 @@ try {
           stages = await stagesOf(still)
           check('under reduced motion a pull shows its piece without the open', stages.map(([s]) => s).join() === 'idle,', JSON.stringify(stages))
           await still.context().close()
+
+          // Its curator gives the open a still of their own.
+          const curated = await open('/play/new-voices', { user: CURATOR_TOKEN, wallet: CURATOR, uploads: true, images: true })
+          await curated.getByText('free to pull').waitFor()
+          await curated.getByLabel('open frame', { exact: true }).waitFor({ state: 'attached' }).catch(() => {})
+          check('a reveal machine\'s curator is offered an open frame, and no dispense',
+            (await curated.getByLabel('open frame', { exact: true }).count()) === 1 && (await curated.getByLabel('dispense frame', { exact: true }).count()) === 0)
+          await curated.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await curated.getByRole('button', { name: 'save frames' }).click({ timeout: 20_000 })
+          await curated.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
+          const openFrame = (await call('/api/experience/machines/new-voices')).json?.machine?.frames?.open
+          await watchStages(curated)
+          await curated.getByRole('button', { name: 'pull', exact: true }).click()
+          await curated.getByText('you revealed').waitFor()
+          stages = await stagesOf(curated)
+          check('a pull then opens on the curator\'s still, held as long as the capsule\'s own open',
+            openFrame?.kind === 'image' && stages.map(([s]) => s).join() === 'idle,open,' && stages[1][3]?.startsWith('div ') &&
+              decodeURIComponent(stages[1][3]).includes(openFrame.uri.replace('ar://', '')) && stageMs(stages, 'open') >= 1100,
+            `${JSON.stringify(openFrame)} | ${JSON.stringify(stages)}`)
+          await curated.context().close()
+          await call('/api/experience/machines/new-voices', { method: 'POST', user: CURATOR_TOKEN, body: { action: 'frames', frames: {} } })
 
           // One piece, so the reveal is known: the collect is the artwork's own,
           // sent from the player's wallet with the right value and referral.
@@ -3286,9 +3476,20 @@ try {
           check('once they are gone it is ready, and says what each piece shows as today',
             ready.includes('on sale now · free') && ready.includes('shows up when its sale opens'), ready.match(/the lineup.{0,300}/)?.[0] ?? '')
           await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          check('a reveal machine offers an open frame, and no dispense — its pull waits on nothing',
+            (await page.getByLabel('open frame', { exact: true }).count()) === 1 && (await page.getByLabel('dispense frame', { exact: true }).count()) === 0)
+          await page.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await page.getByRole('button', { name: 'change', exact: true }).waitFor({ timeout: 15_000 }).catch(() => {})
+          const uploadsBefore = arweaveUploads.length
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
           check('publishing queues it for a curator', (await text(page)).includes('browser picks is queued for a curator'))
+          const queuedFrames = (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.find((r) => r.machine.id === 'browser-picks')?.machine?.frames
+          const [coverUp, frameUp] = arweaveUploads.slice(uploadsBefore)
+          check('with its open frame: a still, uploaded once, its own still',
+            arweaveUploads.length === uploadsBefore + 2 && !!coverUp && JSON.stringify(Object.keys(queuedFrames ?? {})) === '["open"]' &&
+              queuedFrames.open.kind === 'image' && queuedFrames.open.uri === `ar://${frameUp?.id}` && queuedFrames.open.poster === queuedFrames.open.uri,
+            JSON.stringify(queuedFrames))
           check('as a reveal machine with the two pieces',
             (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-picks' && r.machine.kind === 'reveal' && r.pool.length === 2))
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: true } })

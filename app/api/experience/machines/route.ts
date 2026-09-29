@@ -40,8 +40,8 @@ import {
 import { serverBaseClient } from '@/lib/rpc'
 import { epochFor } from '@/lib/experience/fairness'
 import { isReveal } from '@/lib/experience/types'
-import type { CapsuleMachine, Machine, MachineCover, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
-import { parseCover } from '@/lib/experience/cover'
+import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
+import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { machineCards } from '@/lib/experience/cards'
 
 /**
@@ -181,6 +181,8 @@ export async function POST(req: NextRequest) {
     collections?: string[]
     /** The cover its card shows (lib/experience/cover). */
     cover?: unknown
+    /** The artist's own frames for the play (lib/experience/cover). */
+    frames?: unknown
     /** Validate everything and write nothing. The Capsule Studio calls this on
      *  every edit so a creator sees the REAL verdict — live on-chain headroom
      *  and rival machines' pledges included — before committing. Re-using the
@@ -204,6 +206,9 @@ export async function POST(req: NextRequest) {
   if (rarity !== 'manual' && rarity !== 'supply') return errorResponse(400, 'Invalid rarity')
   const cover = body.cover === undefined ? undefined : parseCover(body.cover)
   if (cover === null) return errorResponse(400, 'Invalid cover')
+  const parsedFrames = body.frames === undefined ? undefined : parseFrames(body.frames, kind)
+  if (parsedFrames === null) return errorResponse(400, 'Invalid frames')
+  const frames = parsedFrames && Object.keys(parsedFrames).length > 0 ? parsedFrames : undefined
   const dryRun = body.dryRun === true
   // A machine's card is its cover, so none is published without one. A check
   // needs none: the studio uploads the cover only when it publishes.
@@ -246,6 +251,7 @@ export async function POST(req: NextRequest) {
       collections: [...new Set(rawCollections.map((c) => c.toLowerCase()))],
       passCollection: gate.passCollection?.toLowerCase() ?? null,
       cover,
+      frames,
     })
   }
 
@@ -437,6 +443,7 @@ export async function POST(req: NextRequest) {
     createdAt: Date.now(),
     ...(rarity === 'supply' ? { rarity: 'supply' as Rarity } : {}),
     ...(cover ? { cover } : {}),
+    ...(frames ? { frames } : {}),
   }
 
   // The capsule reservation is the AUTHORITATIVE one-machine-per-capsule guard;
@@ -515,6 +522,7 @@ async function publishReveal(input: {
   collections: string[]
   passCollection: string | null
   cover: MachineCover | undefined
+  frames: MachineFrames | undefined
 }): Promise<NextResponse> {
   const pieces = input.pieces.map((e) => ({
     collection: e.collection.toLowerCase(),
@@ -582,6 +590,7 @@ async function publishReveal(input: {
     createdAt: Date.now(),
     ...(linking ? { collections: input.collections } : {}),
     ...(input.cover ? { cover: input.cover } : {}),
+    ...(input.frames ? { frames: input.frames } : {}),
   }
   // Reserved as a draft and filled before it takes its real state, as a
   // capsule machine is: a half-written lineup is never public.

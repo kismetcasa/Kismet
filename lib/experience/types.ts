@@ -235,6 +235,28 @@ export interface MachineCover {
   thumbhash?: string
 }
 
+/** An artist's own art for one stage of a play (lib/experience/frameUpload):
+ *  a clip — a gif becomes one — or a still, with the still a viewer who asked
+ *  for less motion sees instead. */
+export interface StageFrame {
+  uri: string
+  kind: 'video' | 'image'
+  /** Its still; the same upload as `uri` for an image. */
+  poster: string
+  thumbhash?: string
+}
+
+/** The stages an artist can draw. A reveal machine's pull waits on nothing,
+ *  so it has no dispense. Absent stages play the platform's own capsule. */
+export interface MachineFrames {
+  dispense?: StageFrame
+  open?: StageFrame
+}
+
+/** What a stage frame is held to. It plays inside a pull, on a phone, often in
+ *  a Farcaster webview: short, small, and no larger than a phone can show. */
+export const FRAME_LIMITS = { seconds: 4, px: 1080, bytes: 2.5 * 1024 * 1024 } as const
+
 interface MachineCommon {
   id: string
   /** Lowercased creator address — artist, or a host who owns no art. */
@@ -249,6 +271,8 @@ interface MachineCommon {
   /** Absent on machines published before covers existed; their cards fall
    *  back to art the machine already has (lib/experience/cards). */
   cover?: MachineCover
+  /** The artist's own frames for the play; absent, the platform's capsule. */
+  frames?: MachineFrames
 }
 
 /** A machine that sells capsules: a player pays the capsule price once and a

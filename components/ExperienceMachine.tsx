@@ -9,8 +9,9 @@ import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from 
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
-import { CoverEditor } from './CoverField'
-import { CollectedLine, MachineStage, motionAllowed } from './MachineStage'
+import { CollectedLine, MachineStage, motionAllowed, type Stage } from './MachineStage'
+import { MachineArtEditors } from './MachineArtEditors'
+import type { MachineFrames } from '@/lib/experience/types'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -73,6 +74,8 @@ interface MachinePayload {
     creator: string
     /** Its cover, an ar:// upload; null for a machine published before covers. */
     cover: string | null
+    /** The artist's own frames for the play; null for the platform's capsule. */
+    frames: MachineFrames | null
     rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
@@ -477,6 +480,10 @@ export function ExperienceMachine({ id }: { id: string }) {
       : null
   const busy = phase === 'paying' || phase === 'opening'
   const cover = data.machine.cover ?? data.machine.capsuleArt?.image ?? null
+  // The box shows a face (a win, a capsule still on its way) or the machine's
+  // window at a stage, with the controls under it until it opens.
+  const face = phase === 'pending' ? 'pending' : phase === 'won' && won.length > 0 && !toOpen ? 'won' : null
+  const stage: Stage | null = face ? null : phase === 'won' && toOpen ? 'open' : busy ? 'dispense' : 'idle'
   // The odds at the button as well as in the table: on a phone the table is a
   // scroll away, and a randomized purchase discloses its odds before it is made.
   const drawn = data.odds.filter((o) => o.probability > 0)
@@ -532,15 +539,14 @@ export function ExperienceMachine({ id }: { id: string }) {
             onDone={load}
           />
         )}
-        <CoverEditor machineId={data.machine.id} current={data.machine.cover} creator={data.machine.creator} onDone={load} />
+        <MachineArtEditors machine={data.machine} kind="capsule" onDone={load} />
       </header>
 
       {/* The machine. The reveal replaces this face in place, so the capsule
           appears to open rather than the page appearing to navigate. */}
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        {phase === 'won' && won.length > 0 && toOpen ? (
-          <MachineStage stage="open" cover={cover} onOpened={opened} />
-        ) : phase === 'won' && won.length > 0 ? (
+        <MachineStage stage={stage} cover={cover} frames={data.machine.frames} onOpened={opened} />
+        {face === 'won' ? (
           <div>
             {won.length > 1 && (
               <p className="mb-5 text-xs font-mono uppercase tracking-widest accent-grad">
@@ -598,7 +604,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               note={null}
             />
           </div>
-        ) : phase === 'pending' ? (
+        ) : face === 'pending' ? (
           <div>
             <p className="text-xs font-mono uppercase tracking-widest text-ink">your artwork is on its way</p>
             <p className="text-[11px] font-mono text-muted mt-2 max-w-sm mx-auto">{pendingReason}</p>
@@ -623,9 +629,8 @@ export function ExperienceMachine({ id }: { id: string }) {
               </button>
             </div>
           </div>
-        ) : (
+        ) : stage !== 'open' && (
           <div>
-            <MachineStage stage={busy ? 'dispense' : 'idle'} cover={cover} />
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
               {phase === 'opening'
                 ? progress && progress.total > 1

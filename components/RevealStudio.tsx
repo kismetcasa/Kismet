@@ -15,6 +15,7 @@ import type { LineupPiece, SolvencyProblemCode } from '@/lib/experience/types'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { DetailWithLinks, Field, Section, StudioSubmitted, inputClass, pieceKey } from './CapsuleStudio'
 import { CoverSlot, uploadCoverOrSay, useCoverPick } from './CoverField'
+import { FrameSlots, uploadFramesOrSay, useFramePick } from './FrameField'
 
 /**
  * Build a reveal machine: a name and a lineup of anyone's artworks.
@@ -51,6 +52,7 @@ export function RevealStudio() {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
   const coverPick = useCoverPick()
+  const openFrame = useFramePick()
   const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
@@ -101,6 +103,8 @@ export function RevealStudio() {
         setAuthRequired(false)
         const cover = dryRun ? null : await uploadCoverOrSay(coverPick.upload)
         if (!dryRun && !cover) return
+        const frames = dryRun ? {} : await uploadFramesOrSay({ open: openFrame.upload })
+        if (!frames) return
         const r = await fetch('/api/experience/machines', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -111,6 +115,7 @@ export function RevealStudio() {
             entries: complete.map((c) => ({ collection: c.collection.toLowerCase(), tokenId: c.tokenId })),
             collections: linked,
             ...(cover ? { cover } : {}),
+            ...(Object.keys(frames).length > 0 ? { frames } : {}),
             dryRun,
           }),
         })
@@ -143,7 +148,7 @@ export function RevealStudio() {
         setBusy(null)
       }
     },
-    [authRequired, complete, coverPick.upload, ensureSession, id, linked, name, router],
+    [authRequired, complete, coverPick.upload, ensureSession, id, linked, name, openFrame.upload, router],
   )
 
   if (submitted) return <StudioSubmitted title="reveal studio" machine={submitted} address={address} />
@@ -182,6 +187,7 @@ export function RevealStudio() {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New Voices" className={inputClass} />
         </Field>
         <CoverSlot pick={coverPick} disabled={busy !== null} />
+        <FrameSlots picks={{ open: openFrame }} disabled={busy !== null} />
       </Section>
 
       <Section title="the lineup" note="Paste an artwork's link, or its collection and token id.">
@@ -327,7 +333,7 @@ export function RevealStudio() {
             </button>
             <button
               onClick={() => submit(false)}
-              disabled={busy !== null || !ready || gatedOut || !coverPick.file}
+              disabled={busy !== null || !ready || gatedOut || !coverPick.file || openFrame.preparing}
               className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
             >
               {busy === 'publish' ? 'publishing…' : 'publish'}

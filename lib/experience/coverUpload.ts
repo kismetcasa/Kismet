@@ -1,6 +1,7 @@
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { canTranscode, extractGifPoster } from '@/lib/media/transcodeGif'
 import { generateThumbhash } from '@/lib/media/thumbhash'
+import { serially } from './frameUpload'
 import type { MachineCover } from './types'
 
 /**
@@ -12,7 +13,7 @@ export async function uploadCover(file: File): Promise<MachineCover> {
   let image = file
   if (canTranscode(file)) {
     try {
-      image = await extractGifPoster(file)
+      image = await serially(() => extractGifPoster(file))
     } catch (err) {
       console.warn('[cover] gif first-frame extraction failed; uploading the original', err)
     }

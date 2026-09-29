@@ -1,37 +1,15 @@
 'use client'
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { MomentImage } from './MomentImage'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { useAllowsVideo } from '@/hooks/useAllowsVideo'
 import type { ProfileTheme } from '@/lib/profileTheme'
 
 // Shared blur treatment for the artwork layers (still + live video/gif) so they
 // stay visually aligned — the live media fades in over the still at the same
 // blur/scale, so drift here would make the backdrop shift as it loads.
 const BLUR_STILL: CSSProperties = { filter: 'blur(40px) saturate(1.2)', transform: 'scale(1.15)' }
-
-// Whether the viewer permits an autoplaying backdrop video/gif. Starts false so
-// we never autoplay before confirming (no flash of motion for reduced-motion /
-// data-saver users); flips true on mount when allowed and tracks live changes
-// to the reduced-motion setting. Per the research: fall back to the static
-// still under prefers-reduced-motion or Data Saver — and low-power mode just
-// makes autoplay fail, which also surfaces the still (BackdropMedia.onError).
-function useAllowsVideo(): boolean {
-  const [allow, setAllow] = useState(false)
-  useEffect(() => {
-    // Gate on `no-preference` (not `!reduce`) so this matches the CSS effects,
-    // which animate only inside the no-preference query — the two motion paths
-    // then agree on every UA, including ones that report neither value (those
-    // conservatively get the static still).
-    const mq = window.matchMedia('(prefers-reduced-motion: no-preference)')
-    const nav = navigator as Navigator & { connection?: { saveData?: boolean } }
-    const compute = () => setAllow(mq.matches && !nav.connection?.saveData)
-    compute()
-    mq.addEventListener('change', compute)
-    return () => mq.removeEventListener('change', compute)
-  }, [])
-  return allow
-}
 
 // The V4 animated layer: a dedicated muted/loop/playsinline element — NOT the
 // feed-bound InlineVideo (which registers with the decoder coordinator and, in
