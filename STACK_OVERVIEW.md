@@ -463,8 +463,16 @@ totals in Redis; `ddda769` survived mid-read upstream deaths.
 (header harvest or bounded 8 MB/12 s count-through) cached in LRU + Redis; manual
 domain-pinned redirect resolution so `Range` reaches the final sandbox host;
 HTML-fallback rejection; byte-compatible dual transcode (wasm ≤100 MB / server
-≤300 MB, `MAX_CONCURRENT=1`); surface classification (`isWebKitOnly` /
-`isReactNativeWebView`) driving proxy-first delivery.
+≤300 MB, `MAX_CONCURRENT=1`) on one timing reading (`lib/media/gifTiming.ts`: each
+frame for the delay a browser plays it, the last one held, the whole ending at the
+GIF's length, a keyframe about once a second — checked frame by frame on ffmpeg
+7.1.1 and 8.1.2 by `verify:gif-transcode`, and by length, frame count and keyframe
+interval on the browser's 5.1.4 by `e2e:experience`); surface classification (`isWebKitOnly` /
+`isReactNativeWebView`) driving proxy-first delivery. Share cards
+(`lib/media/shareImage.ts`) hand Satori their image inlined as a jpeg — from
+`/api/img`'s variant cache, else one bounded fetch (4 s, 30 MB, each redirect held
+to the SSRF guard) — or nothing, for the text card: Satori draws a blank card for
+any image it cannot load or decode (`verify:share-image`).
 
 **Risks.** Single gateway (no fallback redundancy); no CDN yet (every constrained
 byte streams through the box); UA-sniffing is brittle; `MAX_CONCURRENT=1` transcode
@@ -906,6 +914,43 @@ indexer); `findLandedDeploy` deploy idempotency.
 assumption is load-bearing for hide/track correctness; on-chain price fallback +
 ADMIN verification depend on Base RPC.
 
+#### G7. Gachapon machines (`experience`)
+**What.** `/play`: two kinds of machine, built in `/play/create-capsule` and
+`/play/create-reveal`. A **capsule machine** sells its creator's own Zora 1155 capsule
+token; each unit bought is one play, drawn server-side from a pool of artists' pieces
+and delivered by `adminMint` from a dedicated CDP account, gas sponsored. A **reveal
+machine** dispenses nothing: a free pull shows one piece from those on sale right now,
+which the player collects through that piece's own sale. A machine is published live
+by an admin and into the review queue by anyone else. Its cover (required) and its
+artist frames can be changed by its creator after it is live.
+
+**Why.** A creator sets weights and supplies, never odds (`lib/experience/types.ts`):
+the published table and the draw read the same frozen snapshot (`draw.ts`), and the
+daily commit–reveal receipt covers the seed and the snapshot's hash (`fairness.ts`),
+so the odds shown and the odds played cannot differ. A claim is the obligation to a
+player who has paid, so it is a state machine with no TTL until it is delivered
+(`store.ts`).
+
+**Key mechanisms.** Claims `claimed → frozen → drawn → sending → delivered`, or
+`pending` when a delivery stalls (it is resumed by `/api/experience/resume`); the
+draw rolls forward past a lost race or a revoked grant (`runDraw.ts`); eligibility
+is one shared, fail-closed filter (`eligibility.ts`) with a live authority check
+on the one piece drawn (`authority.ts`); revenue goes to the capsule's on-chain split,
+which the pool is checked against (`payees.ts`); capsules minted elsewhere are found
+with one `eth_getLogs` (`discovery.ts`); `/api/cron/experience-seeds` commits each
+day's seed in advance. The play: `components/MachineStage.tsx` runs idle → dispense
+(a capsule's wallet and draw) → open, playing the artist's frames or the platform's
+capsule; the open is skippable, is not played under reduced motion, and hands over
+to the artwork in a view transition where the browser has one. The window is at most 240×240 CSS px, under
+WCAG 2.3.1's flash-threshold area, which is what lets artist clips play unscreened.
+Frames go through the mint's media path, held to 4 s, 1080 px and 2.5 MB
+(`frameUpload.ts`). Each machine has its own share card (`app/play/[id]/opengraph-image.tsx`).
+
+**Risks.** Delivery needs the CDP credentials; without them every play pends until
+resumed. Art changed after review is not reviewed again. A larger stage window
+would need artist clips screened for flashes. Checked by `verify:experience` and the
+`e2e:experience` run (`scripts/e2e/README.md`).
+
 ---
 
 ## 4. How it all works together — end-to-end flows
@@ -1033,8 +1078,9 @@ for video on WebKit/iframe/Mini-App), which races the gateway pool, follows
 arweave.net's 302→sandbox redirects manually so `Range` reaches the final host,
 synthesizes RFC-9110 `206`s with real learned totals (iOS AVFoundation refuses `200`
 and `bytes 0-1/*`), and re-serves with 1-year immutable caching. Trust boundaries:
-`/api/sign` (session cookie + 48-byte guard + quota, JWK stays server) and `/api/img`
-(ar/ipfs-only SSRF guard + per-hop redirect domain-pinning).
+`/api/sign` (session cookie + 48-byte guard + quota, JWK stays server), `/api/img`
+(ar/ipfs-only SSRF guard + per-hop redirect domain-pinning) and the share-card
+fetch (`isSafePublicHttpsUrl` on the first URL and on every redirect).
 
 ### 4.6 Auth & session
 Two keyspaces, deliberately separated: **user** (nonce keyed by address, 7-day
@@ -1161,6 +1207,7 @@ they are flagged for follow-up.
 | G4 | Notifications | internal | `lib/notifications.ts`, `lib/farcasterNotifications.ts` |
 | G5 | Feeds / Discover / Stats | internal | `app/api/timeline`, `lib/stats.ts` |
 | G6 | Moments & collections domain | internal | `lib/momentDetail.ts`, `lib/collections.ts` |
+| G7 | Gachapon machines | internal | `lib/experience/*`, `app/api/experience/*` |
 
 _Generated from a full multi-agent read of the codebase + git history, validated
 against `file:line`. Where a subsystem predates the shallow-clone boundary

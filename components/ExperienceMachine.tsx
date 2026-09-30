@@ -9,6 +9,9 @@ import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from 
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
+import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
+import { MachineArtEditors } from './MachineArtEditors'
+import type { MachineFrames } from '@/lib/experience/types'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -69,6 +72,10 @@ interface MachinePayload {
     name: string
     state: string
     creator: string
+    /** Its cover, an ar:// upload; null for a machine published before covers. */
+    cover: string | null
+    /** The artist's own frames for the play; null for the platform's capsule. */
+    frames: MachineFrames | null
     rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
@@ -149,6 +156,8 @@ export function ExperienceMachine({ id }: { id: string }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [pull, setPull] = useState<number>(1)
   const [won, setWon] = useState<Prize[]>([])
+  // Prizes landed and the capsule is still opening over them.
+  const [toOpen, setToOpen] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [pendingReason, setPendingReason] = useState<string | null>(null)
   const [lastTx, setLastTx] = useState<string | null>(null)
@@ -198,6 +207,18 @@ export function ExperienceMachine({ id }: { id: string }) {
   )
 
   useEffect(() => { load() }, [load])
+  const endOpen = useCallback(() => revealAfterOpen(() => setToOpen(false)), [])
+  // The box shows a face (a win, a capsule still on its way) or the machine's
+  // window at a stage, with the controls under it until it opens.
+  const busy = phase === 'paying' || phase === 'opening'
+  const face = phase === 'pending' ? 'pending' : phase === 'won' && won.length > 0 && !toOpen ? 'won' : null
+  const stage: Stage | null = face ? null : phase === 'won' && toOpen ? 'open' : busy ? 'dispense' : 'idle'
+  // A face replaces the control a keyboard user pressed: focus moves to it
+  // rather than falling to the page (WCAG 2.4.3).
+  const faceRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (face && document.activeElement === document.body) faceRef.current?.focus({ preventScroll: true })
+  }, [face])
   useEffect(() => { setLocal(listPendingCapsules(id)) }, [id])
   useEffect(() => {
     if (connectedAddress) setAccount(connectedAddress.toLowerCase())
@@ -293,6 +314,8 @@ export function ExperienceMachine({ id }: { id: string }) {
       setLocal(listPendingCapsules(id))
 
       if (prizes.length > 0) {
+        // One open for the whole pull, played once everything has landed.
+        setToOpen(motionAllowed())
         setPhase('won')
         if (prizes.length < units) {
           setPendingReason(
@@ -378,6 +401,7 @@ export function ExperienceMachine({ id }: { id: string }) {
 
         if (recovered.length > 0) {
           setWon((w) => [...w, ...recovered])
+          setToOpen(motionAllowed())
           setPhase('won')
           setPendingReason(reason)
           if (!reason) clearPendingCapsule(id, txHash)
@@ -465,7 +489,34 @@ export function ExperienceMachine({ id }: { id: string }) {
           }
         })()
       : null
-  const busy = phase === 'paying' || phase === 'opening'
+  const cover = data.machine.cover ?? data.machine.capsuleArt?.image ?? null
+  // What the box says to a screen reader as it changes (WCAG 4.1.3): the
+  // wait, the open, and what came out — never taking focus to say it.
+  const announcement =
+    face === 'won'
+      ? won.length === 1
+        ? `You've collected ${artworkTitle(won[0].name, won[0].tokenId)} by ${shortAddress(won[0].artist)}`
+        : `You've collected ${won.length} artworks`
+      : face === 'pending'
+        ? 'Your artwork is on its way'
+        : stage === 'open'
+          ? 'Opening your capsule'
+          : phase === 'paying'
+            ? 'Confirm in your wallet'
+            : phase === 'opening'
+              ? progress && progress.total > 1 ? `Opening ${progress.done + 1} of ${progress.total}` : 'Opening your capsule'
+              : ''
+  // The odds at the button as well as in the table: on a phone the table is a
+  // scroll away, and a randomized purchase discloses its odds before it is made.
+  const drawn = data.odds.filter((o) => o.probability > 0)
+  const rarest = Math.min(...drawn.map((o) => o.probability))
+  const rarestRatio = formatOddsRatio(rarest)
+  const oddsLine =
+    drawn.length === 0
+      ? null
+      : `${drawn.length} ${drawn.length === 1 ? 'artwork' : 'artworks'}${
+          rarestRatio ? ` · ${drawn.every((o) => o.probability === rarest) ? 'each' : 'rarest'} ${rarestRatio}` : ''
+        }`
   // Everything still owed, from three records that each cover a hole in the
   // others, deduplicated by transaction:
   //   1. the server's claims — durable, cross-device, but only for plays the
@@ -510,24 +561,29 @@ export function ExperienceMachine({ id }: { id: string }) {
             onDone={load}
           />
         )}
+        <MachineArtEditors machine={data.machine} kind="capsule" onDone={load} />
       </header>
 
       {/* The machine. The reveal replaces this face in place, so the capsule
           appears to open rather than the page appearing to navigate. */}
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        {phase === 'won' && won.length > 0 ? (
-          <div>
-            <p className="text-xs font-mono uppercase tracking-widest accent-grad">
-              {won.length === 1 ? 'you won' : `you won ${won.length}`}
-            </p>
-            <div className={`mt-5 grid gap-3 ${won.length === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}`}>
+        <p role="status" className="sr-only">{announcement}</p>
+        <MachineStage stage={stage} cover={cover} frames={data.machine.frames} onOpened={endOpen} />
+        {face === 'won' ? (
+          <div ref={faceRef} tabIndex={-1} className="outline-none">
+            {won.length > 1 && (
+              <p className="mb-5 text-xs font-mono uppercase tracking-widest accent-grad">
+                you&apos;ve collected {won.length} artworks
+              </p>
+            )}
+            <div className={`grid gap-3 ${won.length === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}`}>
               {won.map((p, i) => (
                 <Link
                   key={`${p.collection}:${p.tokenId}:${i}`}
                   href={`/artwork/${p.collection}/${p.tokenId}`}
                   className="group block"
                 >
-                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[15rem] mx-auto' : 'aspect-square'}`}>
+                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[240px] mx-auto [view-transition-name:machine-window]' : 'aspect-square'}`}>
                     {p.image ? (
                       <MomentImage src={p.image} alt="" fill className="object-cover" sizes="240px" />
                     ) : (
@@ -536,14 +592,22 @@ export function ExperienceMachine({ id }: { id: string }) {
                       </div>
                     )}
                   </div>
-                  <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
-                    {artworkTitle(p.name, p.tokenId)}
-                  </p>
-                  <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(p.artist)}</p>
+                  {won.length === 1 ? (
+                    <div className="mt-3">
+                      <CollectedLine title={artworkTitle(p.name, p.tokenId)} artist={p.artist} />
+                    </div>
+                  ) : (
+                    <>
+                      <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
+                        {artworkTitle(p.name, p.tokenId)}
+                      </p>
+                      <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(p.artist)}</p>
+                    </>
+                  )}
                 </Link>
               ))}
             </div>
-            <p className="text-[11px] font-mono text-muted mt-4">
+            <p className="text-[11px] font-mono text-muted mt-2">
               {won.length === 1 ? 'it is' : 'they are'} already in your wallet
             </p>
             {pendingReason && (
@@ -559,11 +623,12 @@ export function ExperienceMachine({ id }: { id: string }) {
               label="play again"
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              odds={oddsLine}
               note={null}
             />
           </div>
-        ) : phase === 'pending' ? (
-          <div>
+        ) : face === 'pending' ? (
+          <div ref={faceRef} tabIndex={-1} className="outline-none">
             <p className="text-xs font-mono uppercase tracking-widest text-ink">your artwork is on its way</p>
             <p className="text-[11px] font-mono text-muted mt-2 max-w-sm mx-auto">{pendingReason}</p>
             {lastTx && <p className="text-[10px] font-mono text-subtle mt-3 break-all">{lastTx}</p>}
@@ -587,19 +652,8 @@ export function ExperienceMachine({ id }: { id: string }) {
               </button>
             </div>
           </div>
-        ) : (
+        ) : stage !== 'open' && (
           <div>
-            {data.machine.capsuleArt?.image && (
-              <div className="relative w-28 h-28 sm:w-36 sm:h-36 mx-auto mb-5 overflow-hidden border border-line bg-raised">
-                <MomentImage
-                  src={data.machine.capsuleArt.image}
-                  alt=""
-                  fill
-                  className="object-cover"
-                  sizes="144px"
-                />
-              </div>
-            )}
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
               {phase === 'opening'
                 ? progress && progress.total > 1
@@ -619,6 +673,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               label={playable ? 'play' : closedLabel}
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              odds={oddsLine}
               note={
                 !playable && data.machine.state === 'live'
                   ? !data.machine.saleReadable
@@ -710,7 +765,7 @@ export function ExperienceMachine({ id }: { id: string }) {
 
       {/* The odds. Derived server-side from the same snapshot a play draws from —
           there is no field anywhere a creator can type a percentage into. */}
-      <section className="mt-8">
+      <section id="odds" className="mt-8">
         <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-3">
           what&apos;s inside · published odds
         </h2>
@@ -853,6 +908,7 @@ function PlayControl({
   label,
   unitPrice,
   totalPrice,
+  odds,
   note,
 }: {
   playable: boolean
@@ -865,6 +921,8 @@ function PlayControl({
   label: string
   unitPrice: string | null
   totalPrice: string | null
+  /** What the draw holds, summed up beside the price. */
+  odds: string | null
   note: string | null
 }) {
   return (
@@ -907,6 +965,14 @@ function PlayControl({
             <>{unitPrice} per play</>
           )}
           <span className="text-subtle"> + network fee</span>
+        </p>
+      )}
+      {playable && odds && (
+        <p className="mt-1 text-[11px] font-mono text-muted">
+          {odds} ·{' '}
+          <a href="#odds" className="text-dim hover:text-ink underline">
+            see odds
+          </a>
         </p>
       )}
       {note && <p className="mt-1.5 text-[11px] font-mono text-[#ffcf70]">{note}</p>}

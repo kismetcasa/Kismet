@@ -40,7 +40,9 @@ import {
 import { serverBaseClient } from '@/lib/rpc'
 import { epochFor } from '@/lib/experience/fairness'
 import { isReveal } from '@/lib/experience/types'
-import type { CapsuleMachine, Machine, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
+import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
+import { parseCover, parseFrames } from '@/lib/experience/cover'
+import { machineCards } from '@/lib/experience/cards'
 
 /**
  * The Capsule Studio backend: list live machines, and create one.
@@ -67,21 +69,12 @@ export async function GET(req: NextRequest) {
   if (creatorParam !== null) return creatorMachines(req, creatorParam)
   const machines = await listMachines(['live', 'ended'])
   return NextResponse.json(
-    {
-      machines: machines.map((m) => ({
-        id: m.id,
-        kind: isReveal(m) ? 'reveal' : 'capsule',
-        name: m.name,
-        state: m.state,
-        creator: m.creator,
-        ...(isReveal(m) ? {} : { capsule: m.capsule }),
-        createdAt: m.createdAt,
-      })),
-    },
+    { machines: await machineCards(machines) },
     // The same for everyone, and read by the home page's "play" tab. Cacheable
     // like the timeline routes, for a CDN in front (OPS_RUNBOOK §3); without
     // one, each read is an index read plus one MGET per 500 machines
-    // (store.listMachines).
+    // (store.listMachines), then the cards' one price multicall and a cached
+    // metadata read per machine without a cover (lib/experience/cards).
     { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=120' } },
   )
 }
@@ -109,6 +102,7 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         name: m.name,
         state: m.state,
         createdAt: m.createdAt,
+        cover: m.cover?.uri ?? null,
         ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
       }
       if (isReveal(m)) {
@@ -185,6 +179,10 @@ export async function POST(req: NextRequest) {
     /** Reveal machines: collections whose Kismet-minted pieces join by
      *  themselves (lib/experience/linked). */
     collections?: string[]
+    /** The cover its card shows (lib/experience/cover). */
+    cover?: unknown
+    /** The artist's own frames for the play (lib/experience/cover). */
+    frames?: unknown
     /** Validate everything and write nothing. The Capsule Studio calls this on
      *  every edit so a creator sees the REAL verdict — live on-chain headroom
      *  and rival machines' pledges included — before committing. Re-using the
@@ -206,7 +204,15 @@ export async function POST(req: NextRequest) {
   if (!name) return errorResponse(400, 'A machine needs a name')
   if (kind !== 'capsule' && kind !== 'reveal') return errorResponse(400, 'Invalid kind')
   if (rarity !== 'manual' && rarity !== 'supply') return errorResponse(400, 'Invalid rarity')
+  const cover = body.cover === undefined ? undefined : parseCover(body.cover)
+  if (cover === null) return errorResponse(400, 'Invalid cover')
+  const parsedFrames = body.frames === undefined ? undefined : parseFrames(body.frames, kind)
+  if (parsedFrames === null) return errorResponse(400, 'Invalid frames')
+  const frames = parsedFrames && Object.keys(parsedFrames).length > 0 ? parsedFrames : undefined
   const dryRun = body.dryRun === true
+  // A machine's card is its cover, so none is published without one. A check
+  // needs none: the studio uploads the cover only when it publishes.
+  if (!dryRun && !cover) return errorResponse(400, 'A machine needs a cover')
   // Separate budgets, because the two are different acts. A check is how a
   // creator iterates on a lineup — sharing one five-per-five-minutes budget
   // with publishing locked them out a few edits in. A publish writes a machine.
@@ -244,6 +250,8 @@ export async function POST(req: NextRequest) {
       pieces: rawEntries,
       collections: [...new Set(rawCollections.map((c) => c.toLowerCase()))],
       passCollection: gate.passCollection?.toLowerCase() ?? null,
+      cover,
+      frames,
     })
   }
 
@@ -434,6 +442,8 @@ export async function POST(req: NextRequest) {
     splitRecipients,
     createdAt: Date.now(),
     ...(rarity === 'supply' ? { rarity: 'supply' as Rarity } : {}),
+    ...(cover ? { cover } : {}),
+    ...(frames ? { frames } : {}),
   }
 
   // The capsule reservation is the AUTHORITATIVE one-machine-per-capsule guard;
@@ -511,6 +521,8 @@ async function publishReveal(input: {
   pieces: { collection: string; tokenId: string }[]
   collections: string[]
   passCollection: string | null
+  cover: MachineCover | undefined
+  frames: MachineFrames | undefined
 }): Promise<NextResponse> {
   const pieces = input.pieces.map((e) => ({
     collection: e.collection.toLowerCase(),
@@ -577,6 +589,8 @@ async function publishReveal(input: {
     state: 'draft',
     createdAt: Date.now(),
     ...(linking ? { collections: input.collections } : {}),
+    ...(input.cover ? { cover: input.cover } : {}),
+    ...(input.frames ? { frames: input.frames } : {}),
   }
   // Reserved as a draft and filled before it takes its real state, as a
   // capsule machine is: a half-written lineup is never public.

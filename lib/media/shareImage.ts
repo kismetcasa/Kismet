@@ -70,15 +70,24 @@ const SHARE_SOURCE_MAX_WIDTH = 1200
  * ATTACKER-SUPPLIED ones — SVG covers — which shareImageUrl still drops;
  * this data URI is built server-side from bytes sharp already verified.)
  *
- * Fallback envelope: variant missing (optimizer-eligible sources never get
- * one — they miss and keep today's exact behavior), sharp failure, or any
- * fs error → the shareImageUrl gateway URL, byte-identical to before.
- * `cacheDir` is injectable for tests; production callers omit it.
+ * On a miss — no variant cached, or none readable — the source is fetched
+ * here and re-encoded the same way, or the card gets nothing. Satori draws a
+ * BLANK card for any image it cannot load or decode: measured against the
+ * bundled @vercel/og, an unreachable URL and a failed fetch both render as
+ * the bare background, `alt` not drawn. So a raw gateway URL was a blank card
+ * whenever the upload was still propagating (the first share of anything new),
+ * the gateway was slow, the source was past a crawler's patience, or it was a
+ * webp. Nothing (undefined) falls back to the branded text card, which always
+ * draws. The fetch is bounded in time and size, and each redirect is checked
+ * as the first URL was, since a public host can redirect anywhere.
+ * `cacheDir` and `fetcher` are injectable for tests; production callers omit
+ * them.
  */
 export async function shareImageSource(
   imageUri: string | undefined,
   guardAgainst?: string,
   cacheDir: string = VARIANT_CACHE_DIR,
+  fetcher: typeof fetch = fetch,
 ): Promise<string | undefined> {
   const url = shareImageUrl(imageUri, guardAgainst)
   if (!url) return undefined
@@ -88,23 +97,66 @@ export async function shareImageSource(
       // the 2048 bucket (MomentImage's PROXY_DISPLAY_MAX_WIDTH) — the one
       // variant guaranteed warm for any cover a viewer has ever seen.
       const variant = await readVariant(cacheDir, variantFileName(imageUri, bucketWidth(2048)))
-      if (variant) {
-        const jpeg = await sharp(variant)
-          .resize({
-            width: SHARE_SOURCE_MAX_WIDTH,
-            height: SHARE_SOURCE_MAX_WIDTH,
-            fit: 'inside',
-            withoutEnlargement: true,
-          })
-          .jpeg({ quality: 85 })
-          .toBuffer()
-        return `data:image/jpeg;base64,${jpeg.toString('base64')}`
-      }
+      if (variant) return await jpegDataUri(variant)
     } catch {
-      // Any failure inline → the plain gateway URL, exactly as before.
+      // Unreadable or undecodable: fetched below, like a miss.
     }
   }
-  return url
+  try {
+    const source = await fetchBounded(url, fetcher)
+    return source ? await jpegDataUri(source) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function jpegDataUri(bytes: Buffer): Promise<string> {
+  const jpeg = await sharp(bytes)
+    .resize({ width: SHARE_SOURCE_MAX_WIDTH, height: SHARE_SOURCE_MAX_WIDTH, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer()
+  return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+}
+
+// A crawler's embed fetch gives up within seconds, so the card must render in
+// well under that; a source this large is a physical-art scan the text card
+// serves better than a half-downloaded one.
+const FETCH_BUDGET_MS = 4_000
+const FETCH_MAX_BYTES = 30 * 1024 * 1024
+const MAX_REDIRECTS = 3
+
+/** The bytes at `url`, or null: past the budget, past the size cap, not a 2xx,
+ *  or redirected anywhere shareImageUrl would not have sent it. */
+async function fetchBounded(url: string, fetcher: typeof fetch): Promise<Buffer | null> {
+  const signal = AbortSignal.timeout(FETCH_BUDGET_MS)
+  let at = url
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const res = await fetcher(at, { signal, redirect: 'manual' })
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location')
+      const next = location ? new URL(location, at).toString() : null
+      if (!next || !isSafePublicHttpsUrl(next)) return null
+      at = next
+      continue
+    }
+    if (!res.ok || !res.body) return null
+    if (Number(res.headers.get('content-length') ?? 0) > FETCH_MAX_BYTES) return null
+    const chunks: Uint8Array[] = []
+    let size = 0
+    const reader = res.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > FETCH_MAX_BYTES) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+    return Buffer.concat(chunks)
+  }
+  return null
 }
 
 // NOTE: the "is this poster flat black?" decision used to live here, reading

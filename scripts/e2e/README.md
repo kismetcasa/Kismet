@@ -290,3 +290,56 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
   long reason (the reason column wraps), and a success toast after an earlier
   failure carries no stale description.
 - No uncaught page errors during the run.
+
+# End-to-end check — the gachapon machines
+
+`scripts/e2e-experience.mjs` (`npm run e2e:experience`) boots the built app
+with its Redis, Base RPC, CDP and inprocess faked in-process, then walks both
+kinds of machine over real HTTP and, in its second half, in a real Chromium.
+CDP credentials are absent, so every delivery lands in `pending` and the
+recovery paths run.
+
+## Why this is separate from `verify:experience`
+
+`verify:experience` executes `lib/experience` against a mock Upstash. Route
+handlers, request parsing, rate limits, the RPC proofs, the pages, the stage's
+timing and the uploads a studio makes only exist in a running app.
+
+## Running it
+
+```sh
+NEXT_PUBLIC_ARWEAVE_N=$(node -e "process.stdout.write(Buffer.alloc(512, 7).toString('base64url'))") npm run build
+npm run e2e:experience
+```
+
+The build needs an Arweave signer key so the studios can upload; any 512-byte
+value will do. The browser half drives `playwright-core` (skipped, with a
+notice, when it is not installed) and the Chromium under `/opt/pw-browsers` (a
+failed check when none launches). That Chromium plays VP8 but not H.264, so the
+video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
+a full-page screenshot of every page it opens, the stage mid-play, and the
+machine share card. About three minutes.
+
+## What it asserts (548)
+
+- **Play** — a capsule is paid for in one signature; the draw, delivery,
+  resume after each way delivery can fail, capsules minted elsewhere, and the
+  verifier recomputing a play from the revealed seed. A reveal pulls for free
+  and collects at the piece's own price.
+- **Machines** — the studios (disconnected, connected, publish to review), the
+  curator's queue, an artist's opt-outs, linked collections, a machine with
+  little or nothing left, the Discover play tab, the nav, the bell, profiles,
+  and ending a season on-chain.
+- **Art** — the required cover, changed live; the stage (idle, dispense, open),
+  its timing, skip and reduced motion, with the platform's capsule and with an
+  artist's frames; frame limits, including a GIF's own length; uploads decoded
+  as sent.
+- **Accessibility** — a status line for each step (WCAG 4.1.3); focus to skip,
+  then to the result, without scrolling (2.4.3, 2.4.11); the window under the
+  flash-threshold area on a phone, a desktop, and with enlarged text (2.3.1);
+  "see odds" landing below the fixed header; view transitions that start and
+  run, and none under reduced motion.
+- **Share card** — a machine's Farcaster embed and its card; a card whose cover
+  is out of reach draws its text, not a blank; a machine in review shares the
+  bare card.
+

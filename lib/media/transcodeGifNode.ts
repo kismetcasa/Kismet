@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { rgbaToThumbHash } from 'thumbhash'
+import { GOP_FRAMES, gifTimingArgs, readGifTiming } from './gifTiming'
 
 const execFileAsync = promisify(execFile)
 
@@ -17,7 +18,8 @@ const FFMPEG_TIMEOUT_MS = 180_000
  * Server-side GIF → MP4 + poster, the no-wasm-cap counterpart to
  * lib/media/transcodeGif.ts (which runs in the browser and tops out at
  * 100MB). Identical ffmpeg recipe (H.264 yuv420p + faststart, even dims,
- * -g 30 for cheap seeks) so a server-transcoded clip is byte-compatible
+ * the GIF's own timing and a keyframe about once a second from
+ * lib/media/gifTiming) so a server-transcoded clip is byte-compatible
  * with the client-transcoded ones. Requires `ffmpeg` on PATH (installed in
  * the Docker runtime image).
  *
@@ -32,7 +34,11 @@ export async function transcodeGifToMp4Node(
   const mp4Path = join(dir, 'out.mp4')
   const posterPath = join(dir, 'poster.jpg')
   try {
-    await writeFile(inPath, gif)
+    // Encoded on the GIF's own timing (lib/media/gifTiming), as the browser
+    // path is: left to itself, this ffmpeg snaps frames to a guessed rate.
+    const timing = readGifTiming(new Uint8Array(gif.buffer, gif.byteOffset, gif.byteLength))
+    const keep = timing ? gifTimingArgs(timing) : null
+    await writeFile(inPath, timing?.bytes ?? gif)
     // Poster = frame 0. The comma in the select filter is escaped for
     // ffmpeg's filtergraph parser (matches the wasm recipe).
     await execFileAsync(
@@ -45,8 +51,8 @@ export async function transcodeGifToMp4Node(
       [
         '-y', '-loglevel', 'error', '-i', inPath,
         '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
-        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', '30', '-an',
+        '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', String(keep?.gop ?? GOP_FRAMES), '-an',
         mp4Path,
       ],
       { timeout: FFMPEG_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 * 64 },

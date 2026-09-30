@@ -1,10 +1,15 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { MachineAction } from './MachineAction'
+
+// Its owner's alone, with the upload stack behind it, so a visitor's profile
+// never loads it (as MachineArtEditors on a machine's page).
+const CoverEditor = dynamic(() => import('./CoverField').then((m) => m.CoverEditor), { ssr: false })
 
 /**
  * A creator's machines, capsule and reveal, on their profile.
@@ -24,6 +29,8 @@ interface CreatorMachineCommon {
   createdAt: number
   /** Present only in the creator's own view. */
   withdrawable?: boolean
+  /** Its cover, an ar:// upload; null for a machine published before covers. */
+  cover: string | null
 }
 
 export type CreatorMachine =
@@ -198,6 +205,7 @@ export function ProfileMachines({
             {manage && signedIn && (m.state === 'live' || m.withdrawable) && (
               <MachineAction machine={m} action={m.state === 'live' ? 'end' : 'withdraw'} onDone={onChange} />
             )}
+            {manage && signedIn && m.state !== 'draft' && <CoverEditor machineId={m.id} current={m.cover} onDone={onChange} />}
           </div>
         )
       })}

@@ -16,9 +16,11 @@ import {
   getRemaining,
   machineStateLockKey,
   recentPlays,
+  setMachineArt,
   setMachineState,
   withdrawMachine,
 } from '@/lib/experience/store'
+import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { readCapsuleSupply } from '@/lib/experience/authority'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
@@ -121,6 +123,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       name: machine.name,
       state: machine.state,
       creator: machine.creator,
+      cover: machine.cover?.uri ?? null,
+      frames: machine.frames ?? null,
       rarity: machine.rarity ?? 'manual',
       capsule: machine.capsule,
       capsuleArt,
@@ -187,6 +191,8 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
       kind: 'reveal',
       name: machine.name,
       state: machine.state,
+      cover: machine.cover?.uri ?? null,
+      frames: machine.frames ?? null,
       creator: machine.creator,
     },
     // The curator earns the mint referral on every collect made through their
@@ -211,6 +217,10 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
  *   withdraw  take back a machine that has never been on sale, freeing its id,
  *             its capsule token and its pledged supply (store.withdrawMachine
  *             carries the guard).
+ *   cover     a new cover, whatever state the machine is in once published:
+ *             art is the creator's to change after it goes live.
+ *   frames    its frames for the play, likewise; `{}` for none (the
+ *             platform's capsule).
  *
  * Under the same state lock a curator's decision takes, so the two cannot
  * interleave.
@@ -223,9 +233,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
   const session = await getSessionAddress(req).catch(() => null)
   if (!session || !isAddress(session)) return errorResponse(401, 'Sign in to change your machine')
-  const body = (await req.json().catch(() => null)) as { action?: string } | null
+  const body = (await req.json().catch(() => null)) as { action?: string; cover?: unknown; frames?: unknown } | null
   const action = body?.action
-  if (action !== 'end' && action !== 'withdraw') return errorResponse(400, 'Invalid action')
+  if (action !== 'end' && action !== 'withdraw' && action !== 'cover' && action !== 'frames') {
+    return errorResponse(400, 'Invalid action')
+  }
+  const cover = action === 'cover' ? parseCover(body?.cover) : null
+  if (action === 'cover' && !cover) return errorResponse(400, 'Invalid cover')
 
   const lock = await acquireLock(machineStateLockKey(id), 60).catch(() => ({ acquired: false, release: async () => {} }))
   if (!lock.acquired) return errorResponse(409, 'This machine is being changed — try again')
@@ -233,6 +247,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const machine = await getMachine(id)
     if (!machine) return errorResponse(404, 'Machine not found')
     if (machine.creator !== session.toLowerCase()) return errorResponse(403, 'Only its creator can change this machine')
+    if (cover || action === 'frames') {
+      // A draft is a publish that never finished, not a machine to dress.
+      if (machine.state === 'draft') return errorResponse(409, 'This machine was never published')
+      if (cover) return NextResponse.json({ ok: true, machine: await setMachineArt(id, { cover }) })
+      // Which stages a machine has depends on its kind, so they are read here.
+      const frames = parseFrames(body?.frames, isReveal(machine) ? 'reveal' : 'capsule')
+      if (!frames) return errorResponse(400, 'Invalid frames')
+      return NextResponse.json({ ok: true, machine: await setMachineArt(id, { frames }) })
+    }
     if (action === 'end') {
       if (machine.state !== 'live') return errorResponse(409, 'Only a live machine can end its season')
       return NextResponse.json({ ok: true, machine: await setMachineState(id, 'ended') })

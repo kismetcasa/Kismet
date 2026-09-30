@@ -1,5 +1,6 @@
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
 import { reportClientError } from '@/lib/clientError'
+import { GOP_FRAMES, gifTimingArgs, readGifTiming } from './gifTiming'
 
 // Past ~100MB, ffmpeg.wasm starts OOM'ing on phones. Bigger GIFs upload
 // unchanged — proxy + edge cache still help.
@@ -289,7 +290,11 @@ export async function transcodeGifToMp4(
   ff.on('progress', progressHandler)
   try {
     const bytes = new Uint8Array(await file.arrayBuffer())
-    await runWatched(ff, 'gif write', () => ff.writeFile('in.gif', bytes))
+    // Encoded on the GIF's own timing (lib/media/gifTiming): left to itself,
+    // this ffmpeg ends the MP4 at its last frame's start.
+    const timing = readGifTiming(bytes)
+    const keep = timing ? gifTimingArgs(timing) : null
+    await runWatched(ff, 'gif write', () => ff.writeFile('in.gif', timing?.bytes ?? bytes))
     await runWatched(ff, 'gif poster', () => ff.exec([
       '-i', 'in.gif',
       '-vf', 'select=eq(n\\,0)',
@@ -301,18 +306,19 @@ export async function transcodeGifToMp4(
       '-i', 'in.gif',
       '-movflags', 'faststart',
       '-pix_fmt', 'yuv420p',
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
       '-c:v', 'libx264',
       '-preset', 'fast',
       '-crf', '23',
-      // Keyframe at most every 30 frames (~1s at 30fps). Default libx264
-      // GOP is 250, which on a short clip means a single keyframe at the
-      // start — every seek decodes the whole file forward to the seek
-      // target. With `-g 30` the detail page's currentTime restore (and
-      // user scrubbing via native controls) lands on the nearest keyframe
-      // within ~1s, cutting seek-decode time by ~3x. Costs ~10-20% file
-      // size; negligible for Kismet's GIF-replacement clip lengths.
-      '-g', '30',
+      // A keyframe about every second (every 30 frames, or a second's worth
+      // on a faster grid — gifTimingArgs). Default libx264 GOP is 250, which
+      // on a short clip means a single keyframe at the start — every seek
+      // decodes the whole file forward to the seek target. With it the detail
+      // page's currentTime restore (and user scrubbing via native controls)
+      // lands on the nearest keyframe within ~1s, cutting seek-decode time by
+      // ~3x. Costs ~10-20% file size; negligible for Kismet's GIF-replacement
+      // clip lengths.
+      '-g', String(keep?.gop ?? GOP_FRAMES),
       '-an',
       'out.mp4',
     ]))

@@ -38,6 +38,10 @@
 html {
   background-color: #0d0d0d;
   color: #efefef;
+  /* The nav is fixed over the page (h-14 + --safe-top, as layout pads main,
+   * and its 1px border): anchors, tabbing and scrollIntoView stop a little
+   * below it, not under it (WCAG 2.4.11; technique C43). */
+  scroll-padding-top: calc(3.5rem + var(--safe-top) + 0.75rem);
 }
 
 body {
@@ -226,5 +230,70 @@ input[type='number'] {
   @keyframes kf-theme-hue-cycle {
     from { filter: hue-rotate(0deg); }
     to   { filter: hue-rotate(360deg); }
+  }
+}
+
+/* The machine stage's default capsule (components/MachineStage.tsx), keyed off
+ * its data-stage. The same no-preference gate as above: under reduced motion
+ * the capsule stands still while it dispenses, and the open is never started
+ * (the machines check motionAllowed). Only transform and opacity animate, and
+ * the one burst fades up and out once — nowhere near WCAG 2.3.1's three
+ * flashes a second. --stage-open is the component's timer, so the two end
+ * together. */
+.stage-burst {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-stage] svg,
+  [data-stage] .stage-lid,
+  [data-stage] .stage-base,
+  [data-stage] .stage-burst {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  [data-stage='dispense'] svg {
+    animation: kf-stage-rock 0.55s ease-in-out infinite alternate;
+  }
+  [data-stage='open'] svg {
+    animation: kf-stage-shake var(--stage-open) linear both;
+  }
+  [data-stage='open'] .stage-lid {
+    animation: kf-stage-lid var(--stage-open) ease-out both;
+  }
+  [data-stage='open'] .stage-base {
+    animation: kf-stage-base var(--stage-open) ease-out both;
+  }
+  [data-stage='open'] .stage-burst {
+    animation: kf-stage-burst var(--stage-open) ease-out both;
+  }
+  @keyframes kf-stage-rock {
+    from { transform: rotate(-8deg); }
+    to   { transform: rotate(8deg); }
+  }
+  /* 0–40%: the capsule shakes. 40%: it pops — the halves part and a ring
+   * goes out. The rest: they drift apart and fade over the win. */
+  @keyframes kf-stage-shake {
+    0%        { transform: rotate(0deg); }
+    8%        { transform: rotate(-10deg); }
+    16%       { transform: rotate(10deg); }
+    24%       { transform: rotate(-8deg); }
+    32%       { transform: rotate(6deg); }
+    40%, 100% { transform: rotate(0deg); }
+  }
+  @keyframes kf-stage-lid {
+    0%, 40% { transform: none; opacity: 1; }
+    60%     { transform: translate(-8%, -60%) rotate(-20deg); opacity: 1; }
+    100%    { transform: translate(-14%, -100%) rotate(-35deg); opacity: 0; }
+  }
+  @keyframes kf-stage-base {
+    0%, 40% { transform: none; opacity: 1; }
+    60%     { transform: translateY(30%); opacity: 1; }
+    100%    { transform: translateY(50%); opacity: 0; }
+  }
+  @keyframes kf-stage-burst {
+    0%, 40% { transform: scale(0.2); opacity: 0; }
+    50%     { opacity: 1; }
+    100%    { transform: scale(1.3); opacity: 0; }
   }
 }

@@ -26,7 +26,6 @@ import {
   getPool,
   getRemaining,
   openEpochSeeds,
-  publicClaim,
   recordPlay,
   recordPrize,
   releaseOne,
@@ -37,7 +36,7 @@ import { isReveal } from '@/lib/experience/types'
 import type { ClaimRecord, SnapshotEntry } from '@/lib/experience/types'
 import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
-import { fetchArtworkMeta } from '@/lib/experience/artwork'
+import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable } from '@/lib/experience/eligibility'
 import { noticeIfEmpty } from '@/lib/experience/notices'
 
@@ -224,7 +223,7 @@ export async function POST(req: NextRequest) {
   if (won === null) return errorResponse(503, 'Play temporarily unavailable')
   if (!won) {
     const existing = await getClaim(machineId, txHash, unitIndex)
-    if (existing) return NextResponse.json({ ok: true, replay: true, units: proof.units, claim: publicClaim(existing) })
+    if (existing) return NextResponse.json({ ok: true, replay: true, units: proof.units, claim: await claimForPlayer(existing) })
     return errorResponse(409, 'Claim in progress')
   }
 
@@ -242,7 +241,7 @@ export async function POST(req: NextRequest) {
     // the claim existed (it finds nothing and lets go). The claim is recorded
     // and owed; resume adopts it once it is stale, exactly as it would a play
     // that died here.
-    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: publicClaim(fresh) })
+    return NextResponse.json({ ok: true, pending: true, units: proof.units, claim: await claimForPlayer(fresh) })
   }
   try {
     return await drawAndDeliver({ machineId, txHash, unitIndex, account, units: proof.units, claim: fresh, now })
@@ -335,7 +334,7 @@ async function drawAndDeliver(params: {
     })
     console.error('[xp] pool failure', { machineId, txHash, unitIndex, attempt })
     after(() => noticeIfEmpty(machineId).catch(() => {}))
-    return NextResponse.json({ ok: true, pending: true, units: units, claim: publicClaim(claim) })
+    return NextResponse.json({ ok: true, pending: true, units: units, claim: await claimForPlayer(claim) })
   }
 
   claim = await advanceClaim(claim, {
@@ -422,5 +421,5 @@ async function drawAndDeliver(params: {
   // `units` is the proved on-chain quantity for the WHOLE transaction — the
   // client uses it to open the remaining units of a capsule it did not mint
   // itself (a pasted or discovered hash arrives with no local unit count).
-  return NextResponse.json({ ok: true, units: units, claim: publicClaim(claim) })
+  return NextResponse.json({ ok: true, units: units, claim: await claimForPlayer(claim) })
 }

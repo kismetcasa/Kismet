@@ -262,7 +262,7 @@ What shipped, and where the reasoning lives in the code.
 |---|---|
 | `lib/glbFormat.ts` | The GLB identity — `.glb`, `model/gltf-binary`, the `glTF` header magic — in ONE place. Zero imports, client-safe. **Both** features that accept GLB now read it: `lib/collectorFileTypes` (ext/MIME) and `lib/collectorFileCore` (magic). They have to agree — an artist dropping the same file into the MEDIA slot and the collector-download slot must get the same verdict. |
 | `lib/media/modelMedia.ts` | GLB specifics for the media path: `MODEL_MAX_BYTES` (30 MB), `MODEL_SOFT_WARN_BYTES` (8 MB), `isGlbFile` (magic sniff), `asGlbFile` (re-wrap with the real MIME). |
-| `lib/media/mintMedia.ts` | The media gates: `checkMintMedia` (mint — image/video/gif/model), `checkReplaceMedia` (edit — same, minus model), `checkCoverImage` (covers — stills only). |
+| `lib/media/mintMedia.ts` | The media gates: `checkMintMedia` (mint and the edit flow's media replace — image/video/gif/model; `checkReplaceMedia` folded into it in `7ae138f`; a machine's stage frames use it too and refuse a model), `checkCoverImage` (covers — an image or a gif, never video or 3D). |
 | `components/ModelPreview.tsx` | Mint-form 3D preview **and** poster source. |
 | `components/MomentModel.tsx` | The detail view's tap-to-load viewer. The only WebGL surface. |
 | `scripts/verify-model-media.ts` | The media-path oracle, wired into `verify:flows` (30 assertions when this record was written; 62 as of 2026-09-29). |

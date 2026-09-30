@@ -3,8 +3,8 @@ import type { Metadata } from 'next'
 import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { listMachines } from '@/lib/experience/store'
-import { isReveal } from '@/lib/experience/types'
-import { MachineRows } from '@/components/MachineRows'
+import { machineCards } from '@/lib/experience/cards'
+import { MachineCards } from '@/components/MachineCards'
 
 // Every machine: people find the live ones in the Discover "play" tab; this
 // list — reached from the studio, the sitemap and shared links — also keeps
@@ -55,15 +55,7 @@ export default async function PlayPage() {
           </p>
         </div>
       ) : (
-        <MachineRows
-          machines={machines.map((m) => ({
-            id: m.id,
-            name: m.name,
-            creator: m.creator,
-            state: m.state,
-            ...(isReveal(m) ? { kind: 'reveal' as const } : { kind: 'capsule' as const, capsule: m.capsule }),
-          }))}
-        />
+        <MachineCards machines={await machineCards(machines)} />
       )}
     </div>
   )

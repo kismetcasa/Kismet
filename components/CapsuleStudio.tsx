@@ -12,6 +12,8 @@ import { isAddress } from '@/lib/address'
 import { deriveOdds, MAX_POOL_ENTRIES } from '@/lib/experience/draw'
 import { formatOddsRatio, formatProbability, parseArtworkRef } from '@/lib/experience/format'
 import type { PoolEntry, Rarity, SolvencyProblemCode } from '@/lib/experience/types'
+import { CoverSlot, uploadCoverOrSay, useCoverPick } from './CoverField'
+import { FrameSlots, uploadFramesOrSay, useFramePick } from './FrameField'
 import { shortAddress } from '@/lib/inprocess'
 
 /**
@@ -77,6 +79,9 @@ export function CapsuleStudio() {
   const router = useRouter()
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
+  const coverPick = useCoverPick()
+  const dispenseFrame = useFramePick()
+  const openFrame = useFramePick()
   const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
@@ -160,10 +165,18 @@ export function CapsuleStudio() {
         // otherwise — instead of trusting the cache into a permanent no-op.
         await ensureSession({ revalidate: authRequired })
         setAuthRequired(false)
+        const cover = dryRun ? null : await uploadCoverOrSay(coverPick.upload)
+        if (!dryRun && !cover) return
+        const frames = dryRun ? {} : await uploadFramesOrSay({ dispense: dispenseFrame.upload, open: openFrame.upload })
+        if (!frames) return
         const r = await fetch('/api/experience/machines', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload(dryRun)),
+          body: JSON.stringify({
+            ...payload(dryRun),
+            ...(cover ? { cover } : {}),
+            ...(Object.keys(frames).length > 0 ? { frames } : {}),
+          }),
         })
         const body = await r.json().catch(() => null)
 
@@ -195,7 +208,7 @@ export function CapsuleStudio() {
         setPublishing(false)
       }
     },
-    [authRequired, ensureSession, payload, router],
+    [authRequired, coverPick.upload, dispenseFrame.upload, ensureSession, openFrame.upload, payload, router],
   )
 
   if (submitted) return <StudioSubmitted title="capsule studio" machine={submitted} address={address} />
@@ -252,6 +265,8 @@ export function CapsuleStudio() {
         <Field label="name">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Spring Season" className={inputClass} />
         </Field>
+        <CoverSlot pick={coverPick} disabled={checking || publishing} />
+        <FrameSlots picks={{ dispense: dispenseFrame, open: openFrame }} disabled={checking || publishing} />
       </Section>
 
       <Section
@@ -471,7 +486,7 @@ export function CapsuleStudio() {
             </button>
             <button
               onClick={() => submit(false)}
-              disabled={checking || publishing || entries.length === 0 || gatedOut}
+              disabled={checking || publishing || entries.length === 0 || gatedOut || !coverPick.file || dispenseFrame.preparing || openFrame.preparing}
               className="px-5 py-2.5 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
             >
               {publishing ? 'publishing…' : 'publish'}
