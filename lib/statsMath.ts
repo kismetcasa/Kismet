@@ -720,3 +720,14 @@ export function remapEntries(
   }
   return out
 }
+
+/**
+ * When the in-process stats fallback (lib/backgroundTasks) runs the pipeline:
+ * no run — from the cron route or the fallback itself — has been recorded
+ * within `intervalMs`. No record at all (a fresh deployment, or a corrupt
+ * heartbeat) is due.
+ */
+export function isStatsRunDue(lastRunAt: number | null | undefined, now: number, intervalMs: number): boolean {
+  if (typeof lastRunAt !== 'number' || !Number.isFinite(lastRunAt)) return true
+  return now - lastRunAt >= intervalMs
+}

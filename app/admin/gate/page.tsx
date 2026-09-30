@@ -16,6 +16,12 @@ interface GateConfig {
   paused: boolean
 }
 
+/** GET /api/admin/sweep: the flag plus the candidate pool the hourly index built. */
+interface SweepStatus {
+  enabled: boolean
+  index: { updatedAt: number; eligible: number; pool: number; stale: boolean } | null
+}
+
 export default function GateAdminPage() {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
@@ -26,6 +32,8 @@ export default function GateAdminPage() {
   const [paused, setPaused] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [sweep, setSweep] = useState<SweepStatus | null>(null)
+  const [sweepSaving, setSweepSaving] = useState(false)
 
   useEffect(() => {
     if (!isAdmin) return
@@ -48,6 +56,15 @@ export default function GateAdminPage() {
       setPassCollection(cfg.passCollection ?? '')
       setPaused(!!cfg.paused)
       setLoaded(true)
+      // The sweep flag has its own route (its own audit line, instant effect);
+      // read through the same session so the switch below shows the truth.
+      const sw = await withSession(async () => {
+        const res = await fetch('/api/admin/sweep')
+        if (!res.ok) return null
+        return (await res.json()) as SweepStatus
+      })
+      if (cancelled || !sw) return
+      setSweep(sw)
     })()
     return () => { cancelled = true }
   }, [isAdmin, withSession])
@@ -87,6 +104,34 @@ export default function GateAdminPage() {
       toastError('Save', err)
     } finally {
       setSaving(false)
+    }
+  }
+
+  // The sweep flag saves on the spot — one POST, audited server-side — rather
+  // than riding the gate form's sign & save, because it is its own key with
+  // its own route and takes effect at once.
+  async function toggleSweep() {
+    if (!sweep || sweepSaving) return
+    const next = !sweep.enabled
+    setSweepSaving(true)
+    try {
+      const ok = await withSession(async () => {
+        const res = await fetch('/api/admin/sweep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        })
+        const json = (await res.json().catch(() => ({}))) as { enabled?: boolean; error?: string }
+        if (!res.ok) throw new Error(json.error ?? 'Save failed')
+        return true
+      })
+      if (!ok) return
+      setSweep({ ...sweep, enabled: next })
+      toast.success(next ? 'Sweep enabled — the button shows within ~90 s' : 'Sweep disabled')
+    } catch (err) {
+      toastError('Sweep', err)
+    } finally {
+      setSweepSaving(false)
     }
   }
 
@@ -176,6 +221,34 @@ export default function GateAdminPage() {
             {saving ? 'saving…' : 'sign & save'}
           </button>
         </>
+      )}
+
+      {sweep && (
+        <div className="flex flex-col gap-3 pt-6 border-t border-line">
+          <div>
+            <h2 className="text-ink font-mono text-sm mb-1">Sweep</h2>
+            <p className="text-dim font-mono text-xs leading-relaxed">
+              The sweep button on /discover. Its candidate pool is built by the
+              stats pipeline within minutes of a deploy and hourly after; the
+              button renders only while the pool is non-empty.
+            </p>
+          </div>
+          <div className="flex items-center justify-between border border-line px-3 py-3">
+            <div className="flex flex-col">
+              <span className="text-xs font-mono text-dim uppercase tracking-wider">sweep enabled</span>
+              <span className="text-[10px] font-mono text-muted mt-0.5">
+                {sweep.index
+                  ? `pool ${sweep.index.pool} of ${sweep.index.eligible} eligible · built ${Math.max(0, Math.round((Date.now() - sweep.index.updatedAt) / 60_000))} min ago${sweep.index.stale ? ' · stale, served empty' : ''}`
+                  : 'no pool yet — wait a few minutes after a deploy, then reload'}
+              </span>
+            </div>
+            <button type="button" onClick={() => void toggleSweep()} disabled={sweepSaving} aria-pressed={sweep.enabled} className="flex-shrink-0 disabled:opacity-50">
+              <div className={`relative w-8 h-4 rounded-full transition-colors ${sweep.enabled ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+                <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${sweep.enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+              </div>
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )

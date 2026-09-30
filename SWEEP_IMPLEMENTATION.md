@@ -12,9 +12,10 @@ routes harness, a browser script).
 mints live on Kismet, in **one transaction on any wallet**. USDC-priced (ERC20Minter) work is
 out of scope by decision; §0 keeps the alternatives that were weighed and why they lost.
 
-**To turn it on:** deploy → `GET /api/cron/sync-stats?secret=…` once (or wait for the hour)
-→ `GET /api/admin/sweep` shows `index.pool > 0` → `POST /api/admin/sweep {"enabled":true}`.
-Until then `/api/sweep` answers `{ enabled: false }` and the button does not render.
+**To turn it on:** deploy (the app builds the candidate pool itself within minutes,
+then hourly — §2.1) → `/admin/gate` shows the pool under **Sweep** → flip the switch
+(the same as `POST /api/admin/sweep {"enabled":true}`). Until then `/api/sweep` answers
+`{ enabled: false }` and the button does not render.
 
 > **Scope in one line.** FixedPriceSaleStrategy sales on Base only → one
 > Multicall3 `aggregate3Value` transaction → `/api/collect` records, exactly
@@ -162,8 +163,8 @@ effective collection, the display creator, the folded artist, the hidden flag
 and the KV meta row; `censusFromCatalog(catalog, updatedAt)` is the pure
 counting half. `rebuildCatalogCensus()` keeps its lock, its
 abort-on-unreadable-collection throw and its shrink guard, and additionally
-returns the resolved catalog so the cron hands it to the index builder
-**without a second walk**. The cron (`app/api/cron/sync-stats/route.ts`) runs
+returns the resolved catalog so the pipeline hands it to the index builder
+**without a second walk**. The pipeline (`lib/statsPipeline.ts`) runs
 
 ```
 rebuildStats() → rebuildCatalogCensus() → rebuildSweepIndex(catalog) → reconcilePendingCredits()
@@ -175,6 +176,14 @@ ops read an uptime monitor points at; there is no dashboard panel — reports
 index age and last error). The sweep phase gets its own `sweepHealthy`
 verdict rather than folding into `healthy`, so a sweep-only failure never
 pages the stats pipeline and vice versa.
+
+Who runs the pipeline: `app/api/cron/sync-stats` (Vercel's cron from
+`vercel.json`, or an external scheduler with the bearer secret) and, when no
+run has been recorded for an hour — a persistent host with no scheduler — the
+in-process fallback in `lib/backgroundTasks.ts`: leader-locked, checked every
+five minutes from two minutes after boot, standing down whenever the heartbeat
+is fresh. So a fresh deploy has a pool within minutes with no ops step, and an
+external scheduler, where one exists, keeps precedence.
 
 ### 2.2 Chain reads (two passes, chunked)
 
@@ -304,7 +313,8 @@ Route rules (`app/api/sweep/route.ts`):
   fails **closed** on a Redis error. Toggled by `POST /api/admin/sweep`
   (`{ enabled }`, admin session + audit log, the `scout-killswitch` shape);
   `GET /api/admin/sweep` also reports the index snapshot so an operator can
-  confirm a build has run before enabling. No deploy needed to pause.
+  confirm a build has run before enabling; the **Sweep** switch on
+  `/admin/gate` drives the same route. No deploy needed to pause.
 - **Serve-time hide filter**: re-apply `getHiddenMomentsSet`,
   `getHiddenCollectionsSet`, `getHiddenUsersSet` (memoized, 15 min) so a piece
   hidden after the hourly build disappears within 15 minutes, not 60.
@@ -577,11 +587,11 @@ repeated here.
 Existing checks cover the rest: `typecheck`, `lint`, `verify:a11y` (the
 sheet's text), `check:bundle` (the sheet lazy-loads behind the button).
 
-**Rollout**: ship with `kismetart:sweep-enabled` absent (off); run the cron
-once (`/api/cron/sync-stats?secret=…`) to materialize the index; check
-`GET /api/admin/sweep` (`index.pool > 0`, `stale: false`) or
-`/api/admin/stats-health` (`sweepIndex`, `sweepHealthy`); enable with
-`POST /api/admin/sweep {"enabled":true}`; watch
+**Rollout**: ship with `kismetart:sweep-enabled` absent (off); the pool builds
+itself within minutes of the deploy (§2.1); check it on `/admin/gate` (or
+`GET /api/admin/sweep`: `index.pool > 0`, `stale: false`;
+`/api/admin/stats-health`: `sweepIndex`, `sweepHealthy`); enable with the
+switch there (`POST /api/admin/sweep {"enabled":true}`); watch
 `sweep_open → sweep_attempt → sweep_success` in the funnel. A pool the cron
 stops refreshing serves empty after a day (`SWEEP_INDEX_MAX_AGE_MS`), so a dead
 cron hides the button rather than serving a dead pool; the health route flags

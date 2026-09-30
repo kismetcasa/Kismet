@@ -146,6 +146,9 @@ async function main() {
 
   // Seed: flag on, a 12-row pool, an admin session for the flag flips below.
   upstash.store.set('kismetart:sweep-enabled', { v: '1' })
+  // A fresh stats heartbeat, so the in-process stats fallback (lib/backgroundTasks)
+  // stands down for this run instead of walking inprocess from the sandbox.
+  upstash.store.set('kismetart:stats:health:rebuild', { v: JSON.stringify({ lastRunAt: Date.now(), lastOkAt: Date.now() }) })
   const pool = { updatedAt: Date.now(), eligible: 12, items: Array.from({ length: 12 }, (_, i) => poolRow(i + 1)) }
   upstash.store.set('kismetart:sweep-index', { v: JSON.stringify(pool) })
   upstash.store.set('kismetart:auth-session:e2e-admin', { v: ADMIN.toLowerCase() })
