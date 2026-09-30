@@ -15,7 +15,7 @@ import { reportClientError } from '@/lib/clientError'
 import { DEFAULT_COLLECT_COMMENT } from '@/lib/inprocess'
 import { SWEEP_DEFAULT_N, type SweepApiResponse } from '@/lib/sweepIndexCore'
 import { MULTICALL3_ADDRESS, buildEthMintCall } from '@/lib/zoraMint'
-import { buildSweepCalls, countSweepMints, sweepBundle } from '@/lib/sweepBatch'
+import { buildSweepCalls, countSweepMints, recordAttemptSchedule, sweepBundle } from '@/lib/sweepBatch'
 import {
   pendingRow,
   sumOutlay,
@@ -70,15 +70,22 @@ interface UseSweepReturn {
 }
 
 const TOAST_ID = 'sweep'
-// /api/collect 403s until its own RPC sees the receipt; the client waited on
-// ITS RPC, so the two can disagree for a few seconds. Five spaced attempts
-// (0.6 s · attempt, ≈ 6 s in all) instead of direct-collect's three: a sweep
-// posts up to twenty records at once, so a lag that loses one loses them all.
-const RECORD_ATTEMPTS = 5
 
-/** One /api/collect record per swept row, bounded retry (the server 403s until
- *  its own RPC sees the receipt), surfaced to the diagnostics sink on total loss. */
-async function recordOne(row: SweepRow, account: Address, txHash: Hash): Promise<boolean> {
+// A sweep that was sent but never seen mined — the receipt wait timed out, or
+// the sheet was closed while it was confirming. Module-level, not a ref: the
+// sheet (and with it this hook) unmounts when the user closes it, and a second
+// bundle must never be signed over one that may still land. open() checks it
+// once for the same signer before anything can be re-sent; a full page reload
+// is the one way to lose it.
+let pendingSweep: { account: Address; hash: Hash } | null = null
+
+/** One /api/collect record per swept row. The server 403s until its own RPC
+ *  sees the receipt (the client waited on ITS RPC, so the two can disagree for
+ *  a few seconds), so 403, 5xx and transport errors are retried on the
+ *  schedule of recordAttemptSchedule; a 429 (the per-IP budget is gone) or a
+ *  4xx validation answer ends the attempts. A row that never records is
+ *  surfaced to the diagnostics sink. */
+async function recordOne(row: SweepRow, account: Address, txHash: Hash, delaysMs: readonly number[]): Promise<boolean> {
   const body = JSON.stringify({
     moment: { collectionAddress: row.item.address, tokenId: row.item.tokenId, chainId: base.id },
     account,
@@ -88,8 +95,8 @@ async function recordOne(row: SweepRow, account: Address, txHash: Hash): Promise
     currency: 'eth',
     txHash,
   })
-  for (let attempt = 0; attempt < RECORD_ATTEMPTS; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * attempt))
+  for (const delay of delaysMs) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay))
     try {
       const res = await fetch('/api/collect', {
         method: 'POST',
@@ -98,6 +105,7 @@ async function recordOne(row: SweepRow, account: Address, txHash: Hash): Promise
         keepalive: true,
       })
       if (res.ok) return true
+      if (res.status !== 403 && res.status < 500) break
     } catch {
       // transport error — retry
     }
@@ -142,9 +150,6 @@ export function useSweep(): UseSweepReturn {
   // confirm() can refuse a basket that was verified for a different wallet.
   const verifiedForRef = useRef<Address | null>(null)
   const nRef = useRef<number>(SWEEP_DEFAULT_N)
-  // A sweep that was sent but never seen mined (the receipt wait timed out).
-  // open() checks it once before anything can be re-sent.
-  const pendingHashRef = useRef<Hash | null>(null)
 
   const open = useCallback(
     async (size: number = SWEEP_DEFAULT_N) => {
@@ -170,15 +175,15 @@ export function useSweep(): UseSweepReturn {
       // Never re-send over a sweep that may still land: one receipt check,
       // then either proceed (verification excludes whatever it minted) or ask
       // the user to look at the wallet.
-      if (pendingHashRef.current) {
-        const mined = await publicClient.getTransactionReceipt({ hash: pendingHashRef.current }).catch(() => null)
+      if (pendingSweep && pendingSweep.account.toLowerCase() === account.toLowerCase()) {
+        const mined = await publicClient.getTransactionReceipt({ hash: pendingSweep.hash }).catch(() => null)
         if (seq !== openSeqRef.current) return
         if (!mined) {
           setStatus('error')
           toast.error('Your last sweep is still pending — check your wallet before trying again')
           return
         }
-        pendingHashRef.current = null
+        pendingSweep = null
       }
 
       let data: SweepApiResponse
@@ -297,11 +302,11 @@ export function useSweep(): UseSweepReturn {
         })
       }
 
-      pendingHashRef.current = hash
+      pendingSweep = { account, hash }
       setStatus('confirming')
       toast.loading('Confirming on-chain…', { id: TOAST_ID })
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 300_000 })
-      pendingHashRef.current = null
+      pendingSweep = null
       if (receipt.status !== 'success') {
         throw new Error('Sweep reverted on-chain — nothing was charged')
       }
@@ -316,7 +321,8 @@ export function useSweep(): UseSweepReturn {
 
       setStatus('recording')
       toast.loading('Finalizing…', { id: TOAST_ID })
-      await Promise.all(basket.map((row) => recordOne(row, account, minedHash)))
+      const delays = recordAttemptSchedule(basket.length)
+      await Promise.all(basket.map((row) => recordOne(row, account, minedHash, delays)))
 
       setRows(rowsRef.current.map((r) => (r.state === 'basket' ? { ...r, state: 'swept' } : r)))
       const minted = basket.length

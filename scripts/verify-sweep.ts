@@ -60,6 +60,8 @@ import {
   sweepSimulationArgs,
   trimToBudget,
   type SweepBasketItem,
+  COLLECT_RATE_LIMIT_PER_MINUTE,
+  recordAttemptSchedule,
 } from '../lib/sweepBatch.ts'
 import { DEFAULT_COLLECT_COMMENT } from '../lib/inprocess.ts'
 import { SWEEP_INDEX_MAX_AGE_MS, isSweepIndexStale, type SweepResponseItem } from '../lib/sweepIndexCore.ts'
@@ -660,6 +662,22 @@ async function main() {
     // interleaves — so the two slots go to two DIFFERENT artists, never X twice.
     const basket = v.ok ? rowsOf(v.rows, 'basket') : []
     check('S11 within one price tier a two-slot basket takes one row from each artist', v.ok && basket.length === 2 && new Set(basket.map((r) => r.item.artist)).size === 2, ids(basket))
+  }
+  {
+    // S12 — budget freed by a simulation drop seats a row the trim set aside (cheaper than any reserve row)
+    const { chain, pending, client } = stage(5, { ethBalance: HEADROOM + outlay(1) + outlay(2) + outlay(4) })
+    chain.tokens.get(tokenKey(COL_A_HEX, 3n))!.mintOk = false
+    const v = await verifyBasket(client, USER, pending, 4)
+    check('S12 basket = 1,2 + the trimmed 4, not the pricier reserve 5', v.ok && ids(rowsOf(v.rows, 'basket')) === '1,2,4', v.ok ? ids(rowsOf(v.rows, 'basket')) : 'rpc')
+    check('S12 nothing is left "needs more ETH"; 5 stays reserve; two simulations', v.ok && rowsOf(v.rows, 'unaffordable').length === 0 && ids(rowsOf(v.rows, 'reserve')) === '5' && chain.simulations === 2)
+  }
+  {
+    // S13 — the record schedule: ≈ 6 s of spaced attempts, never more requests than /api/collect's per-IP budget
+    const five = recordAttemptSchedule(9)
+    check('S13 a 9-basket gets five attempts at 0 / 0.6 / 1.8 / 3.6 / 6 s', five.join() === '0,600,1200,1800,2400', five.join())
+    const full = recordAttemptSchedule(20)
+    check('S13 a full 20-basket gets three attempts over the same 6 s (60 requests = the budget)', full.length === 3 && full.reduce((a, b) => a + b, 0) === 6000 && full.length * 20 <= COLLECT_RATE_LIMIT_PER_MINUTE, full.join())
+    check('S13 every size keeps size × attempts within the budget with at least three attempts', [1, 5, 10, 12, 13, 15, 19, 20].every((n) => recordAttemptSchedule(n).length * n <= COLLECT_RATE_LIMIT_PER_MINUTE && recordAttemptSchedule(n).length >= 3))
   }
 
   // ── 11b. countSweepMints: success is the receipt showing the mints ────────

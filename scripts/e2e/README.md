@@ -249,7 +249,7 @@ sees its types on a clean install) and launches the Chromium at `E2E_CHROMIUM`
 or, by default, the one Playwright's registry keeps under `/opt/pw-browsers`.
 Screenshots land in `.e2e/shots/sweep-*.png`.
 
-## What it asserts (54)
+## What it asserts (63)
 
 - **Header** — the button renders once `/api/sweep` answers with a pool; at
   375 px the row does not overflow and the stats block wraps under the toggle
@@ -281,6 +281,11 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
 - **Single item** — a lone row is a direct `1155.mint` to the collection with
   the suffix, decodes to `mint(FPSS, 1, 1, [referral], (user, comment))`,
   reaches "swept 1 artwork" and is recorded.
+- **Closed mid-flight** — with its receipt held back, Escape closes the sheet
+  while it is confirming; reopening reads "retry" with the "still pending"
+  toast, offers no basket and sends nothing; once the receipt lands, retry
+  re-verifies (the row is owned now) and the in-flight sweep's record still
+  arrives.
 - **Walkthrough regressions** — a dropped row keeps its name visible beside a
   long reason (the reason column wraps), and a success toast after an earlier
   failure carries no stale description.
