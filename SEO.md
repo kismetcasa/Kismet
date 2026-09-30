@@ -103,11 +103,13 @@ All JSON-LD is server-rendered (crawlers ignore JS-injected markup) and escapes
   training) while `OAI-SearchBot` (ChatGPT search) stays allowed; block
   `Google-Extended` (Gemini training) without affecting Googlebot ranking;
   `ClaudeBot` respects the standard rules.
-- **Farcaster embeds are page-scoped on /learn** (hub + guides): each carries
-  its own embed whose button opens THAT page in the Mini App, with a dedicated
-  share card (`…/opengraph-image`). Other unscoped routes (e.g. /mint,
-  /market) still inherit the homepage embed — acceptable, and fixable the same
-  way if ever desired.
+- **Farcaster embeds are page-scoped** where a page has a subject of its own —
+  an artwork, a collection, a profile, a machine (`/play/<id>`), and /learn
+  (hub + guides): each carries an embed whose button opens THAT page in the
+  Mini App, over its own share card (`…/opengraph-image`). /market and /play
+  carry their own button over the default image; every other route (e.g. /mint,
+  /discover) inherits the homepage embed — acceptable, and fixable the same way
+  if ever desired.
 - **Public artwork URL is `/artwork/<address>/<tokenId>`** (migrated from
   `/moment/…`, 2026-07). The slug now matches the user-facing noun (see the
   terminology note in `lib/inprocess.ts`). Every historical `/moment/…` link —

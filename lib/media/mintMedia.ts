@@ -76,7 +76,7 @@ export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
 
 /**
  * Gate for cover / poster pickers (the edit flow's "change cover", collection
- * covers). A cover is rendered as a still everywhere it appears, so video and
+ * and machine covers). A cover is rendered as a still everywhere it appears, so video and
  * 3D are both refused rather than uploaded into an <img> slot.
  */
 export async function checkCoverImage(file: File): Promise<MintMediaVerdict> {
