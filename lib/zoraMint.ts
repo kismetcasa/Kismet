@@ -82,6 +82,13 @@ const ZORA_1155_MINT_ABI = parseAbi([
   'function totalSupply(uint256 id) view returns (uint256)',
 ])
 
+// mintFee() alone, exported for the batched per-collection fee read
+// (lib/saleConfig readMintFeesWithBound). Deliberately NOT the full mint ABI
+// above: keeping the payable mint() entry unexported means every mint encoding
+// still has to go through buildEthMintCall (the treasury-critical single
+// source of the referral and strategy arguments).
+export const ZORA_1155_MINT_FEE_ABI = parseAbi(['function mintFee() view returns (uint256)'])
+
 // Returns {uri, maxSupply, totalMinted}. Prefer `totalMinted` over
 // `totalSupply` for cap checks — mint() compares against the former, and
 // totalSupply decreases on burn.
@@ -233,7 +240,9 @@ export function buildMulticall3Batch(calls: readonly { to: Address; data: Hex; v
 // returns a pathological value before the user signs it. Applies to every
 // ETH-priced mint path (collect-all, direct-collect) so a single source of
 // truth governs the bound.
-const MAX_REASONABLE_MINT_FEE_WEI = parseEther('0.01')
+// Exported so the batched reader (lib/saleConfig readMintFeesWithBound) enforces
+// THIS bound rather than a hand-copied duplicate.
+export const MAX_REASONABLE_MINT_FEE_WEI = parseEther('0.01')
 
 /**
  * Read mintFee() from a Zora 1155 collection and assert it's within the

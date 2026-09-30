@@ -99,6 +99,19 @@ export const SALE_ENDS_KEY = 'kismetart:sale-ends'
 // least-recently-indexed entry first. Read as a plain member set to filter free
 // mints out of the Latest/Most Sales feeds; see lib/saleEnds.ts.
 export const SALE_FREE_KEY = 'kismetart:sale-free'
+// Sweep index: ONE bounded JSON blob (the kismetart:stats:platform:catalog
+// shape) holding the cheapest live ETH-priced mints across every tracked
+// collection, rebuilt by the sync-stats cron right after the catalog census
+// from the SAME resolved catalog (lib/sweepIndex.ts). Read by /api/sweep. Never
+// grows past SWEEP_POOL_SIZE items; the last good blob survives an aborted
+// rebuild (the census's abort-don't-overwrite throw runs first).
+export const SWEEP_INDEX_KEY = 'kismetart:sweep-index'
+// Sweep feature flag: '1' = enabled, absent = off (the launch default). Same
+// string-flag shape as kismetart:platform:paused — READ THROUGH
+// lib/gateFlags.isFlagSet, because Upstash JSON-parses '1' back to the NUMBER 1
+// on GET. Toggled by /api/admin/sweep; the index still rebuilds while off so
+// enabling is instant and inspectable from /api/admin/stats-health.
+export const SWEEP_ENABLED_KEY = 'kismetart:sweep-enabled'
 
 /**
  * Build a member → score Map from a `zrange(..., { withScores: true })` reply

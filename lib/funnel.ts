@@ -1,7 +1,7 @@
 // First-party funnel counters — the app deliberately has no analytics service
 // (lib/clientError.ts), which meant every funnel question ("where do new
 // users drop off?", "does anyone see the connect modal and bail?") was
-// unanswerable. This is the smallest honest instrument: seven named events,
+// unanswerable. This is the smallest honest instrument: a short list of named events,
 // fire-and-forget beacons to /api/funnel, which day-buckets them in Redis.
 // No identifiers, no payload beyond the event name — counts only.
 //
@@ -15,6 +15,11 @@
 // filter engagement (any pill/drawer refinement), and collect intent from an
 // oval — the measurements that decide which discover backlog items (activity
 // strip, sale-open index, windowed trending) earn their build.
+//
+// The sweep_* trio instruments the sweep: sheet opened (components/SweepButton,
+// once per open), wallet prompt requested and sweep confirmed on-chain
+// (hooks/useSweep) — the open → attempt → success ratio is what decides
+// whether the sweep earns its place on /discover.
 export const FUNNEL_EVENTS = [
   'landing',
   'connect_modal',
@@ -26,6 +31,9 @@ export const FUNNEL_EVENTS = [
   'discover_landing',
   'discover_filter',
   'discover_collect_attempt',
+  'sweep_open',
+  'sweep_attempt',
+  'sweep_success',
 ] as const
 
 export type FunnelEvent = (typeof FUNNEL_EVENTS)[number]

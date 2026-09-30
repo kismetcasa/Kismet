@@ -5,6 +5,7 @@ import { errorResponse } from '@/lib/apiResponse'
 import { getStatsHealth, STATS_STALE_MS, type StatsPhaseHealth } from '@/lib/statsHealth'
 import { getPlatformSalesSnapshot } from '@/lib/stats'
 import { getCatalogCensus } from '@/lib/catalogCensus'
+import { getSweepIndex } from '@/lib/sweepIndex'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,10 +25,11 @@ export async function GET(req: NextRequest) {
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
 
-  const [health, sales, catalog] = await Promise.all([
+  const [health, sales, catalog, sweep] = await Promise.all([
     getStatsHealth(),
     getPlatformSalesSnapshot(),
     getCatalogCensus(),
+    getSweepIndex(),
   ])
   const now = Date.now()
   const ageOf = (t?: number | null) => (typeof t === 'number' ? now - t : null)
@@ -41,6 +43,7 @@ export async function GET(req: NextRequest) {
 
   const salesAge = ageOf(sales?.updatedAt)
   const catalogAge = ageOf(catalog?.updatedAt)
+  const sweepAge = ageOf(sweep?.updatedAt)
   // A null age (never written) counts as stale — no data is not "healthy".
   const isStale = (age: number | null) => age == null || age > STATS_STALE_MS
   const healthy =
@@ -48,6 +51,12 @@ export async function GET(req: NextRequest) {
     !health.census?.lastError &&
     !isStale(salesAge) &&
     !isStale(catalogAge)
+  // The sweep index gets its OWN verdict rather than folding into `healthy`:
+  // it is an optional, flag-gated surface, and a monitor alerting on the stats
+  // pipeline must not page for a sweep-only failure (nor stay quiet about the
+  // pipeline because the sweep is fine). Same rules — no unresolved error, not
+  // stale, and never written counts as stale.
+  const sweepHealthy = !health['sweep-index']?.lastError && !isStale(sweepAge)
 
   return NextResponse.json(
     {
@@ -56,9 +65,17 @@ export async function GET(req: NextRequest) {
       staleThresholdMs: STATS_STALE_MS,
       rebuild: phase(health.rebuild),
       census: phase(health.census),
+      sweepIndex: phase(health['sweep-index']),
+      sweepHealthy,
       snapshots: {
         sales: { updatedAt: sales?.updatedAt ?? null, ageMs: salesAge },
         catalog: { updatedAt: catalog?.updatedAt ?? null, ageMs: catalogAge },
+        sweepIndex: {
+          updatedAt: sweep?.updatedAt ?? null,
+          ageMs: sweepAge,
+          eligible: sweep?.eligible ?? null,
+          pool: sweep?.items.length ?? null,
+        },
       },
     },
     { headers: { 'Cache-Control': 'private, no-store' } },

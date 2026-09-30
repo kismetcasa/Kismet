@@ -1,0 +1,108 @@
+import { NextRequest, NextResponse } from 'next/server'
+import type { Moment } from '@/lib/inprocess'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { errorResponse } from '@/lib/apiResponse'
+import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
+import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
+import { getHiddenUsersSet } from '@/lib/hidden-users'
+import { enrichMomentsWithKismetMeta } from '@/lib/momentEnrichment'
+import { getSweepIndex, isSweepEnabled } from '@/lib/sweepIndex'
+import {
+  SWEEP_MAX_N,
+  clampSweepN,
+  isSweepIndexStale,
+  selectSweepItems,
+  sweepItemToMoment,
+  type SweepResponseItem,
+} from '@/lib/sweepIndexCore'
+
+export const runtime = 'nodejs'
+
+// The sweep candidate pool: the cheapest live ETH-priced mints across every
+// tracked collection, from the hourly index (lib/sweepIndex.ts), re-filtered
+// against the live hide sets and identity-enriched exactly like a feed page.
+// Viewer-INDEPENDENT on purpose — no account parameter — so it caches at the
+// edge; "already yours" and every live price/supply check happen on the
+// client from one cross-collection multicall right before the wallet prompt
+// (SWEEP_IMPLEMENTATION.md §3, §4.1). Returns 3n rows (min 30) so that
+// verification can drop rows and still fill the basket from the reserve.
+//
+//   GET /api/sweep?n=10   → { enabled, updatedAt, eligible, maxN, n, items }
+//                          → { enabled: false } while the flag is off
+const PUBLIC_CACHE = 'public, s-maxage=30, stale-while-revalidate=120'
+// The flag-off answer skips stale-while-revalidate: with it, a shared cache
+// could keep serving "disabled" for up to 150 s after an operator enables the
+// feature; without it the pill appears within 30 s plus the 60 s flag memo.
+const DISABLED_CACHE = 'public, s-maxage=30'
+const NO_STORE = 'private, no-store'
+
+export async function GET(req: NextRequest) {
+  if (!(await checkRateLimit(`sweep:${getClientIp(req)}`, 60, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
+  const n = clampSweepN(req.nextUrl.searchParams.get('n'))
+
+  // Flag read fails CLOSED, uncached: a Redis blip must neither expose the
+  // feature nor pin "off" into the shared cache for the window.
+  let enabled: boolean
+  try {
+    enabled = await isSweepEnabled()
+  } catch {
+    return NextResponse.json({ enabled: false }, { headers: { 'Cache-Control': NO_STORE } })
+  }
+  if (!enabled) {
+    return NextResponse.json({ enabled: false }, { headers: { 'Cache-Control': DISABLED_CACHE } })
+  }
+
+  const index = await getSweepIndex()
+  // No build yet, or a pool the cron stopped refreshing (isSweepIndexStale):
+  // an honest empty pool, same shape, cacheable — the button hides.
+  if (!index || isSweepIndexStale(index)) {
+    return NextResponse.json(
+      { enabled: true, updatedAt: index?.updatedAt ?? null, eligible: 0, maxN: SWEEP_MAX_N, n, items: [] },
+      { headers: { 'Cache-Control': PUBLIC_CACHE } },
+    )
+  }
+
+  // Hide sets are strictRead-backed (they throw on a Redis failure): fail
+  // CLOSED — never serve the pool unfiltered — and don't cache the failure.
+  let hiddenMoments: Set<string>
+  let hiddenCollections: Set<string>
+  let hiddenUsers: Set<string>
+  try {
+    ;[hiddenMoments, hiddenCollections, hiddenUsers] = await Promise.all([
+      getHiddenMomentsSet(),
+      getHiddenCollectionsSet(),
+      getHiddenUsersSet(),
+    ])
+  } catch {
+    return NextResponse.json(
+      { error: 'Temporarily unavailable' },
+      { status: 503, headers: { 'Cache-Control': NO_STORE } },
+    )
+  }
+  const selected = selectSweepItems(index, { n, hiddenMoments, hiddenCollections, hiddenUsers })
+
+  // Identity overlay through the feeds' single choke point (username,
+  // hidden-identity scrub). Display-only: on a
+  // failure the rows ship with bare addresses, which leaks nothing (the index
+  // stores no names) and the client's shortAddress fallback renders them.
+  let enriched: Moment[] | null = null
+  try {
+    enriched = await enrichMomentsWithKismetMeta(selected.map(sweepItemToMoment))
+  } catch {
+    enriched = null
+  }
+  const items: SweepResponseItem[] = selected.map((it, i) => {
+    const m = enriched?.[i]
+    return {
+      ...it,
+      creatorProfile: { username: m?.creator?.username ?? null },
+    }
+  })
+
+  return NextResponse.json(
+    { enabled: true, updatedAt: index.updatedAt, eligible: index.eligible, maxN: SWEEP_MAX_N, n, items },
+    { headers: { 'Cache-Control': PUBLIC_CACHE } },
+  )
+}

@@ -131,6 +131,17 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
       return 'OK'
     }
     if (op === 'GET') return store.get(key)?.v ?? null
+    // A real counter, so a funnel day-bucket (lib/funnel → INCR + EXPIRE) is observable.
+    if (op === 'INCR') {
+      const n = Number(store.get(key)?.v ?? 0) + 1
+      store.set(key, { v: String(n), ex: store.get(key)?.ex })
+      return n
+    }
+    if (op === 'EXPIRE') {
+      const cur = store.get(key)
+      if (cur) store.set(key, { v: cur.v, ex: Number(cmd[2]) })
+      return cur ? 1 : 0
+    }
     if (op === 'DEL') {
       let n = 0
       for (let i = 1; i < cmd.length; i++) {
