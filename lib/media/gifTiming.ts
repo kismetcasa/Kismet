@@ -16,13 +16,14 @@
  * final hold (7.8 s): 6.32 s from the browser path, 6.34 s from the server's.
  *
  * So the timing is read here and the encode is told it: every frame's delay
- * as a browser plays it, written back into the bytes ffmpeg reads; a constant
- * frame rate on the GIF's own time grid (100 / the delays' greatest common
- * divisor, so every delay is a whole number of frames — a GIF of even delays
- * keeps its own frame count); its last frame held for its delay; and the
- * whole trimmed at the GIF's true length. At a constant rate every frame,
- * the last included, lasts one step on every version, which is what makes
- * the end exact. Verified frame by frame on ffmpeg 7.1.1 and 8.1.2
+ * as a browser plays it, written back into the bytes ffmpeg reads, and a
+ * constant frame rate on the GIF's own time grid (100 / the delays' greatest
+ * common divisor, so every delay is a whole number of frames — a GIF of even
+ * delays keeps its own frame count). The rate filter runs to the end of the
+ * last frame's delay, so it holds that frame, and on a grid every delay fits
+ * the whole ends exactly at the GIF's length on every version. Nothing more
+ * is needed: padding the last frame (tpad) or trimming the output (-t)
+ * changes no byte of it on 5.1.4, 7.1.1 or 8.1.2. Verified frame by frame on ffmpeg 7.1.1 and 8.1.2
  * (scripts/verify-gif-transcode.ts); on the browser's 5.1.4 (wasm) the
  * experience E2E checks each uploaded clip's length, frame count and keyframe
  * interval.
@@ -112,17 +113,14 @@ export const GOP_FRAMES = 30
 
 /**
  * The encode that keeps a GIF's timing: a filter to put first in the video
- * chain, the output's exact length (ffmpeg's `-t`), and its keyframe interval
- * (`-g`). The interval is about a second on the GIF's grid: a fine grid (uneven
+ * chain, and its keyframe interval (`-g`). The interval is about a second on the GIF's grid: a fine grid (uneven
  * delays can put a GIF on 100 frames a second) would otherwise keyframe every
  * third of a second, a fifth larger for no gain in seeking.
  */
-export function gifTimingArgs(timing: GifTiming): { filter: string; duration: string; gop: number } {
+export function gifTimingArgs(timing: GifTiming): { filter: string; gop: number } {
   const step = timing.delays.reduce(gcd)
-  const last = timing.delays[timing.delays.length - 1]
   return {
-    filter: `fps=100/${step},tpad=stop_mode=clone:stop_duration=${(last / 100).toFixed(2)}`,
-    duration: gifSeconds(timing).toFixed(2),
+    filter: `fps=100/${step}`,
     gop: Math.max(GOP_FRAMES, Math.round(100 / step)),
   }
 }

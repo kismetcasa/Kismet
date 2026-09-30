@@ -2888,6 +2888,12 @@ try {
           check('the face says insert coin', body.includes('insert coin'))
           const deskArea = await stageArea(page)
           check('and on a desktop too', deskArea <= FLASH_AREA && deskArea > 0, `${deskArea} of ${FLASH_AREA}`)
+          // A reader who sets larger text (a 32 px default here) must not get a
+          // larger window. Measured on a desktop: on a phone the width bounds it.
+          await page.evaluate(() => { document.documentElement.style.fontSize = '32px' })
+          const bigTextArea = await stageArea(page)
+          await page.evaluate(() => { document.documentElement.style.fontSize = '' })
+          check('and stays under it when the reader enlarges text', bigTextArea <= FLASH_AREA && bigTextArea > 0, `${bigTextArea} of ${FLASH_AREA}`)
           check('the pull selector offers ×1 ×5 ×10', ['×1', '×5', '×10'].every((n) => body.includes(n)))
           const play = page.getByRole('button', { name: 'play', exact: true })
           check('and play is enabled before any wallet is connected', await play.isEnabled())
@@ -3125,12 +3131,6 @@ try {
           const phoneArea = await stageArea(page)
           check('the window stays under the flash-threshold area on a phone, so no artist clip can flash over it (WCAG 2.3.1)',
             phoneArea <= FLASH_AREA && phoneArea > 0, `${phoneArea} of ${FLASH_AREA}`)
-          // A reader who sets larger text (a 32 px default here) must not get a
-          // larger window.
-          await page.evaluate(() => { document.documentElement.style.fontSize = '32px' })
-          const bigTextArea = await stageArea(page)
-          await page.evaluate(() => { document.documentElement.style.fontSize = '' })
-          check('and stays under it when the reader enlarges text', bigTextArea <= FLASH_AREA && bigTextArea > 0, `${bigTextArea} of ${FLASH_AREA}`)
           // The table ends the page, so the page cannot scroll it to the top;
           // room below it lets the jump go as far as it will, and only the
           // header's offset stops it.

@@ -52,7 +52,6 @@ export async function transcodeGifToMp4Node(
         '-y', '-loglevel', 'error', '-i', inPath,
         '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
         '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
-        ...(keep ? ['-t', keep.duration] : []),
         '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', String(keep?.gop ?? GOP_FRAMES), '-an',
         mp4Path,
       ],

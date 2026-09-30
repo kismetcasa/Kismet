@@ -307,7 +307,6 @@ export async function transcodeGifToMp4(
       '-movflags', 'faststart',
       '-pix_fmt', 'yuv420p',
       '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
-      ...(keep ? ['-t', keep.duration] : []),
       '-c:v', 'libx264',
       '-preset', 'fast',
       '-crf', '23',
