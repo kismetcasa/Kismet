@@ -7,7 +7,8 @@
 //   3. extensions, local colour tables and another encoder's layout are walked,
 //      a truncated file yields the frames it has, and a non-GIF yields null;
 //   4. the encode arguments put the GIF on its own time grid, hold the last
-//      frame for its delay, and end at the GIF's length.
+//      frame for its delay, end at the GIF's length, and keyframe about once a
+//      second on that grid (never more often than every 30 frames).
 // The encode itself, on real ffmpeg, is scripts/verify-gif-transcode.ts.
 //
 // Run: node --experimental-strip-types scripts/verify-gif-timing.ts
@@ -122,15 +123,18 @@ console.log('\n3. the encode that keeps it')
   const args = (delays: number[]) => gifTimingArgs(readGifTiming(gif(delays.map((delay) => ({ delay }))))!)
   const even = args([4, 4, 4])
   check('even delays keep their own rate — a frame per GIF frame',
-    even.filter === 'fps=100/4,tpad=stop_mode=clone:stop_duration=0.04' && even.duration === '0.12', JSON.stringify(even))
+    even.filter === 'fps=100/4,tpad=stop_mode=clone:stop_duration=0.04' && even.duration === '0.12' && even.gop === 30, JSON.stringify(even))
   const held = args([4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 200])
   check('a held last frame is held for its delay, and the whole ends at the GIF\'s length',
-    held.filter === 'fps=100/4,tpad=stop_mode=clone:stop_duration=2.00' && held.duration === '2.40', JSON.stringify(held))
+    held.filter === 'fps=100/4,tpad=stop_mode=clone:stop_duration=2.00' && held.duration === '2.40' && held.gop === 30, JSON.stringify(held))
   const uneven = args([37, 9, 120])
   check('uneven delays go on the grid they share — here every hundredth',
     uneven.filter === 'fps=100/1,tpad=stop_mode=clone:stop_duration=1.20' && uneven.duration === '1.66', JSON.stringify(uneven))
+  check('a keyframe about every second on a fine grid — 100 frames at 100 a second', uneven.gop === 100, JSON.stringify(uneven))
+  const fast = args([2, 2, 2])
+  check('and at 50 a second, 50', fast.gop === 50, JSON.stringify(fast))
   const slow = args([250, 250])
-  check('and long ones on a slow grid', slow.filter === 'fps=100/250,tpad=stop_mode=clone:stop_duration=2.50' && slow.duration === '5.00', JSON.stringify(slow))
+  check('and long ones on a slow grid, keyframing every 30 frames as before', slow.filter === 'fps=100/250,tpad=stop_mode=clone:stop_duration=2.50' && slow.duration === '5.00' && slow.gop === 30, JSON.stringify(slow))
 }
 
 if (failures > 0) {

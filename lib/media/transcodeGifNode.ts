@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { rgbaToThumbHash } from 'thumbhash'
-import { gifTimingArgs, readGifTiming } from './gifTiming'
+import { GOP_FRAMES, gifTimingArgs, readGifTiming } from './gifTiming'
 
 const execFileAsync = promisify(execFile)
 
@@ -18,7 +18,8 @@ const FFMPEG_TIMEOUT_MS = 180_000
  * Server-side GIF → MP4 + poster, the no-wasm-cap counterpart to
  * lib/media/transcodeGif.ts (which runs in the browser and tops out at
  * 100MB). Identical ffmpeg recipe (H.264 yuv420p + faststart, even dims,
- * -g 30 for cheap seeks) so a server-transcoded clip is byte-compatible
+ * the GIF's own timing and a keyframe about once a second from
+ * lib/media/gifTiming) so a server-transcoded clip is byte-compatible
  * with the client-transcoded ones. Requires `ffmpeg` on PATH (installed in
  * the Docker runtime image).
  *
@@ -52,7 +53,7 @@ export async function transcodeGifToMp4Node(
         '-movflags', 'faststart', '-pix_fmt', 'yuv420p',
         '-vf', `${keep ? `${keep.filter},` : ''}scale=trunc(iw/2)*2:trunc(ih/2)*2`,
         ...(keep ? ['-t', keep.duration] : []),
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', '30', '-an',
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-g', String(keep?.gop ?? GOP_FRAMES), '-an',
         mp4Path,
       ],
       { timeout: FFMPEG_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 * 64 },

@@ -8,11 +8,14 @@
 // servers in this process, then walks the product the way its users will —
 // creator publishes, player pays and plays, delivery stalls, player recovers,
 // verifier recomputes, curator promotes, cron commits seeds — asserting at each
-// step. CDP credentials are deliberately absent, so every delivery lands in the
-// `pending` state the recovery paths exist for.
+// step, then does the same in a real Chromium (playwright-core): the studios,
+// the stage, the uploads, the pages. CDP credentials are deliberately absent, so
+// every delivery lands in the `pending` state the recovery paths exist for.
+// What it covers: scripts/e2e/README.md.
 //
-// Not in `npm run check`: it needs a production build and ~30s. Run it before
-// merging anything that touches app/api/experience or lib/experience:
+// Not in `npm run check`: it needs a production build and a few minutes. Run it
+// before merging anything that touches app/api/experience, lib/experience or the
+// machine components:
 //
 //   npm run build && npm run e2e:experience
 //
@@ -124,8 +127,9 @@ function dataItemPayload(item) {
   o += item[o] === 1 ? 33 : 1
   return item.subarray(o + 16 + Number(item.readBigUInt64LE(o + 8)))
 }
-/** An MP4's length (its movie header) and its video's sample count — read
- *  from the boxes, since nothing here can decode H.264. */
+/** An MP4's length (its movie header), its video's sample count — read from
+ *  the boxes, since nothing here can decode H.264 — and the keyframe interval
+ *  libx264 wrote into the stream with its other settings. */
 function mp4Timing(mp4) {
   const boxes = (buf, from, to) => {
     const out = {}
@@ -148,7 +152,8 @@ function mp4Timing(mp4) {
   const length = v1 ? Number(mp4.readBigUInt64BE(h + 24)) : mp4.readUInt32BE(h + 16)
   const trak = boxes(mp4, ...moov.trak)
   const stbl = boxes(mp4, ...boxes(mp4, ...boxes(mp4, ...trak.mdia).minf).stbl)
-  return { seconds: length / scale, samples: mp4.readUInt32BE(stbl.stsz[0] + 8) }
+  const keyint = Number(mp4.toString('latin1').match(/ keyint=(\d+) /)?.[1])
+  return { seconds: length / scale, samples: mp4.readUInt32BE(stbl.stsz[0] + 8), keyint }
 }
 /** Spring Season's cover: an Arweave upload, as the studio makes one. */
 const SPRING_COVER = { uri: 'ar://' + 'Sp1ngC0ver'.repeat(4) + 'abc' }
@@ -2478,9 +2483,10 @@ try {
   {
     const origin = `http://127.0.0.1:${PORT}`
     // playwright-core is a devDependency and the browser is pre-provisioned in
-    // CI/dev images; if either is missing, skip this section with a notice
-    // rather than failing the suite — the 118 API checks above stand on their
-    // own, and the pages are what this section alone can vouch for.
+    // dev images. Without playwright-core this section is skipped with a notice
+    // — the API checks above stand on their own; with it but no Chromium to
+    // launch, that is a failed check, since the pages are what only this
+    // section can vouch for.
     let chromium = null
     try { ({ chromium } = await import('playwright-core')) } catch { /* not installed */ }
     if (!chromium) {
@@ -3119,6 +3125,12 @@ try {
           const phoneArea = await stageArea(page)
           check('the window stays under the flash-threshold area on a phone, so no artist clip can flash over it (WCAG 2.3.1)',
             phoneArea <= FLASH_AREA && phoneArea > 0, `${phoneArea} of ${FLASH_AREA}`)
+          // A reader who sets larger text (a 32 px default here) must not get a
+          // larger window.
+          await page.evaluate(() => { document.documentElement.style.fontSize = '32px' })
+          const bigTextArea = await stageArea(page)
+          await page.evaluate(() => { document.documentElement.style.fontSize = '' })
+          check('and stays under it when the reader enlarges text', bigTextArea <= FLASH_AREA && bigTextArea > 0, `${bigTextArea} of ${FLASH_AREA}`)
           // The table ends the page, so the page cannot scroll it to the top;
           // room below it lets the jump go as far as it will, and only the
           // header's offset stops it.
@@ -3241,7 +3253,7 @@ try {
             tooLong && tooWide && arweaveUploads.length === uploadsBefore && (await studio.getByRole('button', { name: 'save frames' }).count()) === 0,
             `${tooLong} ${tooWide} ${arweaveUploads.length - uploadsBefore} | ${toastsSeen}`)
           await studio.getByLabel('dispense frame', { exact: true }).setInputFiles({ name: 'dispense.gif', mimeType: 'image/gif', buffer: tinyGif(50) })
-          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(10, 70) })
+          await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(3, 77) })
           await studio.getByRole('button', { name: 'save frames' }).click({ timeout: 60_000 })
           await studio.getByText('Frames updated').waitFor({ timeout: 30_000 }).catch(() => {})
           const frames = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
@@ -3259,9 +3271,11 @@ try {
             return mp4 && mp4.toString('latin1', 4, 8) === 'ftyp' ? mp4Timing(mp4) : null
           }
           const [dispenseClip, openClip] = [clip(frames?.dispense?.uri), clip(frames?.open?.uri)]
-          check('each clip runs exactly as long as its gif — even gifs at their own frame rate, a held last frame for its whole hold',
-            dispenseClip?.seconds === 1 && dispenseClip.samples === 2 && openClip?.seconds === 0.8 && openClip.samples === 8,
+          check('each clip runs exactly as long as its gif — an even gif at its own frame rate, an uneven one on the grid its delays share, a held last frame for its whole hold',
+            dispenseClip?.seconds === 1 && dispenseClip.samples === 2 && openClip?.seconds === 0.8 && openClip.samples === 80,
             JSON.stringify({ dispenseClip, openClip }))
+          check('and each keyframes about once a second on its grid, never more often than every 30 frames',
+            dispenseClip?.keyint === 30 && openClip?.keyint === 100, JSON.stringify({ dispenseClip, openClip }))
           await studio.context().close()
 
           // ── and the play is theirs ──

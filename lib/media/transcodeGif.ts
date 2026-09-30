@@ -1,6 +1,6 @@
 import type { FFmpeg } from '@ffmpeg/ffmpeg'
 import { reportClientError } from '@/lib/clientError'
-import { gifTimingArgs, readGifTiming } from './gifTiming'
+import { GOP_FRAMES, gifTimingArgs, readGifTiming } from './gifTiming'
 
 // Past ~100MB, ffmpeg.wasm starts OOM'ing on phones. Bigger GIFs upload
 // unchanged — proxy + edge cache still help.
@@ -311,14 +311,15 @@ export async function transcodeGifToMp4(
       '-c:v', 'libx264',
       '-preset', 'fast',
       '-crf', '23',
-      // Keyframe at most every 30 frames (~1s at 30fps). Default libx264
-      // GOP is 250, which on a short clip means a single keyframe at the
-      // start — every seek decodes the whole file forward to the seek
-      // target. With `-g 30` the detail page's currentTime restore (and
-      // user scrubbing via native controls) lands on the nearest keyframe
-      // within ~1s, cutting seek-decode time by ~3x. Costs ~10-20% file
-      // size; negligible for Kismet's GIF-replacement clip lengths.
-      '-g', '30',
+      // A keyframe about every second (every 30 frames, or a second's worth
+      // on a faster grid — gifTimingArgs). Default libx264 GOP is 250, which
+      // on a short clip means a single keyframe at the start — every seek
+      // decodes the whole file forward to the seek target. With it the detail
+      // page's currentTime restore (and user scrubbing via native controls)
+      // lands on the nearest keyframe within ~1s, cutting seek-decode time by
+      // ~3x. Costs ~10-20% file size; negligible for Kismet's GIF-replacement
+      // clip lengths.
+      '-g', String(keep?.gop ?? GOP_FRAMES),
       '-an',
       'out.mp4',
     ]))

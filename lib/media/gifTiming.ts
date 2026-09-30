@@ -22,8 +22,10 @@
  * keeps its own frame count); its last frame held for its delay; and the
  * whole trimmed at the GIF's true length. At a constant rate every frame,
  * the last included, lasts one step on every version, which is what makes
- * the end exact. Verified frame by frame on ffmpeg 5.1.4 (wasm), 7.1.1 and
- * 8.1.2 (scripts/verify-gif-transcode.ts).
+ * the end exact. Verified frame by frame on ffmpeg 7.1.1 and 8.1.2
+ * (scripts/verify-gif-transcode.ts); on the browser's 5.1.4 (wasm) the
+ * experience E2E checks each uploaded clip's length, frame count and keyframe
+ * interval.
  */
 
 export interface GifTiming {
@@ -104,15 +106,23 @@ export function gifSeconds(timing: GifTiming): number {
 
 const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
 
+/** Frames between keyframes when a GIF's timing is unknown — and the fewest
+ *  on any grid, so a GIF of 30 fps or slower keyframes as it always has. */
+export const GOP_FRAMES = 30
+
 /**
  * The encode that keeps a GIF's timing: a filter to put first in the video
- * chain, and the output's exact length (ffmpeg's `-t`).
+ * chain, the output's exact length (ffmpeg's `-t`), and its keyframe interval
+ * (`-g`). The interval is about a second on the GIF's grid: a fine grid (uneven
+ * delays can put a GIF on 100 frames a second) would otherwise keyframe every
+ * third of a second, a fifth larger for no gain in seeking.
  */
-export function gifTimingArgs(timing: GifTiming): { filter: string; duration: string } {
+export function gifTimingArgs(timing: GifTiming): { filter: string; duration: string; gop: number } {
   const step = timing.delays.reduce(gcd)
   const last = timing.delays[timing.delays.length - 1]
   return {
     filter: `fps=100/${step},tpad=stop_mode=clone:stop_duration=${(last / 100).toFixed(2)}`,
     duration: gifSeconds(timing).toFixed(2),
+    gop: Math.max(GOP_FRAMES, Math.round(100 / step)),
   }
 }

@@ -119,6 +119,10 @@ async function verify(name: string, source: Buffer, played: number[]) {
     inOrder && worst <= 0.011 && Math.abs(m.seconds - want) <= 0.011,
     `${m.seconds} s, runs ${JSON.stringify(m.runs.map(([c, s]) => [c, +s.toFixed(3)]))}`)
   check(`${name}: no more frames than its time grid needs (${grid})`, m.frames <= grid, String(m.frames))
+  // libx264 writes the settings it encoded with into the stream.
+  const keyint = Number(mp4.toString('latin1').match(/ keyint=(\d+) /)?.[1])
+  const gop = Math.max(30, Math.round(100 / played.reduce(gcd)))
+  check(`${name}: a keyframe every ${gop} frames — about a second, and never under 30`, keyint === gop, String(keyint))
   check(`${name}: with its poster`, poster.length > 0)
 }
 

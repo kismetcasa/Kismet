@@ -583,7 +583,7 @@ export function ExperienceMachine({ id }: { id: string }) {
                   href={`/artwork/${p.collection}/${p.tokenId}`}
                   className="group block"
                 >
-                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[15rem] mx-auto [view-transition-name:machine-window]' : 'aspect-square'}`}>
+                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[240px] mx-auto [view-transition-name:machine-window]' : 'aspect-square'}`}>
                     {p.image ? (
                       <MomentImage src={p.image} alt="" fill className="object-cover" sizes="240px" />
                     ) : (

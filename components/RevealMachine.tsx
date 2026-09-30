@@ -152,7 +152,7 @@ export function RevealMachine({ id }: { id: string }) {
           <div ref={pickRef} tabIndex={-1} className="outline-none">
             <p className="text-xs font-mono uppercase tracking-widest accent-grad">you revealed</p>
             <Link href={`/artwork/${pick.collection}/${pick.tokenId}`} className="group block mt-5">
-              <div className="relative overflow-hidden border border-line bg-raised aspect-square max-w-[15rem] mx-auto [view-transition-name:machine-window]">
+              <div className="relative overflow-hidden border border-line bg-raised aspect-square max-w-[240px] mx-auto [view-transition-name:machine-window]">
                 {pick.image ? (
                   <MomentImage src={pick.image} alt="" fill className="object-cover" sizes="240px" />
                 ) : (

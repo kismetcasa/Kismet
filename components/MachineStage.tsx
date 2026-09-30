@@ -93,13 +93,14 @@ export function MachineStage({
   const shown = cover && cover !== failed ? cover : null
   return (
     <div className="mb-5" hidden={stage === null}>
-      {/* At most 15rem square: 57,600 CSS px, under the 87,296 (341 × 256)
+      {/* At most 240 CSS px square — px, not rem, so a reader's larger text
+          does not enlarge it: 57,600 CSS px, under the 87,296 (341 × 256)
           that WCAG 2.3.1 sets as the flash threshold's area, so no artist's
           clip can flash over a seizure-risk area however it was drawn.
           Enlarging the window means screening clips for flashes first. */}
       <div
         data-stage={stage ?? undefined}
-        className="relative aspect-square w-full max-w-[15rem] mx-auto overflow-hidden border border-line bg-raised [view-transition-name:machine-window]"
+        className="relative aspect-square w-full max-w-[240px] mx-auto overflow-hidden border border-line bg-raised [view-transition-name:machine-window]"
         style={{ '--stage-open': `${OPEN_MS}ms` } as CSSProperties}
       >
         {shown && (
