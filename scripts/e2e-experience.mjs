@@ -24,7 +24,7 @@
 import { createServer, request as httpRequest } from 'node:http'
 import { spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import {
   decodeAbiParameters,
   decodeFunctionData,
@@ -2526,6 +2526,13 @@ try {
         return Buffer.from(b64, 'base64')
       })()
       const mediaRequests = []
+      // `E2E_SHOTS=<dir>`: a full-page screenshot of every page the suite opens,
+      // taken as it closes, and of the moments below that only a screenshot
+      // shows — the run's visual record, for review. Off by default.
+      const SHOTS = process.env.E2E_SHOTS
+      let shots = 0
+      if (SHOTS) mkdirSync(SHOTS, { recursive: true })
+      const shotName = (name) => `${SHOTS}/${String(++shots).padStart(3, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60)}.png`
       /** A page with optional session headers and an optional stub wallet. */
       const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads, reducedMotion, media } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
@@ -2642,6 +2649,13 @@ try {
         }
         const page = await context.newPage()
         page.on('pageerror', (e) => pageErrors.push(`${path}: ${e.message}`))
+        if (SHOTS) {
+          const close = context.close.bind(context)
+          context.close = async (...a) => {
+            await page.screenshot({ path: shotName(path), fullPage: true }).catch(() => {})
+            return close(...a)
+          }
+        }
         await page.goto(`${origin}${path}`, { waitUntil: 'domcontentloaded' })
         // Interact only once React owns the page. Text typed into the
         // server-rendered inputs before hydration is reset to the component's
@@ -2656,13 +2670,38 @@ try {
       // label reads back uppercased. Lowercase the haystack so an assertion tests
       // the words, not the CSS; getByText (raw DOM text) is used where case matters.
       const text = async (page) => (await page.locator('body').innerText()).replace(/\s+/g, ' ').toLowerCase()
+      // A machine's result as the page shows it — not the same words in its
+      // screen-reader status region (role=status), which a text search finds too.
+      const shown = (page, words) => page.getByText(words).and(page.locator(':not([role="status"])'))
       // Every stage a machine's window passes through from now on, in order:
       // [stage, when, the capsule's animation, the artist's frame on show — its
       // element and source]. A MutationObserver runs before the next paint, so
       // even a stage shown for one frame is recorded; null is a face with no
       // window (a win, a reveal).
+      // Alongside: each thing the box's status region says (window.__said) and
+      // how many view transitions the page started (window.__vt).
       const watchStages = (page) => page.evaluate(() => {
         window.__stages = []
+        window.__said = []
+        window.__vt = 0
+        const start = document.startViewTransition?.bind(document)
+        // Each one's outcome too: `ready` rejects when a transition cannot run
+        // (two elements of one name, an update that throws), and it is skipped.
+        window.__vtRan = 0
+        window.__vtErrors = []
+        if (start) {
+          document.startViewTransition = (cb) => {
+            window.__vt++
+            const t = start(cb)
+            t.ready.then(() => window.__vtRan++, (e) => window.__vtErrors.push(String(e)))
+            return t
+          }
+        }
+        let lastSaid = ''
+        const say = () => {
+          const t = document.querySelector('[role="status"]')?.textContent ?? ''
+          if (t && t !== lastSaid) window.__said.push((lastSaid = t))
+        }
         let last
         const note = () => {
           const el = document.querySelector('[data-stage]')
@@ -2675,9 +2714,28 @@ try {
           window.__stages.push([stage, performance.now(), svg ? getComputedStyle(svg).animationName : null, art])
         }
         note()
-        new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-stage'] })
+        new MutationObserver(() => { note(); say() }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-stage'] })
       })
       const stagesOf = (page) => page.evaluate(() => window.__stages)
+      const saidOf = (page) => page.evaluate(() => window.__said)
+      /** How many view transitions the page started, and ran, as `ran/started`
+       *  with any error that stopped one. */
+      const transitionsOf = (page) => page.evaluate(() => `${window.__vtRan}/${window.__vt}${window.__vtErrors.length ? ` ${window.__vtErrors.join('; ')}` : ''}`)
+      /** Where keyboard focus is, as its text, or 'body' when it fell to the page. */
+      const focusOf = (page) => page.evaluate(() => (document.activeElement === document.body ? 'body' : document.activeElement?.textContent?.replace(/\s+/g, ' ').trim() ?? ''))
+      /** Where an element sits against the fixed header: its top and bottom,
+       *  the header's bottom, and the viewport's height. */
+      const underNav = (page, selector) => page.evaluate((sel) => {
+        const el = sel === ':focus' ? document.activeElement : document.querySelector(sel)
+        const r = el?.getBoundingClientRect()
+        return { top: r?.top ?? NaN, bottom: r?.bottom ?? NaN, nav: document.querySelector('header')?.getBoundingClientRect().bottom ?? NaN, view: innerHeight }
+      }, selector)
+      // WCAG 2.3.1's flash-threshold area, in CSS pixels (341 × 256).
+      const FLASH_AREA = 341 * 256
+      const stageArea = async (page) => {
+        const b = await page.locator('[data-stage]').boundingBox()
+        return b ? b.width * b.height : Infinity
+      }
       // How long the stage `name` was shown, the nth time it was.
       const stageMs = (stages, name, nth = 0) => {
         const i = stages.map(([s], j) => (s === name ? j : -1)).filter((j) => j >= 0)[nth]
@@ -2791,7 +2849,19 @@ try {
             return { status: r.status, type: r.headers.get('content-type'), bytes: Buffer.from(await r.arrayBuffer()) }
           }
           const live = await png('spring-season')
+          if (SHOTS) writeFileSync(shotName('share-card-spring-season'), live.bytes)
           check('which renders', live.status === 200 && live.type === 'image/png' && live.bytes.length > 0, `${live.status} ${live.type}`)
+          // Its cover is not on any gateway this run can reach, which is how a
+          // first share goes while an upload propagates: the card must fall
+          // back to its text, not come out as a blank background.
+          const { default: sharp } = await import('sharp')
+          const { data, info } = await sharp(live.bytes).raw().toBuffer({ resolveWithObject: true })
+          let drawn = 0
+          for (let i = 0; i < data.length; i += info.channels) {
+            if ([0, 1, 2].some((k) => Math.abs(data[i + k] - data[k]) > 24)) drawn++
+          }
+          check('and with its cover out of reach, draws its text rather than a blank card',
+            drawn / (info.width * info.height) > 0.005, `${drawn} of ${info.width * info.height} pixels drawn`)
           // One waiting for review is not public: its card must be the bare one,
           // byte for byte the card of a machine that does not exist.
           strings.delete(`kismetart:rl:xp-publish:${CURATOR.toLowerCase()}`)
@@ -2810,6 +2880,8 @@ try {
           await page.getByText('insert coin').waitFor()
           const body = await text(page)
           check('the face says insert coin', body.includes('insert coin'))
+          const deskArea = await stageArea(page)
+          check('and on a desktop too', deskArea <= FLASH_AREA && deskArea > 0, `${deskArea} of ${FLASH_AREA}`)
           check('the pull selector offers ×1 ×5 ×10', ['×1', '×5', '×10'].every((n) => body.includes(n)))
           const play = page.getByRole('button', { name: 'play', exact: true })
           check('and play is enabled before any wallet is connected', await play.isEnabled())
@@ -3044,10 +3116,23 @@ try {
           check('the odds are summed up beside the price, with a link to the table',
             (await oddsLine.count()) === 1 && (await oddsLine.getByRole('link', { name: 'see odds' }).getAttribute('href')) === '#odds' &&
               (await page.locator('section#odds').getByText("what's inside · published odds").count()) === 1)
+          const phoneArea = await stageArea(page)
+          check('the window stays under the flash-threshold area on a phone, so no artist clip can flash over it (WCAG 2.3.1)',
+            phoneArea <= FLASH_AREA && phoneArea > 0, `${phoneArea} of ${FLASH_AREA}`)
+          // The table ends the page, so the page cannot scroll it to the top;
+          // room below it lets the jump go as far as it will, and only the
+          // header's offset stops it.
+          await page.evaluate(() => document.body.append(Object.assign(document.createElement('div'), { id: 'room', style: 'height:200vh' })))
+          await oddsLine.getByRole('link', { name: 'see odds' }).click()
+          await page.waitForFunction(() => location.hash === '#odds' && scrollY > 0)
+          const odds = await underNav(page, 'section#odds')
+          await page.evaluate(() => { document.getElementById('room')?.remove(); scrollTo(0, 0) })
+          check('and see odds lands the table just below the fixed header, not under it (WCAG 2.4.11)',
+            odds.top >= odds.nav && odds.top <= odds.nav + 16, JSON.stringify(odds))
           await watchStages(page)
           const paid = chain.walletTxs.length
           await page.getByRole('button', { name: 'play', exact: true }).click()
-          await page.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          await shown(page, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           check('a capsule is paid for in one signature from the player\'s wallet',
             chain.walletTxs.length === paid + 1 && String(chain.walletTxs.at(-1)?.to).toLowerCase() === CAPSULE_A)
           // The first link to it is the win; the odds table below links it too.
@@ -3064,17 +3149,37 @@ try {
             stages.map(([s]) => s).join() === 'idle,dispense,open,' && stages[1][2] === 'kf-stage-rock' && stages[2][2] === 'kf-stage-shake',
             JSON.stringify(stages))
           check('and the open plays out in full when nobody skips it', stageMs(stages, 'open') >= 1100, String(stageMs(stages, 'open')))
+          let said = await saidOf(page)
+          check('a screen reader is told each step: the wallet, the open, and what was collected (WCAG 4.1.3)',
+            said[0] === 'Confirm in your wallet' && said.includes('Opening your capsule') && /^You've collected Piece Eight by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(said.at(-1)),
+            JSON.stringify(said))
+          check('the opened capsule hands over to the artwork in one view transition', (await transitionsOf(page)) === '1/1', await transitionsOf(page))
 
           // A multi-pull opens once, for everything it won.
           await page.getByRole('button', { name: '×5' }).click()
-          await page.getByRole('button', { name: 'play again ×5' }).click()
-          await page.getByText("you've collected 5 artworks").waitFor({ timeout: 60_000 }).catch(() => {})
+          await page.getByRole('button', { name: 'play again ×5' }).focus()
+          const scrolledFrom = await page.evaluate(() => scrollY)
+          await page.keyboard.press('Enter')
+          await page.getByRole('button', { name: 'skip' }).waitFor({ timeout: 60_000 }).catch(() => {})
+          const focusInOpen = await focusOf(page)
+          await shown(page, "you've collected 5 artworks").waitFor({ timeout: 60_000 }).catch(() => {})
+          const scrolledTo = await page.evaluate(() => scrollY)
+          const result = await underNav(page, ':focus')
           stages = await stagesOf(page)
           check('a pull of five opens once, then shows all five',
             stages.map(([s]) => s).join() === 'idle,dispense,open,,dispense,open,' &&
-              (await page.getByText("you've collected 5 artworks").count()) === 1 &&
+              (await shown(page, "you've collected 5 artworks").count()) === 1 &&
               (await page.locator(`a[href="/artwork/${POOL}/8"]`).count()) === 5 + 1,
             JSON.stringify(stages.map(([s]) => s)))
+          const focusAfter = await focusOf(page)
+          check('played from the keyboard, focus moves to skip while it opens, then to what it held — never to the page (WCAG 2.4.3)',
+            focusInOpen === 'skip' && /^you've collected 5 artworks/i.test(focusAfter), `${focusInOpen} | ${focusAfter.slice(0, 60)}`)
+          check('and moving it scrolls nothing: the result is where the machine was, in view below the header (WCAG 2.4.11)',
+            scrolledTo === scrolledFrom && result.bottom > result.nav && result.top < result.view,
+            JSON.stringify({ scrolledFrom, scrolledTo, ...result }))
+          said = await saidOf(page)
+          check('and a pull of five is told its progress, then its count',
+            said.includes('Opening 1 of 5') && said.includes('Opening 5 of 5') && said.at(-1) === "You've collected 5 artworks", JSON.stringify(said.slice(-8)))
           await page.context().close()
 
           // A viewer who asked for less motion sees a still capsule, and no open.
@@ -3082,12 +3187,13 @@ try {
           await still.getByText('insert coin').waitFor()
           await watchStages(still)
           await still.getByRole('button', { name: 'play', exact: true }).click()
-          await still.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          await shown(still, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           stages = await stagesOf(still)
           check('under reduced motion the capsule stands still, and the win is shown without the open',
             stages.map(([s]) => s).join() === 'idle,dispense,' && stages[1][2] === 'none' &&
               (await still.getByText(/^you've collected Piece Eight by /).count()) === 1,
             JSON.stringify(stages))
+          check('and without a view transition', (await transitionsOf(still)) === '0/0', await transitionsOf(still))
           await still.context().close()
 
           // A capsule bought elsewhere, redeemed here, opens the same way.
@@ -3098,12 +3204,25 @@ try {
           await watchStages(redeemed)
           await redeemed.getByPlaceholder('paste its transaction hash (0x…)').fill(TX_ELSEWHERE)
           await redeemed.getByRole('button', { name: 'redeem' }).click()
-          await redeemed.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          await shown(redeemed, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           stages = await stagesOf(redeemed)
           check('a capsule bought elsewhere and redeemed here opens the same way',
             stages.map(([s]) => s).join() === 'idle,open,' && (await redeemed.getByText(/^you've collected Piece Eight by /).count()) === 1,
             JSON.stringify(stages.map(([s]) => s)))
           await redeemed.context().close()
+
+          if (SHOTS) {
+            const tour = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true })
+            await tour.getByText('insert coin').waitFor()
+            await tour.getByRole('button', { name: 'play', exact: true }).click()
+            await tour.locator('[data-stage="dispense"]').waitFor().catch(() => {})
+            await tour.screenshot({ path: shotName('stage-dispense-platform-capsule') })
+            await tour.locator('[data-stage="open"]').waitFor({ timeout: 60_000 }).catch(() => {})
+            await tour.waitForTimeout(550)
+            await tour.screenshot({ path: shotName('stage-open-platform-capsule') })
+            await shown(tour, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+            await tour.context().close()
+          }
 
           // ── its creator gives it frames of their own ──
           const studio = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
@@ -3155,7 +3274,7 @@ try {
           const asked = mediaRequests.length
           await watchStages(withFrames)
           await withFrames.getByRole('button', { name: 'play', exact: true }).click()
-          await withFrames.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          await shown(withFrames, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           stages = await stagesOf(withFrames)
           const [, dispensing, opening] = stages
           check('the capsule dispenses as the artist\'s clip, looping, and opens as their other one',
@@ -3176,12 +3295,27 @@ try {
           await calm.getByText('insert coin').waitFor()
           await watchStages(calm)
           await calm.getByRole('button', { name: 'play', exact: true }).click()
-          await calm.getByText("you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+          await shown(calm, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
           stages = await stagesOf(calm)
           check('under reduced motion the artist\'s dispense shows as its still, and nothing opens',
             stages.map(([s]) => s).join() === 'idle,dispense,' && stages[1][3]?.startsWith('div ') && decodeURIComponent(stages[1][3]).includes(idOf(frames?.dispense?.poster)),
             JSON.stringify(stages))
           await calm.context().close()
+
+          if (SHOTS) {
+            const tour = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true })
+            await tour.getByText('insert coin').waitFor()
+            await tour.waitForTimeout(1500)
+            await tour.getByRole('button', { name: 'play', exact: true }).click()
+            await tour.locator('[data-stage="dispense"]').waitFor().catch(() => {})
+            await tour.waitForTimeout(300)
+            await tour.screenshot({ path: shotName('stage-dispense-artist-clip') })
+            await tour.locator('[data-stage="open"]').waitFor({ timeout: 60_000 }).catch(() => {})
+            await tour.waitForTimeout(400)
+            await tour.screenshot({ path: shotName('stage-open-artist-clip') })
+            await shown(tour, "you've collected").waitFor({ timeout: 60_000 }).catch(() => {})
+            await tour.context().close()
+          }
 
           // Its creator takes the open back to the capsule's own; the dispense stays.
           const editing = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
@@ -3290,7 +3424,7 @@ try {
           check('with a line on what comes and goes', body.includes('one that sells out or closes leaves by itself, and 1 more joins when its sale opens'), body.match(/one that sells out.{0,80}/)?.[0] ?? '')
           await watchStages(page)
           await page.getByRole('button', { name: 'pull', exact: true }).click()
-          await page.getByText('you revealed').waitFor()
+          await shown(page, 'you revealed').waitFor()
           const revealed = await page.locator('a[href^="/artwork/"]').first().getAttribute('href')
           let stages = await stagesOf(page)
           check('a pull opens the capsule, then shows what it held',
@@ -3298,10 +3432,29 @@ try {
             JSON.stringify(stages))
           await page.getByRole('button', { name: 'pull again' }).click()
           await page.getByRole('button', { name: 'skip' }).click({ timeout: 5000 }).catch(() => {})
-          await page.getByText('you revealed').waitFor()
+          await shown(page, 'you revealed').waitFor()
           stages = await stagesOf(page)
           check('and the open can be skipped', stages.map(([s]) => s).join() === 'idle,open,,open,' && stageMs(stages, 'open', 1) < 600,
             JSON.stringify(stages))
+          await page.getByRole('button', { name: 'pull again' }).focus()
+          const scrolledFrom = await page.evaluate(() => scrollY)
+          await page.keyboard.press('Enter')
+          await page.getByRole('button', { name: 'skip' }).waitFor().catch(() => {})
+          const focusInOpen = await focusOf(page)
+          await shown(page, 'you revealed').waitFor()
+          const focusAfter = await focusOf(page)
+          const scrolledTo = await page.evaluate(() => scrollY)
+          const piece = await underNav(page, ':focus')
+          check('pulled from the keyboard, focus moves to skip while it opens, then to the piece — never to the page (WCAG 2.4.3)',
+            focusInOpen === 'skip' && /^you revealed/i.test(focusAfter), `${focusInOpen} | ${focusAfter.slice(0, 60)}`)
+          check('and moving it scrolls nothing: the piece is where the machine was, in view below the header (WCAG 2.4.11)',
+            scrolledTo === scrolledFrom && piece.bottom > piece.nav && piece.top < piece.view,
+            JSON.stringify({ scrolledFrom, scrolledTo, ...piece }))
+          const revealSaid = await saidOf(page)
+          check('a screen reader is told each open and each piece revealed (WCAG 4.1.3)',
+            revealSaid.filter((t) => t === 'Opening').length === 3 && /^You revealed .+ by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(revealSaid.at(-1)),
+            JSON.stringify(revealSaid))
+          check('and each open hands over to its piece in a view transition', (await transitionsOf(page)) === '3/3', await transitionsOf(page))
           check('a pull reveals one of the pieces on sale', [1, 2, 6].some((id) => revealed === `/artwork/${REVEAL}/${id}`), revealed)
           check('and offers to collect it or pull again',
             (await page.getByRole('button', { name: /^collect · / }).count()) === 1 && (await page.getByRole('button', { name: 'pull again' }).count()) === 1)
@@ -3310,7 +3463,7 @@ try {
           const seen = new Set([revealed])
           for (let i = 0; i < 12; i++) {
             await page.getByRole('button', { name: 'pull again' }).click()
-            await page.getByText('you revealed').waitFor()
+            await shown(page, 'you revealed').waitFor()
             seen.add(await page.locator('a[href^="/artwork/"]').first().getAttribute('href'))
           }
           check('pulls land on different pieces', seen.size >= 2, [...seen].join(' '))
@@ -3320,9 +3473,10 @@ try {
           await still.getByText('free to pull').waitFor()
           await watchStages(still)
           await still.getByRole('button', { name: 'pull', exact: true }).click()
-          await still.getByText('you revealed').waitFor()
+          await shown(still, 'you revealed').waitFor()
           stages = await stagesOf(still)
           check('under reduced motion a pull shows its piece without the open', stages.map(([s]) => s).join() === 'idle,', JSON.stringify(stages))
+          check('and without a view transition', (await transitionsOf(still)) === '0/0', await transitionsOf(still))
           await still.context().close()
 
           // Its curator gives the open a still of their own.
@@ -3337,7 +3491,7 @@ try {
           const openFrame = (await call('/api/experience/machines/new-voices')).json?.machine?.frames?.open
           await watchStages(curated)
           await curated.getByRole('button', { name: 'pull', exact: true }).click()
-          await curated.getByText('you revealed').waitFor()
+          await shown(curated, 'you revealed').waitFor()
           stages = await stagesOf(curated)
           check('a pull then opens on the curator\'s still, held as long as the capsule\'s own open',
             openFrame?.kind === 'image' && stages.map(([s]) => s).join() === 'idle,open,' && stages[1][3]?.startsWith('div ') &&
@@ -3352,13 +3506,14 @@ try {
           const solo = await open('/play/solo-piece', { wallet: PLAYER, onChain: true })
           await solo.getByText('free to pull').waitFor()
           check('a one-piece lineup says so', (await text(solo)).includes("what's inside · one piece, always revealed"))
+          await watchStages(solo)
           await solo.getByRole('button', { name: 'pull', exact: true }).click()
           const collectBtn = solo.getByRole('button', { name: 'collect · 0.002 ETH' })
           await collectBtn.waitFor()
           const minted = chain.mints.length
           const before = chain.tokens.get(key(REVEAL, 1)).totalMinted
           await collectBtn.click()
-          await solo.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
+          await shown(solo, "you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
           const m = chain.mints.at(-1)
           check('collecting sends one mint of the revealed piece from the player\'s wallet',
             chain.mints.length === minted + 1 && m?.collection === REVEAL && m.tokenId === 1n && m.quantity === 1n && m.mintTo === PLAYER.toLowerCase(),
@@ -3370,6 +3525,9 @@ try {
           const said = (await solo.locator(`a[href="/artwork/${REVEAL}/1"]`).first().innerText()).replace(/\s+/g, ' ')
           check('the page says the player has collected it, and whose it is', /^you've collected Reveal One by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(said), said)
           check('with nothing left to pay', (await solo.getByRole('button', { name: /^collect/ }).count()) === 0)
+          const soloSaid = await saidOf(solo)
+          check('and a screen reader is told the collect, from the wallet to what is now theirs',
+            soloSaid.includes('Confirm in your wallet') && /^You've collected Reveal One by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(soloSaid.at(-1)), JSON.stringify(soloSaid))
           await solo.context().close()
 
           // A curator's machine: the curator earns the referral on the collect —
@@ -3381,7 +3539,7 @@ try {
             await pg.getByText('free to pull').waitFor()
             await pg.getByRole('button', { name: 'pull', exact: true }).click()
             await pg.getByRole('button', { name: 'collect · 0.002 ETH' }).click()
-            await pg.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
+            await shown(pg, "you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
             await pg.context().close()
             return chain.mints.at(-1)
           }
@@ -3407,7 +3565,7 @@ try {
             await btn.click()
             await pg.waitForTimeout(3000)
             check('a piece that sells out between the reveal and the collect is not minted, and not shown as collected',
-              chain.mints.length === minted && (await pg.getByText("you've collected").count()) === 0)
+              chain.mints.length === minted && (await shown(pg, "you've collected").count()) === 0)
             chain.tokens.set(key(REVEAL, 1), t)
             await pg.context().close()
           }
@@ -3425,7 +3583,7 @@ try {
             const sent = chain.walletTxs.length
             const minted = chain.mints.length
             await btn.click()
-            await pg.getByText("you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
+            await shown(pg, "you've collected").waitFor({ timeout: 20_000 }).catch(() => {})
             const txs = chain.walletTxs.slice(sent)
             const m = chain.mints.at(-1)
             check('a USDC piece asks to approve exactly its price to Zora\'s ERC20Minter, then mints',
@@ -3436,7 +3594,7 @@ try {
               chain.mints.length === minted + 1 && m?.collection === REVEAL && m.tokenId === 6n && m.mintTo === PLAYER.toLowerCase() && m.value === 1_000_000n && m.currency === 'usdc',
               JSON.stringify(m, (_, v) => (typeof v === 'bigint' ? v.toString() : v)))
             check('with the curator as the mint referral', m?.rewardsRecipients?.[0] === CURATOR.toLowerCase())
-            check('and the page says it is collected', (await pg.getByText("you've collected").count()) === 1)
+            check('and the page says it is collected', (await shown(pg, "you've collected").count()) === 1)
             await pg.context().close()
           }
         }
@@ -3760,6 +3918,8 @@ try {
           check('their profile counts their own machines and those featuring them', c2Machines === 6, String(c2Machines))
           const visitor = await open(`/profile/${CREATOR2}`)
           await visitor.getByText(`Machines (${c2Machines})`).waitFor()
+          // Settled, so an editor that loads late would have loaded.
+          await visitor.waitForLoadState('networkidle').catch(() => {})
           const vBody = await text(visitor)
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
           check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0 &&
@@ -3769,6 +3929,8 @@ try {
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()
           check('the creator sees each machine in plain words', (await text(page)).includes('on sale'))
+          // Its editor loads for its owner only, after the page.
+          await page.getByRole('button', { name: 'change cover' }).first().waitFor({ timeout: 15_000 }).catch(() => {})
           check('and can change each one\'s cover', (await page.getByRole('button', { name: 'change cover' }).count()) >= 1)
           check('and how to build another', (await page.getByRole('link', { name: 'build another gachapon →' }).getAttribute('href').catch(() => null)) === '/play/create')
           const row = page.locator('div.border', { hasText: 'Browser Machine' }).last()

@@ -9,7 +9,7 @@ import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from 
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
-import { CollectedLine, MachineStage, motionAllowed, type Stage } from './MachineStage'
+import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
 import type { MachineFrames } from '@/lib/experience/types'
 import {
@@ -207,7 +207,18 @@ export function ExperienceMachine({ id }: { id: string }) {
   )
 
   useEffect(() => { load() }, [load])
-  const opened = useCallback(() => setToOpen(false), [])
+  const endOpen = useCallback(() => revealAfterOpen(() => setToOpen(false)), [])
+  // The box shows a face (a win, a capsule still on its way) or the machine's
+  // window at a stage, with the controls under it until it opens.
+  const busy = phase === 'paying' || phase === 'opening'
+  const face = phase === 'pending' ? 'pending' : phase === 'won' && won.length > 0 && !toOpen ? 'won' : null
+  const stage: Stage | null = face ? null : phase === 'won' && toOpen ? 'open' : busy ? 'dispense' : 'idle'
+  // A face replaces the control a keyboard user pressed: focus moves to it
+  // rather than falling to the page (WCAG 2.4.3).
+  const faceRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (face && document.activeElement === document.body) faceRef.current?.focus({ preventScroll: true })
+  }, [face])
   useEffect(() => { setLocal(listPendingCapsules(id)) }, [id])
   useEffect(() => {
     if (connectedAddress) setAccount(connectedAddress.toLowerCase())
@@ -478,12 +489,23 @@ export function ExperienceMachine({ id }: { id: string }) {
           }
         })()
       : null
-  const busy = phase === 'paying' || phase === 'opening'
   const cover = data.machine.cover ?? data.machine.capsuleArt?.image ?? null
-  // The box shows a face (a win, a capsule still on its way) or the machine's
-  // window at a stage, with the controls under it until it opens.
-  const face = phase === 'pending' ? 'pending' : phase === 'won' && won.length > 0 && !toOpen ? 'won' : null
-  const stage: Stage | null = face ? null : phase === 'won' && toOpen ? 'open' : busy ? 'dispense' : 'idle'
+  // What the box says to a screen reader as it changes (WCAG 4.1.3): the
+  // wait, the open, and what came out — never taking focus to say it.
+  const announcement =
+    face === 'won'
+      ? won.length === 1
+        ? `You've collected ${artworkTitle(won[0].name, won[0].tokenId)} by ${shortAddress(won[0].artist)}`
+        : `You've collected ${won.length} artworks`
+      : face === 'pending'
+        ? 'Your artwork is on its way'
+        : stage === 'open'
+          ? 'Opening your capsule'
+          : phase === 'paying'
+            ? 'Confirm in your wallet'
+            : phase === 'opening'
+              ? progress && progress.total > 1 ? `Opening ${progress.done + 1} of ${progress.total}` : 'Opening your capsule'
+              : ''
   // The odds at the button as well as in the table: on a phone the table is a
   // scroll away, and a randomized purchase discloses its odds before it is made.
   const drawn = data.odds.filter((o) => o.probability > 0)
@@ -545,9 +567,10 @@ export function ExperienceMachine({ id }: { id: string }) {
       {/* The machine. The reveal replaces this face in place, so the capsule
           appears to open rather than the page appearing to navigate. */}
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
-        <MachineStage stage={stage} cover={cover} frames={data.machine.frames} onOpened={opened} />
+        <p role="status" className="sr-only">{announcement}</p>
+        <MachineStage stage={stage} cover={cover} frames={data.machine.frames} onOpened={endOpen} />
         {face === 'won' ? (
-          <div>
+          <div ref={faceRef} tabIndex={-1} className="outline-none">
             {won.length > 1 && (
               <p className="mb-5 text-xs font-mono uppercase tracking-widest accent-grad">
                 you&apos;ve collected {won.length} artworks
@@ -560,7 +583,7 @@ export function ExperienceMachine({ id }: { id: string }) {
                   href={`/artwork/${p.collection}/${p.tokenId}`}
                   className="group block"
                 >
-                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[15rem] mx-auto' : 'aspect-square'}`}>
+                  <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[15rem] mx-auto [view-transition-name:machine-window]' : 'aspect-square'}`}>
                     {p.image ? (
                       <MomentImage src={p.image} alt="" fill className="object-cover" sizes="240px" />
                     ) : (
@@ -605,7 +628,7 @@ export function ExperienceMachine({ id }: { id: string }) {
             />
           </div>
         ) : face === 'pending' ? (
-          <div>
+          <div ref={faceRef} tabIndex={-1} className="outline-none">
             <p className="text-xs font-mono uppercase tracking-widest text-ink">your artwork is on its way</p>
             <p className="text-[11px] font-mono text-muted mt-2 max-w-sm mx-auto">{pendingReason}</p>
             {lastTx && <p className="text-[10px] font-mono text-subtle mt-3 break-all">{lastTx}</p>}

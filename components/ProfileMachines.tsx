@@ -1,11 +1,15 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { MachineAction } from './MachineAction'
-import { CoverEditor } from './CoverField'
+
+// Its owner's alone, with the upload stack behind it, so a visitor's profile
+// never loads it (as MachineArtEditors on a machine's page).
+const CoverEditor = dynamic(() => import('./CoverField').then((m) => m.CoverEditor), { ssr: false })
 
 /**
  * A creator's machines, capsule and reveal, on their profile.

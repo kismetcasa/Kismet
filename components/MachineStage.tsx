@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { flushSync } from 'react-dom'
 import { MomentImage } from './MomentImage'
 import { shortAddress } from '@/lib/inprocess'
 import { proxyUrl, videoGatewayUrls } from '@/lib/media/gateway'
@@ -32,7 +33,7 @@ export type Stage = 'idle' | 'dispense' | 'open'
 
 /** Long enough to read as a capsule opening; the skip covers anyone for whom
  *  it is still a wait. An artist's still holds the open as long. */
-export const OPEN_MS = 1200
+const OPEN_MS = 1200
 
 /** The longest an artist's clip may run, and a little over: the bound on an
  *  open whose clip never reports its end. */
@@ -43,6 +44,17 @@ const CLIP_BOUND_MS = FRAME_LIMITS.seconds * 1000 + 500
  *  neither preference gets no animation. */
 export function motionAllowed(): boolean {
   return window.matchMedia('(prefers-reduced-motion: no-preference)').matches
+}
+
+/**
+ * End the open: the window becomes what it held. Through a view transition
+ * where the browser has one (same-document transitions are Baseline since
+ * October 2025) and motion is welcome — the opened capsule's square morphs
+ * into the artwork's, both named `machine-window` — and at once otherwise.
+ */
+export function revealAfterOpen(update: () => void): void {
+  if (!document.startViewTransition || !motionAllowed()) return update()
+  document.startViewTransition(() => flushSync(update))
 }
 
 export function MachineStage({
@@ -64,6 +76,12 @@ export function MachineStage({
   // while the page is open) gets its own chance.
   const [failed, setFailed] = useState<string | null>(null)
   const clips = useAllowsVideo()
+  // The open replaces the button that started it; a keyboard user's focus
+  // moves to skip rather than falling to the page (WCAG 2.4.3).
+  const skipRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (stage === 'open' && document.activeElement === document.body) skipRef.current?.focus({ preventScroll: true })
+  }, [stage])
   const own = stage === 'dispense' ? frames?.dispense : stage === 'open' ? frames?.open : undefined
   useEffect(() => {
     if (stage !== 'open' || !onOpened) return
@@ -75,9 +93,13 @@ export function MachineStage({
   const shown = cover && cover !== failed ? cover : null
   return (
     <div className="mb-5" hidden={stage === null}>
+      {/* At most 15rem square: 57,600 CSS px, under the 87,296 (341 × 256)
+          that WCAG 2.3.1 sets as the flash threshold's area, so no artist's
+          clip can flash over a seizure-risk area however it was drawn.
+          Enlarging the window means screening clips for flashes first. */}
       <div
         data-stage={stage ?? undefined}
-        className="relative aspect-square w-full max-w-[15rem] mx-auto overflow-hidden border border-line bg-raised"
+        className="relative aspect-square w-full max-w-[15rem] mx-auto overflow-hidden border border-line bg-raised [view-transition-name:machine-window]"
         style={{ '--stage-open': `${OPEN_MS}ms` } as CSSProperties}
       >
         {shown && (
@@ -108,6 +130,7 @@ export function MachineStage({
       </div>
       {stage === 'open' && (
         <button
+          ref={skipRef}
           onClick={onOpened}
           className="mt-3 px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-muted hover:text-ink"
         >

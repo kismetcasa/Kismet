@@ -38,6 +38,10 @@
 html {
   background-color: #0d0d0d;
   color: #efefef;
+  /* The nav is fixed over the page (h-14 + --safe-top, as layout pads main,
+   * and its 1px border): anchors, tabbing and scrollIntoView stop a little
+   * below it, not under it (WCAG 2.4.11; technique C43). */
+  scroll-padding-top: calc(3.5rem + var(--safe-top) + 0.75rem);
 }
 
 body {

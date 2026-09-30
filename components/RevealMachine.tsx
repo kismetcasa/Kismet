@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import type { Address } from 'viem'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
@@ -10,7 +10,7 @@ import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
-import { CollectedLine, MachineStage, motionAllowed } from './MachineStage'
+import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
 import type { MachineFrames } from '@/lib/experience/types'
 
@@ -70,7 +70,14 @@ export function RevealMachine({ id }: { id: string }) {
     setPick(data.lineup[pickIndex(data.lineup.length)])
     setOpening(motionAllowed())
   }, [data])
-  const opened = useCallback(() => setOpening(false), [])
+  const endOpen = useCallback(() => revealAfterOpen(() => setOpening(false)), [])
+  // The piece replaces the button that pulled it: focus moves to it rather
+  // than falling to the page (WCAG 2.4.3).
+  const pickRef = useRef<HTMLDivElement>(null)
+  const showing = !!pick && !opening
+  useEffect(() => {
+    if (showing && document.activeElement === document.body) pickRef.current?.focus({ preventScroll: true })
+  }, [showing, pick])
 
   const collecting = status !== 'idle' && status !== 'done' && status !== 'error'
   const collectPick = useCallback(async () => {
@@ -97,6 +104,16 @@ export function RevealMachine({ id }: { id: string }) {
 
   const live = data.machine.state === 'live'
   const n = data.lineup.length
+  // What the box says to a screen reader as it changes (WCAG 4.1.3).
+  const announcement = !pick
+    ? ''
+    : opening
+      ? 'Opening'
+      : collected === pick.key
+        ? `You've collected ${artworkTitle(pick.name, pick.tokenId)} by ${shortAddress(pick.artist)}`
+        : collecting
+          ? 'Confirm in your wallet'
+          : `You revealed ${artworkTitle(pick.name, pick.tokenId)} by ${shortAddress(pick.artist)}`
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -124,17 +141,18 @@ export function RevealMachine({ id }: { id: string }) {
       </header>
 
       <div className="border border-line bg-surface p-6 sm:p-10 text-center">
+        <p role="status" className="sr-only">{announcement}</p>
         <MachineStage
           stage={opening ? 'open' : pick ? null : 'idle'}
           cover={data.machine.cover}
           frames={data.machine.frames}
-          onOpened={opened}
+          onOpened={endOpen}
         />
         {pick && !opening ? (
-          <div>
+          <div ref={pickRef} tabIndex={-1} className="outline-none">
             <p className="text-xs font-mono uppercase tracking-widest accent-grad">you revealed</p>
             <Link href={`/artwork/${pick.collection}/${pick.tokenId}`} className="group block mt-5">
-              <div className="relative overflow-hidden border border-line bg-raised aspect-square max-w-[15rem] mx-auto">
+              <div className="relative overflow-hidden border border-line bg-raised aspect-square max-w-[15rem] mx-auto [view-transition-name:machine-window]">
                 {pick.image ? (
                   <MomentImage src={pick.image} alt="" fill className="object-cover" sizes="240px" />
                 ) : (

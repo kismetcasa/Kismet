@@ -17,7 +17,7 @@ import { FRAME_LIMITS, type MachineFrames, type StageFrame } from '@/lib/experie
  * machine is published or saved — once per picked file, as a cover is.
  */
 
-export type FrameStage = keyof MachineFrames
+type FrameStage = keyof MachineFrames
 
 /** Each stage, as the studio and the editor describe it. */
 const STAGE_COPY: Record<FrameStage, string> = {
