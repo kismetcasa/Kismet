@@ -83,6 +83,27 @@ export async function recordStatsRun(
   }
 }
 
+/**
+ * When `phase` last did work: the latest `ok` or `error` stamp, ignoring
+ * `skipped` (a run that found another run's lock and did nothing — a fallback
+ * keyed on it would defer a full interval behind a stale lock). Null when
+ * nothing was ever recorded or the record is not JSON; THROWS on a Redis
+ * failure, so a caller can tell "unreadable" from "never ran" — the same
+ * distinction recordStatsRun draws on its writes.
+ */
+export async function readStatsLastAttempt(phase: StatsPhase): Promise<number | null> {
+  const raw = await redis.get<StatsPhaseHealth | string | null>(healthKey(phase))
+  if (!raw) return null
+  let h: StatsPhaseHealth
+  try {
+    h = typeof raw === 'string' ? (JSON.parse(raw) as StatsPhaseHealth) : raw
+  } catch {
+    return null
+  }
+  const t = Math.max(h?.lastOkAt ?? 0, h?.lastErrorAt ?? 0)
+  return t > 0 ? t : null
+}
+
 /** Persisted health for every phase (null when a phase has never recorded). */
 export async function getStatsHealth(): Promise<Record<StatsPhase, StatsPhaseHealth | null>> {
   const read = async (phase: StatsPhase): Promise<StatsPhaseHealth | null> => {

@@ -410,11 +410,11 @@ async function main() {
   // Likewise the hidden-moments set: seeded before boot so the sweep pool's
   // serve-time hide filter (section 4c) is observable.
   upstash.sets.set('kismetart:hidden-moments', new Set([`${COLLECTION.toLowerCase()}:2`]))
-  // A fresh stats heartbeat, so the in-process stats fallback (lib/backgroundTasks)
-  // stands down for this run instead of walking inprocess from the sandbox.
-  upstash.store.set('kismetart:stats:health:rebuild', { v: JSON.stringify({ lastRunAt: Date.now(), lastOkAt: Date.now() }) })
   const [redisUrl, rpcUrl] = await Promise.all([upstash.start(), startRpcServer()])
   const { base, child } = await startNext({
+    // The in-process stats fallback (lib/backgroundTasks) would walk inprocess
+    // from the sandbox two minutes in; the harness runs the routes, not the cron.
+    STATS_PIPELINE_INPROCESS: 'off',
     UPSTASH_REDIS_REST_URL: redisUrl,
     UPSTASH_REDIS_REST_TOKEN: 'mock-token',
     BASE_RPC_URL: rpcUrl,

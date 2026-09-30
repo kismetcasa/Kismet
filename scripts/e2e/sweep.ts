@@ -19,7 +19,8 @@
  * funnel beacons landing in Redis exactly once each, the ownership exclusion
  * on the next round, the "needs more ETH" state, the hidden button once the
  * flag is off, the direct-mint path for a single item, and a sweep closed
- * mid-flight that must never be signed twice.
+ * mid-flight — during the wallet prompt or while confirming — that must never
+ * be signed twice.
  *
  * Deliberately NOT wired into `npm run check`: it needs a built app, a
  * running server and a browser (see scripts/e2e/README.md). Run:
@@ -146,14 +147,14 @@ async function main() {
 
   // Seed: flag on, a 12-row pool, an admin session for the flag flips below.
   upstash.store.set('kismetart:sweep-enabled', { v: '1' })
-  // A fresh stats heartbeat, so the in-process stats fallback (lib/backgroundTasks)
-  // stands down for this run instead of walking inprocess from the sandbox.
-  upstash.store.set('kismetart:stats:health:rebuild', { v: JSON.stringify({ lastRunAt: Date.now(), lastOkAt: Date.now() }) })
   const pool = { updatedAt: Date.now(), eligible: 12, items: Array.from({ length: 12 }, (_, i) => poolRow(i + 1)) }
   upstash.store.set('kismetart:sweep-index', { v: JSON.stringify(pool) })
   upstash.store.set('kismetart:auth-session:e2e-admin', { v: ADMIN.toLowerCase() })
 
   const { base, child } = await startNext({
+    // The in-process stats fallback (lib/backgroundTasks) would walk inprocess
+    // from the sandbox two minutes in; this script drives the sheet, not the cron.
+    STATS_PIPELINE_INPROCESS: 'off',
     UPSTASH_REDIS_REST_URL: redisUrl,
     UPSTASH_REDIS_REST_TOKEN: 'mock-token',
     BASE_RPC_URL: rpc.url,
@@ -217,6 +218,20 @@ async function main() {
     // A receipt the page is not allowed to see yet — a sweep still sitting in
     // the mempool — for the mid-flight-close round.
     let holdReceipts = false
+    // The wallet's send can be held so the prompt "stays open" — the
+    // closed-during-the-prompt round.
+    let sendGate: { promise: Promise<void>; release: () => void } | null = null
+    const holdNextSend = () => {
+      let release: () => void = () => {}
+      const promise = new Promise<void>((r) => {
+        release = r
+      })
+      sendGate = { promise, release }
+    }
+    const releaseSend = () => {
+      sendGate?.release()
+      sendGate = null
+    }
     const rpc = (method: string, params: unknown[]): unknown => {
       if (holdReceipts && method === 'eth_getTransactionReceipt') return null
       return handleRpc(chain, method, params)
@@ -271,6 +286,7 @@ async function main() {
       if (url.startsWith(base)) {
         if (url.startsWith(`${base}/__e2e_wallet`)) {
           const { method, params } = JSON.parse(req.postData() ?? '{}') as { method: string; params: unknown[] }
+          if (method === 'eth_sendTransaction' && sendGate) await sendGate.promise
           try {
             return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: walletRpc(method, params) }) })
           } catch (e) {
@@ -482,6 +498,30 @@ async function main() {
     ok(await until(async () => (await label()) === 're-check', 45_000), 'once mined, retry re-verifies: the row is owned now, nothing to sweep', await label())
     const heldHash = [...chain.receipts.keys()][3]
     ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${heldHash.toLowerCase()}:`)).length === 1, 45_000), 'the in-flight sweep still records once its receipt lands')
+
+    // ── 10. a sheet closed while the wallet is still asking is still one sweep ──
+    console.log('closed during the prompt')
+    upstash.store.set('kismetart:sweep-index', { v: JSON.stringify({ updatedAt: Date.now(), eligible: 1, items: [poolRow(12)] }) })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await sweepBtn.waitFor({ state: 'visible', timeout: 60_000 })
+    await sweepBtn.click()
+    await dialog.waitFor({ state: 'visible', timeout: 15_000 })
+    ok(await until(async () => (await label()) === `sweep 1 for ${formatPrice(outlay(12).toString(), 'eth')}`, 30_000), 'a fresh row: "sweep 1 for …"', await label())
+    holdNextSend() // the wallet prompt stays open until released
+    await primary.click()
+    ok(await until(async () => (await label()) === 'confirm in wallet…', 20_000), 'the sheet is waiting on the wallet', await label())
+    await page.keyboard.press('Escape')
+    ok(await until(async () => (await dialog.count()) === 0, 5_000), 'Escape closes the sheet while the prompt is open')
+    await sweepBtn.click()
+    await dialog.waitFor({ state: 'visible', timeout: 15_000 })
+    ok(await until(async () => (await label()) === 'retry', 20_000), 'reopening finds the prompt still open: "retry", no rows verified', await label())
+    ok(await until(async () => (await page.getByText(/waiting in the wallet/).count()) > 0, 5_000), 'the toast says the last sweep is still waiting in the wallet')
+    ok((await dialog.getByRole('button', { name: /^Remove / }).count()) === 0 && wallet.sent.length === 4, 'no basket is offered and nothing has been sent')
+    releaseSend() // the user approves in the wallet
+    ok(await until(() => wallet.sent.length === 5, 20_000), 'the held transaction lands once approved')
+    ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${([...chain.receipts.keys()][4] ?? '').toLowerCase()}:`)).length === 1, 45_000), 'the sweep signed from the closed sheet still records')
+    await primary.click() // retry → the record was released when its receipt was seen → re-verify
+    ok(await until(async () => (await label()) === 're-check', 45_000), 'retry re-verifies: the row is owned now, nothing to sweep', await label())
 
     ok(pageErrors.length === 0, 'no uncaught page errors during the run', pageErrors)
     console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — sweep browser e2e: ${passed} passed, ${failed} failed`)

@@ -1,5 +1,6 @@
 import { encodeFunctionData, parseAbi, parseEventLogs, type Address, type Hex, type Log, type RpcLog } from 'viem'
 import { DEFAULT_COLLECT_COMMENT } from './inprocess'
+import { COLLECT_RATE_LIMIT_PER_MINUTE } from './collectRecord'
 import { buildEthMintCall, buildMulticall3Batch } from './zoraMint'
 
 // Sweep basket → transaction, the pure half (SWEEP_IMPLEMENTATION.md §4.2–4.4),
@@ -146,9 +147,6 @@ export function countSweepMints(logs: readonly (Log | RpcLog)[], items: readonly
   return seen.size
 }
 
-/** /api/collect's per-IP budget (app/api/collect/route.ts: 60 per minute) —
- *  the ceiling on the record requests one sweep may make, retries included. */
-export const COLLECT_RATE_LIMIT_PER_MINUTE = 60
 const RECORD_MAX_ATTEMPTS = 5
 const RECORD_WINDOW_MS = 6_000
 
@@ -156,9 +154,12 @@ const RECORD_WINDOW_MS = 6_000
  * The wait before each /api/collect attempt for one row of a basket of `size`
  * rows. The server 403s until its own RPC sees the receipt, so the attempts
  * are spread over ≈ 6 s (0 / 0.6 / 1.8 / 3.6 / 6 s at five). The rate limiter
- * counts rejected requests too, so a basket may never make more requests in
- * all (size × attempts) than the budget: a full 20-basket gets three attempts
- * over the same 6 s, anything up to twelve rows the five maximum.
+ * counts rejected requests too, so ONE sweep may never make more requests in
+ * all (size × attempts) than the budget (COLLECT_RATE_LIMIT_PER_MINUTE, the
+ * route's own constant): a full 20-basket gets three attempts over the same
+ * 6 s, anything up to twelve rows the five maximum. The window is per IP and
+ * shared with every collect, so a second sweep in the same minute under lag
+ * can still be starved; a batched record endpoint is the fix at depth.
  */
 export function recordAttemptSchedule(size: number): number[] {
   const attempts = Math.max(1, Math.min(RECORD_MAX_ATTEMPTS, Math.floor(COLLECT_RATE_LIMIT_PER_MINUTE / Math.max(1, size))))

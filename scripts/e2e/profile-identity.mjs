@@ -138,6 +138,7 @@ await new Promise((r) => rpcServer.listen(RPC_PORT, '127.0.0.1', r))
 const app = spawn('node_modules/.bin/next', ['start', '-p', String(APP_PORT)], {
   env: {
     ...process.env,
+    STATS_PIPELINE_INPROCESS: 'off', // no in-process stats pipeline against the stub (lib/backgroundTasks)
     UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${REDIS_PORT}`,
     UPSTASH_REDIS_REST_TOKEN: 'e2e-token',
     MAINNET_RPC_URL: `http://127.0.0.1:${RPC_PORT}`,

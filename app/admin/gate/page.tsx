@@ -33,6 +33,7 @@ export default function GateAdminPage() {
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [sweep, setSweep] = useState<SweepStatus | null>(null)
+  const [sweepError, setSweepError] = useState<string | null>(null)
   const [sweepSaving, setSweepSaving] = useState(false)
 
   useEffect(() => {
@@ -57,14 +58,23 @@ export default function GateAdminPage() {
       setPaused(!!cfg.paused)
       setLoaded(true)
       // The sweep flag has its own route (its own audit line, instant effect);
-      // read through the same session so the switch below shows the truth.
-      const sw = await withSession(async () => {
-        const res = await fetch('/api/admin/sweep')
-        if (!res.ok) return null
-        return (await res.json()) as SweepStatus
-      })
-      if (cancelled || !sw) return
-      setSweep(sw)
+      // read through the same session so the switch below shows the truth. A
+      // non-2xx (the route answers 503 when the flag is unreadable) is shown,
+      // never collapsed into "absent".
+      try {
+        const sw = await withSession(async () => {
+          const res = await fetch('/api/admin/sweep')
+          if (!res.ok) {
+            const json = (await res.json().catch(() => ({}))) as { error?: string }
+            throw new Error(json.error ?? `HTTP ${res.status}`)
+          }
+          return (await res.json()) as SweepStatus
+        })
+        if (cancelled || !sw) return
+        setSweep(sw)
+      } catch (err) {
+        if (!cancelled) setSweepError(err instanceof Error ? err.message : String(err))
+      }
     })()
     return () => { cancelled = true }
   }, [isAdmin, withSession])
@@ -223,31 +233,38 @@ export default function GateAdminPage() {
         </>
       )}
 
-      {sweep && (
+      {(sweep || sweepError) && (
         <div className="flex flex-col gap-3 pt-6 border-t border-line">
           <div>
             <h2 className="text-ink font-mono text-sm mb-1">Sweep</h2>
             <p className="text-dim font-mono text-xs leading-relaxed">
               The sweep button on /discover. Its candidate pool is built by the
-              stats pipeline within minutes of a deploy and hourly after; the
-              button renders only while the pool is non-empty.
+              stats pipeline — within minutes of a deploy when no run is
+              recorded for the hour, hourly otherwise — and the button renders
+              only while the pool is non-empty.
             </p>
           </div>
-          <div className="flex items-center justify-between border border-line px-3 py-3">
-            <div className="flex flex-col">
-              <span className="text-xs font-mono text-dim uppercase tracking-wider">sweep enabled</span>
-              <span className="text-[10px] font-mono text-muted mt-0.5">
-                {sweep.index
-                  ? `pool ${sweep.index.pool} of ${sweep.index.eligible} eligible · built ${Math.max(0, Math.round((Date.now() - sweep.index.updatedAt) / 60_000))} min ago${sweep.index.stale ? ' · stale, served empty' : ''}`
-                  : 'no pool yet — wait a few minutes after a deploy, then reload'}
-              </span>
-            </div>
-            <button type="button" onClick={() => void toggleSweep()} disabled={sweepSaving} aria-pressed={sweep.enabled} className="flex-shrink-0 disabled:opacity-50">
-              <div className={`relative w-8 h-4 rounded-full transition-colors ${sweep.enabled ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
-                <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${sweep.enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+          {sweep ? (
+            <div className="flex items-center justify-between border border-line px-3 py-3">
+              <div className="flex flex-col">
+                <span className="text-xs font-mono text-dim uppercase tracking-wider">sweep enabled</span>
+                <span className="text-[10px] font-mono text-muted mt-0.5">
+                  {sweep.index
+                    ? `pool ${sweep.index.pool} of ${sweep.index.eligible} eligible · built ${Math.max(0, Math.round((Date.now() - sweep.index.updatedAt) / 60_000))} min ago${sweep.index.stale ? ' · stale, served empty' : ''}`
+                    : 'no readable pool — it builds on the next pipeline run; /api/admin/stats-health shows the sweep-index phase'}
+                </span>
               </div>
-            </button>
-          </div>
+              <button type="button" onClick={() => void toggleSweep()} disabled={sweepSaving} aria-pressed={sweep.enabled} className="flex-shrink-0 disabled:opacity-50">
+                <div className={`relative w-8 h-4 rounded-full transition-colors ${sweep.enabled ? 'bg-accent' : 'bg-line border border-[#3a3a3a]'}`}>
+                  <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${sweep.enabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                </div>
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs font-mono text-muted border border-line px-3 py-3">
+              sweep status unavailable: {sweepError} — reload to retry
+            </p>
+          )}
         </div>
       )}
     </div>
