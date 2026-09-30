@@ -73,6 +73,8 @@ const OTHERS_TX = `0x${'7e'.repeat(32)}` as Hex
  *  30-day idempotency window, so its record is a BACKFILL (lib/collectRecord). */
 const RECORD_TX_OLD = `0x${'7f'.repeat(32)}` as Hex
 const OTHER = getAddress(`0x${'ac'.repeat(20)}`)
+/** The one admin (lib/config ADMIN_ADDRESS), passed to the server so the sweep flag's front door is testable. */
+const ADMIN = getAddress(`0x${'ad'.repeat(20)}`)
 const PRICE = 1_000_000_000_000_000n // 0.001 ETH
 const USDC_PRICE = 5_000_000n // $5
 const MINT_FEE = 111_000_000_000_000n
@@ -394,7 +396,7 @@ async function startNext(env: Record<string, string>): Promise<{ base: string; c
 // ───────────────────────── main ─────────────────────────
 
 async function main() {
-  const upstash = createMockUpstash({ modelSets: (k) => k.startsWith('kismetart:scout-pending-revoke') || k === 'kismetart:hidden-listings' })
+  const upstash = createMockUpstash({ modelSets: (k) => k.startsWith('kismetart:scout-pending-revoke') || k === 'kismetart:hidden-listings' || k === 'kismetart:hidden-moments' })
   receipts.set(RECORD_TX, mockReceipt(RECORD_TX))
   receipts.set(RECORD_TX2, mockReceipt(RECORD_TX2))
   receipts.set(RECORD_TX_OLD, mockReceipt(RECORD_TX_OLD))
@@ -405,6 +407,9 @@ async function main() {
   // The hidden-listings set is memoized in-process for 15 minutes on first
   // read, so the hide must exist before the server's first listing read.
   upstash.sets.set('kismetart:hidden-listings', new Set([`${COLLECTION.toLowerCase()}:11:${SELLER.toLowerCase()}`]))
+  // Likewise the hidden-moments set: seeded before boot so the sweep pool's
+  // serve-time hide filter (section 4c) is observable.
+  upstash.sets.set('kismetart:hidden-moments', new Set([`${COLLECTION.toLowerCase()}:2`]))
   const [redisUrl, rpcUrl] = await Promise.all([upstash.start(), startRpcServer()])
   const { base, child } = await startNext({
     UPSTASH_REDIS_REST_URL: redisUrl,
@@ -414,6 +419,7 @@ async function main() {
     NEXT_PUBLIC_SCOUT_SPENDER_ADDRESS: SPENDER,
     SCOUT_SPENDER_PRIVATE_KEY: '',
     CDP_API_KEY_ID: '',
+    ADMIN_ADDRESS: ADMIN,
   })
   const stop = () => {
     child.kill('SIGTERM')
@@ -964,6 +970,75 @@ async function main() {
     upstash.store.delete(`kismetart:scout-run:${USER.toLowerCase()}`)
     const noRecordDelete = await json('/api/agent/scout', { method: 'DELETE', headers: { cookie: `__Host-kismet_session=${token2}` } })
     ok(noRecordDelete.status === 200 && noRecordDelete.body?.revoked === true && noRecordDelete.body?.queued === true, 'DELETE with no agent → ok, nothing to revoke')
+
+    // ── 4c. sweep pool + flag (the flag read is memoized 60 s, so the order is: off → on) ──
+    console.log('sweep pool + flag')
+    const sweepOff = await json('/api/sweep?n=10')
+    ok(sweepOff.status === 200 && sweepOff.body?.enabled === false, 'flag unset → { enabled: false }', sweepOff.body)
+    ok(sweepOff.headers.get('cache-control') === 'public, s-maxage=30', 'the flag-off answer is cacheable WITHOUT stale-while-revalidate', sweepOff.headers.get('cache-control'))
+    const adminAnon = await json('/api/admin/sweep')
+    ok(adminAnon.status === 401, 'admin GET without a session → 401', adminAnon.status)
+    // Sessions hold the recovered signer LOWERCASED (lib/config ADMIN_ADDRESS is lowercased too).
+    upstash.store.set('kismetart:auth-session:sweep-other', { v: OTHER.toLowerCase() })
+    const adminNotAdmin = await json('/api/admin/sweep', { headers: { cookie: '__Host-kismetart-admin=sweep-other' } })
+    ok(adminNotAdmin.status === 403, 'a signed-in non-admin → 403', adminNotAdmin.status)
+    upstash.store.set('kismetart:auth-session:sweep-admin', { v: ADMIN.toLowerCase() })
+    const adminCookie = '__Host-kismetart-admin=sweep-admin'
+    const adminGet = await json('/api/admin/sweep', { headers: { cookie: adminCookie } })
+    ok(adminGet.status === 200 && adminGet.body?.enabled === false && adminGet.body?.index === null, 'admin GET reports the flag and "no readable index"', adminGet.body)
+    const badPost = await json('/api/admin/sweep', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ enabled: 'yes' }),
+    })
+    ok(badPost.status === 400, 'POST rejects a non-boolean', badPost.status)
+    const onPost = await json('/api/admin/sweep', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ enabled: true }),
+    })
+    ok(onPost.status === 200 && upstash.store.get('kismetart:sweep-enabled')?.v === '1', "POST { enabled: true } stores '1' under the flag key", onPost.body)
+    const sweepEmpty = await json('/api/sweep?n=10')
+    ok(
+      sweepEmpty.body?.enabled === true && Array.isArray(sweepEmpty.body?.items) && (sweepEmpty.body.items as unknown[]).length === 0 && sweepEmpty.body?.updatedAt === null && sweepEmpty.body?.maxN === 20 && sweepEmpty.body?.n === 10,
+      'flag on, no build yet → an honest empty pool (memo invalidated by the write)',
+      sweepEmpty.body,
+    )
+    ok(sweepEmpty.headers.get('cache-control') === 'public, s-maxage=30, stale-while-revalidate=120', 'the pool answer is edge-cacheable', sweepEmpty.headers.get('cache-control'))
+    const poolRow = (tokenId: string, outlay: bigint) => ({
+      address: COLLECTION.toLowerCase(),
+      tokenId,
+      priceWei: (outlay - MINT_FEE).toString(),
+      feeWei: MINT_FEE.toString(),
+      outlayWei: outlay.toString(),
+      creator: ARTIST.toLowerCase(),
+      artist: ARTIST.toLowerCase(),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      name: `Piece ${tokenId}`,
+    })
+    const pool = { updatedAt: Date.now(), eligible: 3, items: [poolRow('1', PRICE + MINT_FEE), poolRow('2', PRICE + MINT_FEE + 1n), poolRow('3', PRICE + MINT_FEE + 2n)] }
+    upstash.store.set('kismetart:sweep-index', { v: JSON.stringify(pool) })
+    // `${COLLECTION}:2` was hidden before the server booted (see main).
+    const served = await json('/api/sweep?n=99')
+    const servedIds = ((served.body?.items as { tokenId: string }[] | undefined) ?? []).map((i) => i.tokenId).join()
+    ok(served.body?.n === 20 && servedIds === '1,3', 'n clamps to the cap; the moment hidden after the build is filtered at serve time', `${served.body?.n} ${servedIds}`)
+    const first = ((served.body?.items as { creatorProfile?: { username: unknown }; priceWei: string }[] | undefined) ?? [])[0]
+    ok(first !== undefined && first.creatorProfile !== undefined && 'username' in first.creatorProfile && first.priceWei === PRICE.toString(), 'rows carry the identity overlay shape and the string-wei fields', first)
+    const garbageN = await json('/api/sweep?n=abc')
+    ok(garbageN.body?.n === 10, 'a garbage n falls back to the default', garbageN.body?.n)
+    upstash.store.set('kismetart:sweep-index', { v: JSON.stringify({ ...pool, updatedAt: Date.now() - 25 * 60 * 60 * 1000 }) })
+    const stale = await json('/api/sweep?n=10')
+    ok(stale.body?.enabled === true && (stale.body?.items as unknown[]).length === 0 && typeof stale.body?.updatedAt === 'number', 'a pool older than a day serves empty (the button hides) and keeps updatedAt', stale.body)
+    const adminStale = await json('/api/admin/sweep', { headers: { cookie: adminCookie } })
+    const idx = adminStale.body?.index as { stale?: boolean; pool?: number } | null
+    ok(idx?.stale === true && idx?.pool === 3, 'admin GET reports stale: true with the pool size', adminStale.body)
+    const offPost = await json('/api/admin/sweep', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: adminCookie },
+      body: JSON.stringify({ enabled: false }),
+    })
+    const sweepOff2 = await json('/api/sweep?n=10')
+    ok(offPost.status === 200 && !upstash.store.has('kismetart:sweep-enabled') && sweepOff2.body?.enabled === false, 'POST { enabled: false } deletes the key and takes effect at once', sweepOff2.body)
 
     // ── 5. record-by-GET delegates to the on-chain-verified record handler ──
     console.log('\nrecord — GET form delegates to /api/collect and PATCH /api/listings')

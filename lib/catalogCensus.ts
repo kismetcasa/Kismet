@@ -1,7 +1,7 @@
 import { inprocessUrl, type Moment } from './inprocess'
 import { getTrackedCollectionsStrict } from './kv'
 import { acquireLock } from './redisLock'
-import { getMomentMetaBatch } from './notifications'
+import { getMomentMetaBatch, type MomentMeta } from './notifications'
 import { resolveMomentCreator } from './statsMath'
 import { synthesizeMissingCoverMoment } from './coverMomentSynthesis'
 import { getSmartWalletOwners } from './smartWalletCache'
@@ -191,13 +191,47 @@ async function walkCollection(collection: string): Promise<CollectionWalk | null
 }
 
 /**
+ * One resolved artwork from the walk — the per-moment facts every consumer of
+ * the catalog needs, computed ONCE per hourly run: the census counts here, and
+ * the sweep index (lib/sweepIndex.ts), which the cron builds from the same
+ * object so the catalog is never walked twice.
+ */
+export interface ResolvedCatalogItem {
+  m: Moment
+  /** Effective collection address, lowercased (`m.address ?? walked collection`). */
+  addr: string
+  /** Resolved creator — KV override over the feed's attribution
+   *  (resolveMomentCreator) — lowercased; null = unattributed. */
+  creator: string | null
+  /** `creator` folded to the owning EOA when it is a per-creator smart wallet
+   *  (getSmartWalletOwners); the same value as `creator` otherwise. */
+  artist: string | null
+  /** Hidden from public feeds: moment-hidden, inside a hidden collection, or by
+   *  an admin-hidden creator — the timeline's exact three filters. */
+  hidden: boolean
+  /** The KV moment-meta row (creator override, pinned createdAt), if any. */
+  meta: MomentMeta | null
+}
+
+export interface ResolvedCatalog {
+  items: ResolvedCatalogItem[]
+  /** Tracked contracts scanned (after case-dedup; patron excluded). */
+  collections: string[]
+  possiblyTruncated: number
+  pageFailures: number
+}
+
+/**
  * Rebuild the catalog census from inprocess and persist it. Single-flight (a
  * concurrent run returns `{ skipped: true }`). Throws — leaving the previous
  * snapshot live — on an unreadable collection OR an implausible shrink/zero
  * (abort-don't-overwrite, the same stance as rebuildStats). Call from the
- * sync-stats cron, or once to backfill.
+ * sync-stats cron, or once to backfill. Returns the resolved catalog alongside
+ * the census so the cron can hand it to the sweep index builder.
  */
-export async function rebuildCatalogCensus(): Promise<CatalogCensus | { skipped: true }> {
+export async function rebuildCatalogCensus(): Promise<
+  { census: CatalogCensus; catalog: ResolvedCatalog } | { skipped: true }
+> {
   const lock = await acquireLock(CENSUS_LOCK_KEY, CENSUS_LOCK_TTL_S)
   if (!lock.acquired) return { skipped: true }
   try {
@@ -207,7 +241,12 @@ export async function rebuildCatalogCensus(): Promise<CatalogCensus | { skipped:
   }
 }
 
-async function runCensus(): Promise<CatalogCensus> {
+/**
+ * Walk + dedup + attribute + fold + hidden verdict — everything up to the
+ * counting. Throws on an unreadable collection (page-1 failure), so no
+ * consumer ever sees a partial catalog.
+ */
+async function resolveCatalog(): Promise<ResolvedCatalog> {
   // Case-dedup so a checksummed and lowercased registration of the same
   // contract can't be walked (and counted) twice. The Patron/Mint-Pass
   // collection is excluded up front: passes are not artworks (its side
@@ -237,7 +276,7 @@ async function runCensus(): Promise<CatalogCensus> {
   // effective address is the pass contract, even though patron was excluded
   // from the input set — guards an upstream row that mis-reports its address.
   const seen = new Set<string>()
-  const items: { m: Moment; addr: string }[] = []
+  const raw: { m: Moment; addr: string }[] = []
   for (const walk of walks as CollectionWalk[]) {
     for (const m of walk.moments) {
       const addr = (m.address ?? walk.collection).toLowerCase()
@@ -245,7 +284,7 @@ async function runCensus(): Promise<CatalogCensus> {
       const key = `${addr}:${m.token_id}`
       if (seen.has(key)) continue
       seen.add(key)
-      items.push({ m, addr })
+      raw.push({ m, addr })
     }
   }
 
@@ -254,64 +293,85 @@ async function runCensus(): Promise<CatalogCensus> {
   // time beats inprocess's attribution (which reports the platform smart
   // wallet / collection defaultAdmin for delegated and cover mints). One
   // internally-chunked MGET for the whole set. The hidden sets ride the same
-  // round trip: `hidden` counts artworks the public feeds suppress, using the
+  // round trip: `hidden` marks artworks the public feeds suppress, using the
   // timeline's exact three filters (moment-hidden, hidden collection,
   // admin-hidden creator) against the SAME resolved creator, so "visible on
   // the feed" and "artworks − hidden" can't disagree.
   const [metas, hiddenSet, hiddenColls, hiddenUsers] = await Promise.all([
-    getMomentMetaBatch(items.map(({ m }) => ({ address: m.address, tokenId: m.token_id }))),
+    getMomentMetaBatch(raw.map(({ m }) => ({ address: m.address, tokenId: m.token_id }))),
     getHiddenMomentsSet(),
     getHiddenCollectionsSet(),
     getHiddenUsersSet(),
   ])
-  const creators: string[] = []
-  // Creators with ≥1 VISIBLE (non-hidden) artwork — the "public roster". The
-  // gap between this and `artists` is exactly the makers whose every piece is
-  // hidden, which is what separates artistsMinted (all) from the artist count
-  // an operator sees on the public site.
-  const visibleCreators: string[] = []
-  let unattributed = 0
-  let hidden = 0
-  items.forEach(({ m, addr }, i) => {
-    const resolved = resolveMomentCreator({
-      kvCreator: metas[i]?.creator ?? null,
-      feedCreator: m.creator?.address,
-    })
-    const creator = resolved.address?.toLowerCase()
-    if (creator) creators.push(creator)
-    else unattributed++
-    const isHidden =
+  const resolved = raw.map(({ m, addr }, i) => {
+    const meta = metas[i] ?? null
+    const creator =
+      resolveMomentCreator({
+        kvCreator: meta?.creator ?? null,
+        feedCreator: m.creator?.address,
+      }).address?.toLowerCase() ?? null
+    const hidden =
       hiddenSet.has(`${addr}:${m.token_id}`) ||
       hiddenColls.has(addr) ||
       (creator ? hiddenUsers.has(creator) : false)
-    if (isHidden) hidden++
-    else if (creator) visibleCreators.push(creator)
+    return { m, addr, creator, hidden, meta }
   })
 
   // Smart-wallet→EOA fold, mirroring the stats rebuild: inprocess attributes
   // relayed mints to the per-creator smart wallet, which is the same artist
-  // as the owning EOA — counting both would double-count them. visibleCreators
-  // ⊆ creators, so the one remap covers both counts.
-  const uniqueCreators = [...new Set(creators)]
+  // as the owning EOA — counting both would double-count them.
+  const uniqueCreators = [...new Set(resolved.flatMap((r) => (r.creator ? [r.creator] : [])))]
   const remap = await getSmartWalletOwners(uniqueCreators)
-  const fold = (list: string[]) => new Set(list.map((c) => remap.get(c) ?? c)).size
-  const artists = fold(uniqueCreators)
-  const visibleArtists = fold(visibleCreators)
+  const items: ResolvedCatalogItem[] = resolved.map((r) => ({
+    ...r,
+    artist: r.creator ? (remap.get(r.creator) ?? r.creator) : null,
+  }))
 
-  const census: CatalogCensus = {
-    updatedAt: Date.now(),
-    artworks: items.length,
-    hidden,
-    artists,
-    visibleArtists,
-    collections: collections.length,
+  return {
+    items,
+    collections,
     possiblyTruncated: walks.reduce(
       (n, w) => n + ((w as CollectionWalk).truncated ? 1 : 0),
       0,
     ),
     pageFailures: walks.reduce((n, w) => n + ((w as CollectionWalk).pageFailures ?? 0), 0),
+  }
+}
+
+/** The pure counting half: a census snapshot from a resolved catalog. */
+export function censusFromCatalog(catalog: ResolvedCatalog, updatedAt: number): CatalogCensus {
+  // `artists` counts folded identities INCLUDING makers whose only work is
+  // hidden; `visibleArtists` only those with ≥1 non-hidden artwork — the gap
+  // is exactly the makers whose every piece is hidden. `unattributed` are the
+  // artworks with no resolvable creator (counted in `artworks`, absent from
+  // `artists`). The fold is per item, so a creator and their smart wallet
+  // collapse to one artist in both counts.
+  const artists = new Set<string>()
+  const visibleArtists = new Set<string>()
+  let hidden = 0
+  let unattributed = 0
+  for (const it of catalog.items) {
+    if (it.artist) artists.add(it.artist)
+    else unattributed++
+    if (it.hidden) hidden++
+    else if (it.artist) visibleArtists.add(it.artist)
+  }
+  return {
+    updatedAt,
+    artworks: catalog.items.length,
+    hidden,
+    artists: artists.size,
+    visibleArtists: visibleArtists.size,
+    collections: catalog.collections.length,
+    possiblyTruncated: catalog.possiblyTruncated,
+    pageFailures: catalog.pageFailures,
     unattributed,
   }
+}
+
+async function runCensus(): Promise<{ census: CatalogCensus; catalog: ResolvedCatalog }> {
+  const catalog = await resolveCatalog()
+  const census = censusFromCatalog(catalog, Date.now())
 
   // Shrink/zero guard before the destructive overwrite: the catalog only grows
   // in normal operation, so a big drop in artworks OR collections means a
@@ -335,7 +395,7 @@ async function runCensus(): Promise<CatalogCensus> {
   // Loud on failure (throw → cron logs it): a swallowed write here would
   // silently serve a stale census for an hour with nothing in the logs.
   await redis.set(CATALOG_KEY, census)
-  return census
+  return { census, catalog }
 }
 
 /** The persisted census, or null before the first successful run / on a

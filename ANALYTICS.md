@@ -257,10 +257,10 @@ guaranteed by `private, no-store` on the admin variant plus `Vary: Cookie`.
 
 This is the platform's **only behavioral analytics**. There is deliberately no
 third-party analytics service; the funnel is "the smallest honest instrument":
-seven named events, counts only — **no identifiers, no session IDs, no paths,
+thirteen named events, counts only — **no identifiers, no session IDs, no paths,
 no user agents, nothing per-user**.
 
-The seven events, in funnel order, and where they fire:
+The events, in funnel order, and where they fire:
 
 | Event | Fired from | When |
 | --- | --- | --- |
@@ -271,6 +271,12 @@ The seven events, in funnel order, and where they fire:
 | `collect_success` | `useDirectCollect` | Collect confirmed |
 | `mint_attempt` | `MintForm` | Mint submitted |
 | `mint_success` | `MintForm` (both paths) | Mint confirmed |
+| `discover_landing` | `DiscoverMarketView` | `/discover` viewed — once per browser session (same sessionStorage de-dupe as `landing`) |
+| `discover_filter` | `DiscoverMarketView` (`DiscoverPillBar` `onChange`) | A pill or drawer filter refined (sort changes don't count) |
+| `discover_collect_attempt` | `MarketOvals` | Collect tapped on a discover oval — the discover-scoped numerator (`collect_attempt` still fires inside `useDirectCollect`) |
+| `sweep_open` | `SweepButton` | Sweep sheet opened from `/discover` (once per open, not per size toggle) |
+| `sweep_attempt` | `useSweep` | Sweep wallet prompt requested (basket verified and simulated) |
+| `sweep_success` | `useSweep` | Sweep bundle confirmed on-chain |
 
 Pipeline: `trackFunnel()` sends a fire-and-forget beacon
 (`navigator.sendBeacon`, keepalive-fetch fallback) → `POST /api/funnel`
@@ -431,7 +437,9 @@ Blind spots to keep in mind when reading the numbers:
 | `kismetart:stats:secondary-counted:<listingId>` | Resale-volume idempotency claims | Once per fill |
 | `kismetart:stats:pending-credits` | Reconcile outbox — royalty/volume whose fill-time eval hard-failed, retried idempotently by the hourly cron (bounded, dropped after ~24 attempts) | On fill-eval failure; drained hourly |
 | `kismetart:stats:last-rebuild` | Shrink + value-jump guard baseline (counted, in-scope, eth, usdc) | After each successful rebuild |
-| `kismetart:stats:health:{rebuild,census}` | Pipeline heartbeat — last run/success/error per phase | Every sync-stats run outcome |
+| `kismetart:stats:health:{rebuild,census,sweep-index}` | Pipeline heartbeat — last run/success/error per phase (`sweep-index` has its own `sweepHealthy` verdict on the health route, never folded into `healthy`) | Every sync-stats run outcome |
+| `kismetart:sweep-index` | Cheapest live ETH-priced mints across tracked collections — the sweep candidate pool (JSON, ≤ 120 items; `lib/sweepIndex.ts`, served by `/api/sweep`) | Hourly, right after the census, from the same walk; last good survives an aborted build |
+| `kismetart:sweep-enabled` | Sweep feature flag (`'1'` = on; read via `isFlagSet`) | Admin toggle (`/api/admin/sweep`) |
 | `kismetart:stats:{rebuild,census}-lock` | Single-flight locks (`lib/redisLock.ts`) | 900 s / 600 s TTL |
 | `kismetart:funnel:<event>:<YYYY-MM-DD>` | Funnel day counters | Per beacon; 90-day TTL |
 | `kismetart:stats:pass-exclude` | Patron `default_admin`+`payout`+`creator` payees, unioned into the pass exclude set | Per rebuild; 7-day TTL |
