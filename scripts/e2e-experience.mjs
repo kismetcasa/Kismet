@@ -1141,6 +1141,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
   env: {
     ...process.env,
     [MARKER_KEY]: MARKER_VAL,
+    STATS_PIPELINE_INPROCESS: 'off', // no in-process stats pipeline mid-run (lib/backgroundTasks)
     UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${redisPort}`,
     UPSTASH_REDIS_REST_TOKEN: 'e2e',
     BASE_RPC_URL: `http://127.0.0.1:${rpcPort}`,

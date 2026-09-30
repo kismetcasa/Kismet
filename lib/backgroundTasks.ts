@@ -1,6 +1,6 @@
 import { sweepExpiredListings } from './listings'
 import { withLeaderLock } from './leaderLock'
-import { getStatsHealth } from './statsHealth'
+import { readStatsLastAttempt } from './statsHealth'
 import { isStatsRunDue } from './statsMath'
 import { runStatsPipeline } from './statsPipeline'
 
@@ -16,13 +16,17 @@ import { runStatsPipeline } from './statsPipeline'
  *    census → sweep index → credit reconcile). vercel.json schedules
  *    /api/cron/sync-stats on Vercel ONLY; on a persistent host nothing calls
  *    it unless an external scheduler is configured, so the app drives the
- *    pipeline itself: each tick, the leader reads the pipeline's own
- *    heartbeat (lib/statsHealth) and runs it when no run — external or
- *    in-process — has been recorded for an hour. An external scheduler, where
- *    one exists, keeps precedence: its runs stamp the same heartbeat and this
- *    loop stands down; should the two ever overlap, the pipeline's phase
- *    locks make the second run a benign skip. The first check waits until a
- *    fresh deploy has finished booting.
+ *    pipeline itself: each tick it reads the pipeline's own heartbeat
+ *    (lib/statsHealth — the last run that did work, a skipped run does not
+ *    count) and runs it when nothing has been recorded for an hour. An
+ *    external scheduler, where one exists, keeps precedence: its runs stamp
+ *    the same heartbeat and this loop stands down; should the two ever
+ *    overlap, the pipeline's phase locks make the second run a benign skip.
+ *    Production only (statsFallbackEnabled): never on Vercel, where the cron
+ *    is scheduled and a timer inside a serverless instance can be frozen
+ *    mid-run holding the phase locks; never outside production, where a
+ *    laptop must not rebuild the shared snapshots from branch code; and off
+ *    for the harnesses that boot the built app (STATS_PIPELINE_INPROCESS=off).
  *
  * Multi-pod: both run under a Redis leader lock so only one pod cluster-wide
  * executes them per tick. Without the lock, N pods × N runs each tick
@@ -34,13 +38,11 @@ const LOCK_TTL_SEC = 60
 
 const STATS_INTERVAL_MS = 60 * 60 * 1000
 const STATS_FIRST_CHECK_MS = 2 * 60 * 1000
-// Serializes pods for the check and the run it starts; the phases hold their
-// own locks for the duration of the work.
+// Serializes pods for the run; the phases hold their own locks for the
+// duration of the work.
 const STATS_LOCK_TTL_SEC = 15 * 60
 
 let started = false
-let running = false
-let statsRunning = false
 
 export function startBackgroundTasks(): void {
   if (started) return
@@ -50,38 +52,53 @@ export function startBackgroundTasks(): void {
   // shouldn't block on cleanup work.
   void runSweep()
   setInterval(runSweep, TICK_MS)
-  setTimeout(runStatsFallback, STATS_FIRST_CHECK_MS)
-  setInterval(runStatsFallback, TICK_MS)
+  if (statsFallbackEnabled()) {
+    // The first check waits until a fresh deploy has finished booting.
+    setTimeout(runStatsFallback, STATS_FIRST_CHECK_MS)
+    setInterval(runStatsFallback, TICK_MS)
+  }
 }
 
-async function runSweep(): Promise<void> {
-  if (running) return
-  running = true
+function statsFallbackEnabled(): boolean {
+  if (process.env.VERCEL) return false
+  if (process.env.NODE_ENV !== 'production') return false
+  return process.env.STATS_PIPELINE_INPROCESS !== 'off'
+}
+
+// One in-flight flag per task, then the leader lock: withLeaderLock returns
+// null if another pod holds it — the normal "you don't run this tick" path,
+// not an error. Throws from the task itself are logged, never propagated.
+const inFlight = new Set<string>()
+async function guarded(name: string, ttlSec: number, fn: () => Promise<unknown>): Promise<void> {
+  if (inFlight.has(name)) return
+  inFlight.add(name)
   try {
-    // withLeaderLock returns null if another pod holds the lock — that's
-    // the normal "you don't run this tick" path, not an error. Throws
-    // from sweepExpiredListings itself propagate and are logged below.
-    await withLeaderLock('sweep-listings', LOCK_TTL_SEC, sweepExpiredListings)
+    await withLeaderLock(name, ttlSec, fn)
   } catch (err) {
-    console.error('[bg:sweep-listings] failed:', err instanceof Error ? err.message : String(err))
+    console.error(`[bg:${name}] failed:`, err instanceof Error ? err.message : String(err))
   } finally {
-    running = false
+    inFlight.delete(name)
   }
+}
+
+function runSweep(): Promise<void> {
+  return guarded('sweep-listings', LOCK_TTL_SEC, sweepExpiredListings)
 }
 
 async function runStatsFallback(): Promise<void> {
-  if (statsRunning) return
-  statsRunning = true
+  // A lock-free read first: most ticks the heartbeat is fresh and nothing else
+  // is needed. An UNREADABLE heartbeat skips the tick — it is not "never ran".
+  let last: number | null
   try {
-    await withLeaderLock('stats-pipeline', STATS_LOCK_TTL_SEC, async () => {
-      const health = await getStatsHealth()
-      if (!isStatsRunDue(health.rebuild?.lastRunAt, Date.now(), STATS_INTERVAL_MS)) return
-      console.log('[bg:stats-pipeline] no run recorded in the last hour — running the pipeline')
-      await runStatsPipeline()
-    })
-  } catch (err) {
-    console.error('[bg:stats-pipeline] failed:', err instanceof Error ? err.message : String(err))
-  } finally {
-    statsRunning = false
+    last = await readStatsLastAttempt('rebuild')
+  } catch {
+    return
   }
+  if (!isStatsRunDue(last, Date.now(), STATS_INTERVAL_MS)) return
+  await guarded('stats-pipeline', STATS_LOCK_TTL_SEC, async () => {
+    // Re-check under the lock: another pod may have run it since the read.
+    if (!isStatsRunDue(await readStatsLastAttempt('rebuild'), Date.now(), STATS_INTERVAL_MS)) return
+    console.log('[bg:stats-pipeline] no run recorded in the last hour — running the pipeline')
+    await runStatsPipeline()
+  })
 }

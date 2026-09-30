@@ -28,6 +28,7 @@ node scripts/e2e/redis-stub.mjs &
 # 2. The app, pointed at the stub.
 UPSTASH_REDIS_REST_URL=http://localhost:6399 \
 UPSTASH_REDIS_REST_TOKEN=stub \
+STATS_PIPELINE_INPROCESS=off \
 npx next start -p 3100 &
 
 # 3. Fixtures: a spec-valid glTF 2.0 cube plus a still. The script writes the
@@ -249,7 +250,7 @@ sees its types on a clean install) and launches the Chromium at `E2E_CHROMIUM`
 or, by default, the one Playwright's registry keeps under `/opt/pw-browsers`.
 Screenshots land in `.e2e/shots/sweep-*.png`.
 
-## What it asserts (63)
+## What it asserts (72)
 
 - **Header** — the button renders once `/api/sweep` answers with a pool; at
   375 px the row does not overflow and the stats block wraps under the toggle
@@ -286,6 +287,11 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
   toast, offers no basket and sends nothing; once the receipt lands, retry
   re-verifies (the row is owned now) and the in-flight sweep's record still
   arrives.
+- **Closed during the prompt** — with the wallet's send held, Escape closes
+  the sheet while it is still asking; reopening reads "retry" with the
+  "waiting in the wallet" toast, offers no basket and sends nothing; approving
+  in the wallet lands the held sweep and its record, and retry then
+  re-verifies (the row is owned).
 - **Walkthrough regressions** — a dropped row keeps its name visible beside a
   long reason (the reason column wraps), and a success toast after an earlier
   failure carries no stale description.

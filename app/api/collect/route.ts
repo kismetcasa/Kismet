@@ -5,6 +5,7 @@ import { verifyMintOnChain } from '@/lib/verifyMint'
 import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis, TRENDING_KEY, TRENDING_LATEST_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { COLLECT_RATE_LIMIT_PER_MINUTE } from '@/lib/collectRecord'
 import { recordCollected, recordMomentCollect } from '@/lib/collected'
 import { COLLECT_IDEMPOTENCY_TTL_SECONDS, isStaleCollectRecord } from '@/lib/collectRecord'
 import { grantDownloadGrace, recordCollectorAudience } from '@/lib/collectorFile'
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
   // per-token collects from the same NAT in the same minute window. Without
   // the headroom, a legitimate batch consumes the cap and blocks shared-IP
   // peers (offices, mobile networks) for ~60s.
-  const allowed = await checkRateLimit(`collect:${ip}`, 60, 60)
+  const allowed = await checkRateLimit(`collect:${ip}`, COLLECT_RATE_LIMIT_PER_MINUTE, 60)
   if (!allowed) return errorResponse(429, 'Too many requests')
 
   const body = (await req.json().catch(() => null)) as {

@@ -33,6 +33,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-sweep.ts
 
 import { classifyOnchainSaleWindow, classifyTokenSupply } from '../lib/saleConfig.ts'
+import { COLLECT_RATE_LIMIT_PER_MINUTE } from '../lib/collectRecord.ts'
 import { rankSweepCandidates, type RankableSweepItem } from '../lib/sweepRank.ts'
 import {
   SWEEP_DEFAULT_N,
@@ -60,7 +61,6 @@ import {
   sweepSimulationArgs,
   trimToBudget,
   type SweepBasketItem,
-  COLLECT_RATE_LIMIT_PER_MINUTE,
   recordAttemptSchedule,
 } from '../lib/sweepBatch.ts'
 import { DEFAULT_COLLECT_COMMENT } from '../lib/inprocess.ts'

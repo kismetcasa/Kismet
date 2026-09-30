@@ -10,6 +10,10 @@
  */
 export const COLLECT_IDEMPOTENCY_TTL_SECONDS = 30 * 24 * 60 * 60
 
+/** /api/collect's per-IP budget per minute — the route enforces it, and the
+ *  sweep's record schedule (lib/sweepBatch) sizes its retries to it. */
+export const COLLECT_RATE_LIMIT_PER_MINUTE = 60
+
 /**
  * A record whose MINT predates the idempotency window is a backfill, not a
  * sale event. The lock cannot distinguish "recorded five months ago, replayed

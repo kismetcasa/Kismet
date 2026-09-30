@@ -71,13 +71,21 @@ interface UseSweepReturn {
 
 const TOAST_ID = 'sweep'
 
-// A sweep that was sent but never seen mined — the receipt wait timed out, or
-// the sheet was closed while it was confirming. Module-level, not a ref: the
-// sheet (and with it this hook) unmounts when the user closes it, and a second
-// bundle must never be signed over one that may still land. open() checks it
-// once for the same signer before anything can be re-sent; a full page reload
-// is the one way to lose it.
-let pendingSweep: { account: Address; hash: Hash } | null = null
+// The sweep in flight for a signer, from the moment the wallet prompt opens
+// until its receipt is seen: a prompt still open (hash null), or a bundle sent
+// but never seen mined (the receipt wait timed out, or the sheet was closed
+// while it was confirming). Module-level, not a ref: the sheet (and with it
+// this hook) unmounts when the user closes it — a backdrop click during the
+// prompt is enough — and a second bundle must never be signed over one that
+// may still land. open() and confirm() check it for the same signer before
+// anything can be sent; each attempt clears only its own record, so a stale
+// instance resolving late cannot erase a newer one's. A full page reload is
+// the one way to lose it.
+interface PendingSweep {
+  account: Address
+  hash: Hash | null
+}
+let pendingSweep: PendingSweep | null = null
 
 /** One /api/collect record per swept row. The server 403s until its own RPC
  *  sees the receipt (the client waited on ITS RPC, so the two can disagree for
@@ -175,15 +183,21 @@ export function useSweep(): UseSweepReturn {
       // Never re-send over a sweep that may still land: one receipt check,
       // then either proceed (verification excludes whatever it minted) or ask
       // the user to look at the wallet.
-      if (pendingSweep && pendingSweep.account.toLowerCase() === account.toLowerCase()) {
-        const mined = await publicClient.getTransactionReceipt({ hash: pendingSweep.hash }).catch(() => null)
+      const held = pendingSweep
+      if (held && held.account.toLowerCase() === account.toLowerCase()) {
+        if (held.hash === null) {
+          setStatus('error')
+          toast.error('Your last sweep is still waiting in the wallet — approve or reject it before trying again')
+          return
+        }
+        const mined = await publicClient.getTransactionReceipt({ hash: held.hash }).catch(() => null)
         if (seq !== openSeqRef.current) return
         if (!mined) {
           setStatus('error')
           toast.error('Your last sweep is still pending — check your wallet before trying again')
           return
         }
-        pendingSweep = null
+        if (pendingSweep === held) pendingSweep = null
       }
 
       let data: SweepApiResponse
@@ -260,6 +274,13 @@ export function useSweep(): UseSweepReturn {
       void open(nRef.current)
       return null
     }
+    // A sweep by this signer is still in flight (a prompt open in a sheet that
+    // was closed, or a bundle not yet seen mined): never send over it. The
+    // re-open runs the pending check and tells the user what to do.
+    if (pendingSweep && pendingSweep.account.toLowerCase() === account.toLowerCase()) {
+      void open(nRef.current)
+      return null
+    }
     inFlightRef.current = true
     trackFunnel('sweep_attempt')
     setStatus('minting')
@@ -268,6 +289,7 @@ export function useSweep(): UseSweepReturn {
     // options for the same id, so it is cleared here explicitly.
     toast.loading(`Confirm in wallet — sweeping ${basket.length}…`, { id: TOAST_ID, description: undefined })
 
+    let attempt: PendingSweep | null = null
     try {
       await ensureBase()
       // The user could have switched networks between verification and this tap.
@@ -275,6 +297,10 @@ export function useSweep(): UseSweepReturn {
         throw new Error('Switched off Base — retry to continue')
       }
       const items = basket.map(toBasketItem)
+      // Recorded BEFORE the prompt: a sheet closed and reopened while the wallet
+      // is still asking must not verify and sign a second bundle.
+      attempt = { account, hash: null }
+      pendingSweep = attempt
       let hash: Hash
       if (items.length === 1) {
         // A lone item takes the direct mint so Purchased.sender stays the user.
@@ -302,11 +328,11 @@ export function useSweep(): UseSweepReturn {
         })
       }
 
-      pendingSweep = { account, hash }
+      attempt.hash = hash
       setStatus('confirming')
       toast.loading('Confirming on-chain…', { id: TOAST_ID })
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 300_000 })
-      pendingSweep = null
+      if (pendingSweep === attempt) pendingSweep = null
       if (receipt.status !== 'success') {
         throw new Error('Sweep reverted on-chain — nothing was charged')
       }
@@ -333,6 +359,9 @@ export function useSweep(): UseSweepReturn {
       ackSuccess()
       return { hash: minedHash, minted }
     } catch (err) {
+      // No hash → nothing was sent (rejected, or the send failed): release the
+      // record. With a hash it stays until a receipt is seen — that is the guard.
+      if (attempt && attempt.hash === null && pendingSweep === attempt) pendingSweep = null
       setStatus('error')
       showError(err, isRetryAfterRecovery, () => {
         void confirmRef.current()

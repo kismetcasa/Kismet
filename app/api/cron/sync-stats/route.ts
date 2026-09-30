@@ -12,9 +12,10 @@ export const maxDuration = 300
 
 // Runs the stats pipeline (lib/statsPipeline). Scheduled via a cron (Vercel
 // `crons` in vercel.json, OR — on Coolify — a Scheduled Task / external
-// scheduler hitting this URL); without any scheduler the app runs the same
-// pipeline itself once its heartbeat is an hour old (lib/backgroundTasks), so
-// this route is an accelerator, never a prerequisite. Also callable manually.
+// scheduler hitting this URL). On a persistent production host the app also
+// runs the same pipeline itself once its heartbeat is an hour old
+// (lib/backgroundTasks), so there this route is an accelerator, never a
+// prerequisite; on Vercel the cron is the driver. Also callable manually.
 // Protected by CRON_SECRET, sent as `Authorization: Bearer <secret>` (Vercel
 // cron does this automatically) or `?secret=`. The compare is trimmed so a stray newline/space in the stored
 // env var can't cause a spurious 401.
