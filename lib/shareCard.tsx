@@ -48,13 +48,11 @@ export function shareCard({ label, title, creator, imageUrl, excerpt }: ShareCar
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={imageUrl}
-          // Satori renders `alt` as fallback text into the PNG when the
-          // src fetch fails (Arweave 404 during propagation, gateway
-          // hiccup, etc.) — so a non-empty alt turns the failure mode
-          // from "blank dark rectangle" into "card showing the title."
-          // Not a DOM accessibility concern (this <img> never reaches a
-          // browser), but the lint rule is correctly satisfied with a
-          // semantically-useful string.
+          // Satori does NOT draw `alt` when the src fails to load — the card
+          // comes out as the bare background (measured on the bundled
+          // @vercel/og). That is why shareImageSource hands over an inlined
+          // jpeg or nothing, never a URL that might fail here. The alt only
+          // satisfies the lint rule; this <img> never reaches a browser.
           alt={title}
           width={1200}
           height={800}
