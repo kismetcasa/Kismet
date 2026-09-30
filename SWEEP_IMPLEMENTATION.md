@@ -120,7 +120,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 | Not connected | The sheet opens at once and runs `useEnsureConnected` (host wallet inside Mini App / Coinbase WebView, RainbowKit modal on web); a declined connect leaves it on `connect wallet`, which re-runs the connect |
 | Wrong chain / wallet | Verification is read-only against the Base client, so the wallet is asked to switch only when the user taps sweep (`useEnsureBase`, then a chain guard right before the send, as `useCollectAll`). A wallet **account** switched between verification and the tap is re-verified, never signed for: the ownership, balance and simulation checks were for the other signer |
 | Wallet replaces the pending transaction | Success is the receipt SHOWING the mints (one TransferSingle to the user per row), never `status` alone. A speed-up carries the same mints under a new hash → done, recorded under the hash that mined. A cancel mines nothing → error `The transaction was replaced in the wallet — check it before trying again`, nothing marked swept, nothing recorded |
-| Receipt wait times out (5 min) | Error. The next open checks that hash once before anything can be re-sent: still pending → `Your last sweep is still pending — check your wallet before trying again`; mined → proceeds, and verification excludes whatever it minted (no double mint) |
+| A sweep sent but not yet seen mined (the receipt wait timed out, or the sheet was closed while confirming) | The hash is kept outside the sheet's lifetime; the next open for the same signer checks it once before anything can be re-sent: still pending → `Your last sweep is still pending — check your wallet before trying again`; mined → proceeds, and verification excludes whatever it minted (no double mint). A full page reload is the one way to lose it |
 | The strict bundle cannot be gas-estimated | Never presented as ready: `Could not verify the sweep on-chain — try again` (an RPC failure or a bundle that would revert), retry re-verifies |
 | Pool empty / index missing | Button hidden; if opened via a stale render, the sheet shows `nothing to sweep right now` with a `re-check` button |
 | Fewer than N eligible after verification | Sheet shows what is available (`sweep 4 for 0.0042 ETH`); no error |
@@ -129,7 +129,7 @@ Tapping the button opens `SweepSheet` — a centered, scrollable card modal in t
 | Simulation drops rows | Refill from the ranked reserve and re-simulate (≤ 2 rounds); dropped rows stay visible, greyed, with reason |
 | Bundle reverts on-chain (a 1/1 minted by someone else between simulation and mining) | Error toast `Sweep reverted on-chain — nothing was charged`; the button reads `retry`, which re-verifies and drops the culprit |
 | User rejects in wallet | Existing `isUserRejection` handling via `useWalletRecovery` (`sweep` toast id) |
-| Record POSTs fail | Bounded retry (5, backoff ≈ 6 s in all, `keepalive`) then `reportClientError('sweep.record_failed')`; success toast still shows because the mint landed |
+| Record POSTs fail | Retried on 403 (the server's RPC lags), 5xx and transport errors, spread over ≈ 6 s and sized so the basket never exceeds `/api/collect`'s per-IP budget (five attempts up to twelve rows, three for twenty); a 429 or a validation 4xx ends the attempts; then `reportClientError('sweep.record_failed')`. The success toast still shows because the mint landed |
 | Wants more than 20 | `sweep the next N` rounds; the cap stays `MAX_COLLECT_ALL_BATCH` (wallet-preview readability) |
 
 ### 1.4 Copy rules
@@ -284,8 +284,10 @@ GET /api/sweep?n=10            n ∈ [1, 20], default 10
       creatorProfile: { username },                 // from enrichment
     })[]
   }
-→ 200 { enabled: true, updatedAt, eligible: 0, items: [] }  // no build yet, or a pool
-                                 // older than SWEEP_INDEX_MAX_AGE_MS (24 h): the button hides
+→ 200 { enabled: true, updatedAt, eligible: 0, items: [] }  // no build yet (uncached: a Redis
+                                 // blip reads the same, and must not be cached as "nothing"),
+                                 // or a pool older than SWEEP_INDEX_MAX_AGE_MS (24 h, cached):
+                                 // the button hides
 → 200 { enabled: false }         // flag off (cached 30 s) — or, uncached, on a flag-read failure
 → 503 { error }                  // hide sets unreadable: fail CLOSED, never serve unfiltered
 Cache-Control: public, s-maxage=30, stale-while-revalidate=120
@@ -398,7 +400,8 @@ Two steps, both in `verifyBasket` (`lib/sweepVerify.ts`):
    a wide margin), then `trimToBudget` keeps the longest cheapest-first prefix
    with `Σ outlay ≤ budgetWei`. Cheapest-first makes the trim a prefix, so the
    user always keeps the best-value part of the basket; the rest is shown as
-   `needs more ETH`.
+   `needs more ETH` unless a simulation drop frees budget — the rows the trim
+   set aside are cheaper than every reserve row, so a refill seats them first.
 2. **After the final simulation**: `estimateSweepGasCost` on the exact strict
    bundle — `estimateContractGas × maxFeePerGas` (one `eth_estimateGas` plus
    `estimateFeesPerGas`, both cheap on Base). Rows are shed from the tail while
@@ -427,7 +430,8 @@ State machine (`useWalletRecovery('sweep', 'Sweep')`, `useEnsureBase`,
 `useEnsureConnected`; an `inFlightRef` latch against a double tap, an
 `openSeqRef` so a verification that finishes after a newer `open()` discards
 its result, a `verifiedForRef` holding the signer the rows were verified for,
-and a `pendingHashRef` for a sweep sent but never seen mined):
+and a module-level `pendingSweep` record — outside the hook's lifetime, since
+the sheet unmounts on close — for a sweep sent but never seen mined):
 
 ```
 idle ─open→ loading ─→ verifying ─→ ready ─confirm→ minting ─→ confirming ─→ recording ─→ done
@@ -435,8 +439,9 @@ idle ─open→ loading ─→ verifying ─→ ready ─confirm→ minting ─�
 ```
 
 1. `open(n)` (the button fired `sweep_open` once, before mounting the sheet):
-   ensure connected (a declined connect → `idle`); if a previous sweep's
-   receipt wait timed out, read that hash once — still pending → `error`
+   ensure connected (a declined connect → `idle`); if a sweep by this signer
+   was never seen mined (its receipt wait timed out, or the sheet was closed
+   while confirming), read that hash once — still pending → `error`
    (`Your last sweep is still pending — check your wallet before trying
    again`), mined → continue; fetch `/api/sweep?n=n` (`empty` when disabled or
    no pool); render the rows at once as `pending` (state `verifying`).
@@ -452,7 +457,7 @@ idle ─open→ loading ─→ verifying ─→ ready ─confirm→ minting ─�
    `writeContractAsync` Multicall3 `aggregate3Value` with `sweepBundle` (strict)
    and `dataSuffix: BUILDER_DATA_SUFFIX`; N = 1 → the direct `1155.mint` from
    `buildEthMintCall` with the same suffix. The hash is held in
-   `pendingHashRef` until `waitForTransactionReceipt({ timeout: 300_000 })`
+   `pendingSweep` until `waitForTransactionReceipt({ timeout: 300_000 })`
    returns. `status !== 'success'` → `Sweep reverted on-chain — nothing was
    charged`. Then the receipt must SHOW the mints: `countSweepMints` counts one
    `TransferSingle(0x0 → user, id)` per basket row from the row's own
@@ -462,10 +467,13 @@ idle ─open→ loading ─→ verifying ─→ ready ─confirm→ minting ─�
    speed-up mines under a new hash).
 4. Records: one `POST /api/collect` per basket row with the mined hash,
    `currency: 'eth'`, `pricePerToken` (the bare live price, as collect-all
-   sends), `RECORD_ATTEMPTS` = 5 spaced attempts (≈ 6 s in all, `keepalive:
-   true` — the server 403s until its own RPC sees the receipt), then
+   sends), on `recordAttemptSchedule(basket size)` (`lib/sweepBatch.ts`):
+   attempts spread over ≈ 6 s with `keepalive: true`, retried only on 403 (the
+   server's own RPC has not seen the receipt yet), 5xx and transport errors,
+   ended by a 429 or a validation 4xx, and sized so the basket's requests never
+   exceed `/api/collect`'s 60/min per-IP budget — the limiter counts rejected
+   requests too — (five attempts up to twelve rows, three for twenty); then
    `reportClientError('sweep.record_failed', …)` for a row that never records.
-   The 60/min per-IP budget on `/api/collect` was sized for a 20-batch.
 5. `done`: rows marked `swept`, `result = { hash, minted }`, toast `Swept N
    artworks!`, `trackFunnel('sweep_success')`. There is no separate "next":
    the sheet's primary button calls `open(n)` again from every settled state
@@ -545,8 +553,8 @@ repeated here.
   strict vs simulated bundles, trim, simulation mapping), plus the network half
   on the fake chain of `scripts/_sweep-fake-chain.ts` behind a real viem client:
   `fetchEligibleTokensMulti`, `readMintFeesWithBound`, `simulateSweep`,
-  `estimateSweepGasCost`, `verifyBasket` end to end, `countSweepMints` and the
-  staleness rule.
+  `estimateSweepGasCost`, `verifyBasket` end to end, `countSweepMints`, the
+  record schedule and the staleness rule.
 - **`verify:sweep-index`** (`scripts/verify-sweep-index.ts`) —
   `rebuildSweepIndex` / `getSweepIndex` / the flag on the real modules against
   the fake chain over HTTP and the mock Upstash: candidate rules, both chain
@@ -555,15 +563,16 @@ repeated here.
 - **`verify:agent:routes`** (section 4c of `scripts/verify-agent-routes.ts`) —
   `/api/sweep` and `/api/admin/sweep` on the real built server: flag off (cache
   header without SWR), the admin front door (401 / 403 / 400 / 200, the audit
-  write), on with no build, a seeded pool with `n` clamping and the serve-time
-  hide filter, a day-old pool serving empty (`stale: true` on the admin read),
+  write), on with no build (uncached), a seeded pool (cached) with `n` clamping
+  and the serve-time hide filter, a day-old pool serving empty (cached;
+  `stale: true` on the admin read),
   off again with the memo invalidated by the write.
 - **`scripts/e2e/sweep.ts`** — a built app, a server and Chromium, so outside
   `check`; `scripts/e2e/README.md` lists what it asserts (the header at 375 and
   1280 px, the sheet's painted states, the exact transaction the wallet is
   asked to sign, the receipt-driven finish, the server-verified records, the
   funnel beacons, the next round, the flag-off header, a wallet-side cancel,
-  the single-item path).
+  the single-item path, a sweep closed mid-flight).
 
 Existing checks cover the rest: `typecheck`, `lint`, `verify:a11y` (the
 sheet's text), `check:bundle` (the sheet lazy-loads behind the button).

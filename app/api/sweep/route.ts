@@ -56,11 +56,14 @@ export async function GET(req: NextRequest) {
 
   const index = await getSweepIndex()
   // No build yet, or a pool the cron stopped refreshing (isSweepIndexStale):
-  // an honest empty pool, same shape, cacheable — the button hides.
+  // an honest empty pool, same shape — the button hides. A MISSING index is
+  // served uncached: getSweepIndex reads a Redis blip as null too, and an
+  // outage must not be pinned into the shared cache as "nothing to sweep" for
+  // the window. A stale pool is a real, readable state and caches.
   if (!index || isSweepIndexStale(index)) {
     return NextResponse.json(
       { enabled: true, updatedAt: index?.updatedAt ?? null, eligible: 0, maxN: SWEEP_MAX_N, n, items: [] },
-      { headers: { 'Cache-Control': PUBLIC_CACHE } },
+      { headers: { 'Cache-Control': index ? PUBLIC_CACHE : NO_STORE } },
     )
   }
 

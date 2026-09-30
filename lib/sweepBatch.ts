@@ -2,7 +2,8 @@ import { encodeFunctionData, parseAbi, parseEventLogs, type Address, type Hex, t
 import { DEFAULT_COLLECT_COMMENT } from './inprocess'
 import { buildEthMintCall, buildMulticall3Batch } from './zoraMint'
 
-// Sweep basket → transaction, the pure half (SWEEP_IMPLEMENTATION.md §4.2–4.4).
+// Sweep basket → transaction, the pure half (SWEEP_IMPLEMENTATION.md §4.2–4.4),
+// plus the schedule on which the records are posted afterwards (§5.1).
 // hooks/useSweep.ts is the only caller; scripts/verify-sweep.ts decodes every
 // call this module builds back to its arguments. Nothing here touches the
 // network, so the treasury-critical invariants (every mint goes through
@@ -143,4 +144,25 @@ export function countSweepMints(logs: readonly (Log | RpcLog)[], items: readonly
     if (wanted.has(key)) seen.add(key)
   }
   return seen.size
+}
+
+/** /api/collect's per-IP budget (app/api/collect/route.ts: 60 per minute) —
+ *  the ceiling on the record requests one sweep may make, retries included. */
+export const COLLECT_RATE_LIMIT_PER_MINUTE = 60
+const RECORD_MAX_ATTEMPTS = 5
+const RECORD_WINDOW_MS = 6_000
+
+/**
+ * The wait before each /api/collect attempt for one row of a basket of `size`
+ * rows. The server 403s until its own RPC sees the receipt, so the attempts
+ * are spread over ≈ 6 s (0 / 0.6 / 1.8 / 3.6 / 6 s at five). The rate limiter
+ * counts rejected requests too, so a basket may never make more requests in
+ * all (size × attempts) than the budget: a full 20-basket gets three attempts
+ * over the same 6 s, anything up to twelve rows the five maximum.
+ */
+export function recordAttemptSchedule(size: number): number[] {
+  const attempts = Math.max(1, Math.min(RECORD_MAX_ATTEMPTS, Math.floor(COLLECT_RATE_LIMIT_PER_MINUTE / Math.max(1, size))))
+  if (attempts === 1) return [0]
+  const unit = RECORD_WINDOW_MS / ((attempts * (attempts - 1)) / 2)
+  return Array.from({ length: attempts }, (_, i) => unit * i)
 }

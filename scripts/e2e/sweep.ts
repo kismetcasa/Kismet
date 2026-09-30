@@ -18,7 +18,8 @@
  * finish, the records the server verifies against the same fake chain, the
  * funnel beacons landing in Redis exactly once each, the ownership exclusion
  * on the next round, the "needs more ETH" state, the hidden button once the
- * flag is off, and the direct-mint path for a single item.
+ * flag is off, the direct-mint path for a single item, and a sweep closed
+ * mid-flight that must never be signed twice.
  *
  * Deliberately NOT wired into `npm run check`: it needs a built app, a
  * running server and a browser (see scripts/e2e/README.md). Run:
@@ -210,6 +211,13 @@ async function main() {
     const funnel: Record<string, number> = {}
     const pageErrors: string[] = []
 
+    // A receipt the page is not allowed to see yet — a sweep still sitting in
+    // the mempool — for the mid-flight-close round.
+    let holdReceipts = false
+    const rpc = (method: string, params: unknown[]): unknown => {
+      if (holdReceipts && method === 'eth_getTransactionReceipt') return null
+      return handleRpc(chain, method, params)
+    }
     const walletRpc = (method: string, params: unknown[]): unknown => {
       switch (method) {
         case 'eth_requestAccounts':
@@ -237,14 +245,14 @@ async function main() {
           return mineTransaction(chain, t)
         }
         default:
-          return handleRpc(chain, method, params) // a read through the wallet provider
+          return rpc(method, params) // a read through the wallet provider
       }
     }
     const rpcEnvelope = (body: string) => {
       const parsed = JSON.parse(body) as { id: number; method: string; params?: unknown[] } | { id: number; method: string; params?: unknown[] }[]
       const one = (r: { id: number; method: string; params?: unknown[] }) => {
         try {
-          return { jsonrpc: '2.0', id: r.id, result: handleRpc(chain, r.method, r.params ?? []) }
+          return { jsonrpc: '2.0', id: r.id, result: rpc(r.method, r.params ?? []) }
         } catch (e) {
           return { jsonrpc: '2.0', id: r.id, error: { code: e instanceof RpcErr ? e.code : -32000, message: e instanceof Error ? e.message : String(e) } }
         }
@@ -446,6 +454,31 @@ async function main() {
     await sleep(500)
     ok((await page.getByText(/replaced in the wallet/).count()) === 0, 'the success toast does not inherit the earlier failure\'s description', await page.getByText(/replaced in the wallet/).count())
     ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${[...chain.receipts.keys()][2].toLowerCase()}:`)).length === 1, 30_000), 'the record is verified server-side under the mined hash')
+
+    // ── 9. a sweep closed mid-flight is still one sweep ──
+    console.log('closed mid-flight')
+    upstash.store.set('kismetart:sweep-index', { v: JSON.stringify({ updatedAt: Date.now(), eligible: 1, items: [poolRow(11)] }) })
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await sweepBtn.waitFor({ state: 'visible', timeout: 60_000 })
+    await sweepBtn.click()
+    await dialog.waitFor({ state: 'visible', timeout: 15_000 })
+    ok(await until(async () => (await label()) === `sweep 1 for ${formatPrice(outlay(11).toString(), 'eth')}`, 30_000), 'a fresh row: "sweep 1 for …"', await label())
+    holdReceipts = true // the transaction will sit in the mempool until released
+    await primary.click()
+    ok(await until(() => wallet.sent.length === 4, 20_000), 'the transaction reaches the wallet')
+    ok(await until(async () => (await label()) === 'confirming…', 20_000), 'the sheet is confirming (no receipt yet)', await label())
+    await page.keyboard.press('Escape')
+    ok(await until(async () => (await dialog.count()) === 0, 5_000), 'Escape closes the sheet while the sweep is in flight')
+    await sweepBtn.click()
+    await dialog.waitFor({ state: 'visible', timeout: 15_000 })
+    ok(await until(async () => (await label()) === 'retry', 20_000), 'reopening finds the sweep still pending: "retry", no rows verified', await label())
+    ok(await until(async () => (await page.getByText(/still pending/).count()) > 0, 5_000), 'the toast says the last sweep is still pending')
+    ok((await dialog.getByRole('button', { name: /^Remove / }).count()) === 0 && wallet.sent.length === 4, 'no basket is offered and nothing was re-sent')
+    holdReceipts = false // the transaction mines
+    await primary.click() // retry → the pending check now finds the receipt → re-verify
+    ok(await until(async () => (await label()) === 're-check', 45_000), 'once mined, retry re-verifies: the row is owned now, nothing to sweep', await label())
+    const heldHash = [...chain.receipts.keys()][3]
+    ok(await until(() => [...upstash.store.keys()].filter((k) => k.startsWith(`verify:collect:${heldHash.toLowerCase()}:`)).length === 1, 45_000), 'the in-flight sweep still records once its receipt lands')
 
     ok(pageErrors.length === 0, 'no uncaught page errors during the run', pageErrors)
     console.log(`\n${failed === 0 ? 'OK' : 'FAILED'} — sweep browser e2e: ${passed} passed, ${failed} failed`)

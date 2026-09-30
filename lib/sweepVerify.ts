@@ -74,7 +74,8 @@ export type Verified =
  * price / supply / ownership / balance, the live per-collection mint fees, a
  * re-rank on live outlay, a balance trim, then an eth_call simulation of the
  * exact bundle (allowFailure on, nothing sent) that drops would-revert rows and
- * refills from the reserve. Invariant on return: every `basket` row passed the
+ * refills — from the rows the trim set aside first, then the reserve.
+ * Invariant on return: every `basket` row passed the
  * last simulation it was part of, and the basket's outlay plus the gas reserve
  * fits the wallet's balance as read in the same aggregate.
  */
@@ -141,14 +142,16 @@ export async function verifyBasket(
   let basket = ranked.slice(0, n)
   const reserve = ranked.slice(n)
   const unaffordable: SweepRow[] = []
-  {
-    const t = trimToBudget(basket, budget)
-    basket = t.kept
-    unaffordable.push(...t.dropped)
-  }
+  // Rows the trim sets aside stay eligible for a refill: every one is cheaper
+  // than every reserve row (the ranking is ascending), so budget freed by a
+  // simulation drop seats them before the reserve.
+  const trim = trimToBudget(basket, budget)
+  basket = trim.kept
+  const trimmed = trim.dropped
 
-  // Simulate the exact bundle; drop would-revert rows; refill from the reserve
-  // (ascending, so the first reserve row that does not fit ends the refill).
+  // Simulate the exact bundle; drop would-revert rows; refill from the trimmed
+  // rows, then the reserve (both ascending, so the first row that does not fit
+  // ends the refill).
   const simDropped: SweepRow[] = []
   let simulations = 0
   while (basket.length > 0 && simulations < MAX_SIMULATIONS) {
@@ -173,8 +176,11 @@ export async function verifyBasket(
     if (simulations >= MAX_SIMULATIONS) break // a refill would go unsimulated
     let room = budget - sumOutlay(basket)
     const refill: SweepRow[] = []
-    while (basket.length + refill.length < n && reserve.length > 0 && reserve[0].outlayWei <= room) {
-      const next = reserve.shift()!
+    while (basket.length + refill.length < n) {
+      // Cheapest unseated row first: the trimmed rows, then the reserve.
+      const queue = trimmed.length > 0 ? trimmed : reserve
+      if (queue.length === 0 || queue[0].outlayWei > room) break
+      const next = queue.shift()!
       refill.push(next)
       room -= next.outlayWei
     }
@@ -196,7 +202,7 @@ export async function verifyBasket(
   const rows: SweepRow[] = [
     ...basket.map((r) => ({ ...r, state: 'basket' as const })),
     ...simDropped.map((r) => ({ ...r, state: 'dropped' as const, reason: 'not mintable right now' })),
-    ...unaffordable.map((r) => ({ ...r, state: 'unaffordable' as const, reason: 'needs more ETH' })),
+    ...[...trimmed, ...unaffordable].map((r) => ({ ...r, state: 'unaffordable' as const, reason: 'needs more ETH' })),
     ...dropped,
     ...reserve.map((r) => ({ ...r, state: 'reserve' as const })),
   ]

@@ -1004,7 +1004,7 @@ async function main() {
       'flag on, no build yet → an honest empty pool (memo invalidated by the write)',
       sweepEmpty.body,
     )
-    ok(sweepEmpty.headers.get('cache-control') === 'public, s-maxage=30, stale-while-revalidate=120', 'the pool answer is edge-cacheable', sweepEmpty.headers.get('cache-control'))
+    ok(sweepEmpty.headers.get('cache-control') === 'private, no-store', 'no readable index → uncached (a Redis blip reads the same, and must not pin "nothing to sweep" into the shared cache)', sweepEmpty.headers.get('cache-control'))
     const poolRow = (tokenId: string, outlay: bigint) => ({
       address: COLLECTION.toLowerCase(),
       tokenId,
@@ -1022,6 +1022,7 @@ async function main() {
     const served = await json('/api/sweep?n=99')
     const servedIds = ((served.body?.items as { tokenId: string }[] | undefined) ?? []).map((i) => i.tokenId).join()
     ok(served.body?.n === 20 && servedIds === '1,3', 'n clamps to the cap; the moment hidden after the build is filtered at serve time', `${served.body?.n} ${servedIds}`)
+    ok(served.headers.get('cache-control') === 'public, s-maxage=30, stale-while-revalidate=120', 'the pool answer is edge-cacheable', served.headers.get('cache-control'))
     const first = ((served.body?.items as { creatorProfile?: { username: unknown }; priceWei: string }[] | undefined) ?? [])[0]
     ok(first !== undefined && first.creatorProfile !== undefined && 'username' in first.creatorProfile && first.priceWei === PRICE.toString(), 'rows carry the identity overlay shape and the string-wei fields', first)
     const garbageN = await json('/api/sweep?n=abc')
@@ -1029,6 +1030,7 @@ async function main() {
     upstash.store.set('kismetart:sweep-index', { v: JSON.stringify({ ...pool, updatedAt: Date.now() - 25 * 60 * 60 * 1000 }) })
     const stale = await json('/api/sweep?n=10')
     ok(stale.body?.enabled === true && (stale.body?.items as unknown[]).length === 0 && typeof stale.body?.updatedAt === 'number', 'a pool older than a day serves empty (the button hides) and keeps updatedAt', stale.body)
+    ok(stale.headers.get('cache-control') === 'public, s-maxage=30, stale-while-revalidate=120', 'a stale pool is a readable state: its empty answer caches', stale.headers.get('cache-control'))
     const adminStale = await json('/api/admin/sweep', { headers: { cookie: adminCookie } })
     const idx = adminStale.body?.index as { stale?: boolean; pool?: number } | null
     ok(idx?.stale === true && idx?.pool === 3, 'admin GET reports stale: true with the pool size', adminStale.body)
