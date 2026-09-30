@@ -22,6 +22,7 @@ import {
   dominantRecipientExcluding,
   exceedsGrowthLimit,
   filterPassRoyaltyCredits,
+  isStatsRunDue,
   newAccumulateCounters,
   newPlatformTotals,
   remapEntries,
@@ -867,6 +868,17 @@ check('shiftDateUtc: degrades (returns input) on an unparseable date instead of 
     noNaN(buildSparkline([0, 0], W, H, PAD)))
   check('buildSparkline: negative + huge values stay finite (no NaN/Infinity)',
     noNaN(buildSparkline([-5, 0, 1e9], W, H, PAD)))
+}
+
+// ── the in-process stats fallback: when is a pipeline run due? ──
+console.log('\nstats fallback due-rule')
+{
+  const HOUR = 60 * 60 * 1000
+  const now = 1_000_000_000
+  check('no heartbeat at all (a fresh deployment) is due', isStatsRunDue(null, now, HOUR) && isStatsRunDue(undefined, now, HOUR))
+  check('a corrupt heartbeat is due', isStatsRunDue(Number.NaN, now, HOUR))
+  check('a run within the hour is not due', !isStatsRunDue(now - HOUR + 1, now, HOUR))
+  check('exactly an hour since the last run is due', isStatsRunDue(now - HOUR, now, HOUR))
 }
 
 if (failures > 0) {

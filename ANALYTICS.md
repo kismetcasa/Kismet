@@ -27,7 +27,7 @@ Key properties:
 | Visibility | Public by design — aggregates derivable from the public In•Process feed + the chain; exposes no individual's figures (per-artist earnings stay private-by-default on `/api/stats`) |
 | Rate limit | 60 requests / 60 s per IP → `429` |
 | Cache | Public payload: `public, s-maxage=300, stale-while-revalidate=600`; admin funnel variant: `private, no-store`; both send `Vary: Cookie` |
-| Freshness | Snapshots rebuilt **hourly** by the `sync-stats` cron (`vercel.json`: `0 * * * *` → `/api/cron/sync-stats`, `CRON_SECRET`-protected); the edge cache only smooths bursts |
+| Freshness | Snapshots rebuilt **hourly** by the `sync-stats` cron (`vercel.json`: `0 * * * *` → `/api/cron/sync-stats`, `CRON_SECRET`-protected — or, with no scheduler, by the in-process hourly fallback in `lib/backgroundTasks.ts`); the edge cache only smooths bursts |
 | Nullability | Each block is `null` until its first successful computation — never fabricated zeros |
 | Chain scope | Base (chain id 8453) only |
 | Consumers | The Discover advanced-market stats modal + trend chart (`DiscoverMarketView`) read the public blocks; also an operator/API surface |
@@ -463,7 +463,7 @@ Blind spots to keep in mind when reading the numbers:
 | Funnel events + client tracker | `lib/funnel.ts` |
 | Funnel sink / admin read | `app/api/funnel/route.ts` / `lib/funnelServer.ts` |
 | ETH/USD price | `lib/ethPrice.ts` |
-| Hourly cron driver | `app/api/cron/sync-stats/route.ts` (+ `vercel.json`) |
+| Hourly cron driver | `lib/statsPipeline.ts`, driven by `app/api/cron/sync-stats/route.ts` (+ `vercel.json`) or the in-process fallback in `lib/backgroundTasks.ts` |
 
 ## 11. Pipeline health (`/api/admin/stats-health`)
 
