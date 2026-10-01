@@ -941,15 +941,21 @@ with one `eth_getLogs` (`discovery.ts`); `/api/cron/experience-seeds` commits ea
 day's seed in advance. The play: `components/MachineStage.tsx` runs idle → dispense
 (a capsule's wallet and draw) → open, playing the artist's frames or the platform's
 capsule; the open is skippable, is not played under reduced motion, and hands over
-to the artwork in a view transition where the browser has one. The window is at most 240×240 CSS px, under
-WCAG 2.3.1's flash-threshold area, which is what lets artist clips play unscreened.
-Frames go through the mint's media path, held to 4 s, 1080 px and 2.5 MB
-(`frameUpload.ts`). Each machine has its own share card (`app/play/[id]/opengraph-image.tsx`).
+to the artwork in a view transition where the browser has one. Frames go through the
+mint's media path, held to 4 s, 1080 px and 2.5 MB, and are screened for flashing
+(WCAG 2.3.1: no more than three flashes a second over more than 21,824 CSS px² — a
+quarter of the 341 × 256 field — general or red, measured at the stage's 240 px and,
+for the looping dispense, looping; `lib/media/flashScreen.ts`) as they are picked
+(`frameUpload.ts`) and again by the server, which plays a frame only once it has
+fetched and passed it (`frameScreen.ts`, with the runtime image's ffmpeg; until then the
+platform's capsule plays). Each machine has its own share card
+(`app/play/[id]/opengraph-image.tsx`).
 
 **Risks.** Delivery needs the CDP credentials; without them every play pends until
-resumed. Art changed after review is not reviewed again. A larger stage window
-would need artist clips screened for flashes. Checked by `verify:experience` and the
-`e2e:experience` run (`scripts/e2e/README.md`).
+resumed. Art changed after review is not reviewed again, though frames are screened
+each time. Without ffmpeg on the box no frame passes, so every stage plays the
+platform's capsule. Checked by `verify:experience`, `verify:flash-screen`,
+`verify:frame-screen` (needs ffmpeg) and the `e2e:experience` run (`scripts/e2e/README.md`).
 
 ---
 

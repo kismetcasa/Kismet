@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic'
 import { useAccount } from 'wagmi'
 import type { MachineFrames } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 
 // The editors carry the whole upload stack (the Arweave signer, ffmpeg's
 // loaders), which only a machine's creator ever uses — so a player's page never
@@ -16,7 +17,13 @@ export function MachineArtEditors({
   kind,
   onDone,
 }: {
-  machine: { id: string; creator: string; cover: string | null; frames: MachineFrames | null }
+  machine: {
+    id: string
+    creator: string
+    cover: string | null
+    /** Every frame, played or not, with its screening (the payload's frameStatus). */
+    frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null
+  }
   kind: 'capsule' | 'reveal'
   onDone: () => void
 }) {
@@ -25,7 +32,7 @@ export function MachineArtEditors({
   return (
     <>
       <CoverEditor machineId={machine.id} current={machine.cover} creator={machine.creator} onDone={onDone} />
-      <FramesEditor machineId={machine.id} kind={kind} current={machine.frames} creator={machine.creator} onDone={onDone} />
+      <FramesEditor machineId={machine.id} kind={kind} current={machine.frameStatus} creator={machine.creator} onDone={onDone} />
     </>
   )
 }

@@ -80,8 +80,8 @@ export function CapsuleStudio() {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
   const coverPick = useCoverPick()
-  const dispenseFrame = useFramePick()
-  const openFrame = useFramePick()
+  const dispenseFrame = useFramePick('dispense')
+  const openFrame = useFramePick('open')
   const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 

@@ -19,15 +19,19 @@
 //
 //   npm run build && npm run e2e:experience
 //
-// The build needs an Arweave signer key (NEXT_PUBLIC_ARWEAVE_N) so the studios
-// can upload; any 512-byte value will do, and the suite says so if it is missing:
+// The server screens every stage frame with ffmpeg, so one must be on PATH, as
+// the runtime image has it. The build needs an Arweave signer key
+// (NEXT_PUBLIC_ARWEAVE_N) so the studios can upload; any 512-byte value will
+// do, and the suite says so if either is missing:
 //
 //   NEXT_PUBLIC_ARWEAVE_N=$(node -e "process.stdout.write(Buffer.alloc(512, 7).toString('base64url'))") npm run build
 
 import { createServer, request as httpRequest } from 'node:http'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   decodeAbiParameters,
   decodeFunctionData,
@@ -814,6 +818,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let ipCounter = 0
 const USER_COOKIE = '__Host-kismet_session'
 const ADMIN_COOKIE = '__Host-kismetart-admin'
+/** A machine's public payload once every named stage's frame has a verdict
+ *  (the server screens in the background), or as it is after ~20 s. */
+async function screened(id, stages) {
+  for (let i = 0; i < 100; i++) {
+    const m = (await call(`/api/experience/machines/${id}`)).json?.machine
+    if (stages.every((s) => m?.frameStatus?.[s] && m.frameStatus[s].state !== 'checking')) return m
+    await sleep(200)
+  }
+  return (await call(`/api/experience/machines/${id}`)).json?.machine
+}
 async function call(path, { method = 'GET', body, user, admin } = {}) {
   // A machine is published with a cover (the route requires one); a test of
   // that requirement sends `cover: undefined`, which JSON drops.
@@ -872,14 +886,33 @@ const inprocessServer = createServer((req, res) => {
   res.end(JSON.stringify({ metadata: meta }))
 })
 
+// ── mock Arweave gateway ──
+// What the server's frame screening fetches (lib/experience/frameScreen, told
+// ARWEAVE_GATEWAY_URL): every upload the browser made, by its id, and files
+// the suite places itself — any of which it can hold back, as a gateway still
+// settling a fresh upload would.
+const gatewayFiles = new Map()
+const gatewayServer = createServer(async (req, res) => {
+  const id = decodeURIComponent((req.url ?? '/').slice(1).split('?')[0])
+  const placed = gatewayFiles.get(id)
+  if (placed?.held) await placed.held
+  const upload = placed ? null : arweaveUploads.find((u) => u.id === id)
+  const bytes = placed?.bytes ?? (upload ? dataItemPayload(upload.body) : null)
+  if (!bytes) { res.writeHead(404); res.end(); return }
+  res.writeHead(200, { 'content-type': placed?.type ?? 'application/octet-stream', 'content-length': bytes.length })
+  res.end(bytes)
+})
+
 await new Promise((r) => redisServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => rpcServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => cdpServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => inprocessServer.listen(0, '127.0.0.1', r))
+await new Promise((r) => gatewayServer.listen(0, '127.0.0.1', r))
 const redisPort = redisServer.address().port
 const rpcPort = rpcServer.address().port
 const cdpPort = cdpServer.address().port
 const inprocessPort = inprocessServer.address().port
+const gatewayPort = gatewayServer.address().port
 
 // Sessions: the create route reads the USER cookie (and decides admin by
 // address); the review API reads the ADMIN cookie.
@@ -1115,6 +1148,29 @@ if ((await probe('/api/experience/machines')) !== null) {
     process.exit(1)
   }
 }
+// ── the server must be able to screen a frame ──
+// Every artist's stage frame is screened by the server with ffmpeg before a
+// player sees it (lib/experience/frameScreen), as the runtime image has it
+// (Dockerfile: apk add ffmpeg). Without one no frame would ever pass.
+try {
+  execFileSync('ffmpeg', ['-hide_banner', '-version'], { stdio: 'ignore' })
+} catch {
+  console.error('no ffmpeg on PATH: the server screens every stage frame with it, as the runtime image has it (apk add ffmpeg / apt install ffmpeg)')
+  process.exit(1)
+}
+/** A clip made by that ffmpeg from a source filter over black: WebM (VP8,
+ *  which this Chromium plays) or MP4 (H.264, as the studio uploads). */
+const CLIPS = mkdtempSync(join(tmpdir(), 'e2e-clips-'))
+function makeClip(name, ext, filter, { seconds = 1, size = '160x160' } = {}) {
+  const out = join(CLIPS, `${name}.${ext}`)
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${size}:r=30:d=${seconds}`,
+    '-vf', `${filter},format=yuv420p`, ...(ext === 'webm' ? ['-c:v', 'libvpx', '-b:v', '400k'] : ['-c:v', 'libx264']), out])
+  return readFileSync(out)
+}
+/** Black and white, `hz` flashes a second, over the whole frame. */
+const strobe = (hz) => `geq=lum='if(lt(mod(T\\,${1 / hz})\\,${1 / (2 * hz)})\\,255\\,0)':cb=128:cr=128`
+/** A white box gliding across: motion, and no flashing. */
+const GLIDE = "drawbox=x='mod(t*60\\,120)':y=50:w=40:h=40:color=white:t=fill"
 /** The server's Arweave key: /api/sign really signs every upload with it. */
 const ARWEAVE_JWK = Buffer.from(JSON.stringify(generateKeyPairSync('rsa', { modulusLength: 4096 }).privateKey.export({ format: 'jwk' }))).toString('base64')
 
@@ -1157,6 +1213,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     CDP_PAYMASTER_URL: `http://127.0.0.1:${cdpPort}/paymaster`,
     INPROCESS_API_URL: `http://127.0.0.1:${inprocessPort}/api`,
     ARWEAVE_JWK,
+    ARWEAVE_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -1166,7 +1223,7 @@ child.stderr.on('data', (d) => { serverLog += d; if (DEBUG) process.stderr.write
 child.on('error', (err) => { console.error(`spawn failed: ${err.message}`); process.exit(1) })
 child.on('exit', (code, sig) => { if (!up) { console.error(`server exited before ready (code=${code} sig=${sig})\n${serverLog.slice(-1500)}`); process.exit(1) } })
 let up = false
-const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close(); inprocessServer.close() }
+const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close(); inprocessServer.close(); gatewayServer.close(); rmSync(CLIPS, { recursive: true, force: true }) }
 process.on('exit', shutdown)
 // A SIGTERM/SIGINT (a `timeout`, a Ctrl-C) does not run 'exit' handlers on its
 // own, and an orphaned server would hold the port for the next run.
@@ -2737,11 +2794,12 @@ try {
         const r = el?.getBoundingClientRect()
         return { top: r?.top ?? NaN, bottom: r?.bottom ?? NaN, nav: document.querySelector('header')?.getBoundingClientRect().bottom ?? NaN, view: innerHeight }
       }, selector)
-      // WCAG 2.3.1's flash-threshold area, in CSS pixels (341 × 256).
-      const FLASH_AREA = 341 * 256
-      const stageArea = async (page) => {
+      // The side, in CSS px, that artists' clips are screened for flashing at
+      // (lib/media/flashScreen FLASH_STAGE_PX): the stage may be no larger.
+      const SCREENED_SIDE = 240
+      const stageSide = async (page) => {
         const b = await page.locator('[data-stage]').boundingBox()
-        return b ? b.width * b.height : Infinity
+        return b ? Math.max(b.width, b.height) : Infinity
       }
       // How long the stage `name` was shown, the nth time it was.
       const stageMs = (stages, name, nth = 0) => {
@@ -2831,10 +2889,16 @@ try {
           check('only its creator sets a machine\'s frames — Arweave uploads, for the stages its kind has',
             refused.map((r) => r.status).join() === '403,400,400,400', refused.map((r) => r.status).join())
           const still = { uri: TEST_FRAME.poster, kind: 'image', poster: TEST_FRAME.poster }
+          // What they are, for the server to fetch and screen: a calm clip, and its still.
+          const { default: sharp } = await import('sharp')
+          gatewayFiles.set(TEST_FRAME.uri.slice(5), { bytes: makeClip('test-frame', 'mp4', GLIDE), type: 'video/mp4' })
+          gatewayFiles.set(TEST_FRAME.poster.slice(5), { bytes: await sharp({ create: { width: 160, height: 160, channels: 3, background: '#224' } }).jpeg().toBuffer(), type: 'image/jpeg' })
           const set1 = await set('spring-season', ADMIN_USER_TOKEN, { dispense: TEST_FRAME, open: still })
-          const shown = (await call('/api/experience/machines/spring-season')).json?.machine?.frames
-          check('its creator sets them, and the machine\'s page is given them',
-            set1.status === 200 && JSON.stringify(shown) === JSON.stringify({ dispense: TEST_FRAME, open: still }), JSON.stringify(shown))
+          const shown = await screened('spring-season', ['dispense', 'open'])
+          check('its creator sets them; the server screens them, and once they pass the machine\'s page is given them',
+            set1.status === 200 && JSON.stringify(shown?.frames) === JSON.stringify({ dispense: TEST_FRAME, open: still }) &&
+              shown?.frameStatus?.dispense?.state === 'passed' && shown?.frameStatus?.open?.state === 'passed',
+            JSON.stringify(shown?.frameStatus))
           await set('spring-season', ADMIN_USER_TOKEN, {})
           check('and clears them, back to the platform\'s capsule', (await call('/api/experience/machines/spring-season')).json?.machine?.frames === null)
           const reveal = await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: {
@@ -2887,14 +2951,15 @@ try {
           await page.getByText('insert coin').waitFor()
           const body = await text(page)
           check('the face says insert coin', body.includes('insert coin'))
-          const deskArea = await stageArea(page)
-          check('and on a desktop too', deskArea <= FLASH_AREA && deskArea > 0, `${deskArea} of ${FLASH_AREA}`)
+          const deskSide = await stageSide(page)
+          check('the window is never larger than the 240 px its artists\' clips are screened for flashing at (WCAG 2.3.1)',
+            deskSide <= SCREENED_SIDE && deskSide > 0, `${deskSide} of ${SCREENED_SIDE}`)
           // A reader who sets larger text (a 32 px default here) must not get a
           // larger window. Measured on a desktop: on a phone the width bounds it.
           await page.evaluate(() => { document.documentElement.style.fontSize = '32px' })
-          const bigTextArea = await stageArea(page)
+          const bigTextSide = await stageSide(page)
           await page.evaluate(() => { document.documentElement.style.fontSize = '' })
-          check('and stays under it when the reader enlarges text', bigTextArea <= FLASH_AREA && bigTextArea > 0, `${bigTextArea} of ${FLASH_AREA}`)
+          check('and stays within it when the reader enlarges text', bigTextSide <= SCREENED_SIDE && bigTextSide > 0, `${bigTextSide} of ${SCREENED_SIDE}`)
           check('the pull selector offers ×1 ×5 ×10', ['×1', '×5', '×10'].every((n) => body.includes(n)))
           const play = page.getByRole('button', { name: 'play', exact: true })
           check('and play is enabled before any wallet is connected', await play.isEnabled())
@@ -3129,9 +3194,8 @@ try {
           check('the odds are summed up beside the price, with a link to the table',
             (await oddsLine.count()) === 1 && (await oddsLine.getByRole('link', { name: 'see odds' }).getAttribute('href')) === '#odds' &&
               (await page.locator('section#odds').getByText("what's inside · published odds").count()) === 1)
-          const phoneArea = await stageArea(page)
-          check('the window stays under the flash-threshold area on a phone, so no artist clip can flash over it (WCAG 2.3.1)',
-            phoneArea <= FLASH_AREA && phoneArea > 0, `${phoneArea} of ${FLASH_AREA}`)
+          const phoneSide = await stageSide(page)
+          check('and on a phone', phoneSide <= SCREENED_SIDE && phoneSide > 0, `${phoneSide} of ${SCREENED_SIDE}`)
           // The table ends the page, so the page cannot scroll it to the top;
           // room below it lets the jump go as far as it will, and only the
           // header's offset stops it.
@@ -3257,7 +3321,11 @@ try {
           await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(3, 77) })
           await studio.getByRole('button', { name: 'save frames' }).click({ timeout: 60_000 })
           await studio.getByText('Frames updated').waitFor({ timeout: 30_000 }).catch(() => {})
-          const frames = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
+          // The server screens what was uploaded before a player's stage plays it.
+          const afterSave = await screened('browser-machine', ['dispense', 'open'])
+          const frames = afterSave?.frames
+          check('the server fetches both uploads and screens them, and both pass',
+            afterSave?.frameStatus?.dispense?.state === 'passed' && afterSave?.frameStatus?.open?.state === 'passed', JSON.stringify(afterSave?.frameStatus))
           const sent = arweaveUploads.slice(uploadsBefore).map((u) => `ar://${u.id}`)
           const parts = [frames?.dispense?.uri, frames?.dispense?.poster, frames?.open?.uri, frames?.open?.poster]
           check('its creator gives it frames on its page: each gif made a video and its still, all four uploaded through the app\'s own signer',
@@ -3339,9 +3407,90 @@ try {
           await editing.getByRole('button', { name: 'save frames' }).click()
           await editing.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
           const left = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
-          check('its creator removes one frame, and the other stays as it was, uploaded nothing new',
+          check('its creator removes one frame, and the other stays as it was, uploaded nothing new — still played, not screened again',
             JSON.stringify(left) === JSON.stringify({ dispense: frames?.dispense }) && arweaveUploads.length === uploadsNow, JSON.stringify(left))
           await editing.context().close()
+
+          // ── what a frame is screened for, and where ──
+          // The studio refuses a clip that flashes, and an image that moves, as
+          // it is picked. The server screens every frame again — one sent
+          // straight to the API included — and a player's stage plays a frame
+          // only once it has passed.
+          const screening = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
+          const openPick = screening.getByLabel('open frame', { exact: true })
+          await openPick.waitFor({ state: 'attached' })
+          const uploadsAt = arweaveUploads.length
+          await openPick.setInputFiles({ name: 'strobe.webm', mimeType: 'video/webm', buffer: makeClip('strobe', 'webm', strobe(4)) })
+          const strobeSaid = await screening.getByText('It flashes 4 times a second over 100% of the stage — keep flashing to three times a second, or to under 37% of the stage')
+            .waitFor({ timeout: 60_000 }).then(() => true, () => false)
+          await openPick.setInputFiles({ name: 'calm.webm', mimeType: 'video/webm', buffer: makeClip('glide', 'webm', GLIDE) })
+          const calmTaken = await screening.getByRole('button', { name: 'save frames' }).waitFor({ timeout: 60_000 }).then(() => true, () => false)
+          await screening.getByRole('button', { name: 'remove open frame' }).click()
+          const moving = await sharp(tinyGif(10), { animated: true }).webp().toBuffer()
+          await openPick.setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: moving })
+          const movingSaid = await screening.getByText('This image moves — give an animation as a gif or a video, which are checked for flashing')
+            .waitFor({ timeout: 30_000 }).then(() => true, () => false)
+          check('the studio refuses a clip that flashes four times a second across the stage, saying why and how to pass, and an image that moves — nothing uploaded; a calm clip is taken',
+            strobeSaid && movingSaid && calmTaken && arweaveUploads.length === uploadsAt, `${strobeSaid} ${movingSaid} ${calmTaken} ${arweaveUploads.length - uploadsAt}`)
+          await screening.context().close()
+
+          // Straight to the API: a flashing clip the studio never saw, sent with
+          // a verdict of its own. Its gateway holds it back a while, as one
+          // settling a fresh upload does.
+          const placed = (name) => 'e2e' + name.padEnd(40, '0')
+          const STROBE = placed('Strobe')
+          const STROBE_STILL = placed('StrobeStill')
+          let release = () => {}
+          gatewayFiles.set(STROBE, { bytes: makeClip('strobe-mp4', 'mp4', strobe(4)), type: 'video/mp4', held: new Promise((r) => { release = r }) })
+          gatewayFiles.set(STROBE_STILL, { bytes: await sharp({ create: { width: 160, height: 160, channels: 3, background: '#000' } }).jpeg().toBuffer(), type: 'image/jpeg' })
+          const setFrames = (frames) => call('/api/experience/machines/browser-machine', { method: 'POST', user: USER_TOKEN, body: { action: 'frames', frames } })
+          const strobeFrame = { uri: `ar://${STROBE}`, kind: 'video', poster: `ar://${STROBE_STILL}` }
+          const direct = await setFrames({ dispense: frames?.dispense, open: { ...strobeFrame, check: { state: 'passed', at: 1 } } })
+          const waiting = (await call('/api/experience/machines/browser-machine')).json?.machine
+          check('a frame sent straight to the API is saved, its own verdict ignored: it waits to be screened, and a player is not given it',
+            direct.status === 200 && waiting?.frameStatus?.open?.state === 'checking' && !waiting?.frames?.open,
+            `${direct.status} ${JSON.stringify(waiting?.frameStatus?.open)} ${JSON.stringify(waiting?.frames)}`)
+          check('while the frame it kept is still played, without being screened again',
+            waiting?.frames?.dispense?.uri === frames?.dispense?.uri && waiting?.frameStatus?.dispense?.state === 'passed')
+          const creatorSees = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, images: true })
+          const saysChecking = await creatorSees.getByText('checking for flashing — players see the capsule until it passes')
+            .waitFor({ timeout: 20_000 }).then(() => true, () => false)
+          await creatorSees.context().close()
+          release()
+          const judged = await screened('browser-machine', ['open'])
+          check('its creator is told it is being checked; once the gateway has it, the server refuses it for flashing, and it is still not played',
+            saysChecking && judged?.frameStatus?.open?.state === 'refused' && /^It flashes 4 times a second over 100% of the stage/.test(judged.frameStatus.open.reason ?? '') && !judged?.frames?.open,
+            `${saysChecking} ${JSON.stringify(judged?.frameStatus?.open)}`)
+          const refusedView = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, images: true })
+          const saysRefused = await refusedView.getByText(/^not shown to players: It flashes 4 times a second/).waitFor({ timeout: 20_000 }).then(() => true, () => false)
+          await refusedView.context().close()
+          const player = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true })
+          await player.getByText('insert coin').waitFor()
+          const playerFrames = { dispense: await player.locator('[data-frame="dispense"]').count(), open: await player.locator('[data-frame="open"]').count() }
+          await player.context().close()
+          check('its creator is told why, on the machine\'s page; a player\'s stage has the dispense and no open of the artist\'s — the capsule opens',
+            saysRefused && playerFrames.dispense === 1 && playerFrames.open === 0, `${saysRefused} ${JSON.stringify(playerFrames)}`)
+
+          // The limits, enforced again: a clip too long for its stage, and an
+          // image that moves given as a still.
+          const LONG = placed('Long')
+          const MOVING = placed('Moving')
+          gatewayFiles.set(LONG, { bytes: makeClip('long', 'mp4', GLIDE, { seconds: 5 }), type: 'video/mp4' })
+          gatewayFiles.set(MOVING, { bytes: moving, type: 'image/webp' })
+          await setFrames({ dispense: frames?.dispense, open: { uri: `ar://${LONG}`, kind: 'video', poster: `ar://${STROBE_STILL}` } })
+          const longClip = await screened('browser-machine', ['open'])
+          await setFrames({ dispense: frames?.dispense, open: { uri: `ar://${MOVING}`, kind: 'image', poster: `ar://${MOVING}` } })
+          const stillMoves = await screened('browser-machine', ['open'])
+          check('the server refuses, for itself, a five-second clip and an image that moves — neither played',
+            longClip?.frameStatus?.open?.reason === 'It runs 5.0 seconds — at most 4' && !longClip?.frames?.open &&
+              /^It moves — an animated frame is a gif or a video/.test(stillMoves?.frameStatus?.open?.reason ?? '') && !stillMoves?.frames?.open,
+            `${JSON.stringify(longClip?.frameStatus?.open)} ${JSON.stringify(stillMoves?.frameStatus?.open)}`)
+          // Through all of it, the dispense kept its verdict: it was sent back
+          // unchanged each time. Taking the open away leaves it as it was.
+          await setFrames({ dispense: frames?.dispense })
+          const restored = (await call('/api/experience/machines/browser-machine')).json?.machine
+          check('and the frame sent back unchanged each time kept its verdict throughout — played at once, never screened again',
+            JSON.stringify(restored?.frames) === JSON.stringify({ dispense: frames?.dispense }), JSON.stringify(restored?.frames))
         }
 
         // ── an artist allows capsule machines on their piece ──

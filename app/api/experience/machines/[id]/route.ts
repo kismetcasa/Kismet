@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { isAddress } from '@/lib/address'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -20,7 +20,8 @@ import {
   setMachineState,
   withdrawMachine,
 } from '@/lib/experience/store'
-import { parseCover, parseFrames } from '@/lib/experience/cover'
+import { frameStatus, parseCover, parseFrames, playerFrames } from '@/lib/experience/cover'
+import { screenMachineFrames, screenMachineFramesSoon, screeningDue } from '@/lib/experience/frameScreen'
 import { readCapsuleSupply } from '@/lib/experience/authority'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
@@ -54,6 +55,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     // profile (GET /api/experience/machines?creator=).
     return errorResponse(404, 'Machine not found')
   }
+  // A frame not yet screened — its gateway was not ready, or the box had no
+  // ffmpeg — is tried again after a read, and is not played until it passes.
+  if (screeningDue(machine.frames)) after(() => screenMachineFramesSoon(id).catch(() => {}))
 
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
@@ -124,7 +128,10 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       state: machine.state,
       creator: machine.creator,
       cover: machine.cover?.uri ?? null,
-      frames: machine.frames ?? null,
+      // A player's stage plays only screened frames; the creator's editor is
+      // shown every frame and where its screening stands.
+      frames: playerFrames(machine.frames),
+      frameStatus: frameStatus(machine.frames),
       rarity: machine.rarity ?? 'manual',
       capsule: machine.capsule,
       capsuleArt,
@@ -192,7 +199,10 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
       name: machine.name,
       state: machine.state,
       cover: machine.cover?.uri ?? null,
-      frames: machine.frames ?? null,
+      // A player's stage plays only screened frames; the creator's editor is
+      // shown every frame and where its screening stands.
+      frames: playerFrames(machine.frames),
+      frameStatus: frameStatus(machine.frames),
       creator: machine.creator,
     },
     // The curator earns the mint referral on every collect made through their
@@ -254,7 +264,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       // Which stages a machine has depends on its kind, so they are read here.
       const frames = parseFrames(body?.frames, isReveal(machine) ? 'reveal' : 'capsule')
       if (!frames) return errorResponse(400, 'Invalid frames')
-      return NextResponse.json({ ok: true, machine: await setMachineArt(id, { frames }) })
+      const saved = await setMachineArt(id, { frames })
+      after(() => screenMachineFrames(id).catch(() => {}))
+      return NextResponse.json({ ok: true, machine: saved })
     }
     if (action === 'end') {
       if (machine.state !== 'live') return errorResponse(409, 'Only a live machine can end its season')

@@ -244,7 +244,16 @@ export interface StageFrame {
   /** Its still; the same upload as `uri` for an image. */
   poster: string
   thumbhash?: string
+  /** The server's verdict on it (lib/experience/frameScreen): stored with the
+   *  frame, never taken from a request, never sent to a player. None yet
+   *  means it is still being checked, and is not played. */
+  check?: FrameCheck
 }
+
+/** What the server's screening of a stage frame found. */
+export type FrameCheck =
+  | { state: 'passed'; at: number }
+  | { state: 'refused'; reason: string; at: number }
 
 /** The stages an artist can draw. A reveal machine's pull waits on nothing,
  *  so it has no dispense. Absent stages play the platform's own capsule. */

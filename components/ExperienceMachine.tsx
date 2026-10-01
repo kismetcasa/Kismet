@@ -12,6 +12,7 @@ import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
 import type { MachineFrames } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -76,6 +77,7 @@ interface MachinePayload {
     cover: string | null
     /** The artist's own frames for the play; null for the platform's capsule. */
     frames: MachineFrames | null
+    frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null
     rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null

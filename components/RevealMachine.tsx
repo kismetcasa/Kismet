@@ -13,6 +13,7 @@ import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
 import type { MachineFrames } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -36,7 +37,7 @@ interface LineupRow {
 }
 
 interface Payload {
-  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null }
+  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null; frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null }
   /** Who earns the mint referral on collects from this machine: its curator,
    *  or null when Kismet curates (Kismet's own referral then applies). */
   referral: string | null

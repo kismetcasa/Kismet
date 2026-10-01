@@ -101,9 +101,10 @@ ENV PORT=3000
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # ffmpeg powers the server-side GIF→MP4 transcode (/api/transcode-gif),
-# the no-wasm-cap fallback for GIFs too large for the in-browser path.
-# Static Alpine package, no extra runtime deps; the route shells out to
-# the binary via child_process.
+# the no-wasm-cap fallback for GIFs too large for the in-browser path, and
+# the flash screening of machines' stage frames (lib/experience/frameScreen),
+# without which no artist's frame is ever played. Static Alpine package, no
+# extra runtime deps; both shell out to the binary via child_process.
 RUN apk add --no-cache ffmpeg
 
 # Non-root runtime user (security baseline; some host kernels' seccomp

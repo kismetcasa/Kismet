@@ -1,10 +1,11 @@
 import 'server-only'
 import { redis } from '../redis'
+import { acquireLock } from '../redisLock'
 import { randomHex } from '../random'
 import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
 import { isReveal } from './types'
-import type { ClaimRecord, ClaimState, Machine, MachineCover, MachineFrames, MachineState, PoolEntry, SnapshotEntry } from './types'
+import type { ClaimRecord, ClaimState, FrameCheck, Machine, MachineCover, MachineFrames, MachineState, PoolEntry, SnapshotEntry } from './types'
 
 /**
  * Redis persistence for the Experience. Redis is the platform's only datastore,
@@ -250,10 +251,53 @@ export async function setMachineArt(
     'cover' in art
       ? { ...m, cover: art.cover }
       : Object.keys(art.frames).length > 0
-        ? { ...m, frames: art.frames }
+        ? { ...m, frames: keepChecks(art.frames, m.frames) }
         : (unframed as Machine)
   await redis.set(kMachine(id), JSON.stringify(next))
   return next
+}
+
+/** New frames, each keeping the verdict its stage already had when it is the
+ *  same upload — an editor re-sends the frames it did not change. */
+function keepChecks(frames: MachineFrames, was: MachineFrames | undefined): MachineFrames {
+  const out: MachineFrames = {}
+  for (const stage of Object.keys(frames) as (keyof MachineFrames)[]) {
+    const frame = frames[stage]!
+    const old = was?.[stage]
+    const same = old && old.uri === frame.uri && old.poster === frame.poster && old.kind === frame.kind
+    out[stage] = same && old.check ? { ...frame, check: old.check } : frame
+  }
+  return out
+}
+
+/**
+ * Record the server's verdict on one of a machine's frames — only if the
+ * stage still holds the upload it was reached for, and has no verdict yet.
+ * Under the state lock the creator's changes take, so neither overwrites the
+ * other; false when the lock was busy (screening tries again later).
+ */
+export async function setFrameCheck(
+  id: string,
+  stage: keyof MachineFrames,
+  uri: string,
+  check: FrameCheck,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const lock = await acquireLock(machineStateLockKey(id), 30).catch(() => null)
+    if (lock?.acquired) {
+      try {
+        const m = await getMachine(id)
+        const frame = m?.frames?.[stage]
+        if (!m || !frame || frame.uri !== uri || frame.check) return true
+        await redis.set(kMachine(id), JSON.stringify({ ...m, frames: { ...m.frames, [stage]: { ...frame, check } } }))
+        return true
+      } finally {
+        await lock.release()
+      }
+    }
+    await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+  }
+  return false
 }
 
 /** How many capsule transactions have been opened on a machine. */

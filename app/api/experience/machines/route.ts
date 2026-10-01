@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -42,6 +42,7 @@ import { epochFor } from '@/lib/experience/fairness'
 import { isReveal } from '@/lib/experience/types'
 import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
 import { parseCover, parseFrames } from '@/lib/experience/cover'
+import { screenMachineFrames } from '@/lib/experience/frameScreen'
 import { machineCards } from '@/lib/experience/cards'
 
 /**
@@ -499,6 +500,8 @@ export async function POST(req: NextRequest) {
 
   const published = await setMachineState(id, finalState)
   if (published?.state === 'review') await noticeReview(published)
+  // Its frames are played only once the server has screened them.
+  if (frames) after(() => screenMachineFrames(id).catch(() => {}))
 
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }
@@ -603,5 +606,6 @@ async function publishReveal(input: {
   const published = await setMachineState(input.id, input.isAdmin ? 'live' : 'review')
   if (published?.state === 'live') await noticeFeaturedArtists(input.id).catch(() => {})
   if (published?.state === 'review') await noticeReview(published)
+  if (input.frames) after(() => screenMachineFrames(input.id).catch(() => {}))
   return NextResponse.json({ ok: true, machine: published ?? machine })
 }

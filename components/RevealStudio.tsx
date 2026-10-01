@@ -52,7 +52,7 @@ export function RevealStudio() {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
   const coverPick = useCoverPick()
-  const openFrame = useFramePick()
+  const openFrame = useFramePick('open')
   const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 

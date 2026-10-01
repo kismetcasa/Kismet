@@ -300,7 +300,8 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
 # End-to-end check — the gachapon machines
 
 `scripts/e2e-experience.mjs` (`npm run e2e:experience`) boots the built app
-with its Redis, Base RPC, CDP and inprocess faked in-process, then walks both
+with its Redis, Base RPC, CDP, inprocess and Arweave gateway faked in-process,
+then walks both
 kinds of machine over real HTTP and, in its second half, in a real Chromium.
 CDP credentials are absent, so every delivery lands in `pending` and the
 recovery paths run.
@@ -319,14 +320,17 @@ npm run e2e:experience
 ```
 
 The build needs an Arweave signer key so the studios can upload; any 512-byte
-value will do. The browser half drives `playwright-core` (skipped, with a
+value will do. The server screens every stage frame with `ffmpeg`, as the
+runtime image has it, so one must be on PATH — the suite stops and says so
+otherwise — and the suite makes its flashing and calm clips with it. The
+browser half drives `playwright-core` (skipped, with a
 notice, when it is not installed) and the Chromium under `/opt/pw-browsers` (a
 failed check when none launches). That Chromium plays VP8 but not H.264, so the
 video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (548)
+## What it asserts (556)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -340,11 +344,17 @@ machine share card. About three minutes.
   its timing, skip and reduced motion, with the platform's capsule and with an
   artist's frames; frame limits, including a GIF's own length; uploads decoded
   as sent.
+- **Flashing (WCAG 2.3.1)** — the studio refuses a clip that flashes four
+  times a second, and an image that moves, before anything uploads; the server
+  screens every frame again: one sent straight to the API waits, unplayed,
+  while its gateway holds it back, then is refused, and its creator is told
+  why; a clip too long and a moving image are refused by the server too; a
+  frame sent back unchanged keeps its verdict. The window is never larger than
+  the 240 px it is screened at, on a desktop, a phone, and with enlarged text.
 - **Accessibility** — a status line for each step (WCAG 4.1.3); focus to skip,
-  then to the result, without scrolling (2.4.3, 2.4.11); the window under the
-  flash-threshold area on a phone, a desktop, and with enlarged text (2.3.1);
-  "see odds" landing below the fixed header; view transitions that start and
-  run, and none under reduced motion.
+  then to the result, without scrolling (2.4.3, 2.4.11); "see odds" landing
+  below the fixed header; view transitions that start and run, and none under
+  reduced motion.
 - **Share card** — a machine's Farcaster embed and its card; a card whose cover
   is out of reach draws its text, not a blank; a machine in review shares the
   bare card.
