@@ -941,3 +941,33 @@ What that changes for this review's budget model, and what it does not:
 - **Upload wall-clock**: a 64 MiB body no longer fits Traefik's 60 s default
   read timeout on ordinary uplinks; the proxy flag is an ops obligation
   (`OPS_RUNBOOK.md` §5), not a Redis one.
+
+## Addendum (2026-10-01) — the machines' keyspace (`kismetart:xp:*`)
+
+The capsule and reveal machines (`lib/experience/store.ts`, STACK_OVERVIEW G7)
+arrived after this review's sweep, so Part II never listed them. Their families,
+from the code (per machine `<id>`; addresses lowercased):
+
+| Key family | Type | Written / read | Bound |
+|---|---|---|---|
+| `xp:<id>:meta` | string JSON (the machine, its frames and their screening verdicts) | SET NX on publish; SET under `xp:lock:state:<id>` on edits / GET, MGET ≤500 per list | one per machine |
+| `xp:index` · `xp:creator:<addr>` | zset id→createdAt | ZADD on publish / ZRANGE rev | index write-trimmed to 1,000; a creator's list is untrimmed |
+| `xp:<id>:pool` · `xp:<id>:remaining` | hash entry→JSON · entry→supply (−1 open) | HSET / HGETALL; draws HINCRBY −1 with rollback | the machine's pool |
+| `xp:commit:<c>:<t>` · `xp:capsule:<c>:<t>` · `xp:uses:<c>:<t>` | hash machine→pledged · string reservation (SET NX, takeover Lua) · set | publish, edit, withdrawal | one per edition in a machine |
+| `xp:featuring:<addr>` · `xp:linked:<c>` · `xp:optout` · `xp:curators` | sets | SADD/SREM / SMEMBERS | artists, collections, opted-out pieces, curators |
+| `xp:<id>:claim:<tx>:<unit>` | string JSON, **no TTL** | SET NX per capsule unit / GET | **+1 per capsule played, forever** — the player's receipt, deliberate |
+| `xp:<id>:seed:<epoch>` | string, **no TTL** | SET NX (commit–reveal) / GET | **+1 per machine per UTC day while it can draw** — kept so past draws stay verifiable |
+| `xp:<id>:plays` · `xp:<id>:prizes` | zset | MULTI ZADD + ZREMRANGEBYRANK | write-trimmed to 5,000 each |
+| `xp:<id>:spark:<addr>` | string counter | INCRBY / GET | one per player per machine |
+| `xp:<id>:notices` | set | SADD (once-only test) | one per machine |
+| `xp:lock:<id>:<tx>:<unit>` · `xp:lock:state:<id>` · `xp:deliver:<claim>` · `lock:xp-frames:<id>` | lock strings | SET NX EX 180 / 30–60 / 120 / 180 | TTL'd |
+| `xp:discover:<c>:<t>:<addr>` · `xp:frames-retry:<id>` | cache · throttle | SET EX 30 · SET NX EX 30 | TTL'd |
+| `xp:job:experience-seeds` · `xp:job:referral-payouts` | string, ms of the last run | SET by each run, either driver / GET each 5-min tick (lib/backgroundTasks) | two keys |
+| `referral-payouts` · `referral-payouts:ops` · `referral-payouts:paid` | lock (EX 600) · hash userOp→entry · hash address→wei | each payout run | ops pruned after 30 days; paid one per payee |
+
+Plus the `rl:xp-*` rate-limit counters (§II.1's limiter, TTL'd). For the
+growth ledger (§3.5): claims and seeds grow forever but are only ever point-read
+— storage, not a cliff. A seed is 64 hex characters; a claim carries its frozen
+draw table, so it scales with the pool (at most MAX_POOL_ENTRIES = 200 rows of
+~200 bytes, so tens of KB at the cap). The in-process jobs add two GETs per
+5-minute tick and, hourly, one pass of two SET NX per machine that can draw.
