@@ -287,3 +287,22 @@ export function isAnimatedImage(b: Uint8Array): boolean {
   }
   return false
 }
+
+/**
+ * Whether an image is an SVG. An SVG can move by itself — SMIL or CSS
+ * animation, or an animated image inside it, all of which a browser plays in
+ * an <img> — and what it does cannot be known without rendering it, so a
+ * still that must stay still (a cover, a stage frame) is never one. SVG is
+ * XML, so it begins with '<' after any byte-order mark and whitespace, which
+ * no raster format does.
+ */
+export function isSvg(b: Uint8Array): boolean {
+  const utf16 = (b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)
+  if (!utf16) {
+    let at = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? 3 : 0
+    while (at < b.length && [0x20, 0x09, 0x0a, 0x0d].includes(b[at])) at++
+    if (b[at] !== 0x3c) return false
+  }
+  const text = new TextDecoder(utf16 ? (b[0] === 0xff ? 'utf-16le' : 'utf-16be') : 'utf-8').decode(b)
+  return /^\s*</.test(text) && /<(?:[\w.-]+:)?svg[\s>/]/i.test(text)
+}

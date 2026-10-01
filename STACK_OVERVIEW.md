@@ -922,7 +922,7 @@ and delivered by `adminMint` from a dedicated CDP account, gas sponsored. A **re
 machine** dispenses nothing: a free pull shows one piece from those on sale right now,
 which the player collects through that piece's own sale. A machine is published live
 by an admin and into the review queue by anyone else. Its cover (required, and a
-still: a GIF becomes its first frame, any other image that moves is refused) and its
+still: a GIF becomes its first frame; any other image that moves, or an SVG, is refused) and its
 artist frames can be changed by its creator after it is live.
 
 **Why.** A creator sets weights and supplies, never odds (`lib/experience/types.ts`):
@@ -949,12 +949,15 @@ quarter of the 341 × 256 field — general or red, measured at the stage's 240 
 for the looping dispense, looping; `lib/media/flashScreen.ts`) as they are picked
 (`frameUpload.ts`) and again by the server, which plays a frame only once it has
 fetched and passed it (`frameScreen.ts`, with the runtime image's ffmpeg; until then the
-platform's capsule plays). Each machine has its own share card
+platform's capsule plays). A still — an image frame, a clip's poster — must not move:
+an animated image is refused, and so is an SVG, which can move by itself. Each machine
+has its own share card
 (`app/play/[id]/opengraph-image.tsx`).
 
 **Risks.** Delivery needs the CDP credentials; without them every play pends until
 resumed. Art changed after review is not reviewed again, though frames are screened
-each time. Without ffmpeg on the box no frame passes, so every stage plays the
+each time; a cover is made a still by the studio, but one sent straight to the API is
+not checked by the server. Without ffmpeg on the box no frame passes, so every stage plays the
 platform's capsule. Checked by `verify:experience`, `verify:flash-screen`,
 `verify:frame-screen` (needs ffmpeg) and the `e2e:experience` run (`scripts/e2e/README.md`).
 

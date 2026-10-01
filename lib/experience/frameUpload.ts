@@ -6,7 +6,7 @@ import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { gifSeconds, readGifTiming } from '@/lib/media/gifTiming'
-import { FLASH_DECODE_FILTER, FLASH_RATE, flashReason, isAnimatedImage, screenFlashes, type FlashVerdict } from '@/lib/media/flashScreen'
+import { FLASH_DECODE_FILTER, FLASH_RATE, flashReason, isAnimatedImage, isSvg, screenFlashes, type FlashVerdict } from '@/lib/media/flashScreen'
 import { FRAME_LIMITS, type MachineFrames, type StageFrame } from './types'
 
 /**
@@ -71,8 +71,12 @@ async function prepare(file: File, stage: keyof MachineFrames): Promise<Prepared
     frame = { media, poster, kind: 'video' }
     seconds = await probeDurationSeconds(media)
   } else {
-    if (isAnimatedImage(new Uint8Array(await file.arrayBuffer()))) {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (isAnimatedImage(bytes)) {
       return 'This image moves — give an animation as a gif or a video, which are checked for flashing'
+    }
+    if (isSvg(bytes)) {
+      return 'An SVG can move by itself — give a still as a png, jpg or webp, or an animation as a gif or a video, which are checked for flashing'
     }
     frame = { media: file, poster: file, kind: 'image' }
   }

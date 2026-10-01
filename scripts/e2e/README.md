@@ -341,18 +341,18 @@ machine share card. About three minutes.
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
   and ending a season on-chain.
 - **Art** — the required cover, changed live, and always a still: one that
-  moves is refused as it is picked, and a GIF becomes its first frame; the
-  stage (idle, dispense, open), its timing, skip and reduced motion, with the
-  platform's capsule and with an artist's frames; frame limits, including a
-  GIF's own length; uploads decoded as sent.
+  moves, or an SVG, is refused as it is picked, and a GIF becomes its first
+  frame; the stage (idle, dispense, open), its timing, skip and reduced
+  motion, with the platform's capsule and with an artist's frames; frame
+  limits, including a GIF's own length; uploads decoded as sent.
 - **Flashing (WCAG 2.3.1)** — the studio refuses a clip that flashes four
-  times a second, and an image that moves, before anything uploads; the server
-  screens every frame again: one sent straight to the API waits, unplayed,
-  while its gateway holds it back, then is refused, and its creator is told
-  why; a clip too long and a moving image are refused by the server too; a
-  frame sent back unchanged keeps its verdict; a creator's page takes up a
-  verdict without a reload. The window is never larger than
-  the 240 px it is screened at, on a desktop, a phone, and with enlarged text.
+  times a second, an image that moves, and an SVG, before anything uploads;
+  the server screens every frame again: one sent straight to the API waits,
+  unplayed, while its gateway holds it back, then is refused, and its creator
+  is told why; a clip too long and a moving image are refused by the server
+  too; a frame sent back unchanged keeps its verdict; a creator's page takes
+  up a verdict without a reload. The window is never larger than the 240 px
+  it is screened at, on a desktop, a phone, and with enlarged text.
 - **Accessibility** — a status line for each step (WCAG 4.1.3); focus to skip,
   then to the result, without scrolling (2.4.3, 2.4.11); "see odds" landing
   below the fixed header; view transitions that start and run, and none under

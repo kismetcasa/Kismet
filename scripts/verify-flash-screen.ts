@@ -26,6 +26,7 @@ import {
   FLASH_STAGE_PX,
   flashReason,
   isAnimatedImage,
+  isSvg,
   screenFlashes,
   type FlashVerdict,
 } from '../lib/media/flashScreen.ts'
@@ -236,6 +237,16 @@ console.log('\n6. what a creator is told, and what an image is')
   check('an animated WebP moves', isAnimatedImage(animatedWebp), `${animatedWebp.length} bytes`)
   check('an APNG of two frames moves; one declaring a single frame does not', isAnimatedImage(apng(2)) && !isAnimatedImage(apng(1)))
   check('an AVIF image sequence moves; an AVIF still does not', isAnimatedImage(avif('avis')) && !isAnimatedImage(avif('avif')))
+  // An SVG can move by itself (SMIL, CSS, an image inside it), so it is never a still.
+  const text = (t: string) => new Uint8Array(Buffer.from(t, 'utf8'))
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"><animate attributeName="fill" values="#000;#fff" dur="0.2s" repeatCount="indefinite"/></rect></svg>'
+  const utf16le = new Uint8Array(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(svg, 'utf16le')]))
+  check('an SVG is told apart — bare, after a prolog, comment and doctype, after a byte-order mark, namespaced, or in UTF-16',
+    isSvg(text(svg)) && isSvg(text(`<?xml version="1.0"?>\n<!-- art -->\n<!DOCTYPE svg>\n${svg}`)) && isSvg(text(`\ufeff \n${svg}`)) &&
+      isSvg(text('<svg:svg xmlns:svg="http://www.w3.org/2000/svg"/>')) && isSvg(utf16le))
+  check('and nothing else is one: a PNG, a JPEG, a GIF, a WebP, a page with no svg, or text that only mentions one',
+    !isSvg(still) && !isSvg(await sharp(still).jpeg().toBuffer()) && !isSvg(animatedGif) && !isSvg(animatedWebp) &&
+      !isSvg(text('<html><body>art</body></html>')) && !isSvg(text('my art: <svg> soon')))
 }
 
 if (failures > 0) {

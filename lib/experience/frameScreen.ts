@@ -11,6 +11,7 @@ import {
   FLASH_RATE,
   flashReason,
   isAnimatedImage,
+  isSvg,
   screenFlashes,
 } from '@/lib/media/flashScreen'
 import { redis } from '@/lib/redis'
@@ -144,10 +145,14 @@ export async function screenFrame(
   if (frame.kind === 'image' && isAnimatedImage(media)) {
     return refuse('It moves — an animated frame is a gif or a video, which are checked for flashing')
   }
+  if (frame.kind === 'image' && isSvg(media)) {
+    return refuse('It is an SVG, which can move by itself — a still is a png, jpg or webp')
+  }
   const poster = frame.poster === frame.uri ? media : await fetchBytes(frame.poster, FRAME_LIMITS.bytes)
   if (poster === null) return null
   if (poster === 'too-large') return refuse(`Its still is ${tooLarge}`)
   if (isAnimatedImage(poster)) return refuse('Its still moves — a still is one image')
+  if (isSvg(poster)) return refuse('Its still is an SVG, which can move by itself — a still is a png, jpg or webp')
 
   if (frame.kind === 'image') {
     const meta = await sharp(media).metadata().catch(() => null)

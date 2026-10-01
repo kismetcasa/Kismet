@@ -5,8 +5,8 @@
 //      fine pattern (under 0.1°) flickering passes; a loop's seam counts only
 //      for the stage that loops;
 //   2. the limits the studio enforces, enforced again: length, size, bytes;
-//   3. what else a frame could hide: an image that moves, a still that moves,
-//      bytes that are no video;
+//   3. what else a frame could hide: an image that moves, an SVG (which can
+//      move by itself), a still that moves, bytes that are no video;
 //   4. codecs an artist's upload may carry (H.264, HEVC, VP9);
 //   5. and no verdict at all — tried again later — when the upload cannot be
 //      fetched yet or there is no ffmpeg to look with.
@@ -115,6 +115,12 @@ try {
     const calm = make('calm2', "drawbox=x=10:y=10:w=20:h=20:color=white:t=fill")
     const stillMoves = await screen(calm, 'open', { poster: webp })
     check('a clip whose still moves is refused', refused(stillMoves, /^Its still moves/), say(stillMoves))
+    // An SVG that strobes black and white five times a second, by itself.
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64"><animate attributeName="fill" values="#000;#fff" dur="0.2s" repeatCount="indefinite"/></rect></svg>')
+    const svgFrame = await screen(svg, 'open', { kind: 'image' })
+    check('an SVG given as an image is refused — it can move by itself, unscreened', refused(svgFrame, /^It is an SVG/), say(svgFrame))
+    const svgStill = await screen(calm, 'open', { poster: svg })
+    check('as is a clip whose still is an SVG', refused(svgStill, /^Its still is an SVG/), say(svgStill))
     const junk = await screen(Buffer.from('<html>not a video</html>'), 'open')
     check('bytes that are no video are refused', refused(junk, /could not be read as a video/), say(junk))
   }

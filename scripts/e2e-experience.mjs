@@ -85,6 +85,9 @@ const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refu
 const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was revoked
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+/** An SVG that strobes black and white five times a second, by itself — as any
+ *  browser plays it in an <img>, unscreened. */
+const STROBE_SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64"><animate attributeName="fill" values="#000;#fff" dur="0.2s" repeatCount="indefinite"/></rect></svg>')
 /** The cover every other publish carries: the route requires one (call()). */
 const TEST_COVER = { uri: 'ar://' + 'e2eCover'.repeat(5) + 'abc' }
 // A stage frame as a publish or its creator's edit carries one (lib/experience/cover).
@@ -2885,6 +2888,9 @@ try {
           await page.getByLabel('cover image').setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: await sharp(tinyGif(10), { animated: true }).webp().toBuffer() })
           const movingRefused = await page.getByText('This image moves — a cover is a still: use a png or jpg, or a gif (its first frame is used)')
             .waitFor({ timeout: 15_000 }).then(() => true, () => false)
+          await page.getByLabel('cover image').setInputFiles({ name: 'strobe.svg', mimeType: 'image/svg+xml', buffer: STROBE_SVG })
+          const svgRefused = await page.getByText('An SVG can move by itself — a cover is a still: use a png or jpg, or a gif (its first frame is used)')
+            .waitFor({ timeout: 15_000 }).then(() => true, () => false)
           const nothingToSave = (await page.getByRole('button', { name: 'save cover' }).count()) === 0
           const beforeGif = arweaveUploads.length
           await page.getByLabel('cover image').setInputFiles({ name: 'moving.gif', mimeType: 'image/gif', buffer: tinyGif(10) })
@@ -2892,10 +2898,10 @@ try {
           for (let i = 0; i < 75 && arweaveUploads.length === beforeGif; i++) await sleep(200)
           const gifSent = arweaveUploads.slice(beforeGif).map((u) => dataItemPayload(u.body))
           const gifCover = await coverNow(`ar://${arweaveUploads[beforeGif]?.id}`)
-          check('a cover that moves is refused as it is picked; a gif cover is uploaded as its first frame, a still — never the moving original',
-            movingRefused && nothingToSave && gifSent.length === 1 && !!gifSent[0] && gifSent[0].subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) &&
+          check('a cover that moves, or can (an SVG), is refused as it is picked; a gif cover is uploaded as its first frame, a still — never the moving original',
+            movingRefused && svgRefused && nothingToSave && gifSent.length === 1 && !!gifSent[0] && gifSent[0].subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) &&
               gifCover === `ar://${arweaveUploads[beforeGif]?.id}`,
-            `${movingRefused} ${nothingToSave} ${gifSent.length} ${gifSent[0]?.subarray(0, 4).toString('hex')} ${gifCover}`)
+            `${movingRefused} ${svgRefused} ${nothingToSave} ${gifSent.length} ${gifSent[0]?.subarray(0, 4).toString('hex')} ${gifCover}`)
           const beforePng = arweaveUploads.length
           await page.getByLabel('cover image').setInputFiles({ name: 'new-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await page.getByRole('button', { name: 'save cover' }).click({ timeout: 30_000 })
@@ -3465,8 +3471,11 @@ try {
           await openPick.setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: moving })
           const movingSaid = await screening.getByText('This image moves — give an animation as a gif or a video, which are checked for flashing')
             .waitFor({ timeout: 30_000 }).then(() => true, () => false)
-          check('the studio refuses a clip that flashes four times a second across the stage, saying why and how to pass, and an image that moves — nothing uploaded; a calm clip is taken',
-            strobeSaid && movingSaid && calmTaken && arweaveUploads.length === uploadsAt, `${strobeSaid} ${movingSaid} ${calmTaken} ${arweaveUploads.length - uploadsAt}`)
+          await openPick.setInputFiles({ name: 'strobe.svg', mimeType: 'image/svg+xml', buffer: STROBE_SVG })
+          const svgSaid = await screening.getByText('An SVG can move by itself — give a still as a png, jpg or webp, or an animation as a gif or a video, which are checked for flashing')
+            .waitFor({ timeout: 30_000 }).then(() => true, () => false)
+          check('the studio refuses a clip that flashes four times a second across the stage, saying why and how to pass, an image that moves, and an SVG — nothing uploaded; a calm clip is taken',
+            strobeSaid && movingSaid && svgSaid && calmTaken && arweaveUploads.length === uploadsAt, `${strobeSaid} ${movingSaid} ${svgSaid} ${calmTaken} ${arweaveUploads.length - uploadsAt}`)
           await screening.context().close()
 
           // Straight to the API: a flashing clip the studio never saw, sent with
