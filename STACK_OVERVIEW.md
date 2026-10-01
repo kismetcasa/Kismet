@@ -921,7 +921,8 @@ token; each unit bought is one play, drawn server-side from a pool of artists' p
 and delivered by `adminMint` from a dedicated CDP account, gas sponsored. A **reveal
 machine** dispenses nothing: a free pull shows one piece from those on sale right now,
 which the player collects through that piece's own sale. A machine is published live
-by an admin and into the review queue by anyone else. Its cover (required) and its
+by an admin and into the review queue by anyone else. Its cover (required, and a
+still: a GIF becomes its first frame, any other image that moves is refused) and its
 artist frames can be changed by its creator after it is live.
 
 **Why.** A creator sets weights and supplies, never odds (`lib/experience/types.ts`):

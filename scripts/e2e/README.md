@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (557)
+## What it asserts (558)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -340,10 +340,11 @@ machine share card. About three minutes.
   curator's queue, an artist's opt-outs, linked collections, a machine with
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
   and ending a season on-chain.
-- **Art** — the required cover, changed live; the stage (idle, dispense, open),
-  its timing, skip and reduced motion, with the platform's capsule and with an
-  artist's frames; frame limits, including a GIF's own length; uploads decoded
-  as sent.
+- **Art** — the required cover, changed live, and always a still: one that
+  moves is refused as it is picked, and a GIF becomes its first frame; the
+  stage (idle, dispense, open), its timing, skip and reduced motion, with the
+  platform's capsule and with an artist's frames; frame limits, including a
+  GIF's own length; uploads decoded as sent.
 - **Flashing (WCAG 2.3.1)** — the studio refuses a clip that flashes four
   times a second, and an image that moves, before anything uploads; the server
   screens every frame again: one sent straight to the API waits, unplayed,

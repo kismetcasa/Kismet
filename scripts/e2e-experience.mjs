@@ -2870,13 +2870,45 @@ try {
           check('only its creator can change it, and only to an Arweave upload', refused[0].status === 403 && refused[1].status === 400, refused.map((r) => r.status).join())
           const page = await open('/play/spring-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, uploads: true })
           await page.getByRole('button', { name: 'change cover' }).waitFor()
+          // A cover is a still — on the card, and in the stage, which plays only
+          // screened motion. One that moves is refused as it is picked, and a gif
+          // becomes its first frame: never the moving original.
+          const { default: sharp } = await import('sharp')
+          const coverNow = async (want) => {
+            for (let i = 0; i < 75; i++) {
+              const c = (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+              if (c === want) return c
+              await sleep(200)
+            }
+            return (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+          }
+          await page.getByLabel('cover image').setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: await sharp(tinyGif(10), { animated: true }).webp().toBuffer() })
+          const movingRefused = await page.getByText('This image moves — a cover is a still: use a png or jpg, or a gif (its first frame is used)')
+            .waitFor({ timeout: 15_000 }).then(() => true, () => false)
+          const nothingToSave = (await page.getByRole('button', { name: 'save cover' }).count()) === 0
+          const beforeGif = arweaveUploads.length
+          await page.getByLabel('cover image').setInputFiles({ name: 'moving.gif', mimeType: 'image/gif', buffer: tinyGif(10) })
+          await page.getByRole('button', { name: 'save cover' }).click({ timeout: 30_000 })
+          for (let i = 0; i < 75 && arweaveUploads.length === beforeGif; i++) await sleep(200)
+          const gifSent = arweaveUploads.slice(beforeGif).map((u) => dataItemPayload(u.body))
+          const gifCover = await coverNow(`ar://${arweaveUploads[beforeGif]?.id}`)
+          check('a cover that moves is refused as it is picked; a gif cover is uploaded as its first frame, a still — never the moving original',
+            movingRefused && nothingToSave && gifSent.length === 1 && !!gifSent[0] && gifSent[0].subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) &&
+              gifCover === `ar://${arweaveUploads[beforeGif]?.id}`,
+            `${movingRefused} ${nothingToSave} ${gifSent.length} ${gifSent[0]?.subarray(0, 4).toString('hex')} ${gifCover}`)
+          const beforePng = arweaveUploads.length
           await page.getByLabel('cover image').setInputFiles({ name: 'new-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
-          await page.getByRole('button', { name: 'save cover' }).click()
-          await page.getByText('Cover updated').waitFor({ timeout: 15_000 }).catch(() => {})
-          const now = (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+          await page.getByRole('button', { name: 'save cover' }).click({ timeout: 30_000 })
+          for (let i = 0; i < 75 && arweaveUploads.length === beforePng; i++) await sleep(200)
+          const now = await coverNow(`ar://${arweaveUploads.at(-1)?.id}`)
           check('its creator changes it from the live machine\'s page, and the machine carries the new one',
             now === `ar://${arweaveUploads.at(-1)?.id}` && now !== SPRING_COVER.uri, now)
           await page.context().close()
+          // The browser signs every upload from one address, and this mock's
+          // counters never expire, so the extra covers above would put the
+          // studio's later uploads over /api/sign's per-IP limit (10 a minute) —
+          // the test's doing, not a person's.
+          for (const k of [...strings.keys()]) if (k.startsWith('kismetart:rl:sign:')) strings.delete(k)
         }
 
         // ── a machine's frames, set by its creator ──
@@ -3906,8 +3938,10 @@ try {
           await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
+          const linkedQueue = (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines ?? []
           check('publishing queues it with the link and what it took in',
-            (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-linked' && r.machine.collections?.join() === LINKED && r.pool.length === 2))
+            linkedQueue.some((r) => r.machine.id === 'browser-linked' && r.machine.collections?.join() === LINKED && r.pool.length === 2),
+            `${JSON.stringify(linkedQueue.map((r) => [r.machine.id, r.machine.collections, r.pool.length]))} | page: ${(await text(page)).slice(-300)}`)
           await page.context().close()
 
           const pg = await open('/play/fresh-ink')
