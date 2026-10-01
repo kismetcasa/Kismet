@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (556)
+## What it asserts (557)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -349,7 +349,8 @@ machine share card. About three minutes.
   screens every frame again: one sent straight to the API waits, unplayed,
   while its gateway holds it back, then is refused, and its creator is told
   why; a clip too long and a moving image are refused by the server too; a
-  frame sent back unchanged keeps its verdict. The window is never larger than
+  frame sent back unchanged keeps its verdict; a creator's page takes up a
+  verdict without a reload. The window is never larger than
   the 240 px it is screened at, on a desktop, a phone, and with enlarged text.
 - **Accessibility** — a status line for each step (WCAG 4.1.3); focus to skip,
   then to the result, without scrolling (2.4.3, 2.4.11); "see odds" landing

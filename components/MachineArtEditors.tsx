@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import { useAccount } from 'wagmi'
 import type { MachineFrames } from '@/lib/experience/types'
@@ -28,7 +29,25 @@ export function MachineArtEditors({
   onDone: () => void
 }) {
   const { address } = useAccount()
-  if (address?.toLowerCase() !== machine.creator.toLowerCase()) return null
+  const mine = address?.toLowerCase() === machine.creator.toLowerCase()
+  // While a frame is being screened, look again every few seconds — for a
+  // minute at most — so its creator sees the verdict, and their own stage
+  // plays the frame once it passes, without reloading.
+  const checking = Object.values(machine.frameStatus ?? {}).some((f) => f?.state === 'checking')
+  const looks = useRef(0)
+  useEffect(() => {
+    if (!mine || !checking) {
+      looks.current = 0
+      return
+    }
+    if (looks.current >= 20) return
+    const t = setTimeout(() => {
+      looks.current++
+      onDone()
+    }, 3000)
+    return () => clearTimeout(t)
+  }, [mine, checking, machine.frameStatus, onDone])
+  if (!mine) return null
   return (
     <>
       <CoverEditor machineId={machine.id} current={machine.cover} creator={machine.creator} onDone={onDone} />

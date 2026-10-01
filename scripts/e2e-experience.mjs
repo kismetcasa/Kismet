@@ -892,8 +892,11 @@ const inprocessServer = createServer((req, res) => {
 // the suite places itself — any of which it can hold back, as a gateway still
 // settling a fresh upload would.
 const gatewayFiles = new Map()
+/** How long the gateway takes over every file, while a check needs it slow. */
+let gatewayDelay = 0
 const gatewayServer = createServer(async (req, res) => {
   const id = decodeURIComponent((req.url ?? '/').slice(1).split('?')[0])
+  if (gatewayDelay) await sleep(gatewayDelay)
   const placed = gatewayFiles.get(id)
   if (placed?.held) await placed.held
   const upload = placed ? null : arweaveUploads.find((u) => u.id === id)
@@ -3650,8 +3653,16 @@ try {
           check('a reveal machine\'s curator is offered an open frame, and no dispense',
             (await curated.getByLabel('open frame', { exact: true }).count()) === 1 && (await curated.getByLabel('dispense frame', { exact: true }).count()) === 0)
           await curated.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          // A slow gateway, so the page reloads the machine before the server
+          // has screened the frame — as a fresh upload's first minute can go.
+          gatewayDelay = 2000
           await curated.getByRole('button', { name: 'save frames' }).click({ timeout: 20_000 })
           await curated.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
+          const checkingFirst = await curated.getByText('checking for flashing — players see the capsule until it passes').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+          const appeared = await curated.locator('[data-frame="open"]').waitFor({ state: 'attached', timeout: 30_000 }).then(() => true, () => false)
+          gatewayDelay = 0
+          check('the curator is told the still is being checked, and their own page takes it up once it passes, without a reload',
+            checkingFirst && appeared, `${checkingFirst} ${appeared}`)
           const openFrame = (await call('/api/experience/machines/new-voices')).json?.machine?.frames?.open
           await watchStages(curated)
           await curated.getByRole('button', { name: 'pull', exact: true }).click()
