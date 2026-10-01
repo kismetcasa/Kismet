@@ -28,7 +28,7 @@ node scripts/e2e/redis-stub.mjs &
 # 2. The app, pointed at the stub.
 UPSTASH_REDIS_REST_URL=http://localhost:6399 \
 UPSTASH_REDIS_REST_TOKEN=stub \
-STATS_PIPELINE_INPROCESS=off \
+CRON_INPROCESS=off \
 npx next start -p 3100 &
 
 # 3. Fixtures: a spec-valid glTF 2.0 cube plus a still. The script writes the
@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (558)
+## What it asserts (560)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -339,7 +339,8 @@ machine share card. About three minutes.
 - **Machines** — the studios (disconnected, connected, publish to review), the
   curator's queue, an artist's opt-outs, linked collections, a machine with
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
-  and ending a season on-chain.
+  and ending a season on-chain; the seed and referral-payout jobs, each run
+  recorded for the app's own schedule (lib/backgroundTasks) to wait on.
 - **Art** — the required cover, changed live, and always a still: one that
   moves, or an SVG, is refused as it is picked, and a GIF becomes its first
   frame; the stage (idle, dispense, open), its timing, skip and reduced

@@ -1203,7 +1203,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
   env: {
     ...process.env,
     [MARKER_KEY]: MARKER_VAL,
-    STATS_PIPELINE_INPROCESS: 'off', // no in-process stats pipeline mid-run (lib/backgroundTasks)
+    CRON_INPROCESS: 'off', // no in-process crons mid-run (lib/backgroundTasks)
     UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${redisPort}`,
     UPSTASH_REDIS_REST_TOKEN: 'e2e',
     BASE_RPC_URL: `http://127.0.0.1:${rpcPort}`,
@@ -2261,7 +2261,10 @@ try {
     // those collects already name Kismet's referral address.
     chain.rewards.set(ADMIN.toLowerCase(), 5_000_000_000_000_000n)
     const before = cdp.ops.size
+    const runAt = Date.now()
     const first = await run()
+    const payoutsRan = Number(strings.get('kismetart:xp:job:referral-payouts'))
+    check('a payout run records that it ran, which the app\'s own daily run waits on', payoutsRan >= runAt && payoutsRan <= Date.now(), String(strings.get('kismetart:xp:job:referral-payouts')))
     const paid = (first.json?.paid ?? []).map((p) => p.address)
     check('Kismet\'s own referral balance and each curator\'s are paid, largest first',
       first.status === 200 && paid.join(',') === `${KISMET_REFERRAL},${CURATOR.toLowerCase()}`, JSON.stringify(first.json).slice(0, 300))
@@ -2523,8 +2526,13 @@ try {
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
   console.log('\n8. the daily commitment cron')
   check('the cron refuses without its secret', (await call('/api/cron/experience-seeds')).status === 401)
+  const cronAt = Date.now()
   const cron = await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
   check('it commits for every capsule machine that can still draw', cron.status === 200 && cron.json.committed === 7 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  // The app runs the job itself once its last run is an hour old
+  // (lib/backgroundTasks); a scheduler's run must count, so the app stands down.
+  const seedsRan = Number(strings.get('kismetart:xp:job:experience-seeds'))
+  check('and records that it ran, which the app\'s own hourly run waits on', seedsRan >= cronAt && seedsRan <= Date.now(), String(strings.get('kismetart:xp:job:experience-seeds')))
   check('and for no reveal machine, which never draws on the server', ![...strings.keys()].some((k) => /^kismetart:xp:(new-voices|kismet-picks):seed:/.test(k)))
   const tomorrow = dayShift(today, 1)
   check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor', 'redraw', 'dry-season'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))

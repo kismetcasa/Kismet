@@ -414,7 +414,7 @@ async function main() {
   const { base, child } = await startNext({
     // The in-process stats fallback (lib/backgroundTasks) would walk inprocess
     // from the sandbox two minutes in; the harness runs the routes, not the cron.
-    STATS_PIPELINE_INPROCESS: 'off',
+    CRON_INPROCESS: 'off',
     UPSTASH_REDIS_REST_URL: redisUrl,
     UPSTASH_REDIS_REST_TOKEN: 'mock-token',
     BASE_RPC_URL: rpcUrl,

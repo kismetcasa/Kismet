@@ -157,7 +157,7 @@ production defaults in `lib/config.ts`):
 | Container | **Docker** multi-stage (deps→builder→runner), **`node:22.22-alpine` pinned** on all stages, non-root uid 1001, execs `node server.js` directly for SIGTERM | `Dockerfile` |
 | Framework | **Next.js 15.5.19** `output: 'standalone'`, App Router, instrumentation hook | `next.config.mjs`, `package.json` |
 | Memory | V8 heap caps: **build 3072 MB / runtime 4096 MB** (fixes a masked V8-heap OOM at ~2030 MB) | `Dockerfile:62,101` |
-| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`, daily `/api/cron/experience-seeds` (00:07 UTC) and daily `/api/cron/referral-payouts` (03:23 UTC); on Coolify each is fired by an external scheduler (`Authorization: Bearer $CRON_SECRET`) — except that the stats pipeline no longer depends on one: `lib/backgroundTasks.ts` runs it in-process (leader-locked; production only, never on Vercel; `STATS_PIPELINE_INPROCESS=off` for harnesses) whenever its heartbeat is an hour old, so only the two daily crons need a scheduler | `vercel.json`, `lib/statsPipeline.ts`, `lib/backgroundTasks.ts` |
+| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`, daily `/api/cron/experience-seeds` (00:07 UTC) and daily `/api/cron/referral-payouts` (03:23 UTC); on Coolify none depends on an external scheduler: `lib/backgroundTasks.ts` runs each job in-process (leader-locked; production only, never on Vercel; `CRON_INPROCESS=off` for harnesses) once its last run is older than its interval — the stats pipeline hourly, seed commitments hourly, referral payouts daily. A scheduler calling the routes (`Authorization: Bearer $CRON_SECRET`) keeps precedence: its runs are recorded the same way, so the app stands down | `vercel.json`, `lib/statsPipeline.ts`, `lib/experience/machineJobs.ts`, `lib/backgroundTasks.ts` |
 | CI | GitHub Actions: `npm ci` → assert clone-response patch → `next build` → `npm run check` → blocking critical `npm audit`; Dependabot weekly | `.github/workflows/ci.yml` |
 
 ### 1.6 The full environment-variable surface
@@ -692,8 +692,9 @@ rotating host pools; `next/image` disk cache LRU-capped at 5 GB.
 **Risks.** Single instance / zero redundancy; the heap cap is a backstop not a fix
 (in-code bounds must not regress); no CDN today (`/api/img` streams up to 2 GB
 through the box); `ignoreBuildErrors` means a type error only surfaces in
-`npm run check`/CI; the `vercel.json` cron is a pre-migration artifact that won't
-fire on Coolify without an external scheduler.
+`npm run check`/CI; the `vercel.json` crons are a pre-migration artifact that
+won't fire on Coolify, which is why the app runs those jobs itself
+(`lib/backgroundTasks.ts`).
 
 ### Layer G — Product subsystems
 
@@ -938,8 +939,9 @@ draw rolls forward past a lost race or a revoked grant (`runDraw.ts`); eligibili
 is one shared, fail-closed filter (`eligibility.ts`) with a live authority check
 on the one piece drawn (`authority.ts`); revenue goes to the capsule's on-chain split,
 which the pool is checked against (`payees.ts`); capsules minted elsewhere are found
-with one `eth_getLogs` (`discovery.ts`); `/api/cron/experience-seeds` commits each
-day's seed in advance. The play: `components/MachineStage.tsx` runs idle → dispense
+with one `eth_getLogs` (`discovery.ts`); each machine's next-day seed is committed
+in advance, hourly, by the app itself or `/api/cron/experience-seeds`
+(`machineJobs.ts`). The play: `components/MachineStage.tsx` runs idle → dispense
 (a capsule's wallet and draw) → open, playing the artist's frames or the platform's
 capsule; the open is skippable, is not played under reduced motion, and hands over
 to the artwork in a view transition where the browser has one. Frames go through the
@@ -1178,13 +1180,14 @@ they are flagged for follow-up.
    all rate limits and spend quotas silently pass; the planned "global daily cap +
    balance alert" fail-closed backstop is noted as *planned*, not implemented
    (`1bf7b1b`). The operational Arweave wallet balance is the only remaining ceiling.
-6. **The `vercel.json` crons won't fire on Coolify** without an external scheduler
-   hitting each of them — if unconfigured, artist earnings stats silently stop
-   refreshing (`/api/cron/sync-stats`), a machine nobody has viewed can have its
-   seed created only at a play, after the player's capsule transaction — the
-   ordering its commitment exists to rule out (`/api/cron/experience-seeds`), and
-   curators' referral rewards stay escrowed with Zora until they withdraw them
-   themselves (`/api/cron/referral-payouts`).
+6. **The `vercel.json` crons don't fire on Coolify, so the app runs them itself**
+   (`lib/backgroundTasks.ts`, Cron row in §1.5). Without that, artist earnings
+   stats would stop refreshing (`/api/cron/sync-stats`), a machine nobody has
+   viewed could have its seed created only at a play, after the player's capsule
+   transaction — the ordering its commitment exists to rule out
+   (`/api/cron/experience-seeds`), and curators' referral rewards would stay
+   escrowed with Zora until they withdrew them themselves
+   (`/api/cron/referral-payouts`).
 7. **Minor label fix (already corrected in this doc):** the marketplace is **Seaport
    1.5** (`lib/seaport.ts:93` EIP-712 domain `version: '1.5'`), not 1.6 as one
    inventory pass guessed.

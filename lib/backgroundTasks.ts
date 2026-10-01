@@ -1,5 +1,6 @@
 import { sweepExpiredListings } from './listings'
 import { withLeaderLock } from './leaderLock'
+import type { MachineJob } from './experience/machineJobs'
 import { readStatsLastAttempt } from './statsHealth'
 import { isStatsRunDue } from './statsMath'
 import { runStatsPipeline } from './statsPipeline'
@@ -22,13 +23,19 @@ import { runStatsPipeline } from './statsPipeline'
  *    external scheduler, where one exists, keeps precedence: its runs stamp
  *    the same heartbeat and this loop stands down; should the two ever
  *    overlap, the pipeline's phase locks make the second run a benign skip.
- *    Production only (statsFallbackEnabled): never on Vercel, where the cron
- *    is scheduled and a timer inside a serverless instance can be frozen
- *    mid-run holding the phase locks; never outside production, where a
- *    laptop must not rebuild the shared snapshots from branch code; and off
- *    for the harnesses that boot the built app (STATS_PIPELINE_INPROCESS=off).
+ * 3. The machines' scheduled jobs (lib/experience/machineJobs: seed
+ *    commitments hourly, referral payouts daily), the other two vercel.json
+ *    crons, driven the same way: each tick reads when the job last ran —
+ *    the cron route records its runs too — and runs it once that is older
+ *    than its interval.
  *
- * Multi-pod: both run under a Redis leader lock so only one pod cluster-wide
+ * 2 and 3 are production only (cronsInProcess): never on Vercel, where the
+ * crons are scheduled and a timer inside a serverless instance can be frozen
+ * mid-run holding the locks; never outside production, where a laptop must
+ * not rebuild the shared snapshots or pay rewards from branch code; and off
+ * for the harnesses that boot the built app (CRON_INPROCESS=off).
+ *
+ * Multi-pod: each runs under a Redis leader lock so only one pod cluster-wide
  * executes them per tick. Without the lock, N pods × N runs each tick
  * amplifies the work linearly with replicas.
  */
@@ -52,17 +59,21 @@ export function startBackgroundTasks(): void {
   // shouldn't block on cleanup work.
   void runSweep()
   setInterval(runSweep, TICK_MS)
-  if (statsFallbackEnabled()) {
+  if (cronsInProcess()) {
     // The first check waits until a fresh deploy has finished booting.
-    setTimeout(runStatsFallback, STATS_FIRST_CHECK_MS)
-    setInterval(runStatsFallback, TICK_MS)
+    const tick = () => {
+      void runStatsFallback()
+      for (const job of MACHINE_JOBS) void runMachineJob(job)
+    }
+    setTimeout(tick, STATS_FIRST_CHECK_MS)
+    setInterval(tick, TICK_MS)
   }
 }
 
-function statsFallbackEnabled(): boolean {
+function cronsInProcess(): boolean {
   if (process.env.VERCEL) return false
   if (process.env.NODE_ENV !== 'production') return false
-  return process.env.STATS_PIPELINE_INPROCESS !== 'off'
+  return process.env.CRON_INPROCESS !== 'off'
 }
 
 // One in-flight flag per task, then the leader lock: withLeaderLock returns
@@ -100,5 +111,24 @@ async function runStatsFallback(): Promise<void> {
     if (!isStatsRunDue(await readStatsLastAttempt('rebuild'), Date.now(), STATS_INTERVAL_MS)) return
     console.log('[bg:stats-pipeline] no run recorded in the last hour — running the pipeline')
     await runStatsPipeline()
+  })
+}
+
+const MACHINE_JOBS: MachineJob[] = ['experience-seeds', 'referral-payouts']
+// Serializes pods for a run; a payout run holds its own lock as well.
+const MACHINE_JOB_LOCK_TTL_SEC = 10 * 60
+
+async function runMachineJob(job: MachineJob): Promise<void> {
+  // Loaded on the first tick, not at boot: the jobs reach the chain and the
+  // sponsoring account, which nothing else here needs.
+  const jobs = await import('./experience/machineJobs')
+  const due = async () => isStatsRunDue(await jobs.readMachineJobRun(job), Date.now(), jobs.MACHINE_JOB_INTERVAL_MS[job])
+  // An unreadable record skips the tick — it is not "never ran".
+  if (!(await due().catch(() => false))) return
+  await guarded(job, MACHINE_JOB_LOCK_TTL_SEC, async () => {
+    // Re-check under the lock: another pod may have run it since the read.
+    if (!(await due())) return
+    console.log(`[bg:${job}] not run within its interval — running it`)
+    await (job === 'experience-seeds' ? jobs.commitMachineSeeds() : jobs.payReferralRewards())
   })
 }
