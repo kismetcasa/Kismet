@@ -4,6 +4,7 @@ import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { drawHash, epochFor, verifyDraw } from '@/lib/experience/fairness'
 import { MAX_UNITS_PER_CAPSULE, drawAtAttempt } from '@/lib/experience/draw'
 import { commitmentForEpoch, getClaim, revealSeed } from '@/lib/experience/store'
+import type { ClaimRecord } from '@/lib/experience/types'
 
 /**
  * Public verification of a past draw.
@@ -123,10 +124,13 @@ export async function GET(req: NextRequest) {
     !!recomputed &&
     recomputed.collection === claim.prize.collection &&
     recomputed.tokenId === claim.prize.tokenId
+  const replaced = await verifyReplaced(machineId, claim, currentEpoch)
+  const earlierFails = replaced.some((r) => r.verified === false)
 
   return NextResponse.json({
     verifiable: true,
-    ok: matches,
+    ok: matches && !earlierFails,
+    ...(matches && earlierFails ? { reason: 'an earlier draw of this capsule does not verify' } : {}),
     epoch: claim.epoch,
     serverSeed: seed,
     commitment,
@@ -140,5 +144,34 @@ export async function GET(req: NextRequest) {
     setAside: setAside.map((e) => ({ collection: e.collection, tokenId: e.tokenId })),
     recomputed: recomputed ? { collection: recomputed.collection, tokenId: recomputed.tokenId } : null,
     delivered: claim.prize,
+    replaced,
   })
+}
+
+/**
+ * The draws this capsule made before the one it was given: each picked a
+ * piece that could no longer be given, which was set aside and the capsule
+ * drawn again. Each is recomputed the same way — its seed against the
+ * commitment, its table against its hash, its pick against what it drew — so
+ * a redraw is a second checkable draw, never a quiet re-roll. `verified` is
+ * null while its seed is not yet revealed or it predates keeping its material.
+ */
+async function verifyReplaced(machineId: string, claim: ClaimRecord, currentEpoch: string) {
+  return Promise.all((claim.replaced ?? []).map(async (r) => {
+    const base = { collection: r.collection, tokenId: r.tokenId, reason: r.reason, at: r.at, epoch: r.epoch ?? null }
+    if (!r.epoch || !r.snapshot || !r.snapshotHash) return { ...base, verified: null }
+    const commitment = r.commitment ?? (await commitmentForEpoch(machineId, r.epoch))
+    const seed = await revealSeed(machineId, r.epoch, currentEpoch)
+    const material = { commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, attempt: r.attempt ?? 0 }
+    if (!seed || !commitment) return { ...base, ...material, verified: null }
+    const check = verifyDraw({ serverSeed: seed, commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: r.attempt ?? 0 })
+    if (!check.ok) return { ...base, ...material, serverSeed: seed, verified: false, why: check.reason }
+    const { pick } = drawAtAttempt(
+      r.snapshot,
+      (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a }),
+      r.attempt ?? 0,
+    )
+    const verified = !!pick && pick.collection === r.collection && pick.tokenId === r.tokenId
+    return { ...base, ...material, serverSeed: seed, verified }
+  }))
 }

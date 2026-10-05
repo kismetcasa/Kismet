@@ -53,6 +53,9 @@ function notificationHref(n: Notification): string {
       // creator's profile, where its end-season control lives; every other
       // decision links the machine itself.
       if (n.note === 'review') return '/admin/play'
+      // A turned-down machine is withdrawn, its link free for anyone's next
+      // machine: the studio is where its creator fixes it and resubmits.
+      if (n.note === 'rejected') return '/play/create'
       return n.note !== 'empty' && n.machineId ? `/play/${n.machineId}` : `/profile/${n.recipient}`
     case 'experience_featured':
       // The artwork, not the machine: its page lists every machine the piece
@@ -299,11 +302,12 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
       )
     case 'experience_status': {
       const name = n.tokenName ? `"${n.tokenName}"` : 'Your machine'
-      const { headline, detail } = experienceStatusCopy(n.note, name, actorLabel)
+      const { headline, detail } = experienceStatusCopy(n.note, name, actorLabel, n.comment)
       return (
         <>
           <p className={`text-xs font-mono truncate ${n.note === 'live' ? 'text-accent' : 'text-ink'}`}>{headline}</p>
-          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+          {/* A curator's reason is the point of the row: it wraps, not cut off. */}
+          <p className={`text-[10px] font-mono text-muted mt-0.5 ${n.comment ? 'line-clamp-4' : 'truncate'}`}>
             {detail && `${detail} · `}
             {time}
           </p>

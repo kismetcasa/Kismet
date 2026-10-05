@@ -81,7 +81,7 @@ export function buildCollectCastText(opts: {
  *                  already-resolved name, whichever actually resolved
  *   null         — nothing better than a shortAddress placeholder
  */
-async function resolveCreatorHandle(ctx: CollectShareContext): Promise<string | null> {
+export async function resolveCreatorHandle(ctx: CollectShareContext): Promise<string | null> {
   let name = ctx.creatorName?.trim() || null
   if (ctx.creatorAddress) {
     const placeholder = shortAddress(ctx.creatorAddress)

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { type Address, type Hex } from 'viem'
 import { isAddress } from '@/lib/address'
 import { verifyMintOnChain } from '@/lib/verifyMint'
+import { creditRevealCollect } from '@/lib/experience/kismet'
 import { isPlatformCollectComment } from '@/lib/inprocess'
 import { redis, TRENDING_KEY, TRENDING_LATEST_KEY } from '@/lib/redis'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -87,6 +88,8 @@ export async function POST(req: NextRequest) {
     pricePerToken?: string
     currency?: 'eth' | 'usdc'
     txHash?: string
+    /** The reveal machine the collect came from (lib/experience/kismet). */
+    machineId?: string
   } | null
 
   if (!body) return errorResponse(400, 'Invalid body')
@@ -420,6 +423,20 @@ export async function POST(req: NextRequest) {
     )
   }
   const finalPrice = derivedPrice !== null ? derivedPrice.toString() : pricePerToken
+
+  // A collect through a reveal machine: a kismet for the collector, the piece
+  // in what the machine gave out, and the sale in its figures — once, and only
+  // for a live machine that lists the piece (lib/experience/kismet). Priced
+  // by the chain, never by the client; a backfill is old history, not a play.
+  const machineId = typeof body.machineId === 'string' && /^[a-z0-9-]{3,64}$/.test(body.machineId) ? body.machineId : null
+  if (machineId && !stale && derivedPrice !== null && currency) {
+    const price = { pricePerToken: derivedPrice, currency }
+    after(() =>
+      creditRevealCollect({ machineId, account, collection: collectionLower, tokenId, txHash, quantity: verified.units, price })
+        .then(() => undefined)
+        .catch(bestEffort('xp.revealCollect', { machineId, txHash })),
+    )
+  }
 
   // Notifications are event-shaped ("X just collected"), so a backfill sends
   // none: a months-late ping is noise at best and a duplicate at worst.

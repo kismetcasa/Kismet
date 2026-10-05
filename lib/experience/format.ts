@@ -82,16 +82,25 @@ export function experienceStatusCopy(
   note: string | undefined,
   name: string,
   actor?: string | null,
+  /** The curator's reason (lib/experience/decline), when they gave one. */
+  reason?: string | null,
 ): { headline: string; detail: string; title: string } {
+  const why = reason?.trim() ? `Why: ${reason.trim()}. ` : ''
   switch (note) {
     case 'live':
       return { headline: `${name} is live`, detail: 'Approved and on the shelves.', title: 'Your machine is live' }
     case 'ended':
-      return { headline: `${name} was closed by a curator`, detail: 'Anything already bought through it is still honoured.', title: 'Machine closed' }
+      return { headline: `${name} was closed by a curator`, detail: `${why}Anything already bought through it is still honoured.`, title: 'Machine closed' }
     case 'delisted':
-      return { headline: `${name} was delisted by a curator`, detail: 'Anything already bought through it is still honoured.', title: 'Machine delisted' }
+      return { headline: `${name} was delisted by a curator`, detail: `${why}Anything already bought through it is still honoured.`, title: 'Machine delisted' }
     case 'rejected':
-      return { headline: `${name} wasn’t approved`, detail: 'It never went on the shelves, so nothing was sold.', title: 'Machine not approved' }
+      return {
+        headline: `${name} wasn’t approved`,
+        detail: why
+          ? `${why}Nothing was sold, and its capsule and pieces are free — fix it and submit again.`
+          : 'It never went on the shelves, so nothing was sold.',
+        title: 'Machine not approved',
+      }
     case 'empty':
       return { headline: `${name} has given out every artwork`, detail: 'End its season so no one buys a capsule it can’t fill.', title: 'Your machine is empty' }
     case 'review':

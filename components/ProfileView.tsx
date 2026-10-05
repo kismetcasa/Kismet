@@ -21,6 +21,7 @@ import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { ProfileMachines, publicMachines, useCreatorMachines } from './ProfileMachines'
+import { ProfileKismet, useKismet } from './ProfileKismet'
 import { CuratePanel } from './CuratePanel'
 import { useAdmin } from '@/contexts/AdminContext'
 import type { Listing } from '@/lib/listings'
@@ -110,7 +111,7 @@ function CollectionPreviewImage({ src, alt, thumbhash, priority }: { src?: strin
 
 // ─── section ordering / collapse ─────────────────────────────────────────────
 
-type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 'machines' | 'curate'
+type SectionId = 'mints' | 'collected' | 'listings' | 'payments' | 'airdrops' | 'machines' | 'kismet' | 'curate'
 
 // `machines` and `curate` are intentionally absent from DEFAULT_ORDER. `machines`
 // is appended only when the profile has capsule machines, so the many profiles
@@ -279,6 +280,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
   const { isInMiniApp, identity: fcIdentity } = useFarcaster()
   const { isAdmin, isCurator } = useAdmin()
   const creatorMachines = useCreatorMachines(address)
+  // What gachapon plays earned this person (components/ProfileKismet); the
+  // section shows only once there is some, as Machines does.
+  const kismet = useKismet(address)
+  const hasKismet = (kismet?.total ?? 0) > 0
   const shelfMachines = publicMachines(creatorMachines.machines)
 
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -1037,6 +1042,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     payments: 'Sales',
     airdrops: 'Airdrops',
     machines: 'Machines',
+    kismet: 'Kismet',
     curate: 'Curate',
   }
   // Public showcase reframes the owner's raw categories as a curated reel.
@@ -1052,6 +1058,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
     machines: creatorMachines.machines.length + creatorMachines.featuredIn.length,
+    kismet: kismet?.total ?? null,
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
   }
@@ -1233,6 +1240,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         onChange={creatorMachines.reload}
       />
     ),
+    kismet: kismet ? <ProfileKismet data={kismet} /> : null,
     curate: <CuratePanel />,
   }
 
@@ -1835,15 +1843,28 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                   ]
                 : [],
             )
+            .concat(
+              kismet && hasKismet
+                ? [
+                    <div key="kismet" className="border-t border-line">
+                      <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">Kismet ({kismet.total})</h2>
+                      <div className="pb-8">
+                        <ProfileKismet data={kismet} />
+                      </div>
+                    </div>,
+                  ]
+                : [],
+            )
         ) : (
           ([
             ...sectionOrder,
             ...((isOwner ? creatorMachines.machines : shelfMachines).length > 0 || creatorMachines.featuredIn.length > 0 ? ['machines' as const] : []),
+            ...(hasKismet ? ['kismet' as const] : []),
             ...(showCurate ? ['curate' as const] : []),
           ]).map((section) => {
           const isCollapsed = sectionCollapsed[section] ?? false
           const count = section === 'machines' && !isOwner ? shelfMachines.length + creatorMachines.featuredIn.length : sectionCount[section]
-          const isReorderable = section !== 'curate' && section !== 'machines'
+          const isReorderable = section !== 'curate' && section !== 'machines' && section !== 'kismet'
           const isDragging = draggingSection === section
           return (
             <div

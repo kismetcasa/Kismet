@@ -102,6 +102,8 @@ export interface Notification {
   price?: string
   currency?: 'eth' | 'usdc' // for $ vs ETH formatting; absent on legacy notifs
   listingId?: string
+  /** The collector's comment; experience_status: the curator's reason for
+   *  turning a machine down or delisting it (lib/experience/decline). */
   comment?: string
   /** file_update: the artist's release note ("added music!") — shown on the
    *  bell row and appended to the push body. experience_status: what happened

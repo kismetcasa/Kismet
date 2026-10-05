@@ -573,14 +573,16 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
       // What happened to the recipient's machine (or, for Kismet, one waiting
       // for review). Same words and same destination as the bell row.
       const subject = tokenName ? `"${tokenName}"` : 'Your machine'
-      const { headline, detail, title } = experienceStatusCopy(n.note, subject, actorName)
+      const { headline, detail, title } = experienceStatusCopy(n.note, subject, actorName, n.comment)
       return {
         title: truncate(title, TITLE_MAX),
         body: truncate(detail ? `${headline}. ${detail}` : headline, BODY_MAX),
         targetUrl:
           n.note === 'review'
             ? `${SITE_URL}/admin/play`
-            : n.note === 'empty' || !n.machineId
+            : n.note === 'rejected'
+              ? `${SITE_URL}/play/create`
+              : n.note === 'empty' || !n.machineId
               ? `${SITE_URL}/profile/${n.recipient}`
               : `${SITE_URL}/play/${n.machineId}`,
       }

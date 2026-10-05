@@ -956,6 +956,28 @@ an animated image is refused, and so is an SVG, which can move by itself. Each m
 has its own share card
 (`app/play/[id]/opengraph-image.tsx`).
 
+**Around the play.** A machine's link is made from its name (`machineId.ts`: folded
+to `a-z0-9-`, numbered `-2`, `-3` on a clash; a withdrawn machine frees it). People
+are named by the platform's standard — Kismet username, then Farcaster, then ENS,
+else the address (`hooks/useProfileNames.ts`, `lib/displayName.ts` for share cards).
+Prices carry a USD estimate from the Chainlink feed (`lib/usdApprox.ts`). Every
+capsule opened and every piece collected through a reveal machine earns one
+**kismet** — a count, not a currency — kept per player per machine with a capped
+history and per-machine stats (plays, collects, ETH and USDC taken), each credited
+once per transaction (`kismet.ts`); the profile's Kismet tab reads it
+(`/api/experience/kismet`). A win can be shared to Farcaster as "just collected …
+by @artist from the Kismet Gachapon" (`lib/gachaponShare.ts`), and a machine lists
+its recent winners. A drawn piece that can no longer be minted — its artist stopped
+allowing it — is put back and drawn again from what is left (`resume`), the first
+draw kept on the claim and verified alongside the second, so a redraw is never a
+silent re-roll; a live
+machine with nothing left to draw tells its creator once, from a play or a page
+view (`notices.ts`). The studios offer the creator's own works to pick from — the
+list their profile shows — and show each piece by its title and image. A curator
+turning a machine down or delisting one must give a reason (`decline.ts`: a preset
+ground and a note, told to the creator in the bell and the push); one never on sale
+is withdrawn, freeing its capsule, pledges and link for a corrected resubmission.
+
 **Risks.** Delivery needs the CDP credentials; without them every play pends until
 resumed. Art changed after review is not reviewed again, though frames are screened
 each time; a cover is made a still by the studio, but one sent straight to the API is

@@ -84,6 +84,9 @@ export interface CollectArgs {
   /** The curator of the reveal machine this collect came from, who earns the
    *  mint referral instead of Kismet (lib/zoraMint.resolveMintReferral). */
   curator?: string | null
+  /** The reveal machine this collect came from: /api/collect, once it has
+   *  proved the mint, credits it there (lib/experience/kismet). */
+  machineId?: string
 }
 
 interface UseDirectCollectReturn {
@@ -360,6 +363,7 @@ export function useDirectCollect(): UseDirectCollectReturn {
           moment: { collectionAddress, tokenId, chainId: base.id },
           account: mintTo,
           ...(isGift ? { giftedBy: account } : {}),
+          ...(args.machineId ? { machineId: args.machineId } : {}),
           amount: Number(quantity),
           comment,
           pricePerToken: pricePerToken.toString(),

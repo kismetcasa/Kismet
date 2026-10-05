@@ -44,6 +44,8 @@ import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, R
 import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { screenMachineFrames } from '@/lib/experience/frameScreen'
 import { machineCards } from '@/lib/experience/cards'
+import { MACHINE_ID_PATTERN, machineIdCandidates, PAGE_IDS } from '@/lib/experience/machineId'
+import { machineStats } from '@/lib/experience/kismet'
 
 /**
  * The Capsule Studio backend: list live machines, and create one.
@@ -105,6 +107,9 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         createdAt: m.createdAt,
         cover: m.cover?.uri ?? null,
         ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
+        // Its figures, for its creator: plays or collects, and what they took
+        // in (lib/experience/kismet — counted as they happen).
+        ...(owner ? { stats: await machineStats(m.id).catch(() => null) } : {}),
       }
       if (isReveal(m)) {
         return { ...common, kind: 'reveal' as const, pieces: (await getPool(m.id).catch(() => [])).length }
@@ -140,8 +145,6 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
 
 /** The pages beside the machines under /play (app/play/*): a machine with one
  *  of these ids would sit behind that page, unreachable. */
-const PAGE_IDS = new Set(['create', 'create-capsule', 'create-reveal'])
-
 export async function POST(req: NextRequest) {
   // A flood guard per IP, before anything is authenticated. The real budgets
   // are per wallet, below, once the request says whether it is a check.
@@ -193,16 +196,18 @@ export async function POST(req: NextRequest) {
   } | null
   if (!body) return errorResponse(400, 'Invalid body')
 
-  const id = typeof body.id === 'string' ? body.id.toLowerCase() : ''
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : ''
+  // A machine's URL is made from its name (lib/experience/machineId); an API
+  // caller may still name one outright.
   const kind = body.kind ?? 'capsule'
   const rarity = body.rarity ?? 'manual'
   const capsuleCollection = body.capsule?.collection
   const rawCapsuleToken = body.capsule?.tokenId
 
-  if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
-  if (PAGE_IDS.has(id)) return errorResponse(400, 'That id is taken by one of Kismet’s own pages — choose another')
   if (!name) return errorResponse(400, 'A machine needs a name')
+  const asked = typeof body.id === 'string' && body.id ? body.id.toLowerCase() : null
+  if (asked !== null && !MACHINE_ID_PATTERN.test(asked)) return errorResponse(400, 'Invalid id')
+  if (asked !== null && PAGE_IDS.has(asked)) return errorResponse(400, 'That id is taken by one of Kismet’s own pages — choose another')
   if (kind !== 'capsule' && kind !== 'reveal') return errorResponse(400, 'Invalid kind')
   if (rarity !== 'manual' && rarity !== 'supply') return errorResponse(400, 'Invalid rarity')
   const cover = body.cover === undefined ? undefined : parseCover(body.cover)
@@ -225,7 +230,21 @@ export async function POST(req: NextRequest) {
       return errorResponse(429, dryRun ? 'Too many checks — wait a few minutes' : 'Too many publishes — wait a few minutes')
     }
   }
-  if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
+  // The URL: the one asked for, or the first of the name's that is free. Taken
+  // here only to read; createMachine's SET NX below is what claims it, so two
+  // publishes of one name racing still end with one machine per URL.
+  let id = asked
+  if (id !== null) {
+    if (await getMachine(id)) return errorResponse(409, 'That machine id is taken')
+  } else {
+    for (const candidate of machineIdCandidates(name)) {
+      if (!(await getMachine(candidate))) {
+        id = candidate
+        break
+      }
+    }
+    if (id === null) return errorResponse(409, 'Too many machines share that name — choose another')
+  }
 
   const rawEntries = Array.isArray(body.entries) ? body.entries : []
   const rawCollections = kind === 'reveal' && Array.isArray(body.collections) ? body.collections : []
@@ -416,6 +435,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       dryRun: true,
+      // The URL it would have; the publish takes the first still free then.
+      id,
       problems: [],
       capsule: {
         maxSupply: capsuleSupply.maxSupply,
@@ -581,7 +602,7 @@ async function publishReveal(input: {
   if (input.dryRun) {
     // What each piece would show as today, so the studio can say which are on
     // sale now and which will appear when their sale opens.
-    return NextResponse.json({ ok: true, dryRun: true, problems: [], lineup: await readLineup(lineup, input.passCollection) })
+    return NextResponse.json({ ok: true, dryRun: true, id: input.id, problems: [], lineup: await readLineup(lineup, input.passCollection) })
   }
 
   const machine: RevealMachine = {

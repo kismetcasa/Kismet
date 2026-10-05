@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { flushSync } from 'react-dom'
 import { MomentImage } from './MomentImage'
-import { shortAddress } from '@/lib/inprocess'
 import { proxyUrl, videoGatewayUrls } from '@/lib/media/gateway'
 import { useAllowsVideo } from '@/hooks/useAllowsVideo'
 import { FRAME_LIMITS, type MachineFrames, type StageFrame } from '@/lib/experience/types'
@@ -233,10 +232,10 @@ function Capsule() {
 }
 
 /** The last beat of a play or a collect, in the words a player expects. */
-export function CollectedLine({ title, artist }: { title: string; artist: string }) {
+export function CollectedLine({ title, by }: { title: string; /** The artist's name (useProfileNames). */ by: string }) {
   return (
     <p className="text-[11px] font-mono text-muted">
-      you&apos;ve collected <span className="text-ink group-hover:underline">{title}</span> by {shortAddress(artist)}
+      you&apos;ve collected <span className="text-ink group-hover:underline">{title}</span> by {by}
     </p>
   )
 }

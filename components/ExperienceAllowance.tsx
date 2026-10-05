@@ -43,6 +43,8 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
   const [standing, setStanding] = useState<PieceStanding | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [lastChange, setLastChange] = useState<'allow' | 'stop' | null>(null)
+  // Stopping while live capsule machines draw this piece asks once more.
+  const [confirmStop, setConfirmStop] = useState(false)
 
   const load = useCallback(() => {
     fetch(`/api/experience/piece?collection=${collection}&tokenId=${tokenId}`)
@@ -117,6 +119,8 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
   }
 
   const summary = standing.available === null ? 'unknown' : standing.available ? 'open' : 'off'
+  // The artist's own live capsule machines that draw this piece.
+  const liveCapsules = standing.machines.filter((m) => m.kind === 'capsule' && m.state === 'live')
 
   return (
     <div className="mt-4 border border-line">
@@ -157,7 +161,7 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
               <p className="text-[10px] font-mono uppercase tracking-widest text-muted">your capsule machines</p>
               <p className="text-xs font-mono text-muted leading-relaxed -mt-1.5">
                 Let your own capsule machines mint this piece as a prize, paid for by your capsule. You can stop
-                at any time; anyone who already drew it waits until you allow it again.
+                at any time; anyone who already drew it is given a fresh draw from what is left.
               </p>
               {standing.allowed === null ? (
                 <p className="text-xs font-mono text-[#ffcf70]">Could not read this from the chain — try again shortly.</p>
@@ -165,9 +169,34 @@ export function ExperienceAllowance({ collection, tokenId }: { collection: strin
                 <p className="text-xs font-mono text-dim">
                   Allowed for every piece in this collection. Change it from the collection&apos;s permissions.
                 </p>
+              ) : confirmStop && standing.allowed ? (
+                <div className="flex flex-col gap-2 border border-[#4a3a1a] bg-[#1a1408] p-3">
+                  <p className="text-xs font-mono text-[#ffcf70] leading-relaxed">
+                    {liveCapsules.map((m) => m.name).join(', ')} {liveCapsules.length === 1 ? 'draws' : 'draw'} this piece now.
+                    Stopping takes it out of {liveCapsules.length === 1 ? 'its' : 'their'} draws at once, and anyone who
+                    already drew it is given a fresh draw from what is left. If it is the last piece a machine can give,
+                    that machine stops selling here — but its capsule keeps selling on zora.co until you end the
+                    season, and each capsule sold there waits for an artwork. End the season first if you are done.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => { setConfirmStop(false); void change(false) }}
+                      disabled={pending}
+                      className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40"
+                    >
+                      stop anyway
+                    </button>
+                    <button
+                      onClick={() => setConfirmStop(false)}
+                      className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider btn-accent"
+                    >
+                      keep allowing
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <button
-                  onClick={() => void change(!standing.allowed)}
+                  onClick={() => (standing.allowed && liveCapsules.length > 0 ? setConfirmStop(true) : void change(!standing.allowed))}
                   disabled={pending}
                   className={`self-start px-4 py-2 text-[10px] font-mono uppercase tracking-wider disabled:opacity-40 ${
                     standing.allowed ? 'border border-line text-dim hover:text-ink' : 'btn-accent'

@@ -96,6 +96,25 @@ export interface ClaimRecord {
   attempt?: number
   /** The selected prize. */
   prize?: { collection: string; tokenId: string; artist: string }
+  /** Prizes drawn for this claim that could not then be given — their artist
+   *  stopped allowing them, the edition sold out, or Kismet withdrew them —
+   *  each handed back and drawn again (the resume route). Kept so a receipt
+   *  shows every draw, not only the last. */
+  replaced?: {
+    collection: string
+    tokenId: string
+    artist: string
+    reason: string
+    at: number
+    /** The draw that picked it, kept so it stays verifiable after the claim
+     *  is frozen and drawn again: its epoch, the commitment and table it was
+     *  drawn under, and the attempt that landed on it. */
+    epoch?: string
+    commitment?: string
+    snapshot?: SnapshotEntry[]
+    snapshotHash?: string
+    attempt?: number
+  }[]
   /** CDP userOp hash, written before the await so a timeout is traceable —
    *  and the ONLY handle reconciliation uses. Resume asks CDP what became of
    *  this exact operation (lib/experience/delivery.readDeliveryOutcome), never

@@ -7,7 +7,7 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { bestEffort } from '@/lib/bestEffort'
 import { drawHash, epochFor, snapshotHash } from '@/lib/experience/fairness'
 import { runDraw } from '@/lib/experience/runDraw'
-import { MAX_UNITS_PER_CAPSULE, mayRunDry } from '@/lib/experience/draw'
+import { entryKey, MAX_UNITS_PER_CAPSULE, mayRunDry } from '@/lib/experience/draw'
 import { checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize, readDeliveryOutcome } from '@/lib/experience/delivery'
 import {
@@ -33,6 +33,7 @@ import { recordCollected } from '@/lib/collected'
 import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable, isDeliverableEntry } from '@/lib/experience/eligibility'
 import { noticeIfEmpty } from '@/lib/experience/notices'
+import { recordPlayHistory } from '@/lib/experience/kismet'
 
 /**
  * Finish a claim that stalled.
@@ -203,25 +204,49 @@ async function handle(
     // rotation. The copy is already spent either way; the choice is only
     // whether to also mint something the platform has decided must not be
     // minted.
+    //
+    // A drawn piece that can no longer be given — Kismet withdrew it, its artist
+    // stopped allowing capsule machines to mint it, or its edition sold out —
+    // is handed back and the capsule drawn again from what can be given now: a
+    // fresh draw, as verifiable as the first (Case 2). Nothing landed, so the
+    // copy was never spent, and a paid capsule must not wait on a decision only
+    // its artist can reverse. An answer the chain could not give is not a "no":
+    // that pends and is asked again.
     const gateNow = await getGateConfig()
     const deliverable = await isDeliverableEntry(prize, gateNow.passCollection?.toLowerCase() ?? null)
-    if (!deliverable) {
+    const auth = deliverable ? await checkPrizeAuthority({ collection: prize.collection, tokenId: prize.tokenId }) : null
+    if (!deliverable || (auth && !auth.ok && auth.reason !== 'unreadable')) {
+      const reason = !deliverable ? 'withdrawn' : (auth?.reason ?? 'unknown')
+      await releaseOne(machineId, entryKey(prize)).catch(() => {})
       claim = await advanceClaim(claim, {
         state: 'pending',
-        pendingReason: 'the drawn artwork is no longer eligible to be dispensed — an operator is looking at this capsule',
+        prize: undefined,
+        userOpHash: undefined,
+        // The first draw, kept whole: drawing again re-freezes the claim, and
+        // without this the draw that picked the piece could no longer be
+        // checked — only the one that replaced it.
+        replaced: [
+          ...(claim.replaced ?? []),
+          {
+            ...prize,
+            reason,
+            at: Date.now(),
+            epoch: claim.epoch,
+            commitment: claim.commitment,
+            snapshot: claim.snapshot,
+            snapshotHash: claim.snapshotHash,
+            attempt: claim.attempt ?? 0,
+          },
+        ],
+        pendingReason: 'the drawn artwork can no longer be given — drawing again',
       })
-      console.error('[xp] resume blocked by eligibility', { machineId, txHash, unitIndex })
-      return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
+      console.warn('[xp] redrawing a prize that can no longer be given', { machineId, txHash, unitIndex, reason })
+      return drawAgain(machineId, txHash, unitIndex, player, claim)
     }
-
-    const auth = await checkPrizeAuthority({
-      collection: prize.collection,
-      tokenId: prize.tokenId,
-    })
-    if (!auth.ok) {
+    if (auth && !auth.ok) {
       claim = await advanceClaim(claim, {
         state: 'pending',
-        pendingReason: `the drawn artwork can no longer be minted (${auth.reason ?? 'unknown'})`,
+        pendingReason: 'could not confirm the artwork can be minted just now — try again shortly',
       })
       return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
     }
@@ -314,6 +339,19 @@ async function handle(
   //    stop being dispensed hides it or blacklists its artist; that empties the
   //    eligible set and the claim pends instead of drawing. Refusing wholesale
   //    bought nothing those checks do not already cover.
+  return drawAgain(machineId, txHash, unitIndex, player, claim)
+}
+
+/** Draw a capsule anew over the pool as it is now, and deliver what it gives
+ *  (Case 2, and Case 1's redraw). */
+async function drawAgain(
+  machineId: string,
+  txHash: string,
+  unitIndex: number,
+  player: string,
+  owed: ClaimRecord,
+): Promise<NextResponse> {
+  let claim: ClaimRecord = owed
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
   const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
@@ -422,6 +460,7 @@ async function settle(claim: ClaimRecord, machineId: string): Promise<void> {
   after(async () => {
     await recordCollected(claimant, prize.collection, prize.tokenId).catch(() => {})
     await recordPrize(claim).catch(() => {})
+    await recordPlayHistory(claimant, { m: machineId, c: prize.collection, t: prize.tokenId, tx, u: claim.unitIndex }).catch(() => {})
     // As the play route: only when this claim's table says it could be empty.
     if (!claim.snapshot || mayRunDry(claim.snapshot)) await noticeIfEmpty(machineId).catch(() => {})
     // The purchase's one win notice rides on unit 0, whichever route lands it.

@@ -958,7 +958,11 @@ from the code (per machine `<id>`; addresses lowercased):
 | `xp:<id>:claim:<tx>:<unit>` | string JSON, **no TTL** | SET NX per capsule unit / GET | **+1 per capsule played, forever** — the player's receipt, deliberate |
 | `xp:<id>:seed:<epoch>` | string, **no TTL** | SET NX (commit–reveal) / GET | **+1 per machine per UTC day while it can draw** — kept so past draws stay verifiable |
 | `xp:<id>:plays` · `xp:<id>:prizes` | zset | MULTI ZADD + ZREMRANGEBYRANK | write-trimmed to 5,000 each |
-| `xp:<id>:spark:<addr>` | string counter | INCRBY / GET | one per player per machine |
+| `xp:kismet:<addr>` | hash machine→kismet | HINCRBY per capsule delivered / reveal collect credited · HGETALL (profile) | one per player; a field per machine played |
+| `xp:history:<addr>` | zset of what came out | MULTI ZADD + ZREMRANGEBYRANK | write-trimmed to 100 per player |
+| `xp:<id>:stats` | hash plays · collects · eth_gwei · usdc_micro | HINCRBY · HGETALL (the creator's own profile) | one per machine |
+| `xp:credited:<sale\|collect key>` | string | SET NX EX 400 days — a sale or collect counted once | one per transaction, TTL'd |
+| `xp:kismet-carried:<addr>` · `xp:<id>:spark:<addr>` | marker · legacy counter | the old per-machine sparks are read once, carried into kismet, and never written again | one per player · read-only, existing keys only |
 | `xp:<id>:notices` | set | SADD (once-only test) | one per machine |
 | `xp:lock:<id>:<tx>:<unit>` · `xp:lock:state:<id>` · `xp:deliver:<claim>` · `lock:xp-frames:<id>` | lock strings | SET NX EX 180 / 30–60 / 120 / 180 | TTL'd |
 | `xp:discover:<c>:<t>:<addr>` · `xp:frames-retry:<id>` | cache · throttle | SET EX 30 · SET NX EX 30 | TTL'd |
@@ -971,3 +975,8 @@ growth ledger (§3.5): claims and seeds grow forever but are only ever point-rea
 draw table, so it scales with the pool (at most MAX_POOL_ENTRIES = 200 rows of
 ~200 bytes, so tens of KB at the cap). The in-process jobs add two GETs per
 5-minute tick and, hourly, one pass of two SET NX per machine that can draw.
+Kismet and the machine stats add, per capsule opened, one HINCRBY (and a SET NX
+that succeeds once per player, ever) and, on delivery, a MULTI of ZADD + trim;
+per purchase, one SET NX and a MULTI of at most two HINCRBY; per reveal collect,
+one SET NX and one MULTI. Reading them is one HGETALL or ZRANGE — nothing is
+scanned, and no command runs on the play's response path.

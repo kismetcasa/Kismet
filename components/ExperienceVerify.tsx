@@ -1,8 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useProfileNames } from '@/hooks/useProfileNames'
 import Link from 'next/link'
-import { shortAddress } from '@/lib/inprocess'
 
 /**
  * The verifier, as a surface a person can actually use.
@@ -38,12 +38,22 @@ interface VerifyResponse {
   setAside?: { collection: string; tokenId: string }[]
   recomputed?: { collection: string; tokenId: string } | null
   delivered?: { collection: string; tokenId: string; artist: string } | null
+  /** Draws this capsule made before, whose piece could no longer be given. */
+  replaced?: { collection: string; tokenId: string; reason: string; epoch: string | null; verified: boolean | null }[]
 }
 
-export function ExperienceVerify({ machineId, initialTx }: { machineId: string; initialTx: string }) {
+/** Why a drawn piece was set aside and the capsule drawn again. */
+const SET_ASIDE: Record<string, string> = {
+  'no-grant': 'its artist stopped allowing machines to mint it',
+  'minted-out': 'its edition sold out',
+  withdrawn: 'it was taken out of machines',
+}
+
+export function ExperienceVerify({ machineId, initialTx, initialUnit = '0' }: { machineId: string; initialTx: string; initialUnit?: string }) {
   const [txHash, setTxHash] = useState(initialTx)
-  const [unitIndex, setUnitIndex] = useState('0')
+  const [unitIndex, setUnitIndex] = useState(initialUnit)
   const [result, setResult] = useState<VerifyResponse | null>(null)
+  const nameOf = useProfileNames((result?.snapshot ?? []).map((e) => e.artist))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -80,8 +90,8 @@ export function ExperienceVerify({ machineId, initialTx }: { machineId: string; 
   // Auto-run when the machine page handed us a transaction, so arriving from a
   // reveal is one tap rather than a copy-paste exercise.
   useEffect(() => {
-    if (initialTx) run(initialTx, '0')
-  }, [initialTx, run])
+    if (initialTx) run(initialTx, initialUnit)
+  }, [initialTx, initialUnit, run])
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -185,6 +195,33 @@ export function ExperienceVerify({ machineId, initialTx }: { machineId: string; 
             />
           </div>
 
+          {(result.replaced?.length ?? 0) > 0 && (
+            <div className="mt-6">
+              <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">drawn before this</h2>
+              <div className="border border-line divide-y divide-line">
+                {result.replaced!.map((r, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2">
+                    <span className="flex-1 min-w-0 text-[11px] font-mono text-dim">
+                      #{r.tokenId} <span className="text-subtle">— set aside: {SET_ASIDE[r.reason] ?? r.reason}</span>
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono shrink-0 ${
+                        r.verified === true ? 'text-[#7ee787]' : r.verified === false ? 'text-[#ff7c80]' : 'text-subtle'
+                      }`}
+                    >
+                      {r.verified === true ? 'verified' : r.verified === false ? 'MISMATCH' : 'not yet verifiable'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] font-mono text-subtle mt-2 max-w-lg leading-relaxed">
+                This capsule drew a piece that could no longer be given, so it was drawn again from what was left.
+                That first draw is checked the same way — its own seed, table and attempt — so a redraw is a second
+                verifiable draw, not a re-roll.
+              </p>
+            </div>
+          )}
+
           {result.snapshot && result.snapshot.length > 0 && (
             <div className="mt-6">
               <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">
@@ -202,7 +239,7 @@ export function ExperienceVerify({ machineId, initialTx }: { machineId: string; 
                           setAsideAt >= 0 ? 'text-subtle line-through' : 'text-dim'
                         }`}
                       >
-                        #{e.tokenId} <span className="text-subtle">by {shortAddress(e.artist)}</span>
+                        #{e.tokenId} <span className="text-subtle">by {nameOf(e.artist)}</span>
                       </span>
                       <span className="text-[10px] font-mono text-subtle tabular-nums shrink-0">
                         {setAsideAt >= 0

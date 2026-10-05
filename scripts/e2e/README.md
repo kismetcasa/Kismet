@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (560)
+## What it asserts (617)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -361,4 +361,28 @@ machine share card. About three minutes.
 - **Share card** — a machine's Farcaster embed and its card; a card whose cover
   is out of reach draws its text, not a blank; a machine in review shares the
   bare card.
+- **People, prices, links** — artists and players by their Kismet or Farcaster
+  name, not their address; a USD estimate beside every ETH price; two machine
+  cards a row on a phone; "0 ETH" rather than "free" for nothing paid yet; a
+  machine's link made from its name, numbered on a clash, never one of the
+  `/play` pages.
+- **Kismet** — one for each capsule opened and each piece collected through a
+  reveal machine, counted once; the old sparks carried over once; the
+  machine's figures (plays, collects, ETH) for its creator alone; the profile's
+  Kismet tab.
+- **Winning and sharing** — a win shared as "just collected … by @artist from
+  the Kismet Gachapon" with the artwork and the machine; recent wins with a
+  winner tag, and a share only on your own.
+- **When a piece goes away** — a drawn piece its artist stops allowing is
+  drawn again from what is left, and both draws verify (an altered first one
+  fails the play); stopping warns first while a live machine
+  draws it; a machine found empty by a play or a page view tells its creator,
+  once.
+- **Curation** — no turning down or delisting without a reason; a machine
+  turned down is withdrawn, its capsule, pledges and link freed for the fixed
+  one; the queue's reason form, and the bell row that reads it and opens the
+  studio.
+- **Studios** — the creator's own works to pick from (hidden ones left out),
+  picked and unpicked; each piece shown by its title, pasted or picked; a link
+  to mint the capsule.
 

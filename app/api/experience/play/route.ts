@@ -14,7 +14,6 @@ import { runDraw } from '@/lib/experience/runDraw'
 import { checkCapsulePurchase, checkPrizeAuthority } from '@/lib/experience/authority'
 import { deliverPrize } from '@/lib/experience/delivery'
 import {
-  addSpark,
   advanceClaim,
   CLAIM_LOCK_TTL_SECONDS,
   buildSnapshot,
@@ -38,6 +37,9 @@ import { writeNotification } from '@/lib/notifications'
 import { recordCollected } from '@/lib/collected'
 import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable } from '@/lib/experience/eligibility'
+import { creditPlay, recordCapsuleSale, recordPlayHistory } from '@/lib/experience/kismet'
+import { resolveOnchainSale } from '@/lib/saleConfig'
+import { serverBaseClient } from '@/lib/rpc'
 import { noticeIfEmpty } from '@/lib/experience/notices'
 
 /**
@@ -227,6 +229,19 @@ export async function POST(req: NextRequest) {
     return errorResponse(409, 'Claim in progress')
   }
 
+  // A paid play, now on record: one kismet for its player, and the purchase in
+  // the machine's figures — counted once per transaction, whichever of its
+  // capsules opens first (lib/experience/kismet). After the response, and
+  // never a reason for the play to fail.
+  const capsule = machine.capsule
+  after(async () => {
+    await creditPlay(machineId, account).catch(bestEffort('xp.kismet', { machineId, txHash }))
+    await recordCapsuleSale(machineId, txHash, proof.units, async () => {
+      const sale = await resolveOnchainSale(serverBaseClient(), capsule.collection as `0x${string}`, BigInt(capsule.tokenId))
+      return sale ? { pricePerToken: sale.pricePerToken, currency: sale.currency } : null
+    }).catch(() => {})
+  })
+
   // 3b. Hold the claim's single-flight lock for the rest of this request — the
   //     SAME lock /api/experience/resume takes. A player who reloads mid-reveal
   //     sees this capsule under "still opening" and can press open while this
@@ -386,9 +401,11 @@ async function drawAndDeliver(params: {
   const prize = chosen
   after(async () => {
     await Promise.all([
-      addSpark(machineId, account, 1).catch(() => {}),
       claim.state === 'delivered'
         ? recordCollected(account, prize.collection, prize.tokenId).catch(() => {})
+        : Promise.resolve(),
+      claim.state === 'delivered'
+        ? recordPlayHistory(account, { m: machineId, c: prize.collection, t: prize.tokenId, tx: txHash, u: unitIndex }).catch(() => {})
         : Promise.resolve(),
       claim.state === 'delivered' ? recordPrize(claim).catch(() => {}) : Promise.resolve(),
     ])
