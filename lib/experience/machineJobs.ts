@@ -54,11 +54,12 @@ async function recordMachineJobRun(job: MachineJob): Promise<void> {
  * openEpochSeeds runs on every machine read and commits today's AND tomorrow's
  * seed, so any machine anyone looks at is always committed a full epoch ahead.
  * The one case that leaves open is a machine nobody has loaded for two days:
- * its next play would create the seed at freeze time — after the player's
- * transaction exists, which is the ordering commit–reveal is supposed to rule
- * out. Traffic-independent publication is the industry norm for exactly this
- * reason (a commitment that does not depend on anyone showing up), and it
- * costs one bounded pass over the machines.
+ * its next play would create the seed at freeze time, after the player's
+ * transaction exists. Every draw is sealed by a block made after its freeze
+ * (lib/experience/entropy), so even that seed could not be chosen to suit the
+ * outcome — but a commitment published a day ahead, whether or not anyone
+ * shows up, is still what a player can hold the draw to, and it costs one
+ * bounded pass over the machines.
  *
  * Idempotent: every write underneath is SET NX, so running it twice — or
  * racing a read — cannot rotate a seed that already exists.

@@ -929,7 +929,17 @@ artist frames can be changed by its creator after it is live.
 **Why.** A creator sets weights and supplies, never odds (`lib/experience/types.ts`):
 the published table and the draw read the same frozen snapshot (`draw.ts`), and the
 daily commit–reveal receipt covers the seed and the snapshot's hash (`fairness.ts`),
-so the odds shown and the odds played cannot differ. A claim is the obligation to a
+so the odds shown and the odds played cannot differ. Each draw is also sealed by a
+Base block: the first block after the freeze, its number written into the claim with
+the seed and the table before the block exists, its hash mixed into the HMAC
+(`entropy.ts`, `fairnessCore.ts`). When the outcome is fixed it is unknown to everyone
+— Kismet, which holds the day's seed, included — and a seed created late cannot be
+chosen to suit a transaction already on chain; a draw waits about a second for its
+block, and one that is late pends and is finished from the same freeze. The verify
+page recomputes every draw in the visitor's browser (Web Crypto, `fairnessWeb.ts`),
+reads the sealing block and the capsule's block from Base through the browser's own
+connection, and holds the seed to the commitment that browser was shown before the
+play (`seenCommitments.ts`); claims drawn before blocks were mixed in verify as drawn. A claim is the obligation to a
 player who has paid, so it is a state machine with no TTL until it is delivered
 (`store.ts`).
 

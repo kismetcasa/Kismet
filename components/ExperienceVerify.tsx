@@ -1,8 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useProfileNames } from '@/hooks/useProfileNames'
 import Link from 'next/link'
+import { BrowserVerify, type BrowserVerifyInput } from './BrowserVerify'
+import type { SnapshotEntry } from '@/lib/experience/types'
 
 /**
  * The verifier, as a surface a person can actually use.
@@ -29,7 +31,7 @@ interface VerifyResponse {
   serverSeed?: string
   commitment?: string
   snapshotHash?: string
-  snapshot?: { collection: string; tokenId: string; artist: string; weight: number; remaining: number | null }[]
+  snapshot?: SnapshotEntry[]
   txHash?: string
   unitIndex?: number
   attempt?: number
@@ -38,8 +40,23 @@ interface VerifyResponse {
   setAside?: { collection: string; tokenId: string }[]
   recomputed?: { collection: string; tokenId: string } | null
   delivered?: { collection: string; tokenId: string; artist: string } | null
+  /** The block that sealed the draw, chosen after the freeze; null on a
+   *  claim drawn before draws were sealed by a block. */
+  entropy?: { block: number; hash: string | null; after: number } | null
   /** Draws this capsule made before, whose piece could no longer be given. */
-  replaced?: { collection: string; tokenId: string; reason: string; epoch: string | null; verified: boolean | null }[]
+  replaced?: {
+    collection: string
+    tokenId: string
+    reason: string
+    epoch: string | null
+    verified: boolean | null
+    serverSeed?: string
+    commitment?: string
+    snapshot?: SnapshotEntry[]
+    snapshotHash?: string
+    attempt?: number
+    entropy?: { block: number; hash: string | null; after: number } | null
+  }[]
 }
 
 /** Why a drawn piece was set aside and the capsule drawn again. */
@@ -56,6 +73,34 @@ export function ExperienceVerify({ machineId, initialTx, initialUnit = '0' }: { 
   const nameOf = useProfileNames((result?.snapshot ?? []).map((e) => e.artist))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // The same material, for this browser to check on its own.
+  const browserInput = useMemo<BrowserVerifyInput | null>(() => {
+    const r = result
+    if (!r?.verifiable || !r.serverSeed || !r.commitment || !r.snapshot || !r.snapshotHash || !r.txHash || !r.delivered || !r.epoch) return null
+    return {
+      machineId,
+      epoch: r.epoch,
+      serverSeed: r.serverSeed,
+      commitment: r.commitment,
+      snapshot: r.snapshot,
+      snapshotHash: r.snapshotHash,
+      txHash: r.txHash,
+      unitIndex: r.unitIndex ?? 0,
+      attempt: r.attempt ?? 0,
+      entropy: r.entropy ?? null,
+      picked: { collection: r.delivered.collection, tokenId: r.delivered.tokenId },
+      earlier: (r.replaced ?? []).map((e) => ({
+        tokenId: e.tokenId,
+        picked: { collection: e.collection, tokenId: e.tokenId },
+        serverSeed: e.serverSeed,
+        commitment: e.commitment,
+        snapshot: e.snapshot,
+        snapshotHash: e.snapshotHash,
+        attempt: e.attempt,
+        entropy: e.entropy ?? null,
+      })),
+    }
+  }, [machineId, result])
 
   const run = useCallback(
     async (tx: string, unit: string) => {
@@ -175,7 +220,10 @@ export function ExperienceVerify({ machineId, initialTx, initialUnit = '0' }: { 
                 <>{result.reason ?? 'The recomputed draw does not match what was delivered.'}</>
               )}
             </p>
+            <p className="text-[10px] font-mono text-subtle mt-1.5">the server&apos;s verdict — your browser&apos;s own is below</p>
           </div>
+
+          {browserInput && <BrowserVerify input={browserInput} />}
 
           <div className="mt-4 border border-line divide-y divide-line">
             <Field label="epoch" value={result.epoch ?? ''} />
@@ -184,6 +232,10 @@ export function ExperienceVerify({ machineId, initialTx, initialUnit = '0' }: { 
             <Field label="weight table hash" value={result.snapshotHash ?? ''} />
             <Field label="your transaction" value={result.txHash ?? ''} />
             <Field label="unit · attempt" value={`${result.unitIndex ?? 0} · ${result.attempt ?? 0}`} />
+            <Field
+              label="sealing block (chosen after the freeze)"
+              value={result.entropy?.hash ? `${result.entropy.block} · ${result.entropy.hash}` : 'none — drawn before draws were sealed by a block'}
+            />
             <Field label="draw hash" value={result.drawHash ?? ''} />
             <Field
               label="recomputed → delivered"
@@ -252,8 +304,9 @@ export function ExperienceVerify({ machineId, initialTx, initialUnit = '0' }: { 
               </div>
               <p className="text-[10px] font-mono text-subtle mt-2 max-w-lg leading-relaxed">
                 Recompute it yourself: HMAC-SHA256 the seed over{' '}
-                <span className="text-dim">txHash:unitIndex:attempt</span> (lowercased hash), take the first 128
-                bits as an integer, and reduce modulo the total weight above. Walking the rows in this order
+                <span className="text-dim">txHash:unitIndex:attempt{result.entropy?.hash ? ':blockHash' : ''}</span>{' '}
+                (hashes lowercased{result.entropy?.hash ? '; the sealing block’s hash, as above' : ''}), take the first
+                128 bits as an integer, and reduce modulo the total weight above. Walking the rows in this order
                 until the cumulative weight passes that number gives the winner.
                 {(result.setAside?.length ?? 0) > 0 && (
                   <>

@@ -94,6 +94,14 @@ export interface ClaimRecord {
   /** Redraw counter — each attempt is an independent, separately verifiable
    *  draw over the same frozen snapshot. */
   attempt?: number
+  /** The block that seals the draw (lib/experience/entropy): the first block
+   *  after the freeze, its number written here with the seed and the table
+   *  before the block existed, its hash once it did. `after` is the height
+   *  the chain stood at when it was chosen. Absent on claims drawn before
+   *  draws were sealed by a block; they verify as they were drawn. */
+  entropy?: { block: number; hash: string | null; after: number }
+  /** When the freeze was written, ms. */
+  frozenAt?: number
   /** The selected prize. */
   prize?: { collection: string; tokenId: string; artist: string }
   /** Prizes drawn for this claim that could not then be given — their artist
@@ -114,6 +122,7 @@ export interface ClaimRecord {
     snapshot?: SnapshotEntry[]
     snapshotHash?: string
     attempt?: number
+    entropy?: { block: number; hash: string | null; after: number }
   }[]
   /** CDP userOp hash, written before the await so a timeout is traceable —
    *  and the ONLY handle reconciliation uses. Resume asks CDP what became of

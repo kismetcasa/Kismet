@@ -83,6 +83,7 @@ const TX_CAP = '0x' + '8e'.repeat(32) // its mint reverts every time it is tried
 const TX_REDRAW = '0x' + '9f'.repeat(32) // its first draw is refused, so attempt 1 delivers
 const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refused and resume lands it
 const TX_SECOND = '0x' + '1d'.repeat(32) // second-chance: drawn, delivery refused, then the piece's grant revoked
+const TX_SEAL = '0x' + '5e'.repeat(32) // second-chance: its sealing block late, finished from the same freeze
 const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was revoked
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
@@ -291,14 +292,19 @@ function exec(cmd) {
       let entries = sortedZ(m)
       const flags = args.map((a) => a.toLowerCase())
       const bound = (raw, d) => raw === '+inf' ? Infinity : raw === '-inf' ? -Infinity : Number.isFinite(Number(raw)) ? Number(raw) : d
+      const rev = flags.includes('rev')
       if (flags.includes('byscore')) {
         const lo = bound(args[1], -Infinity), hi = bound(args[2], Infinity)
         entries = entries.filter(([, sc]) => sc >= lo && sc <= hi)
+        if (rev) entries.reverse()
       } else {
+        // As Redis does: with REV, ranks count from the highest score — so
+        // `0 29 REV` is the thirty newest, not the thirty oldest reversed.
+        if (rev) entries.reverse()
         const [a, b] = rankRange(entries.length, Number(args[1]), Number(args[2]))
         entries = b < a ? [] : entries.slice(a, b + 1)
       }
-      return (flags.includes('rev') ? entries.reverse() : entries).map(([mem]) => mem)
+      return entries.map(([mem]) => mem)
     }
     case 'zremrangebyrank': { const m = zsets.get(k); if (!m) return 0; const s = sortedZ(m); const [a, b] = rankRange(s.length, Number(args[1]), Number(args[2])); if (b < a) return 0; for (const [mem] of s.slice(a, b + 1)) m.delete(mem); return b - a + 1 }
     case 'zremrangebyscore': { const m = zsets.get(k); if (!m) return 0; const lo = args[1] === '-inf' ? -Infinity : Number(args[1]); const hi = args[2] === '+inf' ? Infinity : Number(args[2]); let n = 0; for (const [mem, sc] of [...m.entries()]) { if (sc >= lo && sc <= hi) { m.delete(mem); n++ } } return n }
@@ -438,11 +444,17 @@ const setHead = (n) => {
 /** `operator` is the address that executed the mint (the buyer for an ordinary
  *  sale, the ERC20Minter for a USDC sale, the admin for a free adminMint);
  *  `purchased` adds the collection's own Purchased receipt to the transaction. */
+/** Each block's own hash, as a real chain has: draws are sealed by one, and
+ *  the verify page reads it back from the chain. */
+function blockHashOf(n) {
+  return '0x' + createHash('sha256').update(`block:${BigInt(n)}`, 'utf8').digest('hex')
+}
+
 function addMint({ tx, collection, to, id, value, block, operator = to, purchased = false }) {
   const topics = encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator, from: ZERO, to } })
   const data = encodeAbiParameters(parseAbiParameters('uint256, uint256'), [id, value])
   const blockHex = '0x' + block.toString(16)
-  const log = { address: collection, topics, data, blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false }
+  const log = { address: collection, topics, data, blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: blockHashOf(block), logIndex: '0x0', removed: false }
   chain.logs.push(log)
   const logs = [log]
   if (purchased) {
@@ -494,7 +506,7 @@ function walletSend(tx) {
         address: tx.to,
         topics: encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: tx.from, from: ZERO, to: mintTo } }),
         data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [tokenId, quantity]),
-        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false,
+        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), logIndex: '0x0', removed: false,
       })
     } else if (String(tx.to).toLowerCase() === USDC) {
       const { functionName, args } = decodeFunctionData({ abi: USDC_APPROVE, data: tx.data })
@@ -522,7 +534,7 @@ function walletSend(tx) {
         address: collection,
         topics: encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: ERC20_MINTER, from: ZERO, to: mintTo } }),
         data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [tokenId, quantity]),
-        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false,
+        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), logIndex: '0x0', removed: false,
       })
     } else {
     const { functionName, args } = decodeFunctionData({ abi: WALLET_WRITES, data: tx.data })
@@ -542,11 +554,21 @@ function walletSend(tx) {
   }
   const blockHex = '0x' + chain.head.toString(16)
   chain.receipts.set(hash, {
-    transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), blockNumber: blockHex,
+    transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), blockNumber: blockHex,
     from: tx.from, to: tx.to, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
     contractAddress: null, logs: ok ? logs : [], logsBloom: '0x' + '0'.repeat(512), status: ok ? '0x1' : '0x0', type: '0x2',
   })
   return hash
+}
+
+function mockBlock(n) {
+  return {
+    number: '0x' + n.toString(16), hash: blockHashOf(n), parentHash: blockHashOf(n - 1n),
+    timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), baseFeePerGas: '0x1', gasLimit: '0x1c9c380', gasUsed: '0x0',
+    miner: ZERO, extraData: '0x', transactions: [], uncles: [], nonce: '0x0000000000000000', difficulty: '0x0',
+    logsBloom: '0x' + '0'.repeat(512), sha3Uncles: '0x' + '00'.repeat(32), stateRoot: '0x' + '00'.repeat(32),
+    receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', totalDifficulty: '0x0',
+  }
 }
 
 function rpc(method, params) {
@@ -653,12 +675,14 @@ function rpc(method, params) {
     case 'eth_gasPrice':
     case 'eth_maxPriorityFeePerGas': return '0x1'
     case 'eth_getTransactionCount': return '0x0'
-    case 'eth_getBlockByNumber': return {
-      number: '0x' + chain.head.toString(16), hash: '0x' + 'bb'.repeat(32), parentHash: '0x' + 'aa'.repeat(32),
-      timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), baseFeePerGas: '0x1', gasLimit: '0x1c9c380', gasUsed: '0x0',
-      miner: ZERO, extraData: '0x', transactions: [], uncles: [], nonce: '0x0000000000000000', difficulty: '0x0',
-      logsBloom: '0x' + '0'.repeat(512), sha3Uncles: '0x' + '00'.repeat(32), stateRoot: '0x' + '00'.repeat(32),
-      receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', totalDifficulty: '0x0',
+    case 'eth_getBlockByNumber': {
+      // 'latest' is the head. A numbered block exists up to one past the head
+      // — the next block is always about to be made, which is the one a draw
+      // waits for to seal it — and each has its own hash.
+      const n = params[0] === 'latest' || params[0] === 'pending' || params[0] == null ? chain.head : BigInt(params[0])
+      if (n > chain.head + (chain.holdNextBlock ? 0n : 1n)) return null
+      chain.blockReads = (chain.blockReads ?? 0) + 1
+      return mockBlock(n)
     }
     case 'eth_getLogs': {
       chain.getLogsCalls = (chain.getLogsCalls ?? 0) + 1
@@ -1374,6 +1398,18 @@ try {
     JSON.stringify(p0.json?.claim))
   check('the claim carries its commitment', p0.json?.claim?.commitment === detail.json.fairness.commitment)
   {
+    // Sealed by a block: the first one after the freeze, its number written
+    // with the seed and the table before it existed, its hash mixed into the
+    // draw — so nobody, Kismet included, could know the outcome when it was fixed.
+    const frozen = JSON.parse(strings.get(`kismetart:xp:spring-season:claim:${TX_A}:0`))
+    const mintBlock = Number(chain.receipts.get(TX_A.toLowerCase())?.blockNumber)
+    check('the draw is sealed by the first block after its freeze, written into the freeze with the seed and the table',
+      frozen.entropy?.block === frozen.entropy?.after + 1 && frozen.entropy.after === Number(chain.head) && frozen.entropy.hash === blockHashOf(frozen.entropy.block) && typeof frozen.frozenAt === 'number',
+      JSON.stringify(frozen.entropy))
+    check('a block after the capsule\'s own, so the player could not have shaped their transaction to it', frozen.entropy?.block > mintBlock, `${frozen.entropy?.block} vs ${mintBlock}`)
+    check('and the player\'s receipt names it', p0.json?.claim?.entropy?.block === frozen.entropy?.block && p0.json.claim.entropy.hash === frozen.entropy.hash)
+  }
+  {
     // What was actually put on the wire: one userOp, calling adminMint on the
     // prize's collection, minting exactly one copy of the drawn token to the
     // player — the same shape lib/experience/delivery's oracle pins, now seen
@@ -1550,6 +1586,13 @@ try {
   check('a closed epoch reveals and verifies', vDone.json?.verifiable === true && vDone.json.ok === true, JSON.stringify(vDone.json).slice(0, 300))
   check('the recomputed draw is the delivered artwork', vDone.json?.recomputed?.tokenId === prize.tokenId && vDone.json.delivered?.tokenId === prize.tokenId)
   check('the revealed seed matches the published commitment', vDone.json?.serverSeed === seed && vDone.json.commitment === sha256(seed))
+  check('and the verifier publishes the block that sealed it, for anyone to read from the chain',
+    vDone.json?.entropy?.block === stored.entropy?.block && vDone.json.entropy.hash === blockHashOf(stored.entropy.block))
+  // The same claim with a different sealing block recomputes to a different
+  // draw hash: the block is part of what was drawn, not decoration.
+  strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256(seed), entropy: { ...stored.entropy, hash: blockHashOf(stored.entropy.block + 1) } }))
+  const vOther = await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_A}&unitIndex=0`)
+  check('a different block gives a different draw', vOther.json?.drawHash && vOther.json.drawHash !== vDone.json?.drawHash, `${vOther.json?.drawHash} vs ${vDone.json?.drawHash}`)
   strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256('not-the-seed') }))
   const vBad = await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_A}&unitIndex=0`)
   check('a claim served under a different commitment FAILS to verify', vBad.json?.verifiable === true && vBad.json.ok === false)
@@ -1636,6 +1679,7 @@ try {
   const pSecond = await call('/api/experience/play', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SECOND, account: PLAYER, unitIndex: 0 } })
   check('(its draw lands on the piece, and the delivery is refused)', pSecond.json?.claim?.state === 'pending' && pSecond.json.claim.prize?.tokenId === '99', JSON.stringify(pSecond.json?.claim).slice(0, 200))
   chain.perms.delete(key(POOL, 99, OPERATOR))
+  setHead(chain.head + 3n) // the chain moves on before the resume
   const rSecond = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SECOND, unitIndex: 0 } })
   const sStored = JSON.parse(strings.get(`kismetart:xp:second-chance:claim:${TX_SECOND}:0`))
   check('a drawn piece its artist stops allowing is not waited on: the resume draws again and delivers what can be given',
@@ -1643,8 +1687,12 @@ try {
   check('and the claim keeps the piece it set aside, and why', sStored.replaced?.length === 1 && sStored.replaced[0].tokenId === '99' && sStored.replaced[0].reason === 'no-grant',
     JSON.stringify(sStored.replaced))
   check('and its new draw is frozen over a table without the revoked piece', !sStored.snapshot.some((e) => e.tokenId === '99'))
-  check('while the first draw keeps what verifies it: its epoch, commitment, table and attempt',
-    sStored.replaced?.[0]?.snapshot?.some((e) => e.tokenId === '99') && !!sStored.replaced[0].snapshotHash && !!sStored.replaced[0].commitment && sStored.replaced[0].epoch === today && sStored.replaced[0].attempt === 0)
+  check('while the first draw keeps what verifies it: its epoch, commitment, table, attempt and sealing block',
+    sStored.replaced?.[0]?.snapshot?.some((e) => e.tokenId === '99') && !!sStored.replaced[0].snapshotHash && !!sStored.replaced[0].commitment && sStored.replaced[0].epoch === today && sStored.replaced[0].attempt === 0 &&
+      sStored.replaced[0].entropy?.hash === blockHashOf(sStored.replaced[0].entropy.block))
+  check('and the new draw is sealed by a block of its own, the first after the redraw was frozen',
+    sStored.entropy?.block === Number(chain.head) + 1 && sStored.entropy.block > sStored.replaced?.[0]?.entropy?.block && sStored.entropy.hash === blockHashOf(sStored.entropy.block),
+    `${sStored.entropy?.block} after ${sStored.replaced?.[0]?.entropy?.block}`)
   {
     // Close the day for both draws, as the redraw machine's check does.
     const sKey = `kismetart:xp:second-chance:claim:${TX_SECOND}:0`
@@ -1660,7 +1708,33 @@ try {
     strings.set(sKey, JSON.stringify({ ...closed, replaced: (closed.replaced ?? []).map((r) => ({ ...r, snapshot: (r.snapshot ?? []).map((e) => ({ ...e, weight: e.tokenId === '7' ? 1_000_000_000 : e.weight })) })) }))
     const vT = await call(`/api/experience/verify?machineId=second-chance&txHash=${TX_SECOND}&unitIndex=0`)
     check('and one whose table was altered fails the play', vT.json?.ok === false && vT.json.replaced?.[0]?.verified === false && /earlier draw/.test(vT.json.reason ?? ''), JSON.stringify(vT.json?.replaced?.[0] ?? vT.json).slice(0, 200))
-    strings.set(sKey, JSON.stringify(sStored))
+    // Left closed, as a day's passing leaves it: the browser checks it later.
+    strings.set(sKey, JSON.stringify(closed))
+  }
+  // A draw whose sealing block does not come in time pends — and is finished
+  // from that same freeze, not frozen again, so a stalled draw is never a
+  // second roll of the dice.
+  {
+    setHead(chain.head + 2n)
+    addMint({ tx: TX_SEAL, collection: CAPSULE_G, to: PLAYER, id: 1n, value: 1n, block: chain.head })
+    chain.holdNextBlock = true
+    const t0 = Date.now()
+    const held = await call('/api/experience/play', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SEAL, account: PLAYER, unitIndex: 0 } })
+    const waited = Date.now() - t0
+    const heldKey = `kismetart:xp:second-chance:claim:${TX_SEAL}:0`
+    const heldStored = JSON.parse(strings.get(heldKey) ?? '{}')
+    check('a draw whose sealing block is late waits for it, then pends saying so — nothing drawn, its freeze kept',
+      held.json?.claim?.state === 'pending' && /sealing this draw/.test(held.json.claim.pendingReason ?? '') && !heldStored.prize &&
+        heldStored.entropy?.hash === null && heldStored.entropy?.block === Number(chain.head) + 1 && !!heldStored.snapshotHash && waited >= 5_000,
+      `${waited}ms ${JSON.stringify(held.json?.claim ?? held.json).slice(0, 200)}`)
+    chain.holdNextBlock = false
+    setHead(chain.head + 4n) // the block it waited for exists now, and more after it
+    await call('/api/experience/resume', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SEAL, unitIndex: 0 } })
+    const doneStored = JSON.parse(strings.get(heldKey) ?? '{}')
+    check('resume finishes it from that same freeze and that same block — not a later one',
+      !!doneStored.prize && doneStored.entropy?.block === heldStored.entropy?.block && doneStored.entropy.hash === blockHashOf(heldStored.entropy.block) &&
+        doneStored.snapshotHash === heldStored.snapshotHash && doneStored.frozenAt === heldStored.frozenAt && doneStored.epoch === heldStored.epoch,
+      JSON.stringify({ held: heldStored.entropy, done: doneStored.entropy, prize: doneStored.prize }))
   }
 
   // ═══ 6. a pool that cannot deliver ═════════════════════════════════════════
@@ -3991,12 +4065,15 @@ try {
           // The collect, proved on chain by /api/collect, is credited to the
           // machine it came through (lib/experience/kismet).
           const soloKismet = async () => (await call(`/api/experience/kismet?account=${PLAYER}`)).json
+          // Credited after the response (after()), and the route reads history
+          // and counts separately — so wait for both, not only the count.
+          const credited = (k) => k?.machines?.find((x) => x.id === 'solo-piece')?.kismet === 1 &&
+            k.history?.some((h) => h.machineId === 'solo-piece' && h.kind === 'collect' && h.collection === REVEAL.toLowerCase() && h.tokenId === '1')
           let sk = await soloKismet()
-          for (let i = 0; i < 25 && !sk?.machines?.some((x) => x.id === 'solo-piece'); i++) { await sleep(200); sk = await soloKismet() }
+          for (let i = 0; i < 25 && !credited(sk); i++) { await sleep(200); sk = await soloKismet() }
           check('collecting what a reveal machine showed earns one kismet there, and is in the collector\'s history',
-            sk?.machines?.find((x) => x.id === 'solo-piece')?.kismet === 1 &&
-              sk.history?.some((h) => h.machineId === 'solo-piece' && h.kind === 'collect' && h.collection === REVEAL.toLowerCase() && h.tokenId === '1'),
-            JSON.stringify(sk).slice(0, 300))
+            credited(sk),
+            JSON.stringify({ solo: sk?.machines?.find((x) => x.id === 'solo-piece') ?? null, history: (sk?.history ?? []).slice(0, 3).map((h) => [h.machineId, h.kind, h.tokenId]) }))
           const soloStats = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines?.find((x) => x.id === 'solo-piece')?.stats
           check('and in the machine\'s figures, priced by the chain', soloStats?.collects === 1 && soloStats.ethWei === '2000000000000000', JSON.stringify(soloStats))
           const soloOut = [...(zsets.get('kismetart:xp:solo-piece:prizes')?.keys() ?? [])].map((x) => JSON.parse(x))
@@ -4398,6 +4475,79 @@ try {
           const others = await phone.locator('header nav [role="menu"] a').evaluateAll((as) => as.map((a) => a.textContent.trim()))
           check('on a phone the menu reads Enjoy, with Create and Curate to go to', current === 'Enjoy' && others.join() === 'Create,Curate', `${current} | ${others.join()}`)
           await phone.context().close()
+        }
+
+        // ── a play checked in the player's own browser ──
+        // The verify page redoes the whole check itself — Web Crypto for the
+        // hashes and the draw, its own connection to Base for the blocks, and
+        // the commitment this browser was shown before the play — so a server
+        // that lied in its answer would not get a "verified" past it.
+        {
+          const seedY = strings.get(`kismetart:xp:second-chance:seed:${yesterday}`)
+          const shown = { 'kismet:xp:commitments': JSON.stringify({ [`second-chance:${yesterday}`]: sha256(seedY) }) }
+          const mintBlock = Number(chain.receipts.get(TX_SECOND.toLowerCase())?.blockNumber)
+          const claimS = JSON.parse(strings.get(`kismetart:xp:second-chance:claim:${TX_SECOND}:0`))
+          const reads = { blocks: chain.blockReads ?? 0, receipts: chain.receiptCalls ?? 0 }
+          const honest = await open(`/play/second-chance/verify?txHash=${TX_SECOND}&unitIndex=0`, { onChain: true, storage: shown })
+          await honest.getByText(/^(verified|MISMATCH) in your browser$/).waitFor({ timeout: 15_000 }).catch(() => {})
+          const h = await text(honest)
+          check('the verify page checks the play again in the browser, and it holds',
+            h.includes('verified in your browser') && !h.includes('mismatch in your browser'), h.match(/checked in your browser.{0,700}/)?.[0] ?? '')
+          check('the seed against the commitment, which is the one this browser was shown before the play',
+            h.includes('the revealed seed hashes to the commitment') && h.includes(`it is the commitment this browser was shown for ${yesterday}, before the play`))
+          check('the table against its hash, and the draw recomputed here onto the artwork delivered',
+            h.includes('the table hashes to the one committed when the draw was frozen') && h.includes('recomputed here, the draw lands on #7 — the artwork delivered'))
+          check('the sealing block read from Base by the browser itself, and after the capsule\'s own block',
+            h.includes(`block ${claimS.entropy.block}, read from base by this browser, is the block that sealed the draw`) &&
+              h.includes(`and it came after your capsule's block ${mintBlock}, so no one could know its hash when you paid`) &&
+              (chain.blockReads ?? 0) > reads.blocks && (chain.receiptCalls ?? 0) > reads.receipts,
+            `${h.match(/block \d+.{0,160}/)?.[0] ?? ''} | reads ${(chain.blockReads ?? 0) - reads.blocks}/${(chain.receiptCalls ?? 0) - reads.receipts}`)
+          check('and the draw before it, set aside, recomputed here too', h.includes('the draw before it, which picked #99 before it was set aside, recomputes here too'))
+          await honest.context().close()
+
+          // The server's answer altered on its way to the browser: it still says
+          // "verified", the browser does not.
+          const tampered = async (alter, storage = shown) => {
+            const pg = await open('/play/second-chance/verify', { onChain: true, storage })
+            await pg.route(/\/api\/experience\/verify\?/, async (route) => {
+              const res = await route.fetch()
+              const json = await res.json()
+              alter(json)
+              await route.fulfill({ response: res, json })
+            })
+            await pg.getByLabel('Capsule transaction hash').fill(TX_SECOND)
+            await pg.getByRole('button', { name: 'verify', exact: true }).click()
+            await pg.getByText(/^(verified|MISMATCH) in your browser$/).waitFor({ timeout: 15_000 }).catch(() => {})
+            const t = await text(pg)
+            await pg.context().close()
+            return t
+          }
+          const wrongPrize = await tampered((j) => { j.delivered.tokenId = '99' })
+          check('an answer naming a different artwork is caught: the server says verified, the browser recomputes the draw and does not',
+            /verified the revealed seed/.test(wrongPrize) && wrongPrize.includes('mismatch in your browser') && wrongPrize.includes('recomputed here, the draw lands on #7, not the #99 delivered'),
+            wrongPrize.match(/checked in your browser.{0,400}/)?.[0] ?? '')
+          const wrongBlock = await tampered((j) => { j.entropy.hash = blockHashOf(j.entropy.block + 7) })
+          check('so is a sealing block that is not the chain\'s',
+            wrongBlock.includes('mismatch in your browser') && wrongBlock.includes(`block ${claimS.entropy.block} on base has a different hash from the one the draw was sealed with`),
+            wrongBlock.match(/checked in your browser.{0,500}/)?.[0] ?? '')
+          const otherCommitment = await tampered(() => {}, { 'kismet:xp:commitments': JSON.stringify({ [`second-chance:${yesterday}`]: sha256('a different seed') }) })
+          check('and a commitment other than the one this browser was shown before the play',
+            otherCommitment.includes('mismatch in your browser') && otherCommitment.includes(`this browser was shown a different commitment for ${yesterday}`),
+            otherCommitment.match(/checked in your browser.{0,400}/)?.[0] ?? '')
+          const noRecord = await tampered(() => {}, {})
+          check('a browser that kept no record says so, without calling it a failure',
+            noRecord.includes('verified in your browser') && noRecord.includes(`this browser kept no record of the commitment it was shown for ${yesterday}`))
+        }
+
+        // ── the machine page remembers the commitments it shows ──
+        {
+          const pg = await open('/play/second-chance')
+          await pg.getByText('provably fair').waitFor()
+          const kept = JSON.parse((await pg.evaluate(() => localStorage.getItem('kismet:xp:commitments'))) ?? '{}')
+          const fair = (await call('/api/experience/machines/second-chance')).json?.fairness
+          check('the machine page keeps the commitments it shows, today\'s and tomorrow\'s, for the verify page to hold the seed to',
+            kept[`second-chance:${fair?.epoch}`] === fair?.commitment && kept[`second-chance:${fair?.next?.epoch}`] === fair?.next?.commitment, JSON.stringify(kept))
+          await pg.context().close()
         }
 
         // ── the bell: where each machine notice takes you ──

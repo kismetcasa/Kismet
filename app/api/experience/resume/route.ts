@@ -34,6 +34,7 @@ import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable, isDeliverableEntry } from '@/lib/experience/eligibility'
 import { noticeIfEmpty } from '@/lib/experience/notices'
 import { recordPlayHistory } from '@/lib/experience/kismet'
+import { awaitBlockHash, chainHead } from '@/lib/experience/entropy'
 
 /**
  * Finish a claim that stalled.
@@ -236,6 +237,7 @@ async function handle(
             snapshot: claim.snapshot,
             snapshotHash: claim.snapshotHash,
             attempt: claim.attempt ?? 0,
+            entropy: claim.entropy,
           },
         ],
         pendingReason: 'the drawn artwork can no longer be given — drawing again',
@@ -352,21 +354,52 @@ async function drawAgain(
   owed: ClaimRecord,
 ): Promise<NextResponse> {
   let claim: ClaimRecord = owed
-  const gate = await getGateConfig()
-  const passCollection = gate.passCollection?.toLowerCase() ?? null
-  const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
-  const eligible: SnapshotEntry[] = (await drawableTable(rawSnapshot, passCollection)).table
+  let eligible: SnapshotEntry[]
+  let seed: string
+  let blockHash: string | null
 
-  const epoch = epochFor(Date.now())
-  const { seed } = await seedForEpoch(machineId, epoch)
-  const { commitment } = await openEpochSeeds(machineId, epoch)
-  claim = await advanceClaim(claim, {
-    state: 'frozen',
-    snapshot: eligible,
-    snapshotHash: snapshotHash(eligible),
-    epoch,
-    commitment,
-  })
+  if (owed.entropy && owed.snapshot && owed.snapshotHash && owed.epoch && owed.commitment && owed.attempt === undefined) {
+    // A freeze whose draw never ran — the play stopped waiting for its block,
+    // or died after writing it. Everything the outcome depends on was fixed
+    // then, so it is finished from that freeze, not frozen again: drawing
+    // anew would let a stalled draw be re-rolled. Its seed may be revealed by
+    // now; the outcome was settled before anyone could know it.
+    eligible = owed.snapshot
+    seed = (await seedForEpoch(machineId, owed.epoch)).seed
+    blockHash = owed.entropy.hash ?? (await awaitBlockHash(owed.entropy.block))
+  } else {
+    const gate = await getGateConfig()
+    const passCollection = gate.passCollection?.toLowerCase() ?? null
+    const rawSnapshot = buildSnapshot(await getPool(machineId), await getRemaining(machineId))
+    eligible = (await drawableTable(rawSnapshot, passCollection)).table
+
+    const epoch = epochFor(Date.now())
+    seed = (await seedForEpoch(machineId, epoch)).seed
+    const { commitment } = await openEpochSeeds(machineId, epoch)
+    // Sealed by the next block, chosen now that the seed and the table are
+    // fixed (lib/experience/entropy) — as a play's first draw is.
+    const head = await chainHead()
+    if (head === null) {
+      claim = await advanceClaim(claim, { state: 'pending', pendingReason: 'could not read the chain to seal this draw — try again shortly' })
+      return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
+    }
+    claim = await advanceClaim(claim, {
+      state: 'frozen',
+      snapshot: eligible,
+      snapshotHash: snapshotHash(eligible),
+      epoch,
+      commitment,
+      attempt: undefined,
+      entropy: { block: head + 1, hash: null, after: head },
+      frozenAt: Date.now(),
+    })
+    blockHash = await awaitBlockHash(head + 1)
+  }
+  if (!blockHash || !claim.entropy) {
+    claim = await advanceClaim(claim, { state: 'pending', pendingReason: 'sealing this draw with the next Base block — try again in a moment' })
+    return NextResponse.json({ ok: true, claim: await claimForPlayer(claim), resumed: false })
+  }
+  claim = await advanceClaim(claim, { state: 'frozen', entropy: { ...claim.entropy, hash: blockHash } })
 
   const result = await runDraw(
     eligible,
@@ -374,7 +407,7 @@ async function drawAgain(
       consume: (key) => consumeOne(machineId, key),
       release: (key) => releaseOne(machineId, key),
       authority: async (e) => (await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })).ok,
-      hash: (attempt) => drawHash({ serverSeed: seed, txHash, unitIndex, attempt }),
+      hash: (attempt) => drawHash({ serverSeed: seed, txHash, unitIndex, attempt, blockHash }),
     },
     MAX_ATTEMPTS,
   )

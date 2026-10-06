@@ -330,11 +330,20 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (617)
+## What it asserts (635)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
-  verifier recomputing a play from the revealed seed. A reveal pulls for free
+  verifier recomputing a play from the revealed seed.
+- **Sealed draws** — every draw sealed by the first block after its freeze,
+  after the capsule's own block; a different block, a different draw; a late
+  block pends the play, and resume finishes it from the same freeze and block;
+  a redraw sealed by a block of its own.
+- **Verified in the browser** — the verify page recomputes the draw, the
+  earlier draw it replaced, and both hashes with Web Crypto, reads the blocks
+  from the chain itself, and holds the seed to the commitment the machine page
+  showed that browser; a server answer altered in transit (another artwork, a
+  block that is not the chain's, another commitment) is called a mismatch. A reveal pulls for free
   and collects at the piece's own price.
 - **Machines** — the studios (disconnected, connected, publish to review), the
   curator's queue, an artist's opt-outs, linked collections, a machine with

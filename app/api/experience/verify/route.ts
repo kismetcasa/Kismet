@@ -75,6 +75,7 @@ export async function GET(req: NextRequest) {
       snapshotHash: claim.snapshotHash,
       snapshot: claim.snapshot,
       attempt: claim.attempt ?? 0,
+      entropy: claim.entropy ?? null,
       prize: claim.prize ?? null,
     })
   }
@@ -95,9 +96,13 @@ export async function GET(req: NextRequest) {
   }
 
   const attempt = claim.attempt ?? 0
+  // The block that sealed it; a claim drawn before blocks were mixed in has
+  // none, and is recomputed exactly as it was drawn.
+  const blockHash = claim.entropy?.hash ?? null
   const result = verifyDraw({
     serverSeed: seed,
     commitment,
+    blockHash,
     snapshot: claim.snapshot,
     snapshotHash: claim.snapshotHash,
     txHash: claim.txHash,
@@ -117,7 +122,7 @@ export async function GET(req: NextRequest) {
   // 0..N-1 refused, and those picks are recomputable from the same seed.
   const { pick: recomputed, setAside } = drawAtAttempt(
     claim.snapshot,
-    (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a }),
+    (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a, blockHash }),
     attempt,
   )
   const matches =
@@ -139,6 +144,9 @@ export async function GET(req: NextRequest) {
     txHash: claim.txHash,
     unitIndex: claim.unitIndex,
     attempt,
+    // What the browser checks against the chain itself: the sealing block,
+    // and the height the chain stood at when it was chosen.
+    entropy: claim.entropy ?? null,
     drawHash: result.hash,
     // The pieces earlier attempts drew and could not deliver, in order.
     setAside: setAside.map((e) => ({ collection: e.collection, tokenId: e.tokenId })),
@@ -162,13 +170,14 @@ async function verifyReplaced(machineId: string, claim: ClaimRecord, currentEpoc
     if (!r.epoch || !r.snapshot || !r.snapshotHash) return { ...base, verified: null }
     const commitment = r.commitment ?? (await commitmentForEpoch(machineId, r.epoch))
     const seed = await revealSeed(machineId, r.epoch, currentEpoch)
-    const material = { commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, attempt: r.attempt ?? 0 }
+    const material = { commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, attempt: r.attempt ?? 0, entropy: r.entropy ?? null }
     if (!seed || !commitment) return { ...base, ...material, verified: null }
-    const check = verifyDraw({ serverSeed: seed, commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: r.attempt ?? 0 })
+    const blockHash = r.entropy?.hash ?? null
+    const check = verifyDraw({ serverSeed: seed, commitment, snapshot: r.snapshot, snapshotHash: r.snapshotHash, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: r.attempt ?? 0, blockHash })
     if (!check.ok) return { ...base, ...material, serverSeed: seed, verified: false, why: check.reason }
     const { pick } = drawAtAttempt(
       r.snapshot,
-      (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a }),
+      (a) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex: claim.unitIndex, attempt: a, blockHash }),
       r.attempt ?? 0,
     )
     const verified = !!pick && pick.collection === r.collection && pick.tokenId === r.tokenId

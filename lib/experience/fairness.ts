@@ -26,6 +26,9 @@
 
 import { createHash, createHmac } from 'node:crypto'
 import type { SnapshotEntry } from './types'
+import { canonicalSnapshot, drawMessage, epochFor, nextEpoch } from './fairnessCore'
+
+export { canonicalSnapshot, drawMessage, epochFor, nextEpoch }
 
 /** Commitment published in advance for an epoch: sha256 of the server seed.
  *  Revealing the seed later lets anyone recompute every draw bound to it. */
@@ -33,51 +36,31 @@ export function commitmentFor(serverSeed: string): string {
   return createHash('sha256').update(serverSeed, 'utf8').digest('hex')
 }
 
-/**
- * Canonical serialization of a frozen snapshot, hashed. Field order and
- * formatting are fixed here so the same snapshot always produces the same
- * digest across processes and deploys — a verifier recomputing this from the
- * published snapshot must land on the identical string.
- *
- * `remaining` is included: two draws over the same pieces but different
- * remaining counts are genuinely different distributions, and a verifier must
- * be able to tell them apart.
- */
-export function canonicalSnapshot(snapshot: SnapshotEntry[]): string {
-  return snapshot
-    .map((e) =>
-      [
-        e.collection.toLowerCase(),
-        e.tokenId,
-        e.artist.toLowerCase(),
-        String(e.weight),
-        e.remaining === null ? 'open' : String(e.remaining),
-      ].join('|'),
-    )
-    .join('\n')
-}
-
 export function snapshotHash(snapshot: SnapshotEntry[]): string {
   return createHash('sha256').update(canonicalSnapshot(snapshot), 'utf8').digest('hex')
 }
 
 /**
- * The draw hash: HMAC-SHA256 over the committed seed, keyed to this exact play.
+ * The draw hash: HMAC-SHA256 over the committed seed, keyed to this exact play
+ * (fairnessCore.drawMessage).
  *
  * `attempt` makes a redraw independently verifiable rather than opaque. A
  * redraw happens when the live authority re-check fails (grant revoked, edition
  * minted out, artwork hidden between freeze and delivery); binding the attempt
  * number into the message means each attempt is its own checkable draw, instead
  * of the server appearing to "re-roll until it liked the answer".
+ *
+ * `blockHash` seals the draw with a block that did not exist when the seed and
+ * the table were fixed; a claim drawn before it existed has none.
  */
 export function drawHash(params: {
   serverSeed: string
   txHash: string
   unitIndex: number
   attempt: number
+  blockHash?: string | null
 }): string {
-  const message = `${params.txHash.toLowerCase()}:${params.unitIndex}:${params.attempt}`
-  return createHmac('sha256', params.serverSeed).update(message, 'utf8').digest('hex')
+  return createHmac('sha256', params.serverSeed).update(drawMessage(params), 'utf8').digest('hex')
 }
 
 /**
@@ -97,6 +80,7 @@ export function verifyDraw(params: {
   txHash: string
   unitIndex: number
   attempt: number
+  blockHash?: string | null
 }): { ok: boolean; reason?: string; hash?: string } {
   if (commitmentFor(params.serverSeed) !== params.commitment) {
     return { ok: false, reason: 'seed does not match the published commitment' }
@@ -111,33 +95,9 @@ export function verifyDraw(params: {
       txHash: params.txHash,
       unitIndex: params.unitIndex,
       attempt: params.attempt,
+      blockHash: params.blockHash,
     }),
   }
 }
 
-/** Epoch label for a timestamp — the rotation unit for server seeds.
- *
- *  Derived from UTC calendar day. The claim record stores the epoch it was
- *  frozen under, so a play spanning a rotation boundary verifies against the
- *  epoch that was live when it was frozen rather than against "today" (edge
- *  case C12/C13 in the spec). */
-export function epochFor(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10)
-}
 
-/** The epoch after this one.
- *
- *  Exists so a seed can be COMMITTED AHEAD. A commit–reveal scheme is only
- *  worth anything if the commitment predates the client entropy, and our client
- *  entropy is the player's capsule transaction. A seed created lazily on first
- *  play is therefore created AFTER that player's transaction already exists —
- *  the precise ordering the scheme is supposed to rule out. Opening epoch N+1
- *  while N is live means every play draws against a seed that was published at
- *  least a full epoch before the player could have transacted.
- *
- *  String arithmetic on the UTC date, via Date.UTC, so month and year rollovers
- *  and leap days are the platform's problem rather than ours. */
-export function nextEpoch(epoch: string): string {
-  const [y, m, d] = epoch.split('-').map(Number)
-  return epochFor(Date.UTC(y, m - 1, d + 1))
-}

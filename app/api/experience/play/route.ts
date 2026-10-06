@@ -38,6 +38,7 @@ import { recordCollected } from '@/lib/collected'
 import { claimForPlayer, fetchArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable } from '@/lib/experience/eligibility'
 import { creditPlay, recordCapsuleSale, recordPlayHistory } from '@/lib/experience/kismet'
+import { awaitBlockHash, chainHead } from '@/lib/experience/entropy'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { noticeIfEmpty } from '@/lib/experience/notices'
@@ -309,18 +310,37 @@ async function drawAndDeliver(params: {
   const epoch = epochFor(now)
   // openEpochSeeds, not seedForEpoch: it also opens the NEXT epoch, so tomorrow's
   // commitment is public before anyone can transact against it. Idempotent (SET
-  // NX), and the read path calls it too, so by the time a play reaches here the
-  // seed has almost always been fixed for a full epoch already.
+  // NX), and the read path and the hourly job call it too, so by the time a
+  // play reaches here the seed has almost always been fixed for a full epoch
+  // already — and when it has not, the sealing block below still comes after it.
   const { seed } = await seedForEpoch(machineId, epoch)
   const { commitment } = await openEpochSeeds(machineId, epoch)
   const sHash = snapshotHash(eligibleSnapshot)
+
+  // The block that seals the draw: the next one after this moment. Read only
+  // now, with the seed and the table already fixed, and written into the
+  // freeze before the block exists (lib/experience/entropy).
+  const head = await chainHead()
+  if (head === null) {
+    claim = await advanceClaim(claim, { state: 'pending', pendingReason: 'could not read the chain to seal this draw — try again shortly' })
+    return NextResponse.json({ ok: true, pending: true, units, claim: await claimForPlayer(claim) })
+  }
   claim = await advanceClaim(claim, {
     state: 'frozen',
     snapshot: eligibleSnapshot,
     snapshotHash: sHash,
     epoch,
     commitment,
+    entropy: { block: head + 1, hash: null, after: head },
+    frozenAt: Date.now(),
   })
+  const blockHash = await awaitBlockHash(head + 1)
+  if (!blockHash) {
+    // The freeze stands; the resume route draws from it once the block is read.
+    claim = await advanceClaim(claim, { state: 'pending', pendingReason: 'sealing this draw with the next Base block — try again in a moment' })
+    return NextResponse.json({ ok: true, pending: true, units, claim: await claimForPlayer(claim) })
+  }
+  claim = await advanceClaim(claim, { state: 'frozen', entropy: { block: head + 1, hash: blockHash, after: head } })
 
   // 5–7. Draw, consume, verify authority. The loop itself lives in
   //      lib/experience/runDraw with its effects injected, so every branch —
@@ -331,7 +351,7 @@ async function drawAndDeliver(params: {
     consume: (key) => consumeOne(machineId, key),
     release: (key) => releaseOne(machineId, key),
     authority: async (e) => (await checkPrizeAuthority({ collection: e.collection, tokenId: e.tokenId })).ok,
-    hash: (attempt) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex, attempt }),
+    hash: (attempt) => drawHash({ serverSeed: seed, txHash: claim.txHash, unitIndex, attempt, blockHash }),
   }, MAX_ATTEMPTS)
 
   const chosen = result.kind === 'drawn' ? result.prize : null

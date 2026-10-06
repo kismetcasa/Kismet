@@ -16,6 +16,7 @@ import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage
 import { MachineArtEditors } from './MachineArtEditors'
 import { GachaponShareButton } from './GachaponShareButton'
 import { RecentWins, type RecentWin } from './RecentWins'
+import { rememberCommitments } from '@/lib/experience/seenCommitments'
 import type { MachineFrames } from '@/lib/experience/types'
 import type { FrameStatus } from '@/lib/experience/cover'
 import {
@@ -435,6 +436,13 @@ export function ExperienceMachine({ id }: { id: string }) {
     ...won.map((p) => p.artist),
     ...(data?.recentWins ?? []).map((w) => w.player),
   ])
+
+  // The commitments this page shows, remembered by this browser, so the
+  // verify page can hold a revealed seed to what was shown before the play.
+  const fairness = data?.fairness
+  useEffect(() => {
+    if (fairness) rememberCommitments(id, [{ epoch: fairness.epoch, commitment: fairness.commitment }, fairness.next])
+  }, [fairness, id])
 
   if (loadError) {
     return (
@@ -868,8 +876,10 @@ export function ExperienceMachine({ id }: { id: string }) {
             </div>
           </dl>
           <p className="text-[11px] font-mono text-muted mt-2">
-            Tomorrow&apos;s seed is already locked — record it now and hold us to it. After a day closes,
-            any play from it can be recomputed from the revealed seed.
+            Tomorrow&apos;s seed is already locked — record it now and hold us to it (this browser keeps what it
+            is shown). Each draw is also sealed by the next Base block, so no one — Kismet included — knows an
+            outcome before it happens. After a day closes, any play from it can be recomputed, in your own
+            browser, from the revealed seed.
           </p>
           <Link
             href={`/play/${id}/verify${lastTx ? `?txHash=${lastTx}` : ''}`}

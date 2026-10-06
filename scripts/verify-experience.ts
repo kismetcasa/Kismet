@@ -37,6 +37,7 @@ import {
   nextEpoch,
   snapshotHash,
   verifyDraw,
+  drawMessage,
 } from '../lib/experience/fairness.ts'
 import {
   artworkTitle,
@@ -648,6 +649,20 @@ console.log('\n6. fairness')
   check('attempt changes the draw', drawHash(args) !== drawHash({ ...args, attempt: 1 }))
   check('seed changes the draw', drawHash(args) !== drawHash({ ...args, serverSeed: 'b'.repeat(64) }))
 
+  // The block that seals a draw (lib/experience/entropy) is part of its
+  // message. A claim drawn before blocks were mixed in has none and must hash
+  // exactly as it did then — these values were produced by that code.
+  const SEAL = '0x' + 'BC'.repeat(32)
+  const pinned = { serverSeed: 'a'.repeat(64), txHash: '0xFEED', unitIndex: 1, attempt: 2 }
+  check('a draw with no sealing block hashes exactly as draws did before blocks were mixed in',
+    drawHash(pinned) === '06571fc6ce8605f7172b388512bbc9dc0bf9373862abcb3b4dde43f3ac7ac4af' &&
+      snapshotHash([snap({ collection: '0xAB', tokenId: '7', artist: '0xCD', weight: 3, remaining: null }), snap({ collection: '0xab', tokenId: '8', artist: '0xcd', weight: 1, remaining: 4 })]) ===
+        'b7ad41ec3e35d8de814fbcab0d33a77e9de72605bd6401bb5c4cfef5ddd77ded')
+  check('a sealed draw mixes the block in, its hash read case-blind',
+    drawHash({ ...pinned, blockHash: SEAL }) === 'be5166c34912c5542d34ad8907a8d238d57354551539d96c59d6929ee409006c' &&
+      drawHash({ ...pinned, blockHash: SEAL.toLowerCase() }) === drawHash({ ...pinned, blockHash: SEAL }))
+  check('a different block, a different draw', drawHash({ ...args, blockHash: SEAL }) !== drawHash({ ...args, blockHash: '0x' + 'bd'.repeat(32) }) && drawHash({ ...args, blockHash: SEAL }) !== drawHash(args))
+
   const good = verifyDraw({
     serverSeed: seed,
     commitment: commitmentFor(seed),
@@ -659,6 +674,45 @@ console.log('\n6. fairness')
   })
   check('a well-formed draw verifies', good.ok)
   check('verification returns the recomputed hash', good.hash === drawHash({ ...args, txHash: '0xfeed' }))
+  check('and recomputes a sealed draw with its block',
+    verifyDraw({ serverSeed: seed, commitment: commitmentFor(seed), snapshot: s1, snapshotHash: snapshotHash(s1), txHash: '0xfeed', unitIndex: 0, attempt: 0, blockHash: SEAL }).hash ===
+      drawHash({ ...args, blockHash: SEAL }))
+
+  // The browser's recomputation (lib/experience/fairnessWeb, Web Crypto) must
+  // agree with the server's (node:crypto) on every input, or the verify page
+  // would call honest draws mismatches — or worse, the reverse.
+  {
+    const web = await import('../lib/experience/fairnessWeb.ts')
+    let agree = 0
+    let picksAgree = 0
+    const N = 200
+    for (let i = 0; i < N; i++) {
+      const sd = createHashHex(`parity-seed-${i}`)
+      const tx = '0x' + createHashHex(`parity-tx-${i}`).toUpperCase()
+      const block = i % 3 === 0 ? null : '0x' + createHashHex(`parity-block-${i}`)
+      const table = Array.from({ length: 1 + (i % 7) }, (_, k) => snap({ tokenId: String(k + 1), weight: 1 + ((i * 7 + k * 13) % 50), remaining: k % 2 ? null : 3 }))
+      const attempt = i % 4
+      const p = { serverSeed: sd, txHash: tx, unitIndex: i % 3, attempt, blockHash: block }
+      if (
+        (await web.sha256Hex(sd)) === commitmentFor(sd) &&
+        (await web.sha256Hex(canonicalSnapshot(table))) === snapshotHash(table) &&
+        (await web.hmacSha256Hex(sd, drawMessage(p))) === drawHash(p)
+      ) agree++
+      const server = drawAtAttempt(table, (a) => drawHash({ ...p, attempt: a }), attempt).pick
+      const browser = await web.recomputeDraw({
+        ...p, commitment: commitmentFor(sd), snapshot: table, snapshotHash: snapshotHash(table),
+        picked: server ?? { collection: '', tokenId: '' },
+      })
+      if (browser.seed && browser.table && (server ? browser.matches : browser.pick === null)) picksAgree++
+    }
+    check('the browser and the server hash every commitment, table and draw identically', agree === N, `${agree}/${N}`)
+    check('and recompute the same pick, redraws included', picksAgree === N, `${picksAgree}/${N}`)
+    const honest = await web.recomputeDraw({ serverSeed: seed, commitment: commitmentFor(seed), snapshot: s1, snapshotHash: snapshotHash(s1), txHash: '0xfeed', unitIndex: 0, attempt: 0, blockHash: SEAL,
+      picked: selectByHash(s1, drawHash({ ...args, blockHash: SEAL }))! })
+    const lied = await web.recomputeDraw({ serverSeed: seed, commitment: commitmentFor('not-it'), snapshot: s1, snapshotHash: snapshotHash(s1), txHash: '0xfeed', unitIndex: 0, attempt: 0, blockHash: SEAL,
+      picked: { collection: 'x', tokenId: 'nope' } })
+    check('the browser holds an honest draw and refuses a false one', honest.seed && honest.table && honest.matches && !lied.seed && !lied.matches)
+  }
 
   check(
     'a wrong seed fails verification',

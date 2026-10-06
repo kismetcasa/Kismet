@@ -548,6 +548,8 @@ export function publicClaim(c: ClaimRecord) {
     epoch: c.epoch ?? null,
     commitment: c.commitment ?? null,
     snapshotHash: c.snapshotHash ?? null,
+    // The sealing block, so the player's own receipt names it.
+    entropy: c.entropy?.hash ? { block: c.entropy.block, hash: c.entropy.hash } : null,
     unitIndex: c.unitIndex,
     pendingReason: c.pendingReason ?? null,
     txDelivered: c.txDelivered ?? null,
