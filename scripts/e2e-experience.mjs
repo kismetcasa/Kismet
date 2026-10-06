@@ -19,15 +19,19 @@
 //
 //   npm run build && npm run e2e:experience
 //
-// The build needs an Arweave signer key (NEXT_PUBLIC_ARWEAVE_N) so the studios
-// can upload; any 512-byte value will do, and the suite says so if it is missing:
+// The server screens every stage frame with ffmpeg, so one must be on PATH, as
+// the runtime image has it. The build needs an Arweave signer key
+// (NEXT_PUBLIC_ARWEAVE_N) so the studios can upload; any 512-byte value will
+// do, and the suite says so if either is missing:
 //
 //   NEXT_PUBLIC_ARWEAVE_N=$(node -e "process.stdout.write(Buffer.alloc(512, 7).toString('base64url'))") npm run build
 
 import { createServer, request as httpRequest } from 'node:http'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash, generateKeyPairSync } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   decodeAbiParameters,
   decodeFunctionData,
@@ -78,9 +82,14 @@ const TX_HANG = '0x' + '7d'.repeat(32) // its mint is broadcast and gets no verd
 const TX_CAP = '0x' + '8e'.repeat(32) // its mint reverts every time it is tried
 const TX_REDRAW = '0x' + '9f'.repeat(32) // its first draw is refused, so attempt 1 delivers
 const TX_REDRAW_2 = '0x' + '1c'.repeat(32) // same machine; its delivery is refused and resume lands it
+const TX_SECOND = '0x' + '1d'.repeat(32) // second-chance: drawn, delivery refused, then the piece's grant revoked
+const TX_SEAL = '0x' + '5e'.repeat(32) // second-chance: its sealing block late, finished from the same freeze
 const TX_SLOW = '0x' + '0b'.repeat(32) // resumed while the play that created it is still delivering
 const TX_BEFORE = '0x' + '6d'.repeat(32) // played after a piece's grant was revoked
 const ONE_PIXEL_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+/** An SVG that strobes black and white five times a second, by itself — as any
+ *  browser plays it in an <img>, unscreened. */
+const STROBE_SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64"><animate attributeName="fill" values="#000;#fff" dur="0.2s" repeatCount="indefinite"/></rect></svg>')
 /** The cover every other publish carries: the route requires one (call()). */
 const TEST_COVER = { uri: 'ar://' + 'e2eCover'.repeat(5) + 'abc' }
 // A stage frame as a publish or its creator's edit carries one (lib/experience/cover).
@@ -161,6 +170,8 @@ const SPRING_COVER = { uri: 'ar://' + 'Sp1ngC0ver'.repeat(4) + 'abc' }
 const CAPSULE_A = '0xcccc00000000000000000000000000000000000a'
 /** The capsule of the machine whose play needs a redraw (section 5b). */
 const CAPSULE_R = '0xcccc00000000000000000000000000000000000b'
+/** The capsule of the machine whose drawn prize is revoked before its resume (section 5b). */
+const CAPSULE_G = '0xcccc0000000000000000000000000000000000a7'
 /** An unused capsule for the collection-wide grant dry run (section 6f). */
 const CAPSULE_W = '0xcccc00000000000000000000000000000000000c'
 /** CREATOR2's capsule for the machine they withdraw and publish again (section 6h). */
@@ -281,14 +292,19 @@ function exec(cmd) {
       let entries = sortedZ(m)
       const flags = args.map((a) => a.toLowerCase())
       const bound = (raw, d) => raw === '+inf' ? Infinity : raw === '-inf' ? -Infinity : Number.isFinite(Number(raw)) ? Number(raw) : d
+      const rev = flags.includes('rev')
       if (flags.includes('byscore')) {
         const lo = bound(args[1], -Infinity), hi = bound(args[2], Infinity)
         entries = entries.filter(([, sc]) => sc >= lo && sc <= hi)
+        if (rev) entries.reverse()
       } else {
+        // As Redis does: with REV, ranks count from the highest score — so
+        // `0 29 REV` is the thirty newest, not the thirty oldest reversed.
+        if (rev) entries.reverse()
         const [a, b] = rankRange(entries.length, Number(args[1]), Number(args[2]))
         entries = b < a ? [] : entries.slice(a, b + 1)
       }
-      return (flags.includes('rev') ? entries.reverse() : entries).map(([mem]) => mem)
+      return entries.map(([mem]) => mem)
     }
     case 'zremrangebyrank': { const m = zsets.get(k); if (!m) return 0; const s = sortedZ(m); const [a, b] = rankRange(s.length, Number(args[1]), Number(args[2])); if (b < a) return 0; for (const [mem] of s.slice(a, b + 1)) m.delete(mem); return b - a + 1 }
     case 'zremrangebyscore': { const m = zsets.get(k); if (!m) return 0; const lo = args[1] === '-inf' ? -Infinity : Number(args[1]); const hi = args[2] === '+inf' ? Infinity : Number(args[2]); let n = 0; for (const [mem, sc] of [...m.entries()]) { if (sc >= lo && sc <= hi) { m.delete(mem); n++ } } return n }
@@ -428,11 +444,17 @@ const setHead = (n) => {
 /** `operator` is the address that executed the mint (the buyer for an ordinary
  *  sale, the ERC20Minter for a USDC sale, the admin for a free adminMint);
  *  `purchased` adds the collection's own Purchased receipt to the transaction. */
+/** Each block's own hash, as a real chain has: draws are sealed by one, and
+ *  the verify page reads it back from the chain. */
+function blockHashOf(n) {
+  return '0x' + createHash('sha256').update(`block:${BigInt(n)}`, 'utf8').digest('hex')
+}
+
 function addMint({ tx, collection, to, id, value, block, operator = to, purchased = false }) {
   const topics = encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator, from: ZERO, to } })
   const data = encodeAbiParameters(parseAbiParameters('uint256, uint256'), [id, value])
   const blockHex = '0x' + block.toString(16)
-  const log = { address: collection, topics, data, blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false }
+  const log = { address: collection, topics, data, blockNumber: blockHex, transactionHash: tx, transactionIndex: '0x0', blockHash: blockHashOf(block), logIndex: '0x0', removed: false }
   chain.logs.push(log)
   const logs = [log]
   if (purchased) {
@@ -484,7 +506,7 @@ function walletSend(tx) {
         address: tx.to,
         topics: encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: tx.from, from: ZERO, to: mintTo } }),
         data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [tokenId, quantity]),
-        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false,
+        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), logIndex: '0x0', removed: false,
       })
     } else if (String(tx.to).toLowerCase() === USDC) {
       const { functionName, args } = decodeFunctionData({ abi: USDC_APPROVE, data: tx.data })
@@ -512,7 +534,7 @@ function walletSend(tx) {
         address: collection,
         topics: encodeEventTopics({ abi: TRANSFER, eventName: 'TransferSingle', args: { operator: ERC20_MINTER, from: ZERO, to: mintTo } }),
         data: encodeAbiParameters(parseAbiParameters('uint256, uint256'), [tokenId, quantity]),
-        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), logIndex: '0x0', removed: false,
+        blockNumber: '0x' + chain.head.toString(16), transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), logIndex: '0x0', removed: false,
       })
     } else {
     const { functionName, args } = decodeFunctionData({ abi: WALLET_WRITES, data: tx.data })
@@ -532,11 +554,21 @@ function walletSend(tx) {
   }
   const blockHex = '0x' + chain.head.toString(16)
   chain.receipts.set(hash, {
-    transactionHash: hash, transactionIndex: '0x0', blockHash: '0x' + 'bb'.repeat(32), blockNumber: blockHex,
+    transactionHash: hash, transactionIndex: '0x0', blockHash: blockHashOf(chain.head), blockNumber: blockHex,
     from: tx.from, to: tx.to, cumulativeGasUsed: '0x5208', gasUsed: '0x5208', effectiveGasPrice: '0x1',
     contractAddress: null, logs: ok ? logs : [], logsBloom: '0x' + '0'.repeat(512), status: ok ? '0x1' : '0x0', type: '0x2',
   })
   return hash
+}
+
+function mockBlock(n) {
+  return {
+    number: '0x' + n.toString(16), hash: blockHashOf(n), parentHash: blockHashOf(n - 1n),
+    timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), baseFeePerGas: '0x1', gasLimit: '0x1c9c380', gasUsed: '0x0',
+    miner: ZERO, extraData: '0x', transactions: [], uncles: [], nonce: '0x0000000000000000', difficulty: '0x0',
+    logsBloom: '0x' + '0'.repeat(512), sha3Uncles: '0x' + '00'.repeat(32), stateRoot: '0x' + '00'.repeat(32),
+    receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', totalDifficulty: '0x0',
+  }
 }
 
 function rpc(method, params) {
@@ -643,12 +675,14 @@ function rpc(method, params) {
     case 'eth_gasPrice':
     case 'eth_maxPriorityFeePerGas': return '0x1'
     case 'eth_getTransactionCount': return '0x0'
-    case 'eth_getBlockByNumber': return {
-      number: '0x' + chain.head.toString(16), hash: '0x' + 'bb'.repeat(32), parentHash: '0x' + 'aa'.repeat(32),
-      timestamp: '0x' + Math.floor(Date.now() / 1000).toString(16), baseFeePerGas: '0x1', gasLimit: '0x1c9c380', gasUsed: '0x0',
-      miner: ZERO, extraData: '0x', transactions: [], uncles: [], nonce: '0x0000000000000000', difficulty: '0x0',
-      logsBloom: '0x' + '0'.repeat(512), sha3Uncles: '0x' + '00'.repeat(32), stateRoot: '0x' + '00'.repeat(32),
-      receiptsRoot: '0x' + '00'.repeat(32), transactionsRoot: '0x' + '00'.repeat(32), size: '0x0', totalDifficulty: '0x0',
+    case 'eth_getBlockByNumber': {
+      // 'latest' is the head. A numbered block exists up to one past the head
+      // — the next block is always about to be made, which is the one a draw
+      // waits for to seal it — and each has its own hash.
+      const n = params[0] === 'latest' || params[0] === 'pending' || params[0] == null ? chain.head : BigInt(params[0])
+      if (n > chain.head + (chain.holdNextBlock ? 0n : 1n)) return null
+      chain.blockReads = (chain.blockReads ?? 0) + 1
+      return mockBlock(n)
     }
     case 'eth_getLogs': {
       chain.getLogsCalls = (chain.getLogsCalls ?? 0) + 1
@@ -814,6 +848,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let ipCounter = 0
 const USER_COOKIE = '__Host-kismet_session'
 const ADMIN_COOKIE = '__Host-kismetart-admin'
+/** A machine's public payload once every named stage's frame has a verdict
+ *  (the server screens in the background), or as it is after ~20 s. */
+async function screened(id, stages) {
+  for (let i = 0; i < 100; i++) {
+    const m = (await call(`/api/experience/machines/${id}`)).json?.machine
+    if (stages.every((s) => m?.frameStatus?.[s] && m.frameStatus[s].state !== 'checking')) return m
+    await sleep(200)
+  }
+  return (await call(`/api/experience/machines/${id}`)).json?.machine
+}
 async function call(path, { method = 'GET', body, user, admin } = {}) {
   // A machine is published with a cover (the route requires one); a test of
   // that requirement sends `cover: undefined`, which JSON drops.
@@ -872,14 +916,36 @@ const inprocessServer = createServer((req, res) => {
   res.end(JSON.stringify({ metadata: meta }))
 })
 
+// ── mock Arweave gateway ──
+// What the server's frame screening fetches (lib/experience/frameScreen, told
+// ARWEAVE_GATEWAY_URL): every upload the browser made, by its id, and files
+// the suite places itself — any of which it can hold back, as a gateway still
+// settling a fresh upload would.
+const gatewayFiles = new Map()
+/** How long the gateway takes over every file, while a check needs it slow. */
+let gatewayDelay = 0
+const gatewayServer = createServer(async (req, res) => {
+  const id = decodeURIComponent((req.url ?? '/').slice(1).split('?')[0])
+  if (gatewayDelay) await sleep(gatewayDelay)
+  const placed = gatewayFiles.get(id)
+  if (placed?.held) await placed.held
+  const upload = placed ? null : arweaveUploads.find((u) => u.id === id)
+  const bytes = placed?.bytes ?? (upload ? dataItemPayload(upload.body) : null)
+  if (!bytes) { res.writeHead(404); res.end(); return }
+  res.writeHead(200, { 'content-type': placed?.type ?? 'application/octet-stream', 'content-length': bytes.length })
+  res.end(bytes)
+})
+
 await new Promise((r) => redisServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => rpcServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => cdpServer.listen(0, '127.0.0.1', r))
 await new Promise((r) => inprocessServer.listen(0, '127.0.0.1', r))
+await new Promise((r) => gatewayServer.listen(0, '127.0.0.1', r))
 const redisPort = redisServer.address().port
 const rpcPort = rpcServer.address().port
 const cdpPort = cdpServer.address().port
 const inprocessPort = inprocessServer.address().port
+const gatewayPort = gatewayServer.address().port
 
 // Sessions: the create route reads the USER cookie (and decides admin by
 // address); the review API reads the ADMIN cookie.
@@ -897,6 +963,21 @@ strings.set(`kismetart:moment-meta:${POOL}:16`, JSON.stringify({ creator: CREATO
 strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${BUSY}`, '1')
 // The gate, enabled exactly as production runs it.
 strings.set('kismetart:gate:enabled', '1')
+// The ETH/USD rate as lib/ethPrice caches it from Chainlink: $2,500, so every
+// USD estimate below is an exact figure.
+strings.set('kismetart:ethusd', '2500')
+// Two people with names, as the profile routes read them: an artist with a
+// Kismet username and a Farcaster account (whose @handle a cast mentions), and
+// a player with a Kismet username. Everyone else has neither, and reads as a
+// short address.
+strings.set(`kismetart:profile:${ARTIST_B}`, JSON.stringify({ address: ARTIST_B, username: 'artist-b', updatedAt: 1 }))
+strings.set(`kismetart:fc:fid-by-addr:${ARTIST_B}`, '4242')
+strings.set('kismetart:fc:profile:4242', JSON.stringify({ fid: 4242, username: 'artistb', displayName: 'Artist B', pfpUrl: null }))
+strings.set('kismetart:fc:verifications:4242', JSON.stringify([ARTIST_B]))
+strings.set(`kismetart:profile:${PLAYER}`, JSON.stringify({ address: PLAYER, username: 'lucky', updatedAt: 1 }))
+// Someone who played before kismet replaced spark: three plays at spring-season.
+const SPARK_PLAYER = '0x4545454545454545454545454545454545454545'
+strings.set(`kismetart:xp:spring-season:spark:${SPARK_PLAYER}`, '3')
 strings.set('kismetart:gate:pass-collection', PASS_COLLECTION)
 strings.set(`kismetart:pass:valid-balance:${PASS_COLLECTION}:${CREATOR2}`, '1')
 strings.set(`kismetart:auth-session:${ADMIN_TOKEN}`, ADMIN)
@@ -935,6 +1016,8 @@ chain.sales.set(key(CAPSULE_3, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken
 chain.tokens.set(key(CAPSULE_A, 1), { maxSupply: 20n, totalMinted: 0n })
 chain.tokens.set(key(CAPSULE_R, 1), { maxSupply: 10n, totalMinted: 0n })
 chain.sales.set(key(CAPSULE_R, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
+chain.tokens.set(key(CAPSULE_G, 1), { maxSupply: 10n, totalMinted: 0n })
+chain.sales.set(key(CAPSULE_G, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: ADMIN })
 chain.perms.set(key(CAPSULE_A, 0, CREATOR2), 2n)
 chain.sales.set(key(CAPSULE_A, 1), { saleStart: 0n, saleEnd: OPEN, pricePerToken: 1_000_000_000_000_000n, fundsRecipient: CREATOR2 })
 
@@ -981,7 +1064,7 @@ chain.perms.set(key(POOL, 8, CREATOR2), 2n)
 chain.perms.set(key(CAPSULE, 0, ERC20_MINTER), 4n)
 // Collection-wide ADMIN for each capsule's creator — the ordinary state for a
 // token you minted, and now a precondition for building a machine on it.
-for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, CAPSULE_R, CAPSULE_W, '0xcccc000000000000000000000000000000000007']) {
+for (const c of [CAPSULE, CAPSULE_3, CAPSULE_4, CAPSULE_5, CAPSULE_6, CAPSULE_9, CAPSULE_R, CAPSULE_G, CAPSULE_W, '0xcccc000000000000000000000000000000000007']) {
   chain.perms.set(key(c, 0, ADMIN), 2n)
 }
 chain.perms.set(key(CAPSULE_2, 0, CREATOR2), 2n)
@@ -1115,6 +1198,29 @@ if ((await probe('/api/experience/machines')) !== null) {
     process.exit(1)
   }
 }
+// ── the server must be able to screen a frame ──
+// Every artist's stage frame is screened by the server with ffmpeg before a
+// player sees it (lib/experience/frameScreen), as the runtime image has it
+// (Dockerfile: apk add ffmpeg). Without one no frame would ever pass.
+try {
+  execFileSync('ffmpeg', ['-hide_banner', '-version'], { stdio: 'ignore' })
+} catch {
+  console.error('no ffmpeg on PATH: the server screens every stage frame with it, as the runtime image has it (apk add ffmpeg / apt install ffmpeg)')
+  process.exit(1)
+}
+/** A clip made by that ffmpeg from a source filter over black: WebM (VP8,
+ *  which this Chromium plays) or MP4 (H.264, as the studio uploads). */
+const CLIPS = mkdtempSync(join(tmpdir(), 'e2e-clips-'))
+function makeClip(name, ext, filter, { seconds = 1, size = '160x160' } = {}) {
+  const out = join(CLIPS, `${name}.${ext}`)
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${size}:r=30:d=${seconds}`,
+    '-vf', `${filter},format=yuv420p`, ...(ext === 'webm' ? ['-c:v', 'libvpx', '-b:v', '400k'] : ['-c:v', 'libx264']), out])
+  return readFileSync(out)
+}
+/** Black and white, `hz` flashes a second, over the whole frame. */
+const strobe = (hz) => `geq=lum='if(lt(mod(T\\,${1 / hz})\\,${1 / (2 * hz)})\\,255\\,0)':cb=128:cr=128`
+/** A white box gliding across: motion, and no flashing. */
+const GLIDE = "drawbox=x='mod(t*60\\,120)':y=50:w=40:h=40:color=white:t=fill"
 /** The server's Arweave key: /api/sign really signs every upload with it. */
 const ARWEAVE_JWK = Buffer.from(JSON.stringify(generateKeyPairSync('rsa', { modulusLength: 4096 }).privateKey.export({ format: 'jwk' }))).toString('base64')
 
@@ -1141,7 +1247,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
   env: {
     ...process.env,
     [MARKER_KEY]: MARKER_VAL,
-    STATS_PIPELINE_INPROCESS: 'off', // no in-process stats pipeline mid-run (lib/backgroundTasks)
+    CRON_INPROCESS: 'off', // no in-process crons mid-run (lib/backgroundTasks)
     UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${redisPort}`,
     UPSTASH_REDIS_REST_TOKEN: 'e2e',
     BASE_RPC_URL: `http://127.0.0.1:${rpcPort}`,
@@ -1157,6 +1263,7 @@ const child = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start
     CDP_PAYMASTER_URL: `http://127.0.0.1:${cdpPort}/paymaster`,
     INPROCESS_API_URL: `http://127.0.0.1:${inprocessPort}/api`,
     ARWEAVE_JWK,
+    ARWEAVE_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
@@ -1166,7 +1273,7 @@ child.stderr.on('data', (d) => { serverLog += d; if (DEBUG) process.stderr.write
 child.on('error', (err) => { console.error(`spawn failed: ${err.message}`); process.exit(1) })
 child.on('exit', (code, sig) => { if (!up) { console.error(`server exited before ready (code=${code} sig=${sig})\n${serverLog.slice(-1500)}`); process.exit(1) } })
 let up = false
-const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close(); inprocessServer.close() }
+const shutdown = () => { try { process.kill(-child.pid, 'SIGTERM') } catch { /* gone */ } killMarked(); redisServer.close(); rpcServer.close(); cdpServer.close(); inprocessServer.close(); gatewayServer.close(); rmSync(CLIPS, { recursive: true, force: true }) }
 process.on('exit', shutdown)
 // A SIGTERM/SIGINT (a `timeout`, a Ctrl-C) does not run 'exit' handlers on its
 // own, and an orphaned server would hold the port for the next run.
@@ -1291,6 +1398,18 @@ try {
     JSON.stringify(p0.json?.claim))
   check('the claim carries its commitment', p0.json?.claim?.commitment === detail.json.fairness.commitment)
   {
+    // Sealed by a block: the first one after the freeze, its number written
+    // with the seed and the table before it existed, its hash mixed into the
+    // draw — so nobody, Kismet included, could know the outcome when it was fixed.
+    const frozen = JSON.parse(strings.get(`kismetart:xp:spring-season:claim:${TX_A}:0`))
+    const mintBlock = Number(chain.receipts.get(TX_A.toLowerCase())?.blockNumber)
+    check('the draw is sealed by the first block after its freeze, written into the freeze with the seed and the table',
+      frozen.entropy?.block === frozen.entropy?.after + 1 && frozen.entropy.after === Number(chain.head) && frozen.entropy.hash === blockHashOf(frozen.entropy.block) && typeof frozen.frozenAt === 'number',
+      JSON.stringify(frozen.entropy))
+    check('a block after the capsule\'s own, so the player could not have shaped their transaction to it', frozen.entropy?.block > mintBlock, `${frozen.entropy?.block} vs ${mintBlock}`)
+    check('and the player\'s receipt names it', p0.json?.claim?.entropy?.block === frozen.entropy?.block && p0.json.claim.entropy.hash === frozen.entropy.hash)
+  }
+  {
     // What was actually put on the wire: one userOp, calling adminMint on the
     // prize's collection, minting exactly one copy of the drawn token to the
     // player — the same shape lib/experience/delivery's oracle pins, now seen
@@ -1325,7 +1444,20 @@ try {
   await sleep(400)
   const claims = await call(`/api/experience/claims?machineId=spring-season&account=${PLAYER}`)
   check('the claims route lists the play, settled', claims.json?.claims?.length === 1 && claims.json.claims[0].unresolved === false)
-  check('spark was credited', claims.json?.spark === 1)
+  check('the play earned its player one kismet there', claims.json?.kismet === 1, JSON.stringify(claims.json?.kismet))
+  const kismetNow = (await call(`/api/experience/kismet?account=${PLAYER}`)).json
+  check('their kismet lists the machine, and their history what it gave them, by name',
+    kismetNow?.machines?.some((m) => m.id === 'spring-season' && m.name === 'Spring Season' && m.kismet === 1) &&
+      kismetNow.history?.some((h) => h.machineId === 'spring-season' && h.kind === 'play' && h.txHash === TX_A.toLowerCase() && h.tokenId === p0.json.claim.prize.tokenId),
+    JSON.stringify(kismetNow).slice(0, 300))
+  const carried = (await call(`/api/experience/kismet?account=${SPARK_PLAYER}`)).json
+  check('a player\'s spark from before kismet is carried over once, at its machine',
+    carried?.total === 3 && carried.machines?.[0]?.id === 'spring-season' && (await call(`/api/experience/kismet?account=${SPARK_PLAYER}`)).json?.total === 3,
+    JSON.stringify(carried))
+  const springStats = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines?.find((m) => m.id === 'spring-season')?.stats
+  check('its creator sees the purchase in the machine\'s figures: every capsule in it, and what it took in, counted once',
+    springStats?.plays === 2 && springStats.ethWei === String(2n * 10_000_000_000_000_000n), JSON.stringify(springStats))
+  check('and nobody else sees them', (await call(`/api/experience/machines?creator=${ADMIN}`)).json?.machines?.every((m) => m.stats === undefined))
   // One notice per purchase, sent with unit 0 and counting every capsule in it.
   const winsFor = () => [...(zsets.get(`kismetart:notif:${PLAYER}`)?.keys() ?? [])].map((m) => JSON.parse(m)).filter((n) => n.type === 'experience_win')
   const w0 = winsFor()
@@ -1454,6 +1586,13 @@ try {
   check('a closed epoch reveals and verifies', vDone.json?.verifiable === true && vDone.json.ok === true, JSON.stringify(vDone.json).slice(0, 300))
   check('the recomputed draw is the delivered artwork', vDone.json?.recomputed?.tokenId === prize.tokenId && vDone.json.delivered?.tokenId === prize.tokenId)
   check('the revealed seed matches the published commitment', vDone.json?.serverSeed === seed && vDone.json.commitment === sha256(seed))
+  check('and the verifier publishes the block that sealed it, for anyone to read from the chain',
+    vDone.json?.entropy?.block === stored.entropy?.block && vDone.json.entropy.hash === blockHashOf(stored.entropy.block))
+  // The same claim with a different sealing block recomputes to a different
+  // draw hash: the block is part of what was drawn, not decoration.
+  strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256(seed), entropy: { ...stored.entropy, hash: blockHashOf(stored.entropy.block + 1) } }))
+  const vOther = await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_A}&unitIndex=0`)
+  check('a different block gives a different draw', vOther.json?.drawHash && vOther.json.drawHash !== vDone.json?.drawHash, `${vOther.json?.drawHash} vs ${vDone.json?.drawHash}`)
   strings.set(claimKey, JSON.stringify({ ...stored, epoch: yesterday, commitment: sha256('not-the-seed') }))
   const vBad = await call(`/api/experience/verify?machineId=spring-season&txHash=${TX_A}&unitIndex=0`)
   check('a claim served under a different commitment FAILS to verify', vBad.json?.verifiable === true && vBad.json.ok === false)
@@ -1520,6 +1659,84 @@ try {
   const rR2 = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'redraw', txHash: TX_REDRAW_2, unitIndex: 0 } })
   check('and the resume that delivers it releases it', rR2.json?.claim?.state === 'delivered' && ledger15() === '0', `${rR2.json?.claim?.state} ledger=${ledger15()}`)
 
+  // Drawn, its delivery refused, and THEN its artist stops allowing it: the
+  // capsule does not wait on the artist. The resume hands the drawn piece back
+  // and draws again from what can be given — a fresh draw, and the receipt
+  // keeps the piece that was set aside and why.
+  chain.perms.set(key(POOL, 99, OPERATOR), 4n)
+  setHead(5_000_080n)
+  const secondChance = await call('/api/experience/machines', { method: 'POST', user: ADMIN_USER_TOKEN, body: {
+    id: 'second-chance', name: 'Second Chance', capsule: { collection: CAPSULE_G, tokenId: '1' },
+    entries: [
+      { collection: POOL, tokenId: '99', artist: ADMIN, weight: 1_000_000, supply: 0 },
+      { collection: POOL, tokenId: '7', artist: ADMIN, weight: 1, supply: 0 },
+    ],
+  } })
+  check('(a machine whose likely prize is about to be revoked publishes)', secondChance.json?.machine?.state === 'live', JSON.stringify(secondChance.json).slice(0, 200))
+  setHead(5_000_082n)
+  cdp.script.push('refuse')
+  addMint({ tx: TX_SECOND, collection: CAPSULE_G, to: PLAYER, id: 1n, value: 1n, block: 5_000_081n })
+  const pSecond = await call('/api/experience/play', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SECOND, account: PLAYER, unitIndex: 0 } })
+  check('(its draw lands on the piece, and the delivery is refused)', pSecond.json?.claim?.state === 'pending' && pSecond.json.claim.prize?.tokenId === '99', JSON.stringify(pSecond.json?.claim).slice(0, 200))
+  chain.perms.delete(key(POOL, 99, OPERATOR))
+  setHead(chain.head + 3n) // the chain moves on before the resume
+  const rSecond = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SECOND, unitIndex: 0 } })
+  const sStored = JSON.parse(strings.get(`kismetart:xp:second-chance:claim:${TX_SECOND}:0`))
+  check('a drawn piece its artist stops allowing is not waited on: the resume draws again and delivers what can be given',
+    rSecond.json?.claim?.state === 'delivered' && rSecond.json.claim.prize?.tokenId === '7', JSON.stringify(rSecond.json?.claim).slice(0, 240))
+  check('and the claim keeps the piece it set aside, and why', sStored.replaced?.length === 1 && sStored.replaced[0].tokenId === '99' && sStored.replaced[0].reason === 'no-grant',
+    JSON.stringify(sStored.replaced))
+  check('and its new draw is frozen over a table without the revoked piece', !sStored.snapshot.some((e) => e.tokenId === '99'))
+  check('while the first draw keeps what verifies it: its epoch, commitment, table, attempt and sealing block',
+    sStored.replaced?.[0]?.snapshot?.some((e) => e.tokenId === '99') && !!sStored.replaced[0].snapshotHash && !!sStored.replaced[0].commitment && sStored.replaced[0].epoch === today && sStored.replaced[0].attempt === 0 &&
+      sStored.replaced[0].entropy?.hash === blockHashOf(sStored.replaced[0].entropy.block))
+  check('and the new draw is sealed by a block of its own, the first after the redraw was frozen',
+    sStored.entropy?.block === Number(chain.head) + 1 && sStored.entropy.block > sStored.replaced?.[0]?.entropy?.block && sStored.entropy.hash === blockHashOf(sStored.entropy.block),
+    `${sStored.entropy?.block} after ${sStored.replaced?.[0]?.entropy?.block}`)
+  {
+    // Close the day for both draws, as the redraw machine's check does.
+    const sKey = `kismetart:xp:second-chance:claim:${TX_SECOND}:0`
+    const sSeed = strings.get(`kismetart:xp:second-chance:seed:${today}`)
+    strings.set(`kismetart:xp:second-chance:seed:${yesterday}`, sSeed)
+    const closed = { ...sStored, epoch: yesterday, commitment: sha256(sSeed), replaced: (sStored.replaced ?? []).map((r) => ({ ...r, epoch: yesterday, commitment: sha256(sSeed) })) }
+    strings.set(sKey, JSON.stringify(closed))
+    const vS = await call(`/api/experience/verify?machineId=second-chance&txHash=${TX_SECOND}&unitIndex=0`)
+    check('both draws verify: the one delivered, and the one whose piece was set aside — a redraw is not a re-roll',
+      vS.json?.verifiable === true && vS.json.ok === true && vS.json.replaced?.length === 1 && vS.json.replaced[0].tokenId === '99' && vS.json.replaced[0].verified === true && vS.json.replaced[0].reason === 'no-grant',
+      JSON.stringify(vS.json?.replaced ?? vS.json).slice(0, 300))
+    // An earlier draw whose table was changed after the fact fails the whole play.
+    strings.set(sKey, JSON.stringify({ ...closed, replaced: (closed.replaced ?? []).map((r) => ({ ...r, snapshot: (r.snapshot ?? []).map((e) => ({ ...e, weight: e.tokenId === '7' ? 1_000_000_000 : e.weight })) })) }))
+    const vT = await call(`/api/experience/verify?machineId=second-chance&txHash=${TX_SECOND}&unitIndex=0`)
+    check('and one whose table was altered fails the play', vT.json?.ok === false && vT.json.replaced?.[0]?.verified === false && /earlier draw/.test(vT.json.reason ?? ''), JSON.stringify(vT.json?.replaced?.[0] ?? vT.json).slice(0, 200))
+    // Left closed, as a day's passing leaves it: the browser checks it later.
+    strings.set(sKey, JSON.stringify(closed))
+  }
+  // A draw whose sealing block does not come in time pends — and is finished
+  // from that same freeze, not frozen again, so a stalled draw is never a
+  // second roll of the dice.
+  {
+    setHead(chain.head + 2n)
+    addMint({ tx: TX_SEAL, collection: CAPSULE_G, to: PLAYER, id: 1n, value: 1n, block: chain.head })
+    chain.holdNextBlock = true
+    const t0 = Date.now()
+    const held = await call('/api/experience/play', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SEAL, account: PLAYER, unitIndex: 0 } })
+    const waited = Date.now() - t0
+    const heldKey = `kismetart:xp:second-chance:claim:${TX_SEAL}:0`
+    const heldStored = JSON.parse(strings.get(heldKey) ?? '{}')
+    check('a draw whose sealing block is late waits for it, then pends saying so — nothing drawn, its freeze kept',
+      held.json?.claim?.state === 'pending' && /sealing this draw/.test(held.json.claim.pendingReason ?? '') && !heldStored.prize &&
+        heldStored.entropy?.hash === null && heldStored.entropy?.block === Number(chain.head) + 1 && !!heldStored.snapshotHash && waited >= 5_000,
+      `${waited}ms ${JSON.stringify(held.json?.claim ?? held.json).slice(0, 200)}`)
+    chain.holdNextBlock = false
+    setHead(chain.head + 4n) // the block it waited for exists now, and more after it
+    await call('/api/experience/resume', { method: 'POST', body: { machineId: 'second-chance', txHash: TX_SEAL, unitIndex: 0 } })
+    const doneStored = JSON.parse(strings.get(heldKey) ?? '{}')
+    check('resume finishes it from that same freeze and that same block — not a later one',
+      !!doneStored.prize && doneStored.entropy?.block === heldStored.entropy?.block && doneStored.entropy.hash === blockHashOf(heldStored.entropy.block) &&
+        doneStored.snapshotHash === heldStored.snapshotHash && doneStored.frozenAt === heldStored.frozenAt && doneStored.epoch === heldStored.epoch,
+      JSON.stringify({ held: heldStored.entropy, done: doneStored.entropy, prize: doneStored.prize }))
+  }
+
   // ═══ 6. a pool that cannot deliver ═════════════════════════════════════════
   console.log('\n6. a pool whose only artist has not granted mint rights')
   const noGrantBody = {
@@ -1552,7 +1769,7 @@ try {
   // a delisted machine outright, stranding exactly the player whose first
   // attempt already failed. It must reach the draw and report on it (200,
   // nothing available yet), not repudiate the capsule with a 403.
-  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'delisted' } })
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'no-grant', state: 'delisted', reason: 'lineup' } })
   const rDelisted = await call('/api/experience/resume', { method: 'POST', body: { machineId: 'no-grant', txHash: TX_N, unitIndex: 0 } })
   check('a fresh draw is still owed on a delisted machine, not refused',
     rDelisted.status === 200 && rDelisted.json?.claim?.state === 'pending' && !rDelisted.json?.claim?.prize,
@@ -1876,7 +2093,7 @@ try {
   check('and named on its pieces now', (await call(`/api/experience/piece?collection=${POOL}&tokenId=8`)).json?.machines?.some((m) => m.id === 'field-recordings'))
   const list = await call('/api/experience/machines')
   check('the public list carries every live machine',
-    list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,redraw,spring-season',
+    list.json.machines.map((m) => m.id).sort().join(',') === 'field-recordings,no-grant,owned-floor,redraw,second-chance,spring-season',
     list.json.machines.map((m) => m.id).sort().join(','))
 
   // The queue's draft tab filtered on the transition list, which has no draft,
@@ -1980,7 +2197,7 @@ try {
   console.log('\n7b. delisting delists — it does not confiscate')
   setHead(5_000_340n)
   addMint({ tx: TX_DELIST, collection: CAPSULE_2, to: PLAYER, id: 1n, value: 1n, block: 5_000_335n })
-  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'delisted' } })
+  await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'field-recordings', state: 'delisted', reason: 'rights' } })
 
   const shelf = await call('/api/experience/machines')
   check('a delisted machine leaves the public list', !shelf.json.machines.some((m) => m.id === 'field-recordings'),
@@ -2179,6 +2396,14 @@ try {
     check('a queued reveal machine can be withdrawn', withdrawn.status === 200 && withdrawn.json.withdrawn === true)
     check('which takes it off its pieces', !(sets.get(`kismetart:xp:uses:${REVEAL}:2`) ?? new Set()).has('second-thoughts'))
     check('and frees its id', (await publish(CURATOR_TOKEN, body({ id: 'second-thoughts', entries: lineup([2]), dryRun: true }))).status === 200)
+    // A machine's link is made from its name (lib/experience/machineId): what a
+    // check says it would be. Asked as Kismet, which no check budget limits.
+    const linkFor = async (name) => (await publish(ADMIN_USER_TOKEN, body({ id: undefined, name, entries: lineup([2]), dryRun: true }))).json?.id
+    check('a machine\'s link is made from its name, and a withdrawn machine\'s link is free again', (await linkFor('Second Thoughts')) === 'second-thoughts')
+    check('a name already in use gets the next number — a live machine keeps its link', (await linkFor('New Voices')) === 'new-voices-2')
+    check('accents fold to their letters, and anything else becomes a dash', (await linkFor('Café  Ñandú — Vol. 2!')) === 'cafe-nandu-vol-2')
+    check('a name with nothing to read becomes "gachapon", and Kismet\'s own pages are never taken',
+      (await linkFor('🎰🎰')) === 'gachapon' && (await linkFor('Create')) === 'create-2')
     const closed = await call('/api/experience/machines/kismet-picks', { method: 'POST', user: ADMIN_USER_TOKEN, body: { action: 'end' } })
     check('its curator closes a live one', closed.status === 200 && closed.json.machine.state === 'ended')
   }
@@ -2198,7 +2423,10 @@ try {
     // those collects already name Kismet's referral address.
     chain.rewards.set(ADMIN.toLowerCase(), 5_000_000_000_000_000n)
     const before = cdp.ops.size
+    const runAt = Date.now()
     const first = await run()
+    const payoutsRan = Number(strings.get('kismetart:xp:job:referral-payouts'))
+    check('a payout run records that it ran, which the app\'s own daily run waits on', payoutsRan >= runAt && payoutsRan <= Date.now(), String(strings.get('kismetart:xp:job:referral-payouts')))
     const paid = (first.json?.paid ?? []).map((p) => p.address)
     check('Kismet\'s own referral balance and each curator\'s are paid, largest first',
       first.status === 200 && paid.join(',') === `${KISMET_REFERRAL},${CURATOR.toLowerCase()}`, JSON.stringify(first.json).slice(0, 300))
@@ -2300,6 +2528,22 @@ try {
       p2.json?.claim?.state === 'pending' && /no eligible artwork/.test(p2.json.claim.pendingReason ?? ''), JSON.stringify(p2.json?.claim).slice(0, 200))
     await sleep(600)
     check('and the creator is not told twice', empties().length === 1, String(empties().length))
+    // A machine can run dry with no play at all — its last piece sold out on
+    // zora.co, or its artist stopped allowing it. Then the page view that
+    // finds nothing left is what tells its creator: as if never told, a view
+    // tells them once, and further views tell no one.
+    sets.get('kismetart:xp:dry-season:notices')?.delete('empty')
+    const inbox = zsets.get(`kismetart:notif:${ADMIN.toLowerCase()}`)
+    for (const m of [...(inbox?.keys() ?? [])]) {
+      const n = JSON.parse(m)
+      if (n.type === 'experience_status' && n.note === 'empty' && n.machineId === 'dry-season') inbox.delete(m)
+    }
+    await view()
+    check('a page view that finds nothing left to draw tells its creator, once it has not been told', await eventually(() => empties().length === 1), String(empties().length))
+    await view()
+    await view()
+    await sleep(600)
+    check('and more views tell no one again', empties().length === 1 && sets.get('kismetart:xp:dry-season:notices')?.has('empty'), String(empties().length))
     cdp.applyMints = false
   }
 
@@ -2383,7 +2627,10 @@ try {
     check('the curator is not told about their own machine', featured(CURATOR, 'new-voices').length === 0)
     check('Kismet featuring an artist tells them too', featured(ARTIST_B, 'kismet-picks').length === 1 && featured(ARTIST_B, 'kismet-picks')[0].actor === ADMIN)
     check('a machine that never went live tells nobody', featured(CREATOR2, 'busy-picks').length === 0)
-    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'delisted' } })
+    const unexplained = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'delisted' } })
+    check('a live machine cannot be delisted without a reason for its creator', unexplained.status === 400 && /say why/i.test(unexplained.json?.error ?? '') &&
+      (await call('/api/experience/machines/new-voices')).json?.machine?.state === 'live', `${unexplained.status} ${JSON.stringify(unexplained.json)}`)
+    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'delisted', reason: 'content', note: 'piece 3 shows a real person without consent' } })
     await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'live' } })
     check('taking a machine off the shelves and back tells nobody twice', featured(ARTIST_B, 'new-voices').length === 1 && featured(CREATOR2, 'new-voices').length === 1)
     const fi = featured(ARTIST_B, 'fresh-ink')
@@ -2443,11 +2690,46 @@ try {
     check('but not about machines Kismet published itself', statusFor(ADMIN, 'kismet-picks').length === 0 && statusFor(ADMIN, 'spring-season').length === 0)
     // Its curator hears each decision, in words that fit a reveal machine.
     check('a curator hears their machine was delisted, then relisted', statusFor(CURATOR, 'new-voices').map((n) => n.note).join() === 'live,delisted,live', statusFor(CURATOR, 'new-voices').map((n) => n.note).join())
-    // Ended or delisted, a machine taken off before it ever went live was
-    // turned down — not closed with "anything already bought is honoured".
-    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'busy-picks', state: 'ended' } })
-    await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'busy-picks', state: 'delisted' } })
-    check('a machine turned down before it ever went live is told it was not approved', statusFor(BUSY, 'busy-picks').map((n) => n.note).join() === 'rejected,rejected', statusFor(BUSY, 'busy-picks').map((n) => n.note).join())
+    const delistedNote = statusFor(CURATOR, 'new-voices').find((n) => n.note === 'delisted')
+    check('and is told why: the ground, then the specifics', delistedNote?.comment === 'it includes something Kismet doesn’t allow — piece 3 shows a real person without consent', JSON.stringify(delistedNote))
+
+    // Turning a queued machine down takes a reason its creator can act on.
+    const decline = (id, why, state = 'ended') => call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id, state, ...why } })
+    const refusals = [
+      await decline('busy-picks', {}),
+      await decline('busy-picks', { reason: 'other' }),
+      await decline('busy-picks', { reason: 'other', note: '   ' }),
+      await decline('busy-picks', { reason: 'art', note: 'x'.repeat(281) }),
+      await decline('busy-picks', { reason: 'constructor' }),
+    ]
+    check('a machine cannot be turned down without a reason: none, "other" with no note, a note too long, or no such reason',
+      refusals.every((r) => r.status === 400) && /say why/i.test(refusals[0].json?.error) && /in the note/i.test(refusals[1].json?.error) && /in the note/i.test(refusals[2].json?.error) && /280/.test(refusals[3].json?.error),
+      refusals.map((r) => `${r.status} ${r.json?.error}`).join(' | '))
+    check('and nothing changed: still queued, its curator told nothing',
+      (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'busy-picks') && statusFor(BUSY, 'busy-picks').length === 0)
+
+    // Turned down, it is withdrawn: never on sale, nothing is owed through it,
+    // so its capsule, its pledges and its link are free for the fixed machine.
+    const tdBody = (dryRun) => ({ name: 'Turned Down', capsule: { collection: CAPSULE_V, tokenId: '1' },
+      entries: [{ collection: POOL, tokenId: '8', artist: CREATOR2, weight: 1, supply: 0 }], dryRun })
+    const td = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: tdBody(false) })
+    check('a creator\'s capsule machine is queued', td.status === 200 && td.json.machine?.id === 'turned-down' && td.json.machine.state === 'review', JSON.stringify(td.json).slice(0, 200))
+    const pledgedBefore = hashes.get(`kismetart:xp:commit:${POOL}:8`)?.has('turned-down')
+    const out = await decline('turned-down', { reason: 'art', note: '  the cover is a\n placeholder ' }, 'delisted')
+    check('turning it down with a reason withdraws it', out.status === 200 && out.json?.withdrawn === true && out.json.machine === null, JSON.stringify(out.json))
+    check('it is gone: no page, not in any queue',
+      (await call('/api/experience/machines/turned-down')).status === 404 &&
+        !((await call('/api/admin/experience', { admin: ADMIN_TOKEN })).json?.machines ?? []).some((r) => r.machine.id === 'turned-down'))
+    check('and what it held is freed: its capsule and its pledge of the piece',
+      strings.get(`kismetart:xp:capsule:${CAPSULE_V}:1`) === undefined && pledgedBefore === true && !hashes.get(`kismetart:xp:commit:${POOL}:8`)?.has('turned-down'),
+      `${strings.get(`kismetart:xp:capsule:${CAPSULE_V}:1`)} ${pledgedBefore}`)
+    const told = notesFor(CREATOR2).filter((n) => n.type === 'experience_status' && n.machineId === 'turned-down')
+    check('its creator is told it was not approved, by whom, and why — the ground, then the note',
+      told.length === 1 && told[0].note === 'rejected' && told[0].actor === ADMIN && told[0].comment === 'its cover or frames need work — the cover is a placeholder',
+      JSON.stringify(told))
+    const resubmit = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: tdBody(true) })
+    check('so they can fix it and submit again: the same capsule and the same link',
+      resubmit.status === 200 && resubmit.json?.problems?.length === 0 && resubmit.json.id === 'turned-down', JSON.stringify(resubmit.json).slice(0, 240))
     // A payout that lands is told to its curator once, as a money notice.
     const paidNotes = (addr) => notesFor(addr).filter((n) => n.type === 'payout' && n.note === 'referral')
     check('a curator is told their referral rewards were paid, with the amount', paidNotes(CURATOR).length === 1 && paidNotes(CURATOR)[0].price === '200000000000000' && paidNotes(CURATOR)[0].priority === true, JSON.stringify(paidNotes(CURATOR)))
@@ -2460,8 +2742,13 @@ try {
   // ═══ 8. the daily commitment cron ══════════════════════════════════════════
   console.log('\n8. the daily commitment cron')
   check('the cron refuses without its secret', (await call('/api/cron/experience-seeds')).status === 401)
+  const cronAt = Date.now()
   const cron = await call(`/api/cron/experience-seeds?secret=${CRON_SECRET}`)
-  check('it commits for every capsule machine that can still draw', cron.status === 200 && cron.json.committed === 7 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  check('it commits for every capsule machine that can still draw', cron.status === 200 && cron.json.committed === 8 && cron.json.failed.length === 0, JSON.stringify(cron.json))
+  // The app runs the job itself once its last run is an hour old
+  // (lib/backgroundTasks); a scheduler's run must count, so the app stands down.
+  const seedsRan = Number(strings.get('kismetart:xp:job:experience-seeds'))
+  check('and records that it ran, which the app\'s own hourly run waits on', seedsRan >= cronAt && seedsRan <= Date.now(), String(strings.get('kismetart:xp:job:experience-seeds')))
   check('and for no reveal machine, which never draws on the server', ![...strings.keys()].some((k) => /^kismetart:xp:(new-voices|kismet-picks):seed:/.test(k)))
   const tomorrow = dayShift(today, 1)
   check("every live machine now holds tomorrow's seed", ['spring-season', 'no-grant', 'field-recordings', 'owned-floor', 'redraw', 'dry-season'].every((id) => strings.has(`kismetart:xp:${id}:seed:${tomorrow}`)))
@@ -2533,6 +2820,8 @@ try {
         return Buffer.from(b64, 'base64')
       })()
       const mediaRequests = []
+      /** Every works list a studio asked for (/api/timeline?creator=). */
+      const worksAsked = []
       // `E2E_SHOTS=<dir>`: a full-page screenshot of every page the suite opens,
       // taken as it closes, and of the moments below that only a screenshot
       // shows — the run's visual record, for review. Off by default.
@@ -2541,7 +2830,7 @@ try {
       if (SHOTS) mkdirSync(SHOTS, { recursive: true })
       const shotName = (name) => `${SHOTS}/${String(++shots).padStart(3, '0')}-${name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60)}.png`
       /** A page with optional session headers and an optional stub wallet. */
-      const open = async (path, { user, admin, wallet, onChain, moment, viewport, storage, images, uploads, reducedMotion, media } = {}) => {
+      const open = async (path, { user, admin, wallet, onChain, moment, works, viewport, storage, images, uploads, reducedMotion, media } = {}) => {
         // The session cookies carry the `__Host-` prefix, so the browser jar
         // refuses to hold them over plain http (Chromium's CDP setCookie
         // enforces the prefix's Secure-scheme rule even on loopback), and
@@ -2587,6 +2876,14 @@ try {
         // In Process — served the way scripts/e2e/model-media.mjs serves it.
         if (moment) {
           await context.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(moment) }))
+        }
+        // `works`: the artist's works as the profile lists them (/api/timeline,
+        // whose upstream is In Process) — what a studio's picker offers.
+        if (works) {
+          await context.route(/\/api\/timeline\?/, (r) => {
+            worksAsked.push(r.request().url())
+            return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'success', moments: works, pagination: { page: 1, limit: 100, total_pages: 1 } }) })
+          })
         }
         if (wallet) {
           await context.addInitScript((addr) => {
@@ -2677,6 +2974,16 @@ try {
       // label reads back uppercased. Lowercase the haystack so an assertion tests
       // the words, not the CSS; getByText (raw DOM text) is used where case matters.
       const text = async (page) => (await page.locator('body').innerText()).replace(/\s+/g, ' ').toLowerCase()
+      // What a share button opens: Farcaster's web composer, read back from the
+      // link instead of opening a tab.
+      const castOf = async (page, button) => {
+        await page.evaluate(() => { window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null } })
+        await button.click()
+        const url = await page.evaluate(() => window.__opened[0] ?? null)
+        if (!url) return null
+        const u = new URL(url)
+        return { host: u.host + u.pathname, text: u.searchParams.get('text'), embeds: u.searchParams.getAll('embeds[]'), channel: u.searchParams.get('channelKey') }
+      }
       // A machine's result as the page shows it — not the same words in its
       // screen-reader status region (role=status), which a text search finds too.
       const shown = (page, words) => page.getByText(words).and(page.locator(':not([role="status"])'))
@@ -2737,11 +3044,12 @@ try {
         const r = el?.getBoundingClientRect()
         return { top: r?.top ?? NaN, bottom: r?.bottom ?? NaN, nav: document.querySelector('header')?.getBoundingClientRect().bottom ?? NaN, view: innerHeight }
       }, selector)
-      // WCAG 2.3.1's flash-threshold area, in CSS pixels (341 × 256).
-      const FLASH_AREA = 341 * 256
-      const stageArea = async (page) => {
+      // The side, in CSS px, that artists' clips are screened for flashing at
+      // (lib/media/flashScreen FLASH_STAGE_PX): the stage may be no larger.
+      const SCREENED_SIDE = 240
+      const stageSide = async (page) => {
         const b = await page.locator('[data-stage]').boundingBox()
-        return b ? b.width * b.height : Infinity
+        return b ? Math.max(b.width, b.height) : Infinity
       }
       // How long the stage `name` was shown, the nth time it was.
       const stageMs = (stages, name, nth = 0) => {
@@ -2781,7 +3089,8 @@ try {
           check('one published before covers shows its capsule instead', (await coverOf('dry-season')).includes('dry-season-capsule'),
             `${await coverOf('dry-season')} | ${JSON.stringify(shelved.find((m) => m.id === 'dry-season'))}`)
           const cardText = async (id) => (await card(id).innerText()).toLowerCase()
-          check('a capsule machine\'s card shows the price of a play, as its page does', /[\d.]+ eth per play/.test(await cardText('spring-season')), await cardText('spring-season'))
+          check('a capsule machine\'s card shows the price of a play, as its page does, and about what it is in dollars',
+            /0\.01 eth per play ≈ \$25\.00/.test(await cardText('spring-season')), await cardText('spring-season'))
           const reveals = shelved.filter((m) => m.kind === 'reveal')
           check('a reveal machine\'s card shows no price — each piece has its own',
             reveals.length > 0 && (await Promise.all(reveals.map((m) => cardText(m.id)))).every((t) => !t.includes('per play')))
@@ -2790,8 +3099,11 @@ try {
           await page.context().close()
           const phone = await open('/play', { viewport: { width: 390, height: 844 }, images: true })
           const phoneCards = phone.locator('article', { has: phone.locator('a[href^="/play/"]') })
-          const [p0, p1] = [await phoneCards.nth(0).boundingBox(), await phoneCards.nth(1).boundingBox()]
-          check('and one to a row on a phone', !!p0 && !!p1 && p1.y > p0.y + p0.height - 1 && Math.abs(p0.x - p1.x) < 1, JSON.stringify([p0, p1]))
+          await phoneCards.nth(1).waitFor()
+          const [p1, p2, p3] = [await phoneCards.nth(0).boundingBox(), await phoneCards.nth(1).boundingBox(), await phoneCards.nth(2).boundingBox()]
+          check('two to a row on a phone too, as the artwork grid is, each inside the screen',
+            !!p1 && !!p2 && !!p3 && Math.abs(p1.y - p2.y) < 1 && p2.x > p1.x && p3.y > p1.y && p2.x + p2.width <= 390 && p1.height < 844 / 2,
+            JSON.stringify([p1, p2, p3]))
           await phone.context().close()
         }
 
@@ -2809,13 +3121,48 @@ try {
           check('only its creator can change it, and only to an Arweave upload', refused[0].status === 403 && refused[1].status === 400, refused.map((r) => r.status).join())
           const page = await open('/play/spring-season', { user: ADMIN_USER_TOKEN, wallet: ADMIN, uploads: true })
           await page.getByRole('button', { name: 'change cover' }).waitFor()
+          // A cover is a still — on the card, and in the stage, which plays only
+          // screened motion. One that moves is refused as it is picked, and a gif
+          // becomes its first frame: never the moving original.
+          const { default: sharp } = await import('sharp')
+          const coverNow = async (want) => {
+            for (let i = 0; i < 75; i++) {
+              const c = (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+              if (c === want) return c
+              await sleep(200)
+            }
+            return (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+          }
+          await page.getByLabel('cover image').setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: await sharp(tinyGif(10), { animated: true }).webp().toBuffer() })
+          const movingRefused = await page.getByText('This image moves — a cover is a still: use a png or jpg, or a gif (its first frame is used)')
+            .waitFor({ timeout: 15_000 }).then(() => true, () => false)
+          await page.getByLabel('cover image').setInputFiles({ name: 'strobe.svg', mimeType: 'image/svg+xml', buffer: STROBE_SVG })
+          const svgRefused = await page.getByText('An SVG can move by itself — a cover is a still: use a png or jpg, or a gif (its first frame is used)')
+            .waitFor({ timeout: 15_000 }).then(() => true, () => false)
+          const nothingToSave = (await page.getByRole('button', { name: 'save cover' }).count()) === 0
+          const beforeGif = arweaveUploads.length
+          await page.getByLabel('cover image').setInputFiles({ name: 'moving.gif', mimeType: 'image/gif', buffer: tinyGif(10) })
+          await page.getByRole('button', { name: 'save cover' }).click({ timeout: 30_000 })
+          for (let i = 0; i < 75 && arweaveUploads.length === beforeGif; i++) await sleep(200)
+          const gifSent = arweaveUploads.slice(beforeGif).map((u) => dataItemPayload(u.body))
+          const gifCover = await coverNow(`ar://${arweaveUploads[beforeGif]?.id}`)
+          check('a cover that moves, or can (an SVG), is refused as it is picked; a gif cover is uploaded as its first frame, a still — never the moving original',
+            movingRefused && svgRefused && nothingToSave && gifSent.length === 1 && !!gifSent[0] && gifSent[0].subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) &&
+              gifCover === `ar://${arweaveUploads[beforeGif]?.id}`,
+            `${movingRefused} ${svgRefused} ${nothingToSave} ${gifSent.length} ${gifSent[0]?.subarray(0, 4).toString('hex')} ${gifCover}`)
+          const beforePng = arweaveUploads.length
           await page.getByLabel('cover image').setInputFiles({ name: 'new-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
-          await page.getByRole('button', { name: 'save cover' }).click()
-          await page.getByText('Cover updated').waitFor({ timeout: 15_000 }).catch(() => {})
-          const now = (await call('/api/experience/machines/spring-season')).json?.machine?.cover
+          await page.getByRole('button', { name: 'save cover' }).click({ timeout: 30_000 })
+          for (let i = 0; i < 75 && arweaveUploads.length === beforePng; i++) await sleep(200)
+          const now = await coverNow(`ar://${arweaveUploads.at(-1)?.id}`)
           check('its creator changes it from the live machine\'s page, and the machine carries the new one',
             now === `ar://${arweaveUploads.at(-1)?.id}` && now !== SPRING_COVER.uri, now)
           await page.context().close()
+          // The browser signs every upload from one address, and this mock's
+          // counters never expire, so the extra covers above would put the
+          // studio's later uploads over /api/sign's per-IP limit (10 a minute) —
+          // the test's doing, not a person's.
+          for (const k of [...strings.keys()]) if (k.startsWith('kismetart:rl:sign:')) strings.delete(k)
         }
 
         // ── a machine's frames, set by its creator ──
@@ -2831,10 +3178,16 @@ try {
           check('only its creator sets a machine\'s frames — Arweave uploads, for the stages its kind has',
             refused.map((r) => r.status).join() === '403,400,400,400', refused.map((r) => r.status).join())
           const still = { uri: TEST_FRAME.poster, kind: 'image', poster: TEST_FRAME.poster }
+          // What they are, for the server to fetch and screen: a calm clip, and its still.
+          const { default: sharp } = await import('sharp')
+          gatewayFiles.set(TEST_FRAME.uri.slice(5), { bytes: makeClip('test-frame', 'mp4', GLIDE), type: 'video/mp4' })
+          gatewayFiles.set(TEST_FRAME.poster.slice(5), { bytes: await sharp({ create: { width: 160, height: 160, channels: 3, background: '#224' } }).jpeg().toBuffer(), type: 'image/jpeg' })
           const set1 = await set('spring-season', ADMIN_USER_TOKEN, { dispense: TEST_FRAME, open: still })
-          const shown = (await call('/api/experience/machines/spring-season')).json?.machine?.frames
-          check('its creator sets them, and the machine\'s page is given them',
-            set1.status === 200 && JSON.stringify(shown) === JSON.stringify({ dispense: TEST_FRAME, open: still }), JSON.stringify(shown))
+          const shown = await screened('spring-season', ['dispense', 'open'])
+          check('its creator sets them; the server screens them, and once they pass the machine\'s page is given them',
+            set1.status === 200 && JSON.stringify(shown?.frames) === JSON.stringify({ dispense: TEST_FRAME, open: still }) &&
+              shown?.frameStatus?.dispense?.state === 'passed' && shown?.frameStatus?.open?.state === 'passed',
+            JSON.stringify(shown?.frameStatus))
           await set('spring-season', ADMIN_USER_TOKEN, {})
           check('and clears them, back to the platform\'s capsule', (await call('/api/experience/machines/spring-season')).json?.machine?.frames === null)
           const reveal = await call('/api/experience/machines', { method: 'POST', user: CURATOR_TOKEN, body: {
@@ -2887,20 +3240,21 @@ try {
           await page.getByText('insert coin').waitFor()
           const body = await text(page)
           check('the face says insert coin', body.includes('insert coin'))
-          const deskArea = await stageArea(page)
-          check('and on a desktop too', deskArea <= FLASH_AREA && deskArea > 0, `${deskArea} of ${FLASH_AREA}`)
+          const deskSide = await stageSide(page)
+          check('the window is never larger than the 240 px its artists\' clips are screened for flashing at (WCAG 2.3.1)',
+            deskSide <= SCREENED_SIDE && deskSide > 0, `${deskSide} of ${SCREENED_SIDE}`)
           // A reader who sets larger text (a 32 px default here) must not get a
           // larger window. Measured on a desktop: on a phone the width bounds it.
           await page.evaluate(() => { document.documentElement.style.fontSize = '32px' })
-          const bigTextArea = await stageArea(page)
+          const bigTextSide = await stageSide(page)
           await page.evaluate(() => { document.documentElement.style.fontSize = '' })
-          check('and stays under it when the reader enlarges text', bigTextArea <= FLASH_AREA && bigTextArea > 0, `${bigTextArea} of ${FLASH_AREA}`)
+          check('and stays within it when the reader enlarges text', bigTextSide <= SCREENED_SIDE && bigTextSide > 0, `${bigTextSide} of ${SCREENED_SIDE}`)
           check('the pull selector offers ×1 ×5 ×10', ['×1', '×5', '×10'].every((n) => body.includes(n)))
           const play = page.getByRole('button', { name: 'play', exact: true })
           check('and play is enabled before any wallet is connected', await play.isEnabled())
-          check('the price is disclosed beside the button', /eth per play \+ network fee/.test(body), body.match(/[\d.]+ eth per play[^.]*/)?.[0] ?? '')
+          check('the price is disclosed beside the button, and about what it is in dollars', /0\.01 eth per play ≈ \$25\.00 \+ network fee/.test(body), body.match(/[\d.]+ eth per play[^.]*/)?.[0] ?? '')
           await page.getByRole('button', { name: '×5' }).click()
-          check('a multi-pull shows the total and the unit', /eth for 5 · [\d.]+ eth each/.test(await text(page)))
+          check('a multi-pull shows the total and the unit, and the total in dollars', /0\.05 eth for 5 · 0\.01 eth each ≈ \$125\.00/.test(await text(page)), (await text(page)).match(/[\d.]+ eth for 5[^+]*/)?.[0] ?? '')
           check('the header names the creator and the promise', /by 0x[0-9a-f]{4}…[0-9a-f]{4} · every play returns an artwork/.test(body))
           const odds = page.locator('section', { hasText: "what's inside · published odds" }).locator('a')
           check('the odds table lists every deliverable piece', (await odds.count()) === 2, String(await odds.count()))
@@ -2922,7 +3276,11 @@ try {
           check('redeem is disabled until a hash is pasted', await redeem.isDisabled())
           await page.getByPlaceholder('paste its transaction hash (0x…)').fill(TX_B)
           check('and enabled once one is', await redeem.isEnabled())
-          check('recent plays are shown', body.includes('recent plays'))
+          await page.getByText('lucky').first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const wins = page.locator('section', { hasText: 'recent wins' })
+          const winsText = (await wins.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('recent wins tag each winner, by name, with what they won', /lucky winner won (piece |#)/.test(winsText), winsText.slice(0, 200))
+          check('and offer a visitor no share — a win is shared by its winner', (await wins.getByRole('button', { name: 'share to farcaster' }).count()) === 0)
           check('the verifier is linked', (await page.getByRole('link', { name: /verify a play/ }).getAttribute('href'))?.startsWith('/play/spring-season/verify'))
           await page.context().close()
         }
@@ -2998,16 +3356,22 @@ try {
           const page = await open('/play/create-capsule')
           await page.getByText('capsule studio').first().waitFor()
           check('a capsule machine has no artist to name — it is your own work', (await page.getByPlaceholder('artist 0x…').count()) === 0)
-          await page.getByPlaceholder('spring-season').fill('browser-machine')
           await page.getByPlaceholder('Spring Season').fill('Browser Machine')
+          check('there is no id to type: its link is made from its name, shown as it is typed',
+            (await page.getByPlaceholder('spring-season').count()) === 0 && (await text(page)).includes('its link: /play/browser-machine'),
+            (await text(page)).match(/its link.{0,60}/)?.[0] ?? '')
           await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
           await page.getByPlaceholder('1', { exact: true }).fill('1')
           await page.getByPlaceholder('collection 0x…').fill(POOL)
           await page.getByPlaceholder('token').fill('8')
           await page.locator('label:has-text("qty") input').fill('0')
           await page.getByText('what players will see').waitFor()
+          await page.getByText('Piece Eight').first().waitFor({ timeout: 8000 }).catch(() => {})
           const oneRow = await text(page)
-          check('the odds preview appears as the lineup is typed', /what players will see #8 0x[0-9a-f]{4}…[0-9a-f]{4} unlimited 100%/.test(oneRow), oneRow.match(/what players will see.{0,80}/)?.[0] ?? '')
+          check('the odds preview appears as the lineup is typed, each piece by its title, not only its token',
+            /what players will see piece eight #8 0x[0-9a-f]{4}…[0-9a-f]{4} unlimited 100%/.test(oneRow) && (await page.locator('p', { hasText: /^\s*Piece Eight\s*$/ }).count()) === 1,
+            oneRow.match(/what players will see.{0,80}/)?.[0] ?? '')
+          check('and the first step links to minting the capsule', (await page.getByRole('link', { name: 'mint it →' }).getAttribute('href')) === '/mint')
           check('and asks for a check to learn the payees', oneRow.includes('run check to see who this capsule actually pays'))
           // Add a second, equally-weighted piece: two unlimited rows at weight 10
           // are a real 50/50, which is where the derived percentage and its
@@ -3044,7 +3408,13 @@ try {
 
         // ── the studio, connected: check, then publish to review ──
         {
-          const page = await open('/play/create-capsule', { user: USER_TOKEN, wallet: CREATOR2, uploads: true })
+          const myWorks = [
+            { address: CAPSULE_A, token_id: '1', creator: { address: CREATOR2 }, metadata: { name: 'Browser Capsule', image: 'ar://browser-capsule' } },
+            { address: POOL, token_id: '8', creator: { address: CREATOR2 }, metadata: { name: 'Piece Eight', image: 'ar://piece-eight' } },
+            { address: POOL, token_id: '16', creator: { address: CREATOR2 }, hidden: true, metadata: { name: 'Hidden Sixteen' } },
+          ]
+          const asked = worksAsked.length
+          const page = await open('/play/create-capsule', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, works: myWorks })
           const dryRuns = []
           const consoleErrs = []
           const failedReqs = []
@@ -3058,15 +3428,36 @@ try {
           page.on('pageerror', (e) => consoleErrs.push(`pageerror: ${e.message.slice(0, 200)}`))
           await page.getByRole('button', { name: 'check', exact: true }).waitFor()
           check('a connected wallet sees check and publish', (await page.getByRole('button', { name: 'publish' }).count()) === 1)
-          await page.getByPlaceholder('spring-season').fill('browser-machine')
           await page.getByPlaceholder('Spring Season').fill('Browser Machine')
-          await page.getByPlaceholder('0x…', { exact: true }).fill(CAPSULE_A)
-          await page.getByPlaceholder('1', { exact: true }).fill('1')
+          // The capsule and the lineup, picked from the artist's own works.
+          const capsulePicker = page.getByRole('button', { name: /^pick it from your works/ })
+          await capsulePicker.click()
+          await page.getByRole('button', { name: 'Browser Capsule' }).waitFor()
+          check('the studio offers the artist\'s own works — the list their profile shows — leaving out a hidden one',
+            worksAsked.length === asked + 1 && new URL(worksAsked.at(-1)).searchParams.get('creator') === CREATOR2.toLowerCase() &&
+              (await page.getByRole('button', { name: 'Piece Eight' }).count()) === 1 && (await page.getByRole('button', { name: 'Hidden Sixteen' }).count()) === 0,
+            worksAsked.slice(asked).join())
+          await page.getByRole('button', { name: 'Browser Capsule' }).click()
+          check('picking one makes it the capsule',
+            (await page.getByPlaceholder('0x…', { exact: true }).inputValue()) === CAPSULE_A && (await page.getByPlaceholder('1', { exact: true }).inputValue()) === '1' &&
+              (await page.getByRole('button', { name: 'Browser Capsule' }).getAttribute('aria-pressed')) === 'true')
+          await capsulePicker.click()
+          await page.getByRole('button', { name: /^pick from your works/ }).click()
+          const tile = page.getByRole('button', { name: 'Piece Eight' })
+          await tile.click()
+          check('picking a piece fills the lineup\'s empty row, shown by its title',
+            (await page.getByPlaceholder('collection 0x…').inputValue()) === POOL && (await page.getByPlaceholder('token').inputValue()) === '8' &&
+              (await tile.getAttribute('aria-pressed')) === 'true' && (await page.getByPlaceholder('collection 0x…').count()) === 1)
+          await tile.click()
+          check('and picking it again takes it out, leaving an empty row',
+            (await page.getByPlaceholder('collection 0x…').count()) === 1 && (await page.getByPlaceholder('collection 0x…').inputValue()) === '' && (await tile.getAttribute('aria-pressed')) === 'false')
+          await tile.click()
           await page.getByPlaceholder('collection 0x…').fill(`${origin}/artwork/${POOL}/8`)
           check('pasting an artwork link fills in its collection and token',
             (await page.getByPlaceholder('collection 0x…').inputValue()) === POOL && (await page.getByPlaceholder('token').inputValue()) === '8')
           const standing = await page.getByText('allowed for capsule machines', { exact: true }).waitFor({ timeout: 8000 }).then(() => true, () => false)
           check('and the piece\'s standing is shown', standing)
+          check('and the preview names it', /what players will see piece eight #8/.test(await text(page)), (await text(page)).match(/what players will see.{0,60}/)?.[0] ?? '')
           await page.locator('label:has-text("qty") input').fill('0')
           check('publish waits for a cover', await page.getByRole('button', { name: 'publish' }).isDisabled())
           await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
@@ -3075,7 +3466,7 @@ try {
           await page.getByRole('button', { name: 'check', exact: true }).click()
           // Wait for the result region either way, so a failing check reports the
           // server's verdict instead of timing out blind.
-          await page.locator('section', { hasText: /ready|fix before publishing/i }).first().waitFor().catch(() => {})
+          await page.getByRole('heading', { name: /^(ready|fix before publishing)$/i }).first().waitFor().catch(() => {})
           const afterCheck = await text(page)
           // Counted once the check's answer is shown: an upload would have gone
           // before the check's request, so any the check made is in by now.
@@ -3109,7 +3500,7 @@ try {
           check('the queue shows the submitted machine with its lineup and odds', /browser-machine · by 0x[0-9a-f]{4}…[0-9a-f]{4} · 1 artwork · 20 capsules/.test(body) && /#8 by/.test(body) && body.includes('100%'), body.match(/browser-machine.{0,80}/)?.[0] ?? '')
           check('approve is enabled because nothing is wrong', await page.getByRole('button', { name: 'approve · live' }).isEnabled())
           check('a queued machine offers no view link to a page that would 404', (await page.getByRole('link', { name: 'view', exact: true }).count()) === 0)
-          check('and the footer tells the curator what the buttons really do', body.includes('stop new listings only') && body.includes('keeps its capsule token'))
+          check('and the footer tells the curator what turning it down really does', body.includes('turning a machine down withdraws it') && body.includes('its link are freed') && !body.includes('end season'))
           await page.getByRole('button', { name: 'approve · live' }).click()
           await page.getByText('browser-machine \u2192 live').waitFor()
           check('approving promotes it', (await call('/api/experience/machines/browser-machine')).status === 200)
@@ -3129,9 +3520,8 @@ try {
           check('the odds are summed up beside the price, with a link to the table',
             (await oddsLine.count()) === 1 && (await oddsLine.getByRole('link', { name: 'see odds' }).getAttribute('href')) === '#odds' &&
               (await page.locator('section#odds').getByText("what's inside · published odds").count()) === 1)
-          const phoneArea = await stageArea(page)
-          check('the window stays under the flash-threshold area on a phone, so no artist clip can flash over it (WCAG 2.3.1)',
-            phoneArea <= FLASH_AREA && phoneArea > 0, `${phoneArea} of ${FLASH_AREA}`)
+          const phoneSide = await stageSide(page)
+          check('and on a phone', phoneSide <= SCREENED_SIDE && phoneSide > 0, `${phoneSide} of ${SCREENED_SIDE}`)
           // The table ends the page, so the page cannot scroll it to the top;
           // room below it lets the jump go as far as it will, and only the
           // header's offset stops it.
@@ -3157,6 +3547,11 @@ try {
             `${winText} | ${winImage.slice(0, 120)} | page: ${(await text(page)).match(/(you've|on its way|opening|still|insert coin).{0,200}/)?.[0] ?? ''}`)
           check('saying the player has collected it, and whose it is',
             /^you've collected Piece Eight by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(winText), winText)
+          const winCast = await castOf(page, page.getByRole('button', { name: 'share to farcaster' }).first())
+          check('the winner can share it to Farcaster, as "just collected … from the Kismet Gachapon", with the artwork and the machine — and no "by" for an artist with no name to give',
+            winCast?.host === 'farcaster.xyz/~/compose' && winCast.text === 'just collected "Piece Eight" from the Kismet Gachapon' &&
+              winCast.embeds.join() === `https://kismet.art/artwork/${POOL}/8,https://kismet.art/play/browser-machine` && winCast.channel === 'kismet',
+            JSON.stringify(winCast))
           let stages = await stagesOf(page)
           check('the capsule rocks while the wallet and the draw work, then opens, once, before the win',
             stages.map(([s]) => s).join() === 'idle,dispense,open,' && stages[1][2] === 'kf-stage-rock' && stages[2][2] === 'kf-stage-shake',
@@ -3182,7 +3577,10 @@ try {
           check('a pull of five opens once, then shows all five',
             stages.map(([s]) => s).join() === 'idle,dispense,open,,dispense,open,' &&
               (await shown(page, "you've collected 5 artworks").count()) === 1 &&
-              (await page.locator(`a[href="/artwork/${POOL}/8"]`).count()) === 5 + 1,
+              // Five in the result, one in the odds table — not counting the
+              // machine's recent wins below, which list them again.
+              (await page.locator(`a[href="/artwork/${POOL}/8"]`).count()) -
+                (await page.locator(`section:has(> h2:text-is("recent wins")) a[href="/artwork/${POOL}/8"]`).count()) === 5 + 1,
             JSON.stringify(stages.map(([s]) => s)))
           const focusAfter = await focusOf(page)
           check('played from the keyboard, focus moves to skip while it opens, then to what it held — never to the page (WCAG 2.4.3)',
@@ -3257,7 +3655,11 @@ try {
           await studio.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.gif', mimeType: 'image/gif', buffer: tinyGif(3, 77) })
           await studio.getByRole('button', { name: 'save frames' }).click({ timeout: 60_000 })
           await studio.getByText('Frames updated').waitFor({ timeout: 30_000 }).catch(() => {})
-          const frames = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
+          // The server screens what was uploaded before a player's stage plays it.
+          const afterSave = await screened('browser-machine', ['dispense', 'open'])
+          const frames = afterSave?.frames
+          check('the server fetches both uploads and screens them, and both pass',
+            afterSave?.frameStatus?.dispense?.state === 'passed' && afterSave?.frameStatus?.open?.state === 'passed', JSON.stringify(afterSave?.frameStatus))
           const sent = arweaveUploads.slice(uploadsBefore).map((u) => `ar://${u.id}`)
           const parts = [frames?.dispense?.uri, frames?.dispense?.poster, frames?.open?.uri, frames?.open?.poster]
           check('its creator gives it frames on its page: each gif made a video and its still, all four uploaded through the app\'s own signer',
@@ -3339,9 +3741,93 @@ try {
           await editing.getByRole('button', { name: 'save frames' }).click()
           await editing.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
           const left = (await call('/api/experience/machines/browser-machine')).json?.machine?.frames
-          check('its creator removes one frame, and the other stays as it was, uploaded nothing new',
+          check('its creator removes one frame, and the other stays as it was, uploaded nothing new — still played, not screened again',
             JSON.stringify(left) === JSON.stringify({ dispense: frames?.dispense }) && arweaveUploads.length === uploadsNow, JSON.stringify(left))
           await editing.context().close()
+
+          // ── what a frame is screened for, and where ──
+          // The studio refuses a clip that flashes, and an image that moves, as
+          // it is picked. The server screens every frame again — one sent
+          // straight to the API included — and a player's stage plays a frame
+          // only once it has passed.
+          const screening = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, uploads: true, images: true })
+          const openPick = screening.getByLabel('open frame', { exact: true })
+          await openPick.waitFor({ state: 'attached' })
+          const uploadsAt = arweaveUploads.length
+          await openPick.setInputFiles({ name: 'strobe.webm', mimeType: 'video/webm', buffer: makeClip('strobe', 'webm', strobe(4)) })
+          const strobeSaid = await screening.getByText('It flashes 4 times a second over 100% of the stage — keep flashing to three times a second, or to under 37% of the stage')
+            .waitFor({ timeout: 60_000 }).then(() => true, () => false)
+          await openPick.setInputFiles({ name: 'calm.webm', mimeType: 'video/webm', buffer: makeClip('glide', 'webm', GLIDE) })
+          const calmTaken = await screening.getByRole('button', { name: 'save frames' }).waitFor({ timeout: 60_000 }).then(() => true, () => false)
+          await screening.getByRole('button', { name: 'remove open frame' }).click()
+          const moving = await sharp(tinyGif(10), { animated: true }).webp().toBuffer()
+          await openPick.setInputFiles({ name: 'moving.webp', mimeType: 'image/webp', buffer: moving })
+          const movingSaid = await screening.getByText('This image moves — give an animation as a gif or a video, which are checked for flashing')
+            .waitFor({ timeout: 30_000 }).then(() => true, () => false)
+          await openPick.setInputFiles({ name: 'strobe.svg', mimeType: 'image/svg+xml', buffer: STROBE_SVG })
+          const svgSaid = await screening.getByText('An SVG can move by itself — give a still as a png, jpg or webp, or an animation as a gif or a video, which are checked for flashing')
+            .waitFor({ timeout: 30_000 }).then(() => true, () => false)
+          check('the studio refuses a clip that flashes four times a second across the stage, saying why and how to pass, an image that moves, and an SVG — nothing uploaded; a calm clip is taken',
+            strobeSaid && movingSaid && svgSaid && calmTaken && arweaveUploads.length === uploadsAt, `${strobeSaid} ${movingSaid} ${svgSaid} ${calmTaken} ${arweaveUploads.length - uploadsAt}`)
+          await screening.context().close()
+
+          // Straight to the API: a flashing clip the studio never saw, sent with
+          // a verdict of its own. Its gateway holds it back a while, as one
+          // settling a fresh upload does.
+          const placed = (name) => 'e2e' + name.padEnd(40, '0')
+          const STROBE = placed('Strobe')
+          const STROBE_STILL = placed('StrobeStill')
+          let release = () => {}
+          gatewayFiles.set(STROBE, { bytes: makeClip('strobe-mp4', 'mp4', strobe(4)), type: 'video/mp4', held: new Promise((r) => { release = r }) })
+          gatewayFiles.set(STROBE_STILL, { bytes: await sharp({ create: { width: 160, height: 160, channels: 3, background: '#000' } }).jpeg().toBuffer(), type: 'image/jpeg' })
+          const setFrames = (frames) => call('/api/experience/machines/browser-machine', { method: 'POST', user: USER_TOKEN, body: { action: 'frames', frames } })
+          const strobeFrame = { uri: `ar://${STROBE}`, kind: 'video', poster: `ar://${STROBE_STILL}` }
+          const direct = await setFrames({ dispense: frames?.dispense, open: { ...strobeFrame, check: { state: 'passed', at: 1 } } })
+          const waiting = (await call('/api/experience/machines/browser-machine')).json?.machine
+          check('a frame sent straight to the API is saved, its own verdict ignored: it waits to be screened, and a player is not given it',
+            direct.status === 200 && waiting?.frameStatus?.open?.state === 'checking' && !waiting?.frames?.open,
+            `${direct.status} ${JSON.stringify(waiting?.frameStatus?.open)} ${JSON.stringify(waiting?.frames)}`)
+          check('while the frame it kept is still played, without being screened again',
+            waiting?.frames?.dispense?.uri === frames?.dispense?.uri && waiting?.frameStatus?.dispense?.state === 'passed')
+          const creatorSees = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, images: true })
+          const saysChecking = await creatorSees.getByText('checking for flashing — players see the capsule until it passes')
+            .waitFor({ timeout: 20_000 }).then(() => true, () => false)
+          await creatorSees.context().close()
+          release()
+          const judged = await screened('browser-machine', ['open'])
+          check('its creator is told it is being checked; once the gateway has it, the server refuses it for flashing, and it is still not played',
+            saysChecking && judged?.frameStatus?.open?.state === 'refused' && /^It flashes 4 times a second over 100% of the stage/.test(judged.frameStatus.open.reason ?? '') && !judged?.frames?.open,
+            `${saysChecking} ${JSON.stringify(judged?.frameStatus?.open)}`)
+          const refusedView = await open('/play/browser-machine', { user: USER_TOKEN, wallet: CREATOR2, images: true })
+          const saysRefused = await refusedView.getByText(/^not shown to players: It flashes 4 times a second/).waitFor({ timeout: 20_000 }).then(() => true, () => false)
+          await refusedView.context().close()
+          const player = await open('/play/browser-machine', { wallet: PLAYER, onChain: true, images: true, media: true })
+          await player.getByText('insert coin').waitFor()
+          const playerFrames = { dispense: await player.locator('[data-frame="dispense"]').count(), open: await player.locator('[data-frame="open"]').count() }
+          await player.context().close()
+          check('its creator is told why, on the machine\'s page; a player\'s stage has the dispense and no open of the artist\'s — the capsule opens',
+            saysRefused && playerFrames.dispense === 1 && playerFrames.open === 0, `${saysRefused} ${JSON.stringify(playerFrames)}`)
+
+          // The limits, enforced again: a clip too long for its stage, and an
+          // image that moves given as a still.
+          const LONG = placed('Long')
+          const MOVING = placed('Moving')
+          gatewayFiles.set(LONG, { bytes: makeClip('long', 'mp4', GLIDE, { seconds: 5 }), type: 'video/mp4' })
+          gatewayFiles.set(MOVING, { bytes: moving, type: 'image/webp' })
+          await setFrames({ dispense: frames?.dispense, open: { uri: `ar://${LONG}`, kind: 'video', poster: `ar://${STROBE_STILL}` } })
+          const longClip = await screened('browser-machine', ['open'])
+          await setFrames({ dispense: frames?.dispense, open: { uri: `ar://${MOVING}`, kind: 'image', poster: `ar://${MOVING}` } })
+          const stillMoves = await screened('browser-machine', ['open'])
+          check('the server refuses, for itself, a five-second clip and an image that moves — neither played',
+            longClip?.frameStatus?.open?.reason === 'It runs 5.0 seconds — at most 4' && !longClip?.frames?.open &&
+              /^It moves — an animated frame is a gif or a video/.test(stillMoves?.frameStatus?.open?.reason ?? '') && !stillMoves?.frames?.open,
+            `${JSON.stringify(longClip?.frameStatus?.open)} ${JSON.stringify(stillMoves?.frameStatus?.open)}`)
+          // Through all of it, the dispense kept its verdict: it was sent back
+          // unchanged each time. Taking the open away leaves it as it was.
+          await setFrames({ dispense: frames?.dispense })
+          const restored = (await call('/api/experience/machines/browser-machine')).json?.machine
+          check('and the frame sent back unchanged each time kept its verdict throughout — played at once, never screened again',
+            JSON.stringify(restored?.frames) === JSON.stringify({ dispense: frames?.dispense }), JSON.stringify(restored?.frames))
         }
 
         // ── an artist allows capsule machines on their piece ──
@@ -3394,9 +3880,21 @@ try {
           check('allowing is one signature from the artist\'s own wallet', chain.walletTxs.length === signed + 1)
           check('and the delivery account now holds MINTER on that piece', chain.perms.get(key(POOL, 99, OPERATOR)) === 4n)
           check('which the publish gate reads the same way', (await call(`/api/experience/piece?collection=${POOL}&tokenId=99`)).json?.allowed === true)
+          // Live capsule machines draw it, so stopping is asked once more.
+          const beforeStop = chain.walletTxs.length
           await page.getByRole('button', { name: 'stop allowing' }).click()
+          await page.getByRole('button', { name: 'stop anyway' }).waitFor()
+          const warned = await text(page)
+          check('stopping while live capsule machines draw it warns first, naming them and the zora.co sale that keeps going',
+            /no grant.*draw this piece now/.test(warned) && /fresh draw from what is left/.test(warned) && /keeps selling on zora\.co until you end the season/.test(warned) && chain.walletTxs.length === beforeStop,
+            warned.match(/[^.]*draws? this piece now.{0,300}/)?.[0] ?? '')
+          await page.getByRole('button', { name: 'keep allowing' }).click()
+          check('keeping it asks for no signature and changes nothing',
+            (await page.getByRole('button', { name: 'stop allowing' }).count()) === 1 && chain.walletTxs.length === beforeStop && chain.perms.get(key(POOL, 99, OPERATOR)) === 4n)
+          await page.getByRole('button', { name: 'stop allowing' }).click()
+          await page.getByRole('button', { name: 'stop anyway' }).click()
           await page.getByRole('button', { name: 'allow capsule machines' }).waitFor()
-          check('stopping revokes it', (chain.perms.get(key(POOL, 99, OPERATOR)) ?? 0n) === 0n)
+          check('stopping anyway revokes it', (chain.perms.get(key(POOL, 99, OPERATOR)) ?? 0n) === 0n)
           await page.context().close()
         }
 
@@ -3433,6 +3931,11 @@ try {
           const body = await text(page)
           check('the face says the pull is free', body.includes('free to pull') && body.includes('pull for free, collect what you reveal at its price'))
           check('the odds are one in however many are on sale', body.includes("what's inside · each piece is 1 in 3"), body.match(/what's inside.{0,60}/)?.[0] ?? '')
+          // Names arrive a moment after the page, in one batched request.
+          await page.getByText('by artist-b').first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const named = await text(page)
+          check('each piece names its artist by their name, and a short address only for someone with none',
+            named.includes('reveal one by artist-b') && /reveal two by 0x9e12…b1aa/.test(named), named.match(/what's inside.{0,200}/)?.[0] ?? '')
           const rows = page.locator('section', { hasText: "what's inside" }).locator('a')
           const rowText = (await rows.allInnerTexts()).join(' | ').toLowerCase()
           check('each piece on sale is listed with its own price', (await rows.count()) === 3 && rowText.includes('0.002 eth') && rowText.includes('free') && rowText.includes('$1'), rowText)
@@ -3467,7 +3970,7 @@ try {
             JSON.stringify({ scrolledFrom, scrolledTo, ...piece }))
           const revealSaid = await saidOf(page)
           check('a screen reader is told each open and each piece revealed (WCAG 4.1.3)',
-            revealSaid.filter((t) => t === 'Opening').length === 3 && /^You revealed .+ by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(revealSaid.at(-1)),
+            revealSaid.filter((t) => t === 'Opening').length === 3 && /^You revealed .+ by (artist-b|0x[0-9a-f]{4}…[0-9a-f]{4})$/.test(revealSaid.at(-1)),
             JSON.stringify(revealSaid))
           check('and each open hands over to its piece in a view transition', (await transitionsOf(page)) === '3/3', await transitionsOf(page))
           check('a pull reveals one of the pieces on sale', [1, 2, 6].some((id) => revealed === `/artwork/${REVEAL}/${id}`), revealed)
@@ -3501,8 +4004,16 @@ try {
           check('a reveal machine\'s curator is offered an open frame, and no dispense',
             (await curated.getByLabel('open frame', { exact: true }).count()) === 1 && (await curated.getByLabel('dispense frame', { exact: true }).count()) === 0)
           await curated.getByLabel('open frame', { exact: true }).setInputFiles({ name: 'open.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          // A slow gateway, so the page reloads the machine before the server
+          // has screened the frame — as a fresh upload's first minute can go.
+          gatewayDelay = 2000
           await curated.getByRole('button', { name: 'save frames' }).click({ timeout: 20_000 })
           await curated.getByText('Frames updated').waitFor({ timeout: 20_000 }).catch(() => {})
+          const checkingFirst = await curated.getByText('checking for flashing — players see the capsule until it passes').waitFor({ timeout: 10_000 }).then(() => true, () => false)
+          const appeared = await curated.locator('[data-frame="open"]').waitFor({ state: 'attached', timeout: 30_000 }).then(() => true, () => false)
+          gatewayDelay = 0
+          check('the curator is told the still is being checked, and their own page takes it up once it passes, without a reload',
+            checkingFirst && appeared, `${checkingFirst} ${appeared}`)
           const openFrame = (await call('/api/experience/machines/new-voices')).json?.machine?.frames?.open
           await watchStages(curated)
           await curated.getByRole('button', { name: 'pull', exact: true }).click()
@@ -3525,6 +4036,8 @@ try {
           await solo.getByRole('button', { name: 'pull', exact: true }).click()
           const collectBtn = solo.getByRole('button', { name: 'collect · 0.002 ETH' })
           await collectBtn.waitFor()
+          check('the revealed piece\'s price is shown in dollars too', (await text(solo)).includes('paid to the artist through its own sale ≈ $5.00 + network fee'),
+            (await text(solo)).match(/paid to the artist[^.]{0,60}/)?.[0] ?? '')
           const minted = chain.mints.length
           const before = chain.tokens.get(key(REVEAL, 1)).totalMinted
           await collectBtn.click()
@@ -3538,12 +4051,42 @@ try {
           check('naming Kismet as the mint referral', m?.rewardsRecipients?.length === 1 && m.rewardsRecipients[0] === KISMET_REFERRAL)
           check('and the edition really grew by one', chain.tokens.get(key(REVEAL, 1)).totalMinted === before + 1n)
           const said = (await solo.locator(`a[href="/artwork/${REVEAL}/1"]`).first().innerText()).replace(/\s+/g, ' ')
-          check('the page says the player has collected it, and whose it is', /^you've collected Reveal One by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(said), said)
+          check('the page says the player has collected it, and whose it is — by the artist\'s name', said === "you've collected Reveal One by artist-b", said)
           check('with nothing left to pay', (await solo.getByRole('button', { name: /^collect/ }).count()) === 0)
+          const collectCast = await castOf(solo, solo.getByRole('button', { name: 'share to farcaster' }).first())
+          check('and can share what they collected, the artist named by their Farcaster @handle',
+            collectCast?.text === 'just collected "Reveal One" by @artistb from the Kismet Gachapon' &&
+              collectCast.embeds.join() === `https://kismet.art/artwork/${REVEAL.toLowerCase()}/1,https://kismet.art/play/solo-piece`,
+            JSON.stringify(collectCast))
           const soloSaid = await saidOf(solo)
           check('and a screen reader is told the collect, from the wallet to what is now theirs',
-            soloSaid.includes('Confirm in your wallet') && /^You've collected Reveal One by 0x[0-9a-f]{4}…[0-9a-f]{4}$/.test(soloSaid.at(-1)), JSON.stringify(soloSaid))
+            soloSaid.includes('Confirm in your wallet') && soloSaid.at(-1) === "You've collected Reveal One by artist-b", JSON.stringify(soloSaid))
           await solo.context().close()
+          // The collect, proved on chain by /api/collect, is credited to the
+          // machine it came through (lib/experience/kismet).
+          const soloKismet = async () => (await call(`/api/experience/kismet?account=${PLAYER}`)).json
+          // Credited after the response (after()), and the route reads history
+          // and counts separately — so wait for both, not only the count.
+          const credited = (k) => k?.machines?.find((x) => x.id === 'solo-piece')?.kismet === 1 &&
+            k.history?.some((h) => h.machineId === 'solo-piece' && h.kind === 'collect' && h.collection === REVEAL.toLowerCase() && h.tokenId === '1')
+          let sk = await soloKismet()
+          for (let i = 0; i < 25 && !credited(sk); i++) { await sleep(200); sk = await soloKismet() }
+          check('collecting what a reveal machine showed earns one kismet there, and is in the collector\'s history',
+            credited(sk),
+            JSON.stringify({ solo: sk?.machines?.find((x) => x.id === 'solo-piece') ?? null, history: (sk?.history ?? []).slice(0, 3).map((h) => [h.machineId, h.kind, h.tokenId]) }))
+          const soloStats = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines?.find((x) => x.id === 'solo-piece')?.stats
+          check('and in the machine\'s figures, priced by the chain', soloStats?.collects === 1 && soloStats.ethWei === '2000000000000000', JSON.stringify(soloStats))
+          const soloOut = [...(zsets.get('kismetart:xp:solo-piece:prizes')?.keys() ?? [])].map((x) => JSON.parse(x))
+          check('and in its record of what came out, to whom', soloOut.length === 1 && soloOut[0].player === PLAYER.toLowerCase() && soloOut[0].tokenId === '1', JSON.stringify(soloOut))
+          const back = await open('/play/solo-piece', { wallet: PLAYER })
+          const backWins = back.locator('section', { hasText: 'recent wins' })
+          await backWins.waitFor({ timeout: 10_000 }).catch(() => {})
+          const backText = (await backWins.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          const ownCast = await castOf(back, backWins.getByRole('button', { name: 'share to farcaster' }).first()).catch(() => null)
+          check('the reveal machine tags its winner too — and the winner, coming back, can share their win from there',
+            backText.includes('you winner won reveal one') && ownCast?.text === 'just collected "Reveal One" by @artistb from the Kismet Gachapon',
+            `${backText.slice(0, 160)} | ${JSON.stringify(ownCast)}`)
+          await back.context().close()
 
           // A curator's machine: the curator earns the referral on the collect —
           // but not on their own.
@@ -3673,7 +4216,6 @@ try {
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: false } })
           const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR, uploads: true })
           await page.getByText('reveal studio').first().waitFor()
-          await page.getByPlaceholder('new-voices').fill('browser-picks')
           await page.getByPlaceholder('New Voices').fill('Browser Picks')
           const addRow = async (i, ref) => {
             if (i > 0) await page.getByRole('button', { name: 'add artwork' }).click()
@@ -3687,8 +4229,12 @@ try {
           // before reading: one row answering says nothing about the other.
           await page.getByText('Kismet has no record of who made this').waitFor({ timeout: 8000 }).catch(() => {})
           await page.getByText('its artist has turned machines off for this piece').waitFor({ timeout: 8000 }).catch(() => {})
+          await page.getByText('Reveal Two').first().waitFor({ timeout: 8000 }).catch(() => {})
           const rows = await text(page)
           check('a pasted piece names its maker', /by 0x[0-9a-f]{4}…[0-9a-f]{4}/.test(rows))
+          check('and shows what it is: its title, or its token where it has none',
+            (await page.locator('p', { hasText: /^\s*Reveal Two\s*$/ }).count()) === 1 && (await page.locator('p', { hasText: /^\s*#5\s*$/ }).count()) === 1,
+            rows.match(/the lineup.{0,200}/)?.[0] ?? '')
           check('one Kismet has no maker for is flagged as you build', rows.includes('kismet has no record of who made this — only artworks minted on kismet can go in'))
           check('as is one its artist turned off', rows.includes('its artist has turned machines off for this piece'))
           await page.getByRole('button', { name: 'check', exact: true }).click()
@@ -3727,7 +4273,6 @@ try {
           windowPasses()
           const page = await open('/play/create-reveal', { user: CURATOR_TOKEN, wallet: CURATOR, uploads: true })
           await page.getByText('reveal studio').first().waitFor()
-          await page.getByPlaceholder('new-voices').fill('browser-linked')
           await page.getByPlaceholder('New Voices').fill('Browser Linked')
           await page.getByRole('button', { name: 'link a collection' }).click()
           const link = page.getByPlaceholder('collection link, or 0x…')
@@ -3746,9 +4291,32 @@ try {
           await page.getByLabel('cover image').setInputFiles({ name: 'cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await page.getByRole('button', { name: 'publish' }).click()
           await page.getByText('is queued for a curator').waitFor({ timeout: 8000 }).catch(() => {})
+          const linkedQueue = (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines ?? []
           check('publishing queues it with the link and what it took in',
-            (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-linked' && r.machine.collections?.join() === LINKED && r.pool.length === 2))
+            linkedQueue.some((r) => r.machine.id === 'browser-linked' && r.machine.collections?.join() === LINKED && r.pool.length === 2),
+            `${JSON.stringify(linkedQueue.map((r) => [r.machine.id, r.machine.collections, r.pool.length]))} | page: ${(await text(page)).slice(-300)}`)
           await page.context().close()
+
+          // The curator turns it down from the queue, saying why.
+          const queue = await open('/admin/play', { admin: ADMIN_TOKEN })
+          await queue.getByRole('button', { name: /Browser Linked/ }).click()
+          await queue.getByRole('button', { name: 'turn down', exact: true }).click()
+          const tell = queue.getByRole('button', { name: 'turn down · tell them' })
+          await tell.waitFor()
+          check('turning down asks why, from a short list, before it can be sent',
+            (await queue.getByRole('radio').count()) === 6 && !(await tell.isEnabled()))
+          await queue.getByRole('radio', { name: 'other' }).click()
+          check('"other" needs a note', !(await tell.isEnabled()))
+          await queue.getByRole('radio', { name: 'cover or frames' }).click()
+          await queue.getByLabel('note to the creator').fill('the cover is a blank square')
+          const preview = await text(queue)
+          check('and shows the curator what the creator will read', preview.includes('they will read: why: its cover or frames need work — the cover is a blank square.'), preview.match(/they will read.{0,120}/)?.[0] ?? '')
+          await tell.click()
+          await queue.getByText('browser-linked turned down').waitFor({ timeout: 8000 }).catch(() => {})
+          check('sending it withdraws the machine', (await call('/api/admin/experience', { admin: ADMIN_TOKEN })).json?.machines?.every((r) => r.machine.id !== 'browser-linked'))
+          const linkedNote = notesFor(CURATOR).find((n) => n.type === 'experience_status' && n.machineId === 'browser-linked')
+          check('and tells its curator why', linkedNote?.note === 'rejected' && linkedNote.comment === 'its cover or frames need work — the cover is a blank square', JSON.stringify(linkedNote))
+          await queue.context().close()
 
           const pg = await open('/play/fresh-ink')
           await pg.getByText('Fresh Ink').first().waitFor()
@@ -3758,13 +4326,34 @@ try {
           await pg.context().close()
         }
 
+        // ── a player's kismet, on their profile and at the machine ──
+        {
+          const k = (await call(`/api/experience/kismet?account=${PLAYER}`)).json
+          const page = await open(`/profile/${PLAYER}`)
+          await page.getByText('what the machines gave').waitFor({ timeout: 15_000 }).catch(() => {})
+          const body = await text(page)
+          check('a player\'s profile shows their kismet, by machine, and what the machines gave them',
+            k?.total > 0 && body.includes(`kismet (${k.total})`) && body.includes(`${k.total} kismet — one for each capsule opened and each piece collected from a gachapon`) &&
+              body.includes('spring season') && body.includes('what the machines gave') && body.includes('opened from spring season'),
+            body.match(/kismet \(.{0,240}/)?.[0] ?? '')
+          check('each play in it can be verified', (await page.locator('a[href^="/play/spring-season/verify?txHash="]').count()) > 0)
+          await page.context().close()
+          const atMachine = await open('/play/spring-season', { wallet: PLAYER })
+          await atMachine.getByText(/kismet earned here/).waitFor({ timeout: 15_000 }).catch(() => {})
+          const here = k?.machines?.find((m) => m.id === 'spring-season')?.kismet
+          check('and the machine says how much kismet they have earned there', (await text(atMachine)).includes(`${here} kismet earned here`), (await text(atMachine)).match(/by .{0,140}/)?.[0] ?? '')
+          await atMachine.context().close()
+        }
+
         // ── an artist's capsule prizes, apart from their airdrops ──
         {
           const page = await open(`/profile/${ADMIN}`, { user: ADMIN_USER_TOKEN, wallet: ADMIN })
           await page.getByText('Box Season').first().waitFor()
           const body = await text(page)
           check('the artist sees how many prizes each capsule machine delivered', /box season .*2 prizes delivered/.test(body), body.match(/box season.{0,160}/)?.[0] ?? '')
-          check('and who won them', /#(7|14) won by 0x51be…77aa/.test(body))
+          await page.getByText('won by lucky').first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const winners = await text(page)
+          check('and who won them, by name', /#(7|14) won by lucky/.test(winners), winners.match(/#\d+ won by \S+/)?.[0] ?? '')
           check('labelled as capsule prizes, not airdrops', body.includes('capsule prizes are minted by kismet when a paid capsule is opened. they are not airdrops'))
           await page.context().close()
         }
@@ -3783,6 +4372,13 @@ try {
           check('the curator sees that collects earn them the referral, paid automatically, and what has been paid',
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
           await own.context().close()
+          // A curator nothing has been paid to yet — their wallet refuses ETH.
+          const unpaid = await open(`/profile/${BUSY}`, { user: BUSY_TOKEN, wallet: BUSY })
+          await unpaid.getByText('Paid so far').first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const unpaidBody = await text(unpaid)
+          check('a curator paid nothing yet reads 0 ETH, not "free"', unpaidBody.includes('paid so far: 0 eth') && !unpaidBody.includes('paid so far: free'),
+            unpaidBody.match(/paid so far[^.]{0,30}/)?.[0] ?? '')
+          await unpaid.context().close()
         }
 
         // ── the Discover "play" tab ──
@@ -3881,6 +4477,79 @@ try {
           await phone.context().close()
         }
 
+        // ── a play checked in the player's own browser ──
+        // The verify page redoes the whole check itself — Web Crypto for the
+        // hashes and the draw, its own connection to Base for the blocks, and
+        // the commitment this browser was shown before the play — so a server
+        // that lied in its answer would not get a "verified" past it.
+        {
+          const seedY = strings.get(`kismetart:xp:second-chance:seed:${yesterday}`)
+          const shown = { 'kismet:xp:commitments': JSON.stringify({ [`second-chance:${yesterday}`]: sha256(seedY) }) }
+          const mintBlock = Number(chain.receipts.get(TX_SECOND.toLowerCase())?.blockNumber)
+          const claimS = JSON.parse(strings.get(`kismetart:xp:second-chance:claim:${TX_SECOND}:0`))
+          const reads = { blocks: chain.blockReads ?? 0, receipts: chain.receiptCalls ?? 0 }
+          const honest = await open(`/play/second-chance/verify?txHash=${TX_SECOND}&unitIndex=0`, { onChain: true, storage: shown })
+          await honest.getByText(/^(verified|MISMATCH) in your browser$/).waitFor({ timeout: 15_000 }).catch(() => {})
+          const h = await text(honest)
+          check('the verify page checks the play again in the browser, and it holds',
+            h.includes('verified in your browser') && !h.includes('mismatch in your browser'), h.match(/checked in your browser.{0,700}/)?.[0] ?? '')
+          check('the seed against the commitment, which is the one this browser was shown before the play',
+            h.includes('the revealed seed hashes to the commitment') && h.includes(`it is the commitment this browser was shown for ${yesterday}, before the play`))
+          check('the table against its hash, and the draw recomputed here onto the artwork delivered',
+            h.includes('the table hashes to the one committed when the draw was frozen') && h.includes('recomputed here, the draw lands on #7 — the artwork delivered'))
+          check('the sealing block read from Base by the browser itself, and after the capsule\'s own block',
+            h.includes(`block ${claimS.entropy.block}, read from base by this browser, is the block that sealed the draw`) &&
+              h.includes(`and it came after your capsule's block ${mintBlock}, so no one could know its hash when you paid`) &&
+              (chain.blockReads ?? 0) > reads.blocks && (chain.receiptCalls ?? 0) > reads.receipts,
+            `${h.match(/block \d+.{0,160}/)?.[0] ?? ''} | reads ${(chain.blockReads ?? 0) - reads.blocks}/${(chain.receiptCalls ?? 0) - reads.receipts}`)
+          check('and the draw before it, set aside, recomputed here too', h.includes('the draw before it, which picked #99 before it was set aside, recomputes here too'))
+          await honest.context().close()
+
+          // The server's answer altered on its way to the browser: it still says
+          // "verified", the browser does not.
+          const tampered = async (alter, storage = shown) => {
+            const pg = await open('/play/second-chance/verify', { onChain: true, storage })
+            await pg.route(/\/api\/experience\/verify\?/, async (route) => {
+              const res = await route.fetch()
+              const json = await res.json()
+              alter(json)
+              await route.fulfill({ response: res, json })
+            })
+            await pg.getByLabel('Capsule transaction hash').fill(TX_SECOND)
+            await pg.getByRole('button', { name: 'verify', exact: true }).click()
+            await pg.getByText(/^(verified|MISMATCH) in your browser$/).waitFor({ timeout: 15_000 }).catch(() => {})
+            const t = await text(pg)
+            await pg.context().close()
+            return t
+          }
+          const wrongPrize = await tampered((j) => { j.delivered.tokenId = '99' })
+          check('an answer naming a different artwork is caught: the server says verified, the browser recomputes the draw and does not',
+            /verified the revealed seed/.test(wrongPrize) && wrongPrize.includes('mismatch in your browser') && wrongPrize.includes('recomputed here, the draw lands on #7, not the #99 delivered'),
+            wrongPrize.match(/checked in your browser.{0,400}/)?.[0] ?? '')
+          const wrongBlock = await tampered((j) => { j.entropy.hash = blockHashOf(j.entropy.block + 7) })
+          check('so is a sealing block that is not the chain\'s',
+            wrongBlock.includes('mismatch in your browser') && wrongBlock.includes(`block ${claimS.entropy.block} on base has a different hash from the one the draw was sealed with`),
+            wrongBlock.match(/checked in your browser.{0,500}/)?.[0] ?? '')
+          const otherCommitment = await tampered(() => {}, { 'kismet:xp:commitments': JSON.stringify({ [`second-chance:${yesterday}`]: sha256('a different seed') }) })
+          check('and a commitment other than the one this browser was shown before the play',
+            otherCommitment.includes('mismatch in your browser') && otherCommitment.includes(`this browser was shown a different commitment for ${yesterday}`),
+            otherCommitment.match(/checked in your browser.{0,400}/)?.[0] ?? '')
+          const noRecord = await tampered(() => {}, {})
+          check('a browser that kept no record says so, without calling it a failure',
+            noRecord.includes('verified in your browser') && noRecord.includes(`this browser kept no record of the commitment it was shown for ${yesterday}`))
+        }
+
+        // ── the machine page remembers the commitments it shows ──
+        {
+          const pg = await open('/play/second-chance')
+          await pg.getByText('provably fair').waitFor()
+          const kept = JSON.parse((await pg.evaluate(() => localStorage.getItem('kismet:xp:commitments'))) ?? '{}')
+          const fair = (await call('/api/experience/machines/second-chance')).json?.fairness
+          check('the machine page keeps the commitments it shows, today\'s and tomorrow\'s, for the verify page to hold the seed to',
+            kept[`second-chance:${fair?.epoch}`] === fair?.commitment && kept[`second-chance:${fair?.next?.epoch}`] === fair?.next?.commitment, JSON.stringify(kept))
+          await pg.context().close()
+        }
+
         // ── the bell: where each machine notice takes you ──
         {
           const bell = async (user, wallet) => {
@@ -3904,6 +4573,14 @@ try {
           await review.waitFor({ timeout: 10_000 }).catch(() => {})
           check('Kismet\'s review notice opens the review queue', (await review.getAttribute('href').catch(() => null)) === '/admin/play')
           await kismet.pg.context().close()
+          const curator = await bell(CURATOR_TOKEN, CURATOR)
+          const turned = curator.pg.locator('a', { hasText: /"browser linked" wasn’t approved/i }).first()
+          await turned.waitFor({ timeout: 10_000 }).catch(() => {})
+          const turnedText = ((await turned.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ')
+          check('a turned-down machine\'s notice says why, in full, and that it can be fixed and sent again',
+            turnedText.includes('Why: its cover or frames need work — the cover is a blank square.') && turnedText.includes('fix it and submit again'), turnedText)
+          check('opening the studio, not the withdrawn machine\'s page', (await turned.getAttribute('href').catch(() => null)) === '/play/create')
+          await curator.pg.context().close()
         }
 
         // ── where an artist's work is featured, on their profile ──

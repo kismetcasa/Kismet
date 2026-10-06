@@ -157,7 +157,7 @@ production defaults in `lib/config.ts`):
 | Container | **Docker** multi-stage (deps→builder→runner), **`node:22.22-alpine` pinned** on all stages, non-root uid 1001, execs `node server.js` directly for SIGTERM | `Dockerfile` |
 | Framework | **Next.js 15.5.19** `output: 'standalone'`, App Router, instrumentation hook | `next.config.mjs`, `package.json` |
 | Memory | V8 heap caps: **build 3072 MB / runtime 4096 MB** (fixes a masked V8-heap OOM at ~2030 MB) | `Dockerfile:62,101` |
-| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`, daily `/api/cron/experience-seeds` (00:07 UTC) and daily `/api/cron/referral-payouts` (03:23 UTC); on Coolify each is fired by an external scheduler (`Authorization: Bearer $CRON_SECRET`) — except that the stats pipeline no longer depends on one: `lib/backgroundTasks.ts` runs it in-process (leader-locked; production only, never on Vercel; `STATS_PIPELINE_INPROCESS=off` for harnesses) whenever its heartbeat is an hour old, so only the two daily crons need a scheduler | `vercel.json`, `lib/statsPipeline.ts`, `lib/backgroundTasks.ts` |
+| Cron | `vercel.json` declares hourly `/api/cron/sync-stats`, daily `/api/cron/experience-seeds` (00:07 UTC) and daily `/api/cron/referral-payouts` (03:23 UTC); on Coolify none depends on an external scheduler: `lib/backgroundTasks.ts` runs each job in-process (leader-locked; production only, never on Vercel; `CRON_INPROCESS=off` for harnesses) once its last run is older than its interval — the stats pipeline hourly, seed commitments hourly, referral payouts daily. A scheduler calling the routes (`Authorization: Bearer $CRON_SECRET`) keeps precedence: its runs are recorded the same way, so the app stands down | `vercel.json`, `lib/statsPipeline.ts`, `lib/experience/machineJobs.ts`, `lib/backgroundTasks.ts` |
 | CI | GitHub Actions: `npm ci` → assert clone-response patch → `next build` → `npm run check` → blocking critical `npm audit`; Dependabot weekly | `.github/workflows/ci.yml` |
 
 ### 1.6 The full environment-variable surface
@@ -692,8 +692,9 @@ rotating host pools; `next/image` disk cache LRU-capped at 5 GB.
 **Risks.** Single instance / zero redundancy; the heap cap is a backstop not a fix
 (in-code bounds must not regress); no CDN today (`/api/img` streams up to 2 GB
 through the box); `ignoreBuildErrors` means a type error only surfaces in
-`npm run check`/CI; the `vercel.json` cron is a pre-migration artifact that won't
-fire on Coolify without an external scheduler.
+`npm run check`/CI; the `vercel.json` crons are a pre-migration artifact that
+won't fire on Coolify, which is why the app runs those jobs itself
+(`lib/backgroundTasks.ts`).
 
 ### Layer G — Product subsystems
 
@@ -921,13 +922,24 @@ token; each unit bought is one play, drawn server-side from a pool of artists' p
 and delivered by `adminMint` from a dedicated CDP account, gas sponsored. A **reveal
 machine** dispenses nothing: a free pull shows one piece from those on sale right now,
 which the player collects through that piece's own sale. A machine is published live
-by an admin and into the review queue by anyone else. Its cover (required) and its
+by an admin and into the review queue by anyone else. Its cover (required, and a
+still: a GIF becomes its first frame; any other image that moves, or an SVG, is refused) and its
 artist frames can be changed by its creator after it is live.
 
 **Why.** A creator sets weights and supplies, never odds (`lib/experience/types.ts`):
 the published table and the draw read the same frozen snapshot (`draw.ts`), and the
 daily commit–reveal receipt covers the seed and the snapshot's hash (`fairness.ts`),
-so the odds shown and the odds played cannot differ. A claim is the obligation to a
+so the odds shown and the odds played cannot differ. Each draw is also sealed by a
+Base block: the first block after the freeze, its number written into the claim with
+the seed and the table before the block exists, its hash mixed into the HMAC
+(`entropy.ts`, `fairnessCore.ts`). When the outcome is fixed it is unknown to everyone
+— Kismet, which holds the day's seed, included — and a seed created late cannot be
+chosen to suit a transaction already on chain; a draw waits about a second for its
+block, and one that is late pends and is finished from the same freeze. The verify
+page recomputes every draw in the visitor's browser (Web Crypto, `fairnessWeb.ts`),
+reads the sealing block and the capsule's block from Base through the browser's own
+connection, and holds the seed to the commitment that browser was shown before the
+play (`seenCommitments.ts`); claims drawn before blocks were mixed in verify as drawn. A claim is the obligation to a
 player who has paid, so it is a state machine with no TTL until it is delivered
 (`store.ts`).
 
@@ -937,19 +949,51 @@ draw rolls forward past a lost race or a revoked grant (`runDraw.ts`); eligibili
 is one shared, fail-closed filter (`eligibility.ts`) with a live authority check
 on the one piece drawn (`authority.ts`); revenue goes to the capsule's on-chain split,
 which the pool is checked against (`payees.ts`); capsules minted elsewhere are found
-with one `eth_getLogs` (`discovery.ts`); `/api/cron/experience-seeds` commits each
-day's seed in advance. The play: `components/MachineStage.tsx` runs idle → dispense
+with one `eth_getLogs` (`discovery.ts`); each machine's next-day seed is committed
+in advance, hourly, by the app itself or `/api/cron/experience-seeds`
+(`machineJobs.ts`). The play: `components/MachineStage.tsx` runs idle → dispense
 (a capsule's wallet and draw) → open, playing the artist's frames or the platform's
 capsule; the open is skippable, is not played under reduced motion, and hands over
-to the artwork in a view transition where the browser has one. The window is at most 240×240 CSS px, under
-WCAG 2.3.1's flash-threshold area, which is what lets artist clips play unscreened.
-Frames go through the mint's media path, held to 4 s, 1080 px and 2.5 MB
-(`frameUpload.ts`). Each machine has its own share card (`app/play/[id]/opengraph-image.tsx`).
+to the artwork in a view transition where the browser has one. Frames go through the
+mint's media path, held to 4 s, 1080 px and 2.5 MB, and are screened for flashing
+(WCAG 2.3.1: no more than three flashes a second over more than 21,824 CSS px² — a
+quarter of the 341 × 256 field — general or red, measured at the stage's 240 px and,
+for the looping dispense, looping; `lib/media/flashScreen.ts`) as they are picked
+(`frameUpload.ts`) and again by the server, which plays a frame only once it has
+fetched and passed it (`frameScreen.ts`, with the runtime image's ffmpeg; until then the
+platform's capsule plays). A still — an image frame, a clip's poster — must not move:
+an animated image is refused, and so is an SVG, which can move by itself. Each machine
+has its own share card
+(`app/play/[id]/opengraph-image.tsx`).
+
+**Around the play.** A machine's link is made from its name (`machineId.ts`: folded
+to `a-z0-9-`, numbered `-2`, `-3` on a clash; a withdrawn machine frees it). People
+are named by the platform's standard — Kismet username, then Farcaster, then ENS,
+else the address (`hooks/useProfileNames.ts`, `lib/displayName.ts` for share cards).
+Prices carry a USD estimate from the Chainlink feed (`lib/usdApprox.ts`). Every
+capsule opened and every piece collected through a reveal machine earns one
+**kismet** — a count, not a currency — kept per player per machine with a capped
+history and per-machine stats (plays, collects, ETH and USDC taken), each credited
+once per transaction (`kismet.ts`); the profile's Kismet tab reads it
+(`/api/experience/kismet`). A win can be shared to Farcaster as "just collected …
+by @artist from the Kismet Gachapon" (`lib/gachaponShare.ts`), and a machine lists
+its recent winners. A drawn piece that can no longer be minted — its artist stopped
+allowing it — is put back and drawn again from what is left (`resume`), the first
+draw kept on the claim and verified alongside the second, so a redraw is never a
+silent re-roll; a live
+machine with nothing left to draw tells its creator once, from a play or a page
+view (`notices.ts`). The studios offer the creator's own works to pick from — the
+list their profile shows — and show each piece by its title and image. A curator
+turning a machine down or delisting one must give a reason (`decline.ts`: a preset
+ground and a note, told to the creator in the bell and the push); one never on sale
+is withdrawn, freeing its capsule, pledges and link for a corrected resubmission.
 
 **Risks.** Delivery needs the CDP credentials; without them every play pends until
-resumed. Art changed after review is not reviewed again. A larger stage window
-would need artist clips screened for flashes. Checked by `verify:experience` and the
-`e2e:experience` run (`scripts/e2e/README.md`).
+resumed. Art changed after review is not reviewed again, though frames are screened
+each time; a cover is made a still by the studio, but one sent straight to the API is
+not checked by the server. Without ffmpeg on the box no frame passes, so every stage plays the
+platform's capsule. Checked by `verify:experience`, `verify:flash-screen`,
+`verify:frame-screen` (needs ffmpeg) and the `e2e:experience` run (`scripts/e2e/README.md`).
 
 ---
 
@@ -1168,13 +1212,14 @@ they are flagged for follow-up.
    all rate limits and spend quotas silently pass; the planned "global daily cap +
    balance alert" fail-closed backstop is noted as *planned*, not implemented
    (`1bf7b1b`). The operational Arweave wallet balance is the only remaining ceiling.
-6. **The `vercel.json` crons won't fire on Coolify** without an external scheduler
-   hitting each of them — if unconfigured, artist earnings stats silently stop
-   refreshing (`/api/cron/sync-stats`), a machine nobody has viewed can have its
-   seed created only at a play, after the player's capsule transaction — the
-   ordering its commitment exists to rule out (`/api/cron/experience-seeds`), and
-   curators' referral rewards stay escrowed with Zora until they withdraw them
-   themselves (`/api/cron/referral-payouts`).
+6. **The `vercel.json` crons don't fire on Coolify, so the app runs them itself**
+   (`lib/backgroundTasks.ts`, Cron row in §1.5). Without that, artist earnings
+   stats would stop refreshing (`/api/cron/sync-stats`), a machine nobody has
+   viewed could have its seed created only at a play, after the player's capsule
+   transaction — the ordering its commitment exists to rule out
+   (`/api/cron/experience-seeds`), and curators' referral rewards would stay
+   escrowed with Zora until they withdrew them themselves
+   (`/api/cron/referral-payouts`).
 7. **Minor label fix (already corrected in this doc):** the marketplace is **Seaport
    1.5** (`lib/seaport.ts:93` EIP-712 domain `version: '1.5'`), not 1.6 as one
    inventory pass guessed.

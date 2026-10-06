@@ -1,10 +1,11 @@
 import 'server-only'
 import { redis } from '../redis'
+import { acquireLock } from '../redisLock'
 import { randomHex } from '../random'
 import { commitmentFor, nextEpoch } from './fairness'
 import { entryKey } from './draw'
 import { isReveal } from './types'
-import type { ClaimRecord, ClaimState, Machine, MachineCover, MachineFrames, MachineState, PoolEntry, SnapshotEntry } from './types'
+import type { ClaimRecord, ClaimState, FrameCheck, Machine, MachineCover, MachineFrames, MachineState, PoolEntry, SnapshotEntry } from './types'
 
 /**
  * Redis persistence for the Experience. Redis is the platform's only datastore,
@@ -250,10 +251,53 @@ export async function setMachineArt(
     'cover' in art
       ? { ...m, cover: art.cover }
       : Object.keys(art.frames).length > 0
-        ? { ...m, frames: art.frames }
+        ? { ...m, frames: keepChecks(art.frames, m.frames) }
         : (unframed as Machine)
   await redis.set(kMachine(id), JSON.stringify(next))
   return next
+}
+
+/** New frames, each keeping the verdict its stage already had when it is the
+ *  same upload — an editor re-sends the frames it did not change. */
+function keepChecks(frames: MachineFrames, was: MachineFrames | undefined): MachineFrames {
+  const out: MachineFrames = {}
+  for (const stage of Object.keys(frames) as (keyof MachineFrames)[]) {
+    const frame = frames[stage]!
+    const old = was?.[stage]
+    const same = old && old.uri === frame.uri && old.poster === frame.poster && old.kind === frame.kind
+    out[stage] = same && old.check ? { ...frame, check: old.check } : frame
+  }
+  return out
+}
+
+/**
+ * Record the server's verdict on one of a machine's frames — only if the
+ * stage still holds the upload it was reached for, and has no verdict yet.
+ * Under the state lock the creator's changes take, so neither overwrites the
+ * other; false when the lock was busy (screening tries again later).
+ */
+export async function setFrameCheck(
+  id: string,
+  stage: keyof MachineFrames,
+  uri: string,
+  check: FrameCheck,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const lock = await acquireLock(machineStateLockKey(id), 30).catch(() => null)
+    if (lock?.acquired) {
+      try {
+        const m = await getMachine(id)
+        const frame = m?.frames?.[stage]
+        if (!m || !frame || frame.uri !== uri || frame.check) return true
+        await redis.set(kMachine(id), JSON.stringify({ ...m, frames: { ...m.frames, [stage]: { ...frame, check } } }))
+        return true
+      } finally {
+        await lock.release()
+      }
+    }
+    await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+  }
+  return false
 }
 
 /** How many capsule transactions have been opened on a machine. */
@@ -504,6 +548,8 @@ export function publicClaim(c: ClaimRecord) {
     epoch: c.epoch ?? null,
     commitment: c.commitment ?? null,
     snapshotHash: c.snapshotHash ?? null,
+    // The sealing block, so the player's own receipt names it.
+    entropy: c.entropy?.hash ? { block: c.entropy.block, hash: c.entropy.hash } : null,
     unitIndex: c.unitIndex,
     pendingReason: c.pendingReason ?? null,
     txDelivered: c.txDelivered ?? null,
@@ -577,14 +623,6 @@ export async function recordPlay(machineId: string, player: string, txHash: stri
     .zremrangebyrank(kPlays(machineId), 0, -(MAX_PLAYS + 1))
     .exec()
     .catch(() => {})
-}
-
-export async function recentPlays(machineId: string, n = 12): Promise<{ player: string; txHash: string }[]> {
-  const raw = (await redis.zrange(kPlays(machineId), 0, Math.max(0, n - 1), { rev: true })) as string[]
-  return raw.map((m) => {
-    const i = m.indexOf(':')
-    return { player: m.slice(0, i), txHash: m.slice(i + 1) }
-  })
 }
 
 /** Claims recorded for a machine by one player — the basis for the "you have an
@@ -765,21 +803,27 @@ export async function otherPledges(
   return sum
 }
 
-// ─── spark ───────────────────────────────────────────────────────────────────
+// ─── reveal collects ─────────────────────────────────────────────────────────
 
-/** Credit earned by playing. Deliberately NOT a currency: it is denominated in
- *  plays, redeemable only for artwork in the machine that issued it, and never
- *  transferable or priced in money — an intermediate currency is the exact
- *  pattern loot-box regulators flag as opaque conversion. */
-export async function addSpark(machineId: string, player: string, n = 1): Promise<number> {
-  return await redis.incrby(kSpark(machineId, player), n)
+/** Whether a reveal machine lists a piece — its lineup, linked pieces included. */
+export async function revealMachineLists(machineId: string, collection: string, tokenId: string): Promise<boolean> {
+  return (await redis.sismember(kUses(collection, tokenId), machineId)) === 1
 }
 
-export async function getSpark(machineId: string, player: string): Promise<number> {
-  const v = await redis.get<number | string>(kSpark(machineId, player))
-  const n = typeof v === 'number' ? v : parseInt(String(v ?? '0'), 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
+/** A collect through a reveal machine, in its log of what came out of it — the
+ *  record a capsule machine keeps of its prizes (recordPrize), so the page can
+ *  show who took what. */
+export async function recordRevealCollect(machineId: string, record: PrizeRecord): Promise<void> {
+  await redis
+    .multi()
+    .zadd(kPrizes(machineId), { score: Date.now(), member: JSON.stringify(record) })
+    .zremrangebyrank(kPrizes(machineId), 0, -(MAX_PLAYS + 1))
+    .exec()
 }
+
+/** The per-machine play counter kismet replaced (lib/experience/kismet), read
+ *  once per player to carry it over. Nothing writes it any more. */
+export const legacySparkKey = (machineId: string, player: string) => kSpark(machineId, player)
 
 /** Build the frozen snapshot: the pool joined to live remaining counts. This is
  *  the input the draw is a pure function of, and the exact array whose hash is

@@ -8,12 +8,15 @@ import { toast } from 'sonner'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePassGate } from '@/hooks/usePassGate'
+import { useProfileNames } from '@/hooks/useProfileNames'
 import { isAddress } from '@/lib/address'
 import { MAX_POOL_ENTRIES } from '@/lib/experience/draw'
 import { parseArtworkRef } from '@/lib/experience/format'
 import type { LineupPiece, SolvencyProblemCode } from '@/lib/experience/types'
-import { formatPrice, shortAddress } from '@/lib/inprocess'
-import { DetailWithLinks, Field, Section, StudioSubmitted, inputClass, pieceKey } from './CapsuleStudio'
+import { formatPrice } from '@/lib/inprocess'
+import { slugify } from '@/lib/experience/machineId'
+import { DetailWithLinks, Field, PieceTitle, Section, StudioSubmitted, inputClass, pieceKey, togglePicked } from './CapsuleStudio'
+import { useMyWorks, WorksPicker, workKey } from './StudioWorks'
 import { CoverSlot, uploadCoverOrSay, useCoverPick } from './CoverField'
 import { FrameSlots, uploadFramesOrSay, useFramePick } from './FrameField'
 
@@ -36,7 +39,7 @@ const MAX_LINKS = 3
 /** A pasted collection page link, or a bare address. */
 const collectionFrom = (text: string) => text.match(/0x[a-fA-F0-9]{40}/)?.[0]?.toLowerCase() ?? text.trim()
 
-type Standing = { available: boolean | null; artist: string | null } | 'loading'
+type Standing = { available: boolean | null; artist: string | null; name?: string | null; image?: string | null } | 'loading'
 
 const STATUS: Record<LineupPiece['status'], string> = {
   'on-sale': 'on sale now',
@@ -52,15 +55,18 @@ export function RevealStudio() {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
   const coverPick = useCoverPick()
-  const openFrame = useFramePick()
+  const openFrame = useFramePick('open')
   const ensureConnected = useEnsureConnected()
   const { gatedOut, passCollectionHref, passCollectionName } = usePassGate()
 
-  const [id, setId] = useState('')
+  // The URL is made from the name (lib/experience/machineId); a check says
+  // the exact one, numbered when the name is already in use.
+  const [checkedLink, setCheckedLink] = useState<{ name: string; id: string } | null>(null)
   const [name, setName] = useState('')
   const [rows, setRows] = useState<Row[]>([{ collection: '', tokenId: '' }])
   const [links, setLinks] = useState<string[]>([])
   const [pieces, setPieces] = useState<Record<string, Standing>>({})
+  const nameOf = useProfileNames(Object.values(pieces).map((p) => (p === 'loading' ? null : p.artist)))
   const [problems, setProblems] = useState<{ code: SolvencyProblemCode; detail: string }[] | null>(null)
   const [lineup, setLineup] = useState<Record<string, LineupPiece>>({})
   const [busy, setBusy] = useState<'check' | 'publish' | null>(null)
@@ -83,14 +89,18 @@ export function RevealStudio() {
       const key = pieceKey(r)
       if (pieces[key] !== undefined) continue
       setPieces((p) => ({ ...p, [key]: 'loading' }))
-      fetch(`/api/experience/piece?collection=${r.collection}&tokenId=${r.tokenId}`)
+      fetch(`/api/experience/piece?collection=${r.collection}&tokenId=${r.tokenId}&meta=1`)
         .then((res) => (res.ok ? res.json() : null))
-        .then((d: { available: boolean | null; artist: string | null } | null) =>
-          setPieces((p) => ({ ...p, [key]: { available: d?.available ?? null, artist: d?.artist ?? null } })),
+        .then((d: { available: boolean | null; artist: string | null; name?: string | null; image?: string | null } | null) =>
+          setPieces((p) => ({ ...p, [key]: { available: d?.available ?? null, artist: d?.artist ?? null, name: d?.name ?? null, image: d?.image ?? null } })),
         )
-        .catch(() => setPieces((p) => ({ ...p, [key]: { available: null, artist: null } })))
+        .catch(() => setPieces((p) => ({ ...p, [key]: { available: null, artist: null, name: null, image: null } })))
     }
   }, [complete, pieces])
+
+  // The curator's own works, a shortcut: a reveal machine takes anyone's.
+  const works = useMyWorks(address)
+  const worksByKey = useMemo(() => new Map((works ?? []).map((w) => [workKey(w), w])), [works])
 
   const setRow = (i: number, patch: Partial<Row>) =>
     setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
@@ -110,7 +120,6 @@ export function RevealStudio() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             kind: 'reveal',
-            id: id.trim().toLowerCase(),
             name: name.trim(),
             entries: complete.map((c) => ({ collection: c.collection.toLowerCase(), tokenId: c.tokenId })),
             collections: linked,
@@ -123,6 +132,7 @@ export function RevealStudio() {
         if (r.status === 401) { setAuthRequired(true); return }
         if (Array.isArray(body?.problems)) {
           setProblems(body.problems)
+          if (typeof body.id === 'string') setCheckedLink({ name: name.trim(), id: body.id })
           if (Array.isArray(body.lineup)) {
             setLineup(Object.fromEntries((body.lineup as LineupPiece[]).map((p) => [p.key, p])))
           }
@@ -148,10 +158,11 @@ export function RevealStudio() {
         setBusy(null)
       }
     },
-    [authRequired, complete, coverPick.upload, ensureSession, id, linked, name, openFrame.upload, router],
+    [authRequired, complete, coverPick.upload, ensureSession, linked, name, openFrame.upload, router],
   )
 
   if (submitted) return <StudioSubmitted title="reveal studio" machine={submitted} address={address} />
+  const linkId = checkedLink?.name === name.trim() ? checkedLink.id : name.trim() ? slugify(name) : 'your-machine'
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -175,28 +186,33 @@ export function RevealStudio() {
       )}
 
       <Section title="the machine">
-        <Field label="id" hint="lowercase letters, numbers and dashes — this becomes the URL">
-          <input
-            value={id}
-            onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
-            placeholder="new-voices"
-            className={inputClass}
-          />
-        </Field>
-        <Field label="name">
+        <Field label="name" hint={`its link: /play/${linkId} — made from the name; one already in use gets a number`}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New Voices" className={inputClass} />
         </Field>
         <CoverSlot pick={coverPick} disabled={busy !== null} />
         <FrameSlots picks={{ open: openFrame }} disabled={busy !== null} />
       </Section>
 
-      <Section title="the lineup" note="Paste an artwork's link, or its collection and token id.">
+      <Section title="the lineup" note="Paste an artwork's link, or its collection and token id — or pick from your own works.">
+        {address && (
+          <WorksPicker
+            works={works}
+            label="pick from your works"
+            picked={new Set(complete.map(pieceKey))}
+            onPick={(w) => setRows((rs) => togglePicked(rs, w, { collection: '', tokenId: '' }))}
+          />
+        )}
         <div className="flex flex-col gap-2">
           {rows.map((r, i) => {
             const standing = pieces[pieceKey(r)]
             const live = lineup[pieceKey(r)]
+            const w = worksByKey.get(pieceKey(r))
+            const known = standing && standing !== 'loading' ? standing : null
             return (
               <div key={i} className="border border-line p-3 flex flex-col gap-2">
+                {isAddress(r.collection) && /^\d+$/.test(r.tokenId) && (
+                  <PieceTitle art={{ collection: r.collection, tokenId: r.tokenId, name: w?.name ?? known?.name ?? null, image: w?.image ?? known?.image ?? null, mime: w?.mime, thumbhash: w?.thumbhash }} />
+                )}
                 <div className="flex gap-2">
                   <input
                     value={r.collection}
@@ -234,7 +250,7 @@ export function RevealStudio() {
                     </p>
                   ) : (
                     <p className="text-[10px] font-mono text-subtle">
-                      by {shortAddress(standing.artist)}
+                      by {nameOf(standing.artist)}
                       {live && (
                         <> · {STATUS[live.status]}{live.sale && ` · ${formatPrice(live.sale.pricePerToken, live.sale.currency)}`}</>
                       )}

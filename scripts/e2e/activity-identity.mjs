@@ -67,7 +67,7 @@ const stub = spawn(process.execPath, ['scripts/e2e/redis-stub.mjs'], { stdio: 'i
 const app = spawn('node_modules/.bin/next', ['start', '-p', String(APP_PORT)], {
   env: {
     ...process.env,
-    STATS_PIPELINE_INPROCESS: 'off', // no in-process stats pipeline against the stub (lib/backgroundTasks)
+    CRON_INPROCESS: 'off', // no in-process crons against the stub (lib/backgroundTasks)
     UPSTASH_REDIS_REST_URL: `http://127.0.0.1:${REDIS_PORT}`,
     UPSTASH_REDIS_REST_TOKEN: 'stub',
     MAINNET_RPC_URL: 'http://127.0.0.1:9', // never reached: /api/profiles is intercepted in the browser

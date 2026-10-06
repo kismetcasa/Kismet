@@ -189,7 +189,7 @@ a pool within minutes with no ops step, and an external scheduler, where one
 exists, keeps precedence. The fallback is production-only: never on Vercel
 (the cron is scheduled there, and a timer in a serverless instance can be
 frozen mid-run holding the phase locks), never in development, and off for
-the harnesses that boot the built app (`STATS_PIPELINE_INPROCESS=off`).
+the harnesses that boot the built app (`CRON_INPROCESS=off`).
 
 ### 2.2 Chain reads (two passes, chunked)
 

@@ -13,6 +13,7 @@ import { checkCapsuleControl, readCapsuleSupply, readPoolState } from '@/lib/exp
 import { getGateConfig } from '@/lib/gate'
 import { readLineup } from '@/lib/experience/lineup'
 import { noticeFeaturedArtists } from '@/lib/experience/notices'
+import { declineText, parseDecline, type DeclineReason } from '@/lib/experience/decline'
 import {
   buildSnapshot,
   getMachine,
@@ -21,6 +22,7 @@ import {
   listMachines,
   machineStateLockKey,
   setMachineState,
+  withdrawMachine,
 } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
 import type { MachineState } from '@/lib/experience/types'
@@ -124,7 +126,7 @@ export async function POST(req: NextRequest) {
   const auth = await verifyAdminSession()
   if ('error' in auth) return errorResponse(auth.status, auth.error)
 
-  const body = (await req.json().catch(() => null)) as { id?: string; state?: string } | null
+  const body = (await req.json().catch(() => null)) as { id?: string; state?: string; reason?: unknown; note?: unknown } | null
   if (!body) return errorResponse(400, 'Invalid body')
 
   const id = typeof body.id === 'string' ? body.id.toLowerCase() : ''
@@ -138,15 +140,61 @@ export async function POST(req: NextRequest) {
   const lock = await acquireLock(machineStateLockKey(id), 60).catch(() => ({ acquired: false, release: async () => {} }))
   if (!lock.acquired) return errorResponse(409, 'This machine is being changed — try again')
   try {
-    return await transition(id, state, auth.signer)
+    return await transition(id, state, auth.signer, body)
   } finally {
     await lock.release()
   }
 }
 
-async function transition(id: string, state: MachineState, signer: string): Promise<NextResponse> {
+async function transition(
+  id: string,
+  state: MachineState,
+  signer: string,
+  why: { reason?: unknown; note?: unknown },
+): Promise<NextResponse> {
   const machine = await getMachine(id)
   if (!machine) return errorResponse(404, 'Machine not found')
+
+  // Taking a machine off before it ever went live — ended or delisted — is
+  // turning it down; delisting a live one takes it off the shelves. Either is
+  // a decision against its creator, who is owed the reason with it, so the
+  // queue cannot make one without saying why.
+  const declining = state !== 'live' && state !== 'review' && !machine.listedAt
+  let decline: { reason: DeclineReason; note: string } | undefined
+  if (declining || state === 'delisted') {
+    const parsed = parseDecline(why)
+    if ('error' in parsed) return errorResponse(400, parsed.error)
+    decline = parsed
+  }
+  const reasonText = decline && declineText(decline)
+
+  // Turned down, it is withdrawn — the same withdrawal its creator can make
+  // themselves (store.withdrawMachine). It was never on sale here, and play
+  // refuses a queued machine, so nothing can be owed through it: its capsule,
+  // its pledges and its link are freed for the corrected machine. Delisting
+  // it instead, as this once did, held all three for life, so a creator told
+  // to fix their cover could not resubmit with the capsule they had minted.
+  // A machine the store will not withdraw (a play on record) is delisted as
+  // before, and its capsules stay honoured.
+  if (declining && (await withdrawMachine(id)) === 'withdrawn') {
+    await writeNotification({
+      type: 'experience_status',
+      recipient: machine.creator,
+      actor: signer,
+      tokenName: machine.name,
+      note: 'rejected',
+      comment: reasonText,
+      // The id it had, for the record; the bell links a turned-down machine
+      // to the studio, since this id is free for anyone's next machine.
+      machineId: id,
+    }).catch(bestEffort('xp.statusNotify', { id, state }))
+    await recordAdminAction('experience-state', {
+      actor: signer,
+      target: id,
+      meta: { from: machine.state, to: 'withdrawn', ...decline },
+    })
+    return NextResponse.json({ ok: true, machine: null, withdrawn: true })
+  }
 
   // Promoting to `live` re-runs the publish gate. A reviewer approving a
   // machine that has gone insolvent while queued would put a machine on sale
@@ -228,7 +276,8 @@ async function transition(id: string, state: MachineState, signer: string): Prom
       tokenName: machine.name,
       // Taking a machine off before it ever went live — delisted or ended —
       // is turning it down, and is told as that: nothing was ever on sale.
-      note: state !== 'live' && !machine.listedAt ? 'rejected' : state,
+      note: declining ? 'rejected' : state,
+      comment: reasonText,
       machineId: id,
     }).catch(bestEffort('xp.statusNotify', { id, state }))
   }
@@ -237,7 +286,7 @@ async function transition(id: string, state: MachineState, signer: string): Prom
   await recordAdminAction('experience-state', {
     actor: signer,
     target: id,
-    meta: { from: machine.state, to: state },
+    meta: { from: machine.state, to: state, ...decline },
   })
 
   return NextResponse.json({ ok: true, machine: next })

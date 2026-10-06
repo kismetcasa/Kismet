@@ -53,9 +53,13 @@ export async function GET(req: NextRequest) {
   let inlineSlots = ENS_INLINE_MAX
   let warmSlots = ENS_WARM_MAX
 
-  const profiles: Record<string, { name: string; avatarUrl?: string }> = Object.fromEntries(
+  // `fcUsername` is the raw Farcaster handle, so a cast can @mention the person
+  // (lib/collectShare) — the collapsed `name` may be a Kismet username or ENS
+  // name that mentions nobody.
+  type Row = { name: string; avatarUrl?: string; fcUsername?: string | null }
+  const profiles: Record<string, Row> = Object.fromEntries(
     await Promise.all(
-      addresses.map(async (addr): Promise<[string, { name: string; avatarUrl?: string }]> => {
+      addresses.map(async (addr): Promise<[string, Row]> => {
         try {
           const [{ profile, farcaster, canonicalAddress }, cachedEns] = await Promise.all([
             resolveCanonicalProfile(addr),
@@ -90,7 +94,7 @@ export async function GET(req: NextRequest) {
               after(() => resolveEnsAndCache(addr))
             }
           }
-          return [addr, pickProfileIdentity(profile, farcaster, ens)]
+          return [addr, { ...pickProfileIdentity(profile, farcaster, ens), fcUsername: farcaster?.username ?? null }]
         } catch {
           // Isolate per-address failures (e.g. a transient Redis/FC blip) so one
           // sender can't blank the whole batch — as independent per-sender calls

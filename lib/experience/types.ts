@@ -94,8 +94,36 @@ export interface ClaimRecord {
   /** Redraw counter — each attempt is an independent, separately verifiable
    *  draw over the same frozen snapshot. */
   attempt?: number
+  /** The block that seals the draw (lib/experience/entropy): the first block
+   *  after the freeze, its number written here with the seed and the table
+   *  before the block existed, its hash once it did. `after` is the height
+   *  the chain stood at when it was chosen. Absent on claims drawn before
+   *  draws were sealed by a block; they verify as they were drawn. */
+  entropy?: { block: number; hash: string | null; after: number }
+  /** When the freeze was written, ms. */
+  frozenAt?: number
   /** The selected prize. */
   prize?: { collection: string; tokenId: string; artist: string }
+  /** Prizes drawn for this claim that could not then be given — their artist
+   *  stopped allowing them, the edition sold out, or Kismet withdrew them —
+   *  each handed back and drawn again (the resume route). Kept so a receipt
+   *  shows every draw, not only the last. */
+  replaced?: {
+    collection: string
+    tokenId: string
+    artist: string
+    reason: string
+    at: number
+    /** The draw that picked it, kept so it stays verifiable after the claim
+     *  is frozen and drawn again: its epoch, the commitment and table it was
+     *  drawn under, and the attempt that landed on it. */
+    epoch?: string
+    commitment?: string
+    snapshot?: SnapshotEntry[]
+    snapshotHash?: string
+    attempt?: number
+    entropy?: { block: number; hash: string | null; after: number }
+  }[]
   /** CDP userOp hash, written before the await so a timeout is traceable —
    *  and the ONLY handle reconciliation uses. Resume asks CDP what became of
    *  this exact operation (lib/experience/delivery.readDeliveryOutcome), never
@@ -244,7 +272,16 @@ export interface StageFrame {
   /** Its still; the same upload as `uri` for an image. */
   poster: string
   thumbhash?: string
+  /** The server's verdict on it (lib/experience/frameScreen): stored with the
+   *  frame, never taken from a request, never sent to a player. None yet
+   *  means it is still being checked, and is not played. */
+  check?: FrameCheck
 }
+
+/** What the server's screening of a stage frame found. */
+export type FrameCheck =
+  | { state: 'passed'; at: number }
+  | { state: 'refused'; reason: string; at: number }
 
 /** The stages an artist can draw. A reveal machine's pull waits on nothing,
  *  so it has no dispense. Absent stages play the platform's own capsule. */

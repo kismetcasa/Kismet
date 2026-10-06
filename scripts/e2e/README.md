@@ -28,7 +28,7 @@ node scripts/e2e/redis-stub.mjs &
 # 2. The app, pointed at the stub.
 UPSTASH_REDIS_REST_URL=http://localhost:6399 \
 UPSTASH_REDIS_REST_TOKEN=stub \
-STATS_PIPELINE_INPROCESS=off \
+CRON_INPROCESS=off \
 npx next start -p 3100 &
 
 # 3. Fixtures: a spec-valid glTF 2.0 cube plus a still. The script writes the
@@ -300,7 +300,8 @@ Screenshots land in `.e2e/shots/sweep-*.png`.
 # End-to-end check — the gachapon machines
 
 `scripts/e2e-experience.mjs` (`npm run e2e:experience`) boots the built app
-with its Redis, Base RPC, CDP and inprocess faked in-process, then walks both
+with its Redis, Base RPC, CDP, inprocess and Arweave gateway faked in-process,
+then walks both
 kinds of machine over real HTTP and, in its second half, in a real Chromium.
 CDP credentials are absent, so every delivery lands in `pending` and the
 recovery paths run.
@@ -319,33 +320,78 @@ npm run e2e:experience
 ```
 
 The build needs an Arweave signer key so the studios can upload; any 512-byte
-value will do. The browser half drives `playwright-core` (skipped, with a
+value will do. The server screens every stage frame with `ffmpeg`, as the
+runtime image has it, so one must be on PATH — the suite stops and says so
+otherwise — and the suite makes its flashing and calm clips with it. The
+browser half drives `playwright-core` (skipped, with a
 notice, when it is not installed) and the Chromium under `/opt/pw-browsers` (a
 failed check when none launches). That Chromium plays VP8 but not H.264, so the
 video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (548)
+## What it asserts (635)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
-  verifier recomputing a play from the revealed seed. A reveal pulls for free
+  verifier recomputing a play from the revealed seed.
+- **Sealed draws** — every draw sealed by the first block after its freeze,
+  after the capsule's own block; a different block, a different draw; a late
+  block pends the play, and resume finishes it from the same freeze and block;
+  a redraw sealed by a block of its own.
+- **Verified in the browser** — the verify page recomputes the draw, the
+  earlier draw it replaced, and both hashes with Web Crypto, reads the blocks
+  from the chain itself, and holds the seed to the commitment the machine page
+  showed that browser; a server answer altered in transit (another artwork, a
+  block that is not the chain's, another commitment) is called a mismatch. A reveal pulls for free
   and collects at the piece's own price.
 - **Machines** — the studios (disconnected, connected, publish to review), the
   curator's queue, an artist's opt-outs, linked collections, a machine with
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
-  and ending a season on-chain.
-- **Art** — the required cover, changed live; the stage (idle, dispense, open),
-  its timing, skip and reduced motion, with the platform's capsule and with an
-  artist's frames; frame limits, including a GIF's own length; uploads decoded
-  as sent.
+  and ending a season on-chain; the seed and referral-payout jobs, each run
+  recorded for the app's own schedule (lib/backgroundTasks) to wait on.
+- **Art** — the required cover, changed live, and always a still: one that
+  moves, or an SVG, is refused as it is picked, and a GIF becomes its first
+  frame; the stage (idle, dispense, open), its timing, skip and reduced
+  motion, with the platform's capsule and with an artist's frames; frame
+  limits, including a GIF's own length; uploads decoded as sent.
+- **Flashing (WCAG 2.3.1)** — the studio refuses a clip that flashes four
+  times a second, an image that moves, and an SVG, before anything uploads;
+  the server screens every frame again: one sent straight to the API waits,
+  unplayed, while its gateway holds it back, then is refused, and its creator
+  is told why; a clip too long and a moving image are refused by the server
+  too; a frame sent back unchanged keeps its verdict; a creator's page takes
+  up a verdict without a reload. The window is never larger than the 240 px
+  it is screened at, on a desktop, a phone, and with enlarged text.
 - **Accessibility** — a status line for each step (WCAG 4.1.3); focus to skip,
-  then to the result, without scrolling (2.4.3, 2.4.11); the window under the
-  flash-threshold area on a phone, a desktop, and with enlarged text (2.3.1);
-  "see odds" landing below the fixed header; view transitions that start and
-  run, and none under reduced motion.
+  then to the result, without scrolling (2.4.3, 2.4.11); "see odds" landing
+  below the fixed header; view transitions that start and run, and none under
+  reduced motion.
 - **Share card** — a machine's Farcaster embed and its card; a card whose cover
   is out of reach draws its text, not a blank; a machine in review shares the
   bare card.
+- **People, prices, links** — artists and players by their Kismet or Farcaster
+  name, not their address; a USD estimate beside every ETH price; two machine
+  cards a row on a phone; "0 ETH" rather than "free" for nothing paid yet; a
+  machine's link made from its name, numbered on a clash, never one of the
+  `/play` pages.
+- **Kismet** — one for each capsule opened and each piece collected through a
+  reveal machine, counted once; the old sparks carried over once; the
+  machine's figures (plays, collects, ETH) for its creator alone; the profile's
+  Kismet tab.
+- **Winning and sharing** — a win shared as "just collected … by @artist from
+  the Kismet Gachapon" with the artwork and the machine; recent wins with a
+  winner tag, and a share only on your own.
+- **When a piece goes away** — a drawn piece its artist stops allowing is
+  drawn again from what is left, and both draws verify (an altered first one
+  fails the play); stopping warns first while a live machine
+  draws it; a machine found empty by a play or a page view tells its creator,
+  once.
+- **Curation** — no turning down or delisting without a reason; a machine
+  turned down is withdrawn, its capsule, pledges and link freed for the fixed
+  one; the queue's reason form, and the bell row that reads it and opens the
+  studio.
+- **Studios** — the creator's own works to pick from (hidden ones left out),
+  picked and unpicked; each piece shown by its title, pasted or picked; a link
+  to mint the capsule.
 

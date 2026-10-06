@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { flushSync } from 'react-dom'
 import { MomentImage } from './MomentImage'
-import { shortAddress } from '@/lib/inprocess'
 import { proxyUrl, videoGatewayUrls } from '@/lib/media/gateway'
 import { useAllowsVideo } from '@/hooks/useAllowsVideo'
 import { FRAME_LIMITS, type MachineFrames, type StageFrame } from '@/lib/experience/types'
@@ -94,10 +93,9 @@ export function MachineStage({
   return (
     <div className="mb-5" hidden={stage === null}>
       {/* At most 240 CSS px square — px, not rem, so a reader's larger text
-          does not enlarge it: 57,600 CSS px, under the 87,296 (341 × 256)
-          that WCAG 2.3.1 sets as the flash threshold's area, so no artist's
-          clip can flash over a seizure-risk area however it was drawn.
-          Enlarging the window means screening clips for flashes first. */}
+          does not enlarge it. That is the size every artist's clip is
+          screened for flashing at (WCAG 2.3.1: lib/media/flashScreen), so the
+          window may not grow unless FLASH_STAGE_PX grows with it. */}
       <div
         data-stage={stage ?? undefined}
         className="relative aspect-square w-full max-w-[240px] mx-auto overflow-hidden border border-line bg-raised [view-transition-name:machine-window]"
@@ -234,10 +232,10 @@ function Capsule() {
 }
 
 /** The last beat of a play or a collect, in the words a player expects. */
-export function CollectedLine({ title, artist }: { title: string; artist: string }) {
+export function CollectedLine({ title, by }: { title: string; /** The artist's name (useProfileNames). */ by: string }) {
   return (
     <p className="text-[11px] font-mono text-muted">
-      you&apos;ve collected <span className="text-ink group-hover:underline">{title}</span> by {shortAddress(artist)}
+      you&apos;ve collected <span className="text-ink group-hover:underline">{title}</span> by {by}
     </p>
   )
 }

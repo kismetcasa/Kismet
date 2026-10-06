@@ -10,6 +10,7 @@ import { proxyUrl } from '@/lib/media/gateway'
 import { prepareFrame, uploadFrame, type PreparedFrame } from '@/lib/experience/frameUpload'
 import { toastError } from '@/lib/toast'
 import { FRAME_LIMITS, type MachineFrames, type StageFrame } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 
 /**
  * An artist's own frames for a machine's play (MachineStage): picked, prepared
@@ -29,7 +30,7 @@ const STAGE_COPY: Record<FrameStage, string> = {
  *  what it becomes is held to FRAME_LIMITS. */
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024
 
-export function useFramePick() {
+export function useFramePick(stage: FrameStage) {
   const prepared = useRef<{ file: File; frame: PreparedFrame } | null>(null)
   const uploaded = useRef<{ file: File; frame: StageFrame } | null>(null)
   // A pick still being prepared is not yet the pick: publishing now would
@@ -41,7 +42,7 @@ export function useFramePick() {
     accept: async (f) => {
       setPreparing(true)
       try {
-        const frame = await prepareFrame(f)
+        const frame = await prepareFrame(f, stage)
         if (typeof frame === 'string') return frame
         prepared.current = { file: f, frame }
         return null
@@ -70,12 +71,18 @@ function FrameField({
   stage,
   pick,
   current,
+  status,
+  reason,
   onRemove,
   disabled,
 }: {
   stage: FrameStage
   pick: FramePick
   current: StageFrame | null
+  /** Where the server's screening of `current` stands. */
+  status?: FrameStatus['state']
+  /** Why the screening refused it. */
+  reason?: string
   onRemove: () => void
   disabled?: boolean
 }) {
@@ -101,6 +108,12 @@ function FrameField({
       <div className="flex-1 min-w-0">
         <p className="text-[11px] font-mono text-dim">{stage}</p>
         <p className="text-[10px] font-mono text-subtle">{STAGE_COPY[stage]}</p>
+        {current && !source && status === 'checking' && (
+          <p className="text-[10px] font-mono text-muted">checking for flashing — players see the capsule until it passes</p>
+        )}
+        {current && !source && status === 'refused' && (
+          <p className="text-[10px] font-mono text-[#ffcf70]">not shown to players: {reason}</p>
+        )}
       </div>
       <button
         type="button"
@@ -134,7 +147,7 @@ function FrameField({
 }
 
 const LIMITS_NOTE =
-  `optional · up to ${FRAME_LIMITS.seconds} s, ${FRAME_LIMITS.px} px and ${FRAME_LIMITS.bytes / (1024 * 1024)} MB each · a gif becomes a video · without one, the platform's capsule plays`
+  `optional · up to ${FRAME_LIMITS.seconds} s, ${FRAME_LIMITS.px} px and ${FRAME_LIMITS.bytes / (1024 * 1024)} MB each, and no flashing more than three times a second · a gif becomes a video · without one, the platform's capsule plays`
 
 /** The studio's frames: one row per stage the machine has. */
 export function FrameSlots({ picks, disabled }: { picks: Partial<Record<FrameStage, FramePick>>; disabled?: boolean }) {
@@ -180,14 +193,15 @@ export function FramesEditor({
 }: {
   machineId: string
   kind: 'capsule' | 'reveal'
-  current: MachineFrames | null
+  /** The machine's frames, each with where its screening stands. */
+  current: Partial<Record<FrameStage, FrameStatus>> | null
   creator: string
   onDone?: () => void
 }) {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
-  const dispense = useFramePick()
-  const open = useFramePick()
+  const dispense = useFramePick('dispense')
+  const open = useFramePick('open')
   const [removed, setRemoved] = useState<FrameStage[]>([])
   const [busy, setBusy] = useState(false)
   if (address?.toLowerCase() !== creator.toLowerCase()) return null
@@ -206,7 +220,7 @@ export function FramesEditor({
       if (!fresh) return
       const frames: MachineFrames = {}
       for (const stage of stages) {
-        const frame = fresh[stage] ?? (removed.includes(stage) ? undefined : current?.[stage])
+        const frame = fresh[stage] ?? (removed.includes(stage) ? undefined : current?.[stage]?.frame)
         if (frame) frames[stage] = frame
       }
       const r = await fetch(`/api/experience/machines/${machineId}`, {
@@ -237,7 +251,9 @@ export function FramesEditor({
           key={stage}
           stage={stage}
           pick={picks[stage]!}
-          current={removed.includes(stage) ? null : (current?.[stage] ?? null)}
+          current={removed.includes(stage) ? null : (current?.[stage]?.frame ?? null)}
+          status={current?.[stage]?.state}
+          reason={current?.[stage]?.reason}
           onRemove={() => {
             picks[stage]?.clear()
             setRemoved((r) => (r.includes(stage) ? r : [...r, stage]))

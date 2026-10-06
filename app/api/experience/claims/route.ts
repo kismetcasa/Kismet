@@ -3,7 +3,8 @@ import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
-import { getClaim, getSpark, playedTxHashes } from '@/lib/experience/store'
+import { getClaim, playedTxHashes } from '@/lib/experience/store'
+import { kismetAt } from '@/lib/experience/kismet'
 import type { ClaimRecord } from '@/lib/experience/types'
 
 /**
@@ -62,7 +63,8 @@ export async function GET(req: NextRequest) {
   claims.sort((a, b) => b.createdAt - a.createdAt || a.unitIndex - b.unitIndex)
 
   return NextResponse.json({
-    spark: await getSpark(machineId, account).catch(() => 0),
+    // What this player has earned at this machine (lib/experience/kismet).
+    kismet: await kismetAt(account, machineId).catch(() => 0),
     claims: claims.map((c) => ({
       txHash: c.txHash,
       unitIndex: c.unitIndex,

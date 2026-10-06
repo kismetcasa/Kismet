@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
+import { useProfileNames } from '@/hooks/useProfileNames'
 import { useUploadSession } from '@/hooks/useUploadSession'
-import { formatPrice, shortAddress } from '@/lib/inprocess'
+import { formatPrice } from '@/lib/inprocess'
 import { MachineAction } from './MachineAction'
 
 // Its owner's alone, with the upload stack behind it, so a visitor's profile
@@ -31,6 +32,8 @@ interface CreatorMachineCommon {
   withdrawable?: boolean
   /** Its cover, an ar:// upload; null for a machine published before covers. */
   cover: string | null
+  /** Its creator's view only: what it has done since it was first counted. */
+  stats?: { plays: number; collects: number; ethWei: string; usdcMicro: string } | null
 }
 
 export type CreatorMachine =
@@ -126,6 +129,10 @@ export function ProfileMachines({
   onChange: () => void
 }) {
   const { ensureSession } = useUploadSession()
+  const nameOf = useProfileNames([
+    ...machines.flatMap((m) => (m.kind === 'capsule' ? m.prizes.recent.map((p) => p.player) : [])),
+    ...featuredIn.map((f) => f.curator),
+  ])
 
   return (
     <div className="flex flex-col gap-2">
@@ -133,7 +140,7 @@ export function ProfileMachines({
         <p className="text-[11px] font-mono text-muted leading-relaxed">
           Collects through your reveal machines earn you Zora&apos;s mint referral, paid to your wallet
           automatically each day.{' '}
-          <span className="text-dim">Paid so far: {formatPrice(referralPaid, 'eth')}</span>
+          <span className="text-dim">Paid so far: {/^0*$/.test(referralPaid) ? '0 ETH' : formatPrice(referralPaid, 'eth')}</span>
         </p>
       )}
       {manage && !signedIn && (
@@ -178,6 +185,7 @@ export function ProfileMachines({
                 </>
               )}
             </p>
+            {m.stats && <MachineFigures kind={m.kind} stats={m.stats} />}
             {m.kind === 'capsule' && m.prizes.recent.length > 0 && (
               <div className="mt-1.5">
                 <ul className="flex flex-col gap-0.5">
@@ -188,7 +196,7 @@ export function ProfileMachines({
                       </Link>{' '}
                       won by{' '}
                       <Link href={`/profile/${p.player}`} className="hover:text-dim">
-                        {shortAddress(p.player)}
+                        {nameOf(p.player)}
                       </Link>
                     </li>
                   ))}
@@ -222,7 +230,7 @@ export function ProfileMachines({
                 </Link>{' '}
                 · curated by{' '}
                 <Link href={`/profile/${f.curator}`} className="hover:text-dim">
-                  {shortAddress(f.curator)}
+                  {nameOf(f.curator)}
                 </Link>
                 {f.state !== 'live' && ' · closed'}
                 {' · '}
@@ -251,5 +259,22 @@ export function ProfileMachines({
         </Link>
       )}
     </div>
+  )
+}
+
+/** A machine's figures, for its creator: what came through it and what it took
+ *  in, in each currency it was paid in. */
+function MachineFigures({ kind, stats }: { kind: 'capsule' | 'reveal'; stats: NonNullable<CreatorMachineCommon['stats']> }) {
+  const taken = [
+    BigInt(stats.ethWei) > 0n ? formatPrice(stats.ethWei, 'eth') : null,
+    BigInt(stats.usdcMicro) > 0n ? formatPrice(stats.usdcMicro, 'usdc') : null,
+  ].filter(Boolean)
+  const count = kind === 'capsule' ? stats.plays : stats.collects
+  if (count === 0 && taken.length === 0) return null
+  return (
+    <p className="text-[10px] font-mono text-dim mt-0.5">
+      {count} {kind === 'capsule' ? (count === 1 ? 'capsule sold' : 'capsules sold') : count === 1 ? 'piece collected through it' : 'pieces collected through it'}
+      {taken.length > 0 && <> · {taken.join(' + ')} taken in</>}
+    </p>
   )
 }

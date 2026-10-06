@@ -708,17 +708,43 @@ console.log('\n7. a whole play, then its receipt')
   check('a valid seed over a rigged weight table FAILS', !tampered.ok)
   check('and says why', (tampered.reason ?? '').includes('weight table'))
 
-  // The play feed is a feed, never the source of truth.
+  // The play log counts plays and finds a player's capsules; the claim record
+  // stays the source of truth.
   await store.recordPlay(M, '0x' + '5'.repeat(40), tx)
-  const plays = (await store.recentPlays(M, 5)) as { player: string; txHash: string }[]
-  check('the play is recorded for the public feed', plays.length === 1 && plays[0].txHash === tx)
-  check('and attributed to the player', plays[0].player === '0x' + '5'.repeat(40))
-  check('played tx hashes are queryable per player',
-    (await store.playedTxHashes(M, '0x' + '5'.repeat(40)) as Set<string>).has(tx))
+  check('the play is counted', (await store.playCount(M)) === 1)
+  check('played tx hashes are queryable per player, and only theirs',
+    (await store.playedTxHashes(M, '0x' + '5'.repeat(40)) as Set<string>).has(tx) &&
+      !(await store.playedTxHashes(M, '0x' + '6'.repeat(40)) as Set<string>).has(tx))
 
-  // Spark is denominated in plays, never money.
-  check('a play credits exactly one spark', (await store.addSpark(M, '0x' + '5'.repeat(40), 1)) === 1)
-  check('and reads back', (await store.getSpark(M, '0x' + '5'.repeat(40))) === 1)
+  // Kismet counts paid plays, never money (lib/experience/kismet).
+  const kismet = await import(new URL('../lib/experience/kismet.ts', import.meta.url).href)
+  const P5 = '0x' + '5'.repeat(40)
+  await kismet.creditPlay(M, P5)
+  check('a paid play earns exactly one kismet, at its machine', (await kismet.kismetAt(P5, M)) === 1)
+  check('and a person\'s kismet is summed across machines', (await kismet.kismetOf(P5)).total === 1)
+  // Spark, the counter kismet replaced, is carried over once, on first read.
+  // 'contested' is a capsule machine on the index (section 5).
+  const P6 = '0x' + '6'.repeat(40)
+  strings.set(store.legacySparkKey('contested', P6), '3')
+  check('a player\'s old spark becomes their kismet, at the machine it was earned at',
+    (await kismet.kismetOf(P6)).total === 3 && (await kismet.kismetAt(P6, 'contested')) === 3)
+  check('carried once: reading again adds nothing', (await kismet.kismetOf(P6)).total === 3)
+  await kismet.creditPlay(M, P6)
+  check('and new plays add to it', (await kismet.kismetOf(P6)).total === 4 && (await kismet.kismetAt(P6, M)) === 1)
+  // History keeps the newest HISTORY_MAX.
+  for (let i = 0; i < kismet.HISTORY_MAX + 5; i++) {
+    await kismet.recordPlayHistory(P5, { m: M, c: COLL, t: `h${i}`, tx, u: 0 })
+  }
+  const hist = await kismet.historyOf(P5, 500)
+  check('a person\'s history keeps the newest, bounded', hist.length === kismet.HISTORY_MAX && hist[0].t === `h${kismet.HISTORY_MAX + 4}` && hist[0].k === 'play')
+  // A purchase counts once, whichever capsule of it opens first, priced once.
+  let priceReads = 0
+  const price = async () => { priceReads++; return { pricePerToken: 10_000_000_000_000_000n, currency: 'eth' as const } }
+  await kismet.recordCapsuleSale(M, tx, 3, price)
+  await kismet.recordCapsuleSale(M, tx, 3, price)
+  const stats = await kismet.machineStats(M)
+  check('a capsule purchase counts once in its machine\'s figures, with what it took in',
+    stats.plays === 3 && stats.ethWei === '30000000000000000' && priceReads === 1, JSON.stringify({ ...stats, priceReads }))
 }
 
 // ═══ 8. the cross-machine commitment ledger ═════════════════════════════════
@@ -1370,6 +1396,61 @@ console.log('\n16. machine lists')
   const mine = await cmds(() => store.listMachinesByCreator(CREATOR16))
   const ids = (mine.result as { id: string }[]).map((m) => m.id).sort().join()
   check('a creator\'s list is read the same way, and is theirs', mine.names === 'zrange,mget' && ids === [...(zsets.get(`kismetart:xp:creator:${CREATOR16}`)?.keys() ?? [])].sort().join() && ids.length > 0, `${mine.names} ${ids}`)
+}
+
+// ═══ 17. a collect through a reveal machine earns kismet once ═══════════════
+// Only through a live reveal machine that lists the piece, and once per
+// transaction, however often /api/collect is told of it.
+console.log('\n17. kismet for a reveal collect')
+{
+  const kismet = await import(new URL('../lib/experience/kismet.ts', import.meta.url).href)
+  const CURATOR17 = '0xc0ffee0000000000000000000000000000000c17'
+  const P17 = '0x' + '7'.repeat(40)
+  const listed = { collection: COLL, tokenId: '170', artist: '0x' + 'a'.repeat(40), weight: 1, supply: 0 }
+  await store.createMachine({ id: 'collect-here', kind: 'reveal', creator: CURATOR17, name: 'Collect Here', state: 'draft', createdAt: Date.now() })
+  await store.putLineup('collect-here', [listed])
+  await store.setMachineState('collect-here', 'live')
+  const collect = (over: Record<string, unknown> = {}) => kismet.creditRevealCollect({
+    machineId: 'collect-here', account: P17, collection: COLL, tokenId: '170', txHash: '0x' + '17'.repeat(32), quantity: 2,
+    price: { pricePerToken: 1_000_000_000_000_000n, currency: 'eth' }, ...over,
+  })
+  check('a collect of a piece the live machine lists earns one kismet', (await collect()) === true && (await kismet.kismetAt(P17, 'collect-here')) === 1)
+  check('told again of the same transaction, nothing more', (await collect()) === false && (await kismet.kismetAt(P17, 'collect-here')) === 1)
+  const figures = await kismet.machineStats('collect-here')
+  check('and the machine counts the copies collected and what they took in, once', figures.collects === 2 && figures.ethWei === '2000000000000000', JSON.stringify(figures))
+  check('in the collector\'s history, as a collect', (await kismet.historyOf(P17, 5))[0]?.k === 'collect')
+  check('a piece the machine does not list earns nothing', (await collect({ tokenId: '171', txHash: '0x' + '71'.repeat(32) })) === false)
+  check('nor does a capsule machine\'s id', (await collect({ machineId: 'contested', txHash: '0x' + '72'.repeat(32) })) === false)
+  await store.setMachineState('collect-here', 'ended')
+  check('nor a machine no longer live', (await collect({ txHash: '0x' + '73'.repeat(32) })) === false && (await kismet.kismetAt(P17, 'collect-here')) === 1)
+}
+
+// ═══ 18. links, reasons and prices, as the pages and the queue build them ═══
+console.log('\n18. links, reasons and prices')
+{
+  const { slugify, machineIdCandidates, MACHINE_ID_PATTERN } = await import(new URL('../lib/experience/machineId.ts', import.meta.url).href)
+  const first = (name: string, n = 2) => [...machineIdCandidates(name)].slice(0, n).join()
+  check('a link is the name, read as it reads', slugify('Spring Season') === 'spring-season' && slugify('Café Ñandú, vol. 2!') === 'cafe-nandu-vol-2')
+  check('a name with nothing to read is a gachapon, a short one says so too', slugify('🎰🎰') === 'gachapon' && slugify('ab') === 'ab-gachapon')
+  const long = slugify('a'.repeat(30) + ' ' + 'b'.repeat(40))
+  check('a long name is cut short enough for a clash\'s number, never on a dash', long.length <= 56 && !long.endsWith('-') && MACHINE_ID_PATTERN.test(`${long}-50`))
+  check('a clash takes the next number', first('Spring Season') === 'spring-season,spring-season-2')
+  check('and a name that is one of Kismet\'s own pages never takes it', first('Create', 1) === 'create-2' && first('Create Reveal', 1) === 'create-reveal-2')
+
+  const { parseDecline, declineText } = await import(new URL('../lib/experience/decline.ts', import.meta.url).href)
+  const err = (x: unknown) => (x as { error?: string }).error ?? ''
+  check('a reason must be one of the list', /say why/i.test(err(parseDecline({}))) && /say why/i.test(err(parseDecline({ reason: 'toString' }))) && /say why/i.test(err(parseDecline({ reason: 7 }))))
+  check('"other" needs a note, and blank space is not one', /in the note/i.test(err(parseDecline({ reason: 'other' }))) && /in the note/i.test(err(parseDecline({ reason: 'other', note: ' \n ' }))))
+  check('a note is kept short', /280/.test(err(parseDecline({ reason: 'art', note: 'x'.repeat(281) }))) && !err(parseDecline({ reason: 'art', note: 'x'.repeat(280) })))
+  check('and read as one line', (parseDecline({ reason: 'art', note: '  the cover\n is  blank ' }) as { note: string }).note === 'the cover is blank')
+  check('the creator reads the ground, then the note',
+    declineText({ reason: 'rights', note: 'piece 3' }) === 'it includes work that isn’t yours to offer — piece 3' &&
+      declineText({ reason: 'art', note: '' }) === 'its cover or frames need work' && declineText({ reason: 'other', note: 'the name' }) === 'the name')
+
+  const { ethUsdApprox, formatUsdApprox } = await import(new URL('../lib/usdApprox.ts', import.meta.url).href)
+  check('a price in ETH carries its USD estimate at the live rate', ethUsdApprox(10n ** 16n, 2500) === '≈ $25.00' && formatUsdApprox(1234.5) === '$1,234.50')
+  check('with no rate there is no estimate rather than a wrong one', ethUsdApprox(10n ** 16n, null) === null)
+  check('nothing to price, or a sub-cent amount, says so', ethUsdApprox(0n, 2500) === null && ethUsdApprox('nope', 2500) === null && ethUsdApprox(1n, 2500) === '≈ < $0.01')
 }
 
 server.close()

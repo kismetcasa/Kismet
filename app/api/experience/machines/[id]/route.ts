@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { errorResponse } from '@/lib/apiResponse'
 import { isAddress } from '@/lib/address'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { acquireLock } from '@/lib/redisLock'
 import { getSessionAddress } from '@/lib/session'
 import { getGateConfig } from '@/lib/gate'
-import { deriveOdds, entryKey, oddsAreCoherent } from '@/lib/experience/draw'
+import { deriveOdds, entryKey, isDrawable, oddsAreCoherent } from '@/lib/experience/draw'
 import { coverage } from '@/lib/experience/solvency'
 import { openEpochSeeds } from '@/lib/experience/store'
 import { epochFor } from '@/lib/experience/fairness'
@@ -15,17 +15,20 @@ import {
   getPool,
   getRemaining,
   machineStateLockKey,
-  recentPlays,
+  prizesDelivered,
+  type PrizeRecord,
   setMachineArt,
   setMachineState,
   withdrawMachine,
 } from '@/lib/experience/store'
-import { parseCover, parseFrames } from '@/lib/experience/cover'
+import { frameStatus, parseCover, parseFrames, playerFrames } from '@/lib/experience/cover'
+import { screenMachineFrames, screenMachineFramesSoon, screeningDue } from '@/lib/experience/frameScreen'
 import { readCapsuleSupply } from '@/lib/experience/authority'
 import { resolveOnchainSale } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { fetchArtworkMeta, hydrateArtworkMeta, type ArtworkMeta } from '@/lib/experience/artwork'
 import { drawableTable } from '@/lib/experience/eligibility'
+import { noticeIfEmptyOnRead } from '@/lib/experience/notices'
 import { readLineup } from '@/lib/experience/lineup'
 import { isReveal, type RevealMachine } from '@/lib/experience/types'
 import { ADMIN_ADDRESS } from '@/lib/config'
@@ -54,16 +57,20 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     // profile (GET /api/experience/machines?creator=).
     return errorResponse(404, 'Machine not found')
   }
+  // A frame not yet screened — its gateway was not ready, or the box had no
+  // ffmpeg — is tried again after a read, and is not played until it passes.
+  if (screeningDue(machine.frames)) after(() => screenMachineFramesSoon(id).catch(() => {}))
 
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
   if (isReveal(machine)) return revealPayload(machine, passCollection)
 
+  const poolRead = getPool(id)
   const [pool, remaining, supply, plays, sale] = await Promise.all([
-    getPool(id),
+    poolRead,
     getRemaining(id),
     readCapsuleSupply(machine.capsule.collection, machine.capsule.tokenId),
-    recentPlays(id, 12).catch(() => []),
+    recentWins(id, poolRead),
     // THE PRICE OF A PLAY. Disclosure before a randomized purchase is this
     // surface's whole compliance posture (Apple 3.1.1, inherited through 4.7),
     // and it was publishing the odds while leaving the cost to be discovered in
@@ -88,6 +95,10 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   // refuses to sell on an unconfirmed table.
   const snapshot = buildSnapshot(pool, remaining)
   const { table: visible, live } = await drawableTable(snapshot, passCollection)
+  // Nothing left it could give, on a table the chain confirmed: its creator is
+  // told, once, to end the season — the capsule keeps selling on zora.co until
+  // they do, and every capsule sold there is a play with nothing to draw.
+  if (machine.state === 'live' && live && !visible.some(isDrawable)) after(() => noticeIfEmptyOnRead(id).catch(() => {}))
 
   const odds = deriveOdds(visible)
 
@@ -124,7 +135,10 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       state: machine.state,
       creator: machine.creator,
       cover: machine.cover?.uri ?? null,
-      frames: machine.frames ?? null,
+      // A player's stage plays only screened frames; the creator's editor is
+      // shown every frame and where its screening stands.
+      frames: playerFrames(machine.frames),
+      frameStatus: frameStatus(machine.frames),
       rarity: machine.rarity ?? 'manual',
       capsule: machine.capsule,
       capsuleArt,
@@ -170,7 +184,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     // is the part that makes "committed in advance" checkable rather than
     // asserted: anyone can record it now and hold us to it tomorrow.
     fairness,
-    recentPlays: plays,
+    recentWins: plays,
   })
 }
 
@@ -182,7 +196,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
  * are simply absent; they come back by themselves when that changes.
  */
 async function revealPayload(machine: RevealMachine, passCollection: string | null): Promise<NextResponse> {
-  const lineup = await readLineup(await getPool(machine.id), passCollection)
+  const pool = await getPool(machine.id)
+  const [lineup, wins] = await Promise.all([
+    readLineup(pool, passCollection),
+    recentWins(machine.id, Promise.resolve(pool)),
+  ])
   const onSale = lineup.filter((p) => p.status === 'on-sale')
   const art = await hydrateArtworkMeta(onSale).catch(() => ({}) as Record<string, ArtworkMeta>)
   return NextResponse.json({
@@ -192,7 +210,10 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
       name: machine.name,
       state: machine.state,
       cover: machine.cover?.uri ?? null,
-      frames: machine.frames ?? null,
+      // A player's stage plays only screened frames; the creator's editor is
+      // shown every frame and where its screening stands.
+      frames: playerFrames(machine.frames),
+      frameStatus: frameStatus(machine.frames),
       creator: machine.creator,
     },
     // The curator earns the mint referral on every collect made through their
@@ -205,6 +226,26 @@ async function revealPayload(machine: RevealMachine, passCollection: string | nu
     // not coming, and counting it would promise a piece that cannot appear.
     waiting: lineup.filter((p) => p.status === 'upcoming').length,
     collections: machine.collections ?? [],
+    recentWins: wins,
+  })
+}
+
+/**
+ * What came out of a machine lately, to whom — a capsule's prizes, a reveal
+ * machine's collects — with each artwork's title, image and artist (from the
+ * machine's pool: a curator's machine holds other artists' work), so the page
+ * can show who won what. Empty, never an error, when it cannot be read.
+ */
+async function recentWins(machineId: string, pool: Promise<{ collection: string; tokenId: string; artist: string }[]>) {
+  const [{ recent }, entries] = await Promise.all([
+    prizesDelivered(machineId, 12).catch(() => ({ recent: [] as PrizeRecord[] })),
+    pool.catch(() => []),
+  ])
+  const artistOf = new Map(entries.map((e) => [entryKey(e), e.artist]))
+  const art = await hydrateArtworkMeta(recent).catch(() => ({}) as Record<string, ArtworkMeta>)
+  return recent.map((w) => {
+    const meta = art[`${w.collection.toLowerCase()}:${w.tokenId}`]
+    return { ...w, artist: artistOf.get(entryKey(w)) ?? null, name: meta?.name ?? null, image: meta?.image ?? null }
   })
 }
 
@@ -254,7 +295,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       // Which stages a machine has depends on its kind, so they are read here.
       const frames = parseFrames(body?.frames, isReveal(machine) ? 'reveal' : 'capsule')
       if (!frames) return errorResponse(400, 'Invalid frames')
-      return NextResponse.json({ ok: true, machine: await setMachineArt(id, { frames }) })
+      const saved = await setMachineArt(id, { frames })
+      after(() => screenMachineFrames(id).catch(() => {}))
+      return NextResponse.json({ ok: true, machine: saved })
     }
     if (action === 'end') {
       if (machine.state !== 'live') return errorResponse(409, 'Only a live machine can end its season')

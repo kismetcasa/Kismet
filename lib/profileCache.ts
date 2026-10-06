@@ -20,10 +20,9 @@ type ProfileResponse = {
 interface ProfileEntry {
   name: string
   avatarUrl: string | undefined
-  // Raw FC username when the address is FC-verified; null otherwise. Entries
-  // seeded by the batch route (which doesn't return the farcaster block) also
-  // read null — consumers degrade to the display name, which is the documented
-  // fallback anyway.
+  // Raw FC username when the address is FC-verified; null otherwise. Both the
+  // single and the batch route return it, so a cast built from a batch-seeded
+  // entry still @mentions the person.
   fcUsername: string | null
   ts: number
   resolved: boolean
@@ -106,15 +105,13 @@ export async function fetchCreatorProfilesBatch(
       // catch (shortAddress, uncached) so a transient error retries next call
       // instead of pinning everyone to shortAddress for the fallback TTL.
       if (!res.ok) throw new Error(`profiles ${res.status}`)
-      const { profiles = {} }: { profiles?: Record<string, { name?: string; avatarUrl?: string }> } =
+      const { profiles = {} }: { profiles?: Record<string, { name?: string; avatarUrl?: string; fcUsername?: string | null }> } =
         await res.json()
       for (const key of chunk) {
         const name = profiles[key]?.name || ''
         // Mirror fetchCreatorProfile: shortAddress is the displayed fallback,
         // resolved=false so an unresolved entry re-checks on the short TTL.
-        // fcUsername: null — the batch route doesn't return the farcaster
-        // block (see ProfileEntry note).
-        const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, fcUsername: null, ts: Date.now(), resolved: !!name }
+        const entry = { name: name || shortAddress(key), avatarUrl: profiles[key]?.avatarUrl, fcUsername: profiles[key]?.fcUsername ?? null, ts: Date.now(), resolved: !!name }
         cache.set(key, entry)
         out[key] = { name: entry.name, avatarUrl: entry.avatarUrl, resolved: entry.resolved }
       }

@@ -50,6 +50,18 @@ export async function noticeIfEmpty(machineId: string): Promise<void> {
 }
 
 /**
+ * The same notice, from a page read that found nothing left to draw — so a
+ * creator hears the moment their machine runs dry (or they stop allowing its
+ * last piece), not only after someone plays. Asks first, cheaply, whether
+ * they have been told: an empty machine's every page view must not re-read
+ * the chain.
+ */
+export async function noticeIfEmptyOnRead(machineId: string): Promise<void> {
+  if ((await redis.sismember(`kismetart:xp:${machineId}:notices`, 'empty')) === 1) return
+  await noticeIfEmpty(machineId)
+}
+
+/**
  * A machine is waiting for review: tell Kismet, whose admin wallet is the
  * only one that can approve it, so nothing sits in the queue unseen. Sent
  * once, when it is submitted.

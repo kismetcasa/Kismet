@@ -41,6 +41,7 @@ import { useFileUpload } from '@/hooks/useFileUpload'
 import { useInprocessSmartWallet, fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useCollectionsPermissions } from '@/hooks/useCollectionsPermissions'
 import { useEthUsd } from '@/hooks/useEthUsd'
+import { formatUsdApprox } from '@/lib/usdApprox'
 import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
@@ -2477,14 +2478,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       </div>
     </form>
   )
-}
-
-// "$1,234.56" for the price input's ≈-USD label. Two decimals for ordinary
-// amounts; sub-cent prices collapse to "< $0.01" instead of a misleading
-// "$0.00". en-US grouping to match the platform's other USD figures.
-function formatUsdApprox(usd: number): string {
-  if (usd < 0.01) return '< $0.01'
-  return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 // Format a Date as a `datetime-local` value (YYYY-MM-DDTHH:mm) in the

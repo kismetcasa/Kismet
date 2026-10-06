@@ -5,13 +5,20 @@ import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
-import { formatPrice, formatSaleWindowLabel, getSaleWindow, shortAddress } from '@/lib/inprocess'
+import { useEthUsd } from '@/hooks/useEthUsd'
+import { useProfileNames } from '@/hooks/useProfileNames'
+import { ethUsdApprox } from '@/lib/usdApprox'
+import { formatPrice, formatSaleWindowLabel, getSaleWindow } from '@/lib/inprocess'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
+import { GachaponShareButton } from './GachaponShareButton'
+import { RecentWins, type RecentWin } from './RecentWins'
+import { rememberCommitments } from '@/lib/experience/seenCommitments'
 import type { MachineFrames } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 import {
   artworkTitle,
   formatOddsRatio,
@@ -76,6 +83,7 @@ interface MachinePayload {
     cover: string | null
     /** The artist's own frames for the play; null for the platform's capsule. */
     frames: MachineFrames | null
+    frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null
     rarity?: 'manual' | 'supply'
     capsule: { collection: string; tokenId: string }
     capsuleArt: { name: string | null; image: string | null } | null
@@ -94,7 +102,7 @@ interface MachinePayload {
   standingReadable: boolean
   coverage: { capsulesOutstanding: number | null; prizesRemaining: number | null; covered: boolean }
   fairness: Fairness | null
-  recentPlays: { player: string; txHash: string }[]
+  recentWins: RecentWin[]
 }
 
 interface DiscoveredCapsule {
@@ -145,11 +153,12 @@ export function ExperienceMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()
   const { collect } = useDirectCollect()
   // Two reads of the wallet, for two jobs. `useAccount` is the render-scoped
-  // value: right for lighting up the passive surfaces (owed capsules, spark) on
+  // value: right for lighting up the passive surfaces (owed capsules, kismet) on
   // mount for a returning player. `ensureConnected` is the authoritative read
   // at the moment of a tap, which can connect a wallet mid-gesture that
   // useAccount would not reflect until the next render.
   const { address: connectedAddress } = useAccount()
+  const ethUsd = useEthUsd()
 
   const [data, setData] = useState<MachinePayload | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -163,7 +172,7 @@ export function ExperienceMachine({ id }: { id: string }) {
   const [lastTx, setLastTx] = useState<string | null>(null)
   const [account, setAccount] = useState<string | null>(null)
   const [claims, setClaims] = useState<ClaimRow[]>([])
-  const [spark, setSpark] = useState(0)
+  const [kismet, setKismet] = useState(0)
   const [local, setLocal] = useState<PendingCapsule[]>([])
   const [discovered, setDiscovered] = useState<DiscoveredCapsule[]>([])
   const [redeemHash, setRedeemHash] = useState('')
@@ -183,9 +192,9 @@ export function ExperienceMachine({ id }: { id: string }) {
     (addr: string) => {
       fetch(`/api/experience/claims?machineId=${id}&account=${addr}`)
         .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((d: { claims: ClaimRow[]; spark: number }) => {
+        .then((d: { claims: ClaimRow[]; kismet: number }) => {
           setClaims(d.claims ?? [])
-          setSpark(d.spark ?? 0)
+          setKismet(d.kismet ?? 0)
         })
         .catch(() => {})
     },
@@ -420,6 +429,21 @@ export function ExperienceMachine({ id }: { id: string }) {
     [account, ensureConnected, id, load, loadClaims, loadDiscovered, openUnit],
   )
 
+  // Every person the page names, by the platform's name standard.
+  const nameOf = useProfileNames([
+    data?.machine.creator,
+    ...(data?.odds ?? []).map((o) => o.artist),
+    ...won.map((p) => p.artist),
+    ...(data?.recentWins ?? []).map((w) => w.player),
+  ])
+
+  // The commitments this page shows, remembered by this browser, so the
+  // verify page can hold a revealed seed to what was shown before the play.
+  const fairness = data?.fairness
+  useEffect(() => {
+    if (fairness) rememberCommitments(id, [{ epoch: fairness.epoch, commitment: fairness.commitment }, fairness.next])
+  }, [fairness, id])
+
   if (loadError) {
     return (
       <div className="border border-line p-8 sm:p-16 text-center">
@@ -489,13 +513,23 @@ export function ExperienceMachine({ id }: { id: string }) {
           }
         })()
       : null
+  // What the pull costs in dollars, at the live rate — none when the rate is
+  // unknown or the capsule is priced in USDC already.
+  const usdPrice = (() => {
+    if (!sale || sale.currency !== 'eth') return null
+    try {
+      return ethUsdApprox(BigInt(sale.pricePerToken) * BigInt(pullSize), ethUsd)
+    } catch {
+      return null
+    }
+  })()
   const cover = data.machine.cover ?? data.machine.capsuleArt?.image ?? null
   // What the box says to a screen reader as it changes (WCAG 4.1.3): the
   // wait, the open, and what came out — never taking focus to say it.
   const announcement =
     face === 'won'
       ? won.length === 1
-        ? `You've collected ${artworkTitle(won[0].name, won[0].tokenId)} by ${shortAddress(won[0].artist)}`
+        ? `You've collected ${artworkTitle(won[0].name, won[0].tokenId)} by ${nameOf(won[0].artist)}`
         : `You've collected ${won.length} artworks`
       : face === 'pending'
         ? 'Your artwork is on its way'
@@ -546,12 +580,12 @@ export function ExperienceMachine({ id }: { id: string }) {
       <header className="mb-6">
         <h1 className="text-lg font-mono tracking-wider text-ink">{data.machine.name}</h1>
         <p className="text-[11px] font-mono text-muted mt-1">
-          by {shortAddress(data.machine.creator)} · every play returns an artwork
+          by {nameOf(data.machine.creator)} · every play returns an artwork
           {data.machine.splitRecipients.length > 0 && (
             <> · pays {data.machine.splitRecipients.length} recipient
               {data.machine.splitRecipients.length === 1 ? '' : 's'}</>
           )}
-          {spark > 0 && <> · {spark} {spark === 1 ? 'play' : 'plays'} here</>}
+          {kismet > 0 && <> · <Link href={`/profile/${account}`} className="text-dim hover:text-ink">{kismet} kismet</Link> earned here</>}
         </p>
         {data.machine.state === 'live' && (
           <MachineAction
@@ -578,11 +612,8 @@ export function ExperienceMachine({ id }: { id: string }) {
             )}
             <div className={`grid gap-3 ${won.length === 1 ? 'grid-cols-1' : 'grid-cols-2 sm:grid-cols-3'}`}>
               {won.map((p, i) => (
-                <Link
-                  key={`${p.collection}:${p.tokenId}:${i}`}
-                  href={`/artwork/${p.collection}/${p.tokenId}`}
-                  className="group block"
-                >
+                <div key={`${p.collection}:${p.tokenId}:${i}`} className="min-w-0">
+                <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="group block">
                   <div className={`relative overflow-hidden border border-line bg-raised ${won.length === 1 ? 'aspect-square max-w-[240px] mx-auto [view-transition-name:machine-window]' : 'aspect-square'}`}>
                     {p.image ? (
                       <MomentImage src={p.image} alt="" fill className="object-cover" sizes="240px" />
@@ -594,22 +625,34 @@ export function ExperienceMachine({ id }: { id: string }) {
                   </div>
                   {won.length === 1 ? (
                     <div className="mt-3">
-                      <CollectedLine title={artworkTitle(p.name, p.tokenId)} artist={p.artist} />
+                      <CollectedLine title={artworkTitle(p.name, p.tokenId)} by={nameOf(p.artist)} />
                     </div>
                   ) : (
                     <>
                       <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
                         {artworkTitle(p.name, p.tokenId)}
                       </p>
-                      <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(p.artist)}</p>
+                      <p className="text-[10px] font-mono text-muted truncate">by {nameOf(p.artist)}</p>
                     </>
                   )}
                 </Link>
+                {won.length > 1 && (
+                  <GachaponShareButton
+                    share={{ machineId: id, collection: p.collection, tokenId: p.tokenId, title: p.name ?? null, artist: p.artist }}
+                    className="mt-1 text-[10px] font-mono text-subtle hover:text-dim underline"
+                  />
+                )}
+                </div>
               ))}
             </div>
             <p className="text-[11px] font-mono text-muted mt-2">
               {won.length === 1 ? 'it is' : 'they are'} already in your wallet
             </p>
+            {won.length === 1 && (
+              <div className="mt-3">
+                <GachaponShareButton share={{ machineId: id, collection: won[0].collection, tokenId: won[0].tokenId, title: won[0].name ?? null, artist: won[0].artist }} />
+              </div>
+            )}
             {pendingReason && (
               <p className="text-[11px] font-mono text-[#ffcf70] mt-2">{pendingReason}</p>
             )}
@@ -623,6 +666,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               label="play again"
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              usdPrice={usdPrice}
               odds={oddsLine}
               note={null}
             />
@@ -673,6 +717,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               label={playable ? 'play' : closedLabel}
               unitPrice={unitPrice}
               totalPrice={totalPrice}
+              usdPrice={usdPrice}
               odds={oddsLine}
               note={
                 !playable && data.machine.state === 'live'
@@ -795,7 +840,7 @@ export function ExperienceMachine({ id }: { id: string }) {
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-mono text-dim truncate">{artworkTitle(o.name, o.tokenId)}</p>
                   <p className="text-[10px] font-mono text-subtle truncate">
-                    by {shortAddress(o.artist)} · {formatRemaining(o.remaining)}
+                    by {nameOf(o.artist)} · {formatRemaining(o.remaining)}
                   </p>
                 </div>
                 <div className="shrink-0 text-right">
@@ -831,8 +876,10 @@ export function ExperienceMachine({ id }: { id: string }) {
             </div>
           </dl>
           <p className="text-[11px] font-mono text-muted mt-2">
-            Tomorrow&apos;s seed is already locked — record it now and hold us to it. After a day closes,
-            any play from it can be recomputed from the revealed seed.
+            Tomorrow&apos;s seed is already locked — record it now and hold us to it (this browser keeps what it
+            is shown). Each draw is also sealed by the next Base block, so no one — Kismet included — knows an
+            outcome before it happens. After a day closes, any play from it can be recomputed, in your own
+            browser, from the revealed seed.
           </p>
           <Link
             href={`/play/${id}/verify${lastTx ? `?txHash=${lastTx}` : ''}`}
@@ -876,22 +923,7 @@ export function ExperienceMachine({ id }: { id: string }) {
         </p>
       </section>
 
-      {data.recentPlays.length > 0 && (
-        <section className="mt-6">
-          <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">recent plays</h2>
-          <div className="flex flex-wrap gap-2">
-            {data.recentPlays.map((p) => (
-              <Link
-                key={p.txHash}
-                href={`/profile/${p.player}`}
-                className="text-[10px] font-mono text-subtle hover:text-dim border border-line px-2 py-1"
-              >
-                {shortAddress(p.player)}
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
+      <RecentWins machineId={id} wins={data.recentWins} account={account} nameOf={nameOf} />
     </div>
   )
 }
@@ -908,6 +940,7 @@ function PlayControl({
   label,
   unitPrice,
   totalPrice,
+  usdPrice,
   odds,
   note,
 }: {
@@ -921,6 +954,8 @@ function PlayControl({
   label: string
   unitPrice: string | null
   totalPrice: string | null
+  /** The pull's price in dollars, "≈ $25.10", when the rate is known. */
+  usdPrice: string | null
   /** What the draw holds, summed up beside the price. */
   odds: string | null
   note: string | null
@@ -964,6 +999,7 @@ function PlayControl({
           ) : (
             <>{unitPrice} per play</>
           )}
+          {usdPrice && <span className="text-subtle"> {usdPrice}</span>}
           <span className="text-subtle"> + network fee</span>
         </p>
       )}

@@ -8,7 +8,7 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { useFileUpload } from '@/hooks/useFileUpload'
 import { checkCoverImage } from '@/lib/media/mintMedia'
 import { proxyUrl } from '@/lib/media/gateway'
-import { uploadCover } from '@/lib/experience/coverUpload'
+import { prepareCover, uploadCover } from '@/lib/experience/coverUpload'
 import { toastError } from '@/lib/toast'
 import type { MachineCover } from '@/lib/experience/types'
 
@@ -21,20 +21,28 @@ const MAX_COVER_BYTES = 25 * 1024 * 1024
  * upload (and pay for) the same image again.
  */
 export function useCoverPick() {
+  // The still each picked file becomes (prepareCover), kept for the upload —
+  // keyed by file, so a slow pick overtaken by a later one cannot claim it.
+  const prepared = useRef(new WeakMap<File, File>())
   const pick = useFileUpload({
     maxBytes: MAX_COVER_BYTES,
     onTooLarge: () => toast.error('Image must be 25MB or smaller'),
     accept: async (f) => {
       const verdict = await checkCoverImage(f)
-      return verdict.ok ? null : verdict.reason
+      if (!verdict.ok) return verdict.reason
+      const still = await prepareCover(f)
+      if (typeof still === 'string') return still
+      prepared.current.set(f, still)
+      return null
     },
     onRejected: (_f, reason) => toast.error('Unsupported cover', { description: reason }),
   })
   const uploaded = useRef<{ file: File; cover: MachineCover } | null>(null)
   const upload = async (): Promise<MachineCover | null> => {
-    if (!pick.file) return null
+    const still = pick.file && prepared.current.get(pick.file)
+    if (!pick.file || !still) return null
     if (uploaded.current?.file === pick.file) return uploaded.current.cover
-    const cover = await uploadCover(pick.file)
+    const cover = await uploadCover(still)
     uploaded.current = { file: pick.file, cover }
     return cover
   }

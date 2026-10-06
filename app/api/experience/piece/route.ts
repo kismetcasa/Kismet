@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { fetchArtworkMeta } from '@/lib/experience/artwork'
 import { isAddress } from '@/lib/address'
 import { errorResponse } from '@/lib/apiResponse'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -59,11 +60,16 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  const [operator, meta, optedOut, ids] = await Promise.all([
+  // `meta=1`: the studios also show what the piece is — its title and image,
+  // from the same cached read the machine pages use — so a pasted row reads
+  // as the artwork, not as "#8 0xdddd…0002".
+  const withArt = url.searchParams.get('meta') === '1'
+  const [operator, meta, optedOut, ids, art] = await Promise.all([
     experienceOperator(),
     getMomentMeta(collection, tokenId).catch(() => null),
     optedOutPieces([piece]).catch(() => null),
     machinesUsingPiece(collection, tokenId).catch(() => [] as string[]),
+    withArt ? fetchArtworkMeta(collection, tokenId) : Promise.resolve(null),
   ])
   // A hint, not an attestation: the capsule gate still requires the creator
   // to hold ADMIN on the piece.
@@ -80,6 +86,7 @@ export async function GET(req: NextRequest) {
     scope: scope ?? null,
     machines,
     artist,
+    ...(withArt ? { name: art?.name ?? null, image: art?.image ?? null } : {}),
   })
 }
 

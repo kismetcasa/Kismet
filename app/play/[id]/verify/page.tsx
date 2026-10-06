@@ -6,7 +6,7 @@ import { ExperienceVerify } from '@/components/ExperienceVerify'
 
 interface Props {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ txHash?: string }>
+  searchParams: Promise<{ txHash?: string; unitIndex?: string }>
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -26,16 +26,17 @@ export const dynamic = 'force-dynamic'
 
 export default async function VerifyPage({ params, searchParams }: Props) {
   const { id } = await params
-  const { txHash } = await searchParams
+  const { txHash, unitIndex } = await searchParams
   if (!/^[a-z0-9-]{3,64}$/.test(id)) notFound()
   const machine = await getMachine(id).catch(() => null)
   if (!machine || machine.state === 'draft' || machine.state === 'review') notFound()
 
   const initial = typeof txHash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(txHash) ? txHash : ''
+  const unit = typeof unitIndex === 'string' && /^\d{1,3}$/.test(unitIndex) ? unitIndex : '0'
 
   return (
     <div className="px-4 py-8">
-      <ExperienceVerify machineId={id} initialTx={initial} />
+      <ExperienceVerify machineId={id} initialTx={initial} initialUnit={unit} />
     </div>
   )
 }

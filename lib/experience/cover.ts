@@ -40,3 +40,38 @@ function parseFrame(raw: unknown): StageFrame | null {
   if (thumbhash !== undefined && (typeof thumbhash !== 'string' || !THUMBHASH.test(thumbhash))) return null
   return { uri, kind, poster, ...(typeof thumbhash === 'string' ? { thumbhash } : {}) }
 }
+
+/** The frames a player's stage may play: those the server's screening passed
+ *  (lib/experience/frameScreen), without its verdict. Null for none. */
+export function playerFrames(frames: MachineFrames | undefined): MachineFrames | null {
+  const out: MachineFrames = {}
+  for (const [stage, frame] of Object.entries(frames ?? {}) as [keyof MachineFrames, StageFrame][]) {
+    if (frame.check?.state !== 'passed') continue
+    const { check: _check, ...shown } = frame
+    out[stage] = shown
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+
+/** Where a stage frame's screening stands, as its creator is shown it. */
+export interface FrameStatus {
+  frame: StageFrame
+  state: 'checking' | 'passed' | 'refused'
+  reason?: string
+}
+
+/** Every frame a machine has, played or not, with its screening — for the
+ *  creator's editor, which must keep the frames it does not change. */
+export function frameStatus(frames: MachineFrames | undefined): Partial<Record<keyof MachineFrames, FrameStatus>> | null {
+  const out: Partial<Record<keyof MachineFrames, FrameStatus>> = {}
+  for (const [stage, frame] of Object.entries(frames ?? {}) as [keyof MachineFrames, StageFrame][]) {
+    const { check, ...shown } = frame
+    out[stage] = !check
+      ? { frame: shown, state: 'checking' }
+      : check.state === 'passed'
+        ? { frame: shown, state: 'passed' }
+        : { frame: shown, state: 'refused', reason: check.reason }
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+

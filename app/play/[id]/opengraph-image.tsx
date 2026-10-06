@@ -1,5 +1,5 @@
 import { ImageResponse } from 'next/og'
-import { shortAddress } from '@/lib/inprocess'
+import { displayNameFor } from '@/lib/displayName'
 import { shareImageSource } from '@/lib/media/shareImage'
 import { machineCovers } from '@/lib/experience/cards'
 import { getMachine } from '@/lib/experience/store'
@@ -25,7 +25,7 @@ export default async function Image({ params }: { params: Promise<{ id: string }
     if (machine && machine.state !== 'draft' && machine.state !== 'review') {
       label = isReveal(machine) ? 'REVEAL MACHINE' : 'CAPSULE MACHINE'
       title = machine.name
-      creator = shortAddress(machine.creator)
+      creator = await displayNameFor(machine.creator)
       imageUrl = await shareImageSource((await machineCovers([machine])).get(id)?.image)
     }
   } catch {

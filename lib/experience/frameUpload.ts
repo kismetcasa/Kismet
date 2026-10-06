@@ -1,19 +1,25 @@
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { checkMintMedia } from '@/lib/media/mintMedia'
-import { transcodeGifToMp4 } from '@/lib/media/transcodeGif'
+import { getFFmpeg, runWatched, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { generateThumbhash } from '@/lib/media/thumbhash'
 import { gifSeconds, readGifTiming } from '@/lib/media/gifTiming'
-import { FRAME_LIMITS, type StageFrame } from './types'
+import { FLASH_DECODE_FILTER, FLASH_RATE, flashReason, isAnimatedImage, isSvg, screenFlashes, type FlashVerdict } from '@/lib/media/flashScreen'
+import { FRAME_LIMITS, type MachineFrames, type StageFrame } from './types'
 
 /**
  * An artist's frame for one stage of a play, prepared the way a mint's media
  * is (MintForm): a gif becomes an H.264 mp4 and its first frame, a video is
  * remuxed to start fast and gives up a still, an image is its own still. Then
- * it is held to what a stage can afford (FRAME_LIMITS) — before anything is
- * uploaded, so a frame that will not do costs a toast, not an upload.
+ * it is held to what a stage can afford (FRAME_LIMITS) and screened for
+ * flashing (lib/media/flashScreen, WCAG 2.3.1) at the size the stage shows it,
+ * looping if its stage loops — before anything is uploaded, so a frame that
+ * will not do costs a toast, not an upload. An image that moves is refused
+ * outright: the stage would show it as an image, animating unscreened. The
+ * server screens every frame again before a player sees it
+ * (lib/experience/frameScreen); this is the creator's early answer.
  *
  * One departure from the mint: a gif the browser cannot transcode is refused
  * rather than handed to the server's transcoder, which exists for gifs past
@@ -38,11 +44,11 @@ export function serially<T>(job: () => Promise<T>): Promise<T> {
   return run
 }
 
-export function prepareFrame(file: File): Promise<PreparedFrame | string> {
-  return serially(() => prepare(file))
+export function prepareFrame(file: File, stage: keyof MachineFrames): Promise<PreparedFrame | string> {
+  return serially(() => prepare(file, stage))
 }
 
-async function prepare(file: File): Promise<PreparedFrame | string> {
+async function prepare(file: File, stage: keyof MachineFrames): Promise<PreparedFrame | string> {
   const verdict = await checkMintMedia(file)
   if (!verdict.ok) return verdict.reason
   if (verdict.kind === 'model') return 'Use an image, a gif or a video'
@@ -65,9 +71,47 @@ async function prepare(file: File): Promise<PreparedFrame | string> {
     frame = { media, poster, kind: 'video' }
     seconds = await probeDurationSeconds(media)
   } else {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (isAnimatedImage(bytes)) {
+      return 'This image moves — give an animation as a gif or a video, which are checked for flashing'
+    }
+    if (isSvg(bytes)) {
+      return 'An SVG can move by itself — give a still as a png, jpg or webp, or an animation as a gif or a video, which are checked for flashing'
+    }
     frame = { media: file, poster: file, kind: 'image' }
   }
-  return (await overLimit(frame, seconds)) ?? frame
+  const over = await overLimit(frame, seconds)
+  if (over) return over
+  if (frame.kind === 'video') {
+    const verdict = await screen(frame.media, stage === 'dispense')
+    if (!verdict) return 'This clip could not be checked for flashing — try an mp4'
+    if (!verdict.ok) return flashReason(verdict)
+  }
+  return frame
+}
+
+/** Decode a clip as flashScreen measures it, with the same ffmpeg the
+ *  transcode uses, and screen it; null when it could not be decoded. */
+async function screen(media: File, loop: boolean): Promise<FlashVerdict | null> {
+  try {
+    const ff = await getFFmpeg()
+    const input = `screen-in.${media.name.split('.').pop() || 'mp4'}`
+    await runWatched(ff, 'screen write', async () => ff.writeFile(input, new Uint8Array(await media.arrayBuffer())))
+    try {
+      await runWatched(ff, 'flash screen', () => ff.exec([
+        '-i', input,
+        '-frames:v', String((FRAME_LIMITS.seconds + 1) * FLASH_RATE),
+        '-vf', FLASH_DECODE_FILTER,
+        '-an', '-f', 'rawvideo', 'screen.rgb',
+      ]))
+      const rgb = (await runWatched(ff, 'screen read', () => ff.readFile('screen.rgb'))) as Uint8Array
+      return rgb.byteLength > 0 ? screenFlashes(rgb, { loop }) : null
+    } finally {
+      for (const f of [input, 'screen.rgb']) await ff.deleteFile(f).catch(() => {})
+    }
+  } catch {
+    return null
+  }
 }
 
 async function overLimit(frame: PreparedFrame, seconds: number | null): Promise<string | null> {

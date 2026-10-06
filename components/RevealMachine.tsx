@@ -3,8 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import type { Address } from 'viem'
+import { useAccount } from 'wagmi'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
+import { useEthUsd } from '@/hooks/useEthUsd'
+import { useProfileNames } from '@/hooks/useProfileNames'
+import { ethUsdApprox } from '@/lib/usdApprox'
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { pickIndex } from '@/lib/experience/draw'
 import { artworkTitle } from '@/lib/experience/format'
@@ -12,7 +16,10 @@ import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen } from './MachineStage'
 import { MachineArtEditors } from './MachineArtEditors'
+import { GachaponShareButton } from './GachaponShareButton'
+import { RecentWins, type RecentWin } from './RecentWins'
 import type { MachineFrames } from '@/lib/experience/types'
+import type { FrameStatus } from '@/lib/experience/cover'
 
 /**
  * A reveal machine: pull for free, see one artwork, collect it at its price.
@@ -36,12 +43,14 @@ interface LineupRow {
 }
 
 interface Payload {
-  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null }
+  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null; frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null }
   /** Who earns the mint referral on collects from this machine: its curator,
    *  or null when Kismet curates (Kismet's own referral then applies). */
   referral: string | null
   lineup: LineupRow[]
   waiting: number
+  /** Who collected what through this machine lately. */
+  recentWins: RecentWin[]
   /** Linked collections: new work minted into them joins by itself. */
   collections: string[]
 }
@@ -49,6 +58,8 @@ interface Payload {
 export function RevealMachine({ id }: { id: string }) {
   const ensureConnected = useEnsureConnected()
   const { collect, status } = useDirectCollect()
+  const ethUsd = useEthUsd()
+  const { address } = useAccount()
   const [data, setData] = useState<Payload | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [pick, setPick] = useState<LineupRow | null>(null)
@@ -87,15 +98,22 @@ export function RevealMachine({ id }: { id: string }) {
       collectionAddress: pick.collection as Address,
       tokenId: pick.tokenId,
       amount: 1,
-      share: { momentName: pick.name, creatorAddress: pick.artist },
       curator: data?.referral,
+      machineId: id,
     })
     if (done) {
       setCollected(pick.key)
       // The piece may have just sold out; the lineup should say so.
       load()
     }
-  }, [collect, collecting, data?.referral, ensureConnected, load, pick])
+  }, [collect, collecting, data?.referral, ensureConnected, id, load, pick])
+
+  // Every person the page names, by the platform's name standard.
+  const nameOf = useProfileNames([
+    data?.machine.creator,
+    ...(data?.lineup ?? []).map((p) => p.artist),
+    ...(data?.recentWins ?? []).map((w) => w.player),
+  ])
 
   if (loadError) {
     return <p className="max-w-3xl mx-auto text-sm font-mono text-muted">This machine could not be loaded.</p>
@@ -110,17 +128,17 @@ export function RevealMachine({ id }: { id: string }) {
     : opening
       ? 'Opening'
       : collected === pick.key
-        ? `You've collected ${artworkTitle(pick.name, pick.tokenId)} by ${shortAddress(pick.artist)}`
+        ? `You've collected ${artworkTitle(pick.name, pick.tokenId)} by ${nameOf(pick.artist)}`
         : collecting
           ? 'Confirm in your wallet'
-          : `You revealed ${artworkTitle(pick.name, pick.tokenId)} by ${shortAddress(pick.artist)}`
+          : `You revealed ${artworkTitle(pick.name, pick.tokenId)} by ${nameOf(pick.artist)}`
 
   return (
     <div className="max-w-3xl mx-auto">
       <header className="mb-6">
         <h1 className="text-lg font-mono tracking-wider text-ink">{data.machine.name}</h1>
         <p className="text-[11px] font-mono text-muted mt-1">
-          curated by {shortAddress(data.machine.creator)} · pull for free, collect what you reveal at its price
+          curated by {nameOf(data.machine.creator)} · pull for free, collect what you reveal at its price
         </p>
         {data.collections.length > 0 && (
           <p className="text-[11px] font-mono text-subtle mt-1">
@@ -163,18 +181,24 @@ export function RevealMachine({ id }: { id: string }) {
               </div>
               {collected === pick.key ? (
                 <div className="mt-3">
-                  <CollectedLine title={artworkTitle(pick.name, pick.tokenId)} artist={pick.artist} />
+                  <CollectedLine title={artworkTitle(pick.name, pick.tokenId)} by={nameOf(pick.artist)} />
                 </div>
               ) : (
                 <>
                   <p className="mt-2 text-[11px] font-mono text-ink truncate group-hover:underline">
                     {artworkTitle(pick.name, pick.tokenId)}
                   </p>
-                  <p className="text-[10px] font-mono text-muted truncate">by {shortAddress(pick.artist)}</p>
+                  <p className="text-[10px] font-mono text-muted truncate">by {nameOf(pick.artist)}</p>
                 </>
               )}
             </Link>
             <div className="mt-5 flex flex-wrap gap-2 justify-center">
+              {collected === pick.key && (
+                <GachaponShareButton
+                  share={{ machineId: id, collection: pick.collection, tokenId: pick.tokenId, title: pick.name, artist: pick.artist }}
+                  className="px-6 py-3 text-xs font-mono tracking-widest uppercase btn-accent"
+                />
+              )}
               {collected !== pick.key && (
                 <button
                   onClick={() => void collectPick()}
@@ -196,7 +220,11 @@ export function RevealMachine({ id }: { id: string }) {
             </div>
             {collected !== pick.key && (
               <p className="mt-2.5 text-[11px] font-mono text-muted">
-                paid to the artist through its own sale <span className="text-subtle">+ network fee</span>
+                paid to the artist through its own sale
+                {pick.sale.currency === 'eth' && ethUsdApprox(pick.sale.pricePerToken, ethUsd) && (
+                  <span className="text-subtle"> {ethUsdApprox(pick.sale.pricePerToken, ethUsd)}</span>
+                )}
+                <span className="text-subtle"> + network fee</span>
               </p>
             )}
           </div>
@@ -244,7 +272,7 @@ export function RevealMachine({ id }: { id: string }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-mono text-dim truncate">{artworkTitle(p.name, p.tokenId)}</p>
-                  <p className="text-[10px] font-mono text-subtle truncate">by {shortAddress(p.artist)}</p>
+                  <p className="text-[10px] font-mono text-subtle truncate">by {nameOf(p.artist)}</p>
                 </div>
                 <span className="shrink-0 text-xs font-mono tabular-nums text-ink">
                   {formatPrice(p.sale.pricePerToken, p.sale.currency)}
@@ -259,6 +287,8 @@ export function RevealMachine({ id }: { id: string }) {
             `, and ${data.waiting} more ${data.waiting === 1 ? 'joins when its sale opens' : 'join when their sales open'}`}.
         </p>
       </section>
+
+      <RecentWins machineId={id} wins={data.recentWins ?? []} account={address?.toLowerCase() ?? null} nameOf={nameOf} />
     </div>
   )
 }
