@@ -94,7 +94,7 @@ export function MachineAction({
             ? 'This takes the machine back and frees its id, so you can fix it and publish again.'
             : 'This takes the machine back. Its id, its capsule and the editions it held are freed, so you can fix it and publish again.'}
       </p>
-      <div className="flex gap-2 mt-2">
+      <div className="flex flex-wrap gap-2 mt-2">
         <button
           onClick={() => void run()}
           disabled={busy}

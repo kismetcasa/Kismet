@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Upload } from 'lucide-react'
 import { useAccount } from 'wagmi'
@@ -55,25 +55,31 @@ export function CoverField({
   pick,
   current,
   disabled,
+  thumbnail = true,
 }: {
   pick: ReturnType<typeof useCoverPick>
   /** The machine's cover now, when it has one. */
   current?: string | null
   disabled?: boolean
+  /** Off where the caller shows the cover itself (a machine's card), leaving
+   *  the button alone here. */
+  thumbnail?: boolean
 }) {
   const src = pick.preview ?? (current ? proxyUrl(current, 256) : null)
   return (
     <div className="flex items-center gap-3">
-      <div className="relative w-16 h-16 flex-shrink-0 bg-raised border border-line overflow-hidden">
-        {src ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={src} alt="cover" className="w-full h-full object-cover" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="text-line font-mono text-[9px]">none</span>
-          </div>
-        )}
-      </div>
+      {thumbnail && (
+        <div className="relative w-16 h-16 flex-shrink-0 bg-raised border border-line overflow-hidden">
+          {src ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={src} alt="cover" className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="text-line font-mono text-[9px]">none</span>
+            </div>
+          )}
+        </div>
+      )}
       <button
         type="button"
         onClick={() => pick.inputRef.current?.click()}
@@ -123,16 +129,29 @@ export function CoverEditor({
   current,
   creator,
   onDone,
+  onPick,
+  className = 'mt-2 flex flex-wrap items-center gap-2',
 }: {
   machineId: string
   current: string | null
   creator?: string
   onDone?: () => void
+  /** Given, the picked file previews through the caller — a machine's card
+   *  shows it as its cover, where it will go — instead of in a thumbnail
+   *  here. Null once the pick is saved or dropped. */
+  onPick?: (preview: string | null) => void
+  className?: string
 }) {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
   const pick = useCoverPick()
   const [busy, setBusy] = useState(false)
+  const preview = pick.preview
+  useEffect(() => {
+    if (!onPick) return
+    onPick(preview)
+    return () => onPick(null)
+  }, [onPick, preview])
   if (creator !== undefined && address?.toLowerCase() !== creator.toLowerCase()) return null
 
   const save = async () => {
@@ -162,8 +181,8 @@ export function CoverEditor({
   }
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <CoverField pick={pick} current={current} disabled={busy} />
+    <div className={className}>
+      <CoverField pick={pick} current={current} disabled={busy} thumbnail={!onPick} />
       {pick.file && (
         <button
           onClick={() => void save()}

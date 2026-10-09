@@ -43,7 +43,7 @@ import { isReveal } from '@/lib/experience/types'
 import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
 import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { screenMachineFrames } from '@/lib/experience/frameScreen'
-import { machineCards } from '@/lib/experience/cards'
+import { machineCards, machineCovers } from '@/lib/experience/cards'
 import { MACHINE_ID_PATTERN, machineIdCandidates, PAGE_IDS } from '@/lib/experience/machineId'
 import { machineStats } from '@/lib/experience/kismet'
 
@@ -98,6 +98,9 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const owner = !!session && session.toLowerCase() === creator
   const all = await listMachinesByCreator(creator)
   const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
+  // What each one's card shows, as the play list's cards do: its cover, or
+  // art it already has for a machine published before covers.
+  const art = await machineCovers(visible)
   const machines = await Promise.all(
     visible.map(async (m) => {
       const common = {
@@ -106,6 +109,7 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         state: m.state,
         createdAt: m.createdAt,
         cover: m.cover?.uri ?? null,
+        art: art.get(m.id) ?? null,
         ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
         // Its figures, for its creator: plays or collects, and what they took
         // in (lib/experience/kismet — counted as they happen).
