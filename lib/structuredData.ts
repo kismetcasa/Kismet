@@ -218,6 +218,9 @@ export function offerAmount(
 // rather than a fabricated one.
 function artMediumFor(mime: string | undefined, hasAnimation: boolean): string | undefined {
   if (mime?.startsWith('image/')) return 'Digital image'
+  // A zine (PDF) carries an animation_url like a video does; name it before
+  // the animation fallback can call it one.
+  if (mime === 'application/pdf') return 'Digital document'
   if (mime?.startsWith('video/') || hasAnimation) return 'Digital video'
   if (mime === 'text/plain') return 'Digital text'
   return undefined

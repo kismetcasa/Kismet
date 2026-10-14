@@ -155,6 +155,9 @@ interface MomentMetadataInline {
   /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
    *  the poster, replayed by the artwork page's viewer. */
   kismet_bg?: string
+  /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
+   *  A badge signal only — rendering keys on `content.mime`. */
+  kismet_zine?: { pages: number; access: 'public' | 'collectors' }
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
@@ -416,6 +419,9 @@ export interface MomentDetail {
   /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
    *  the poster, replayed by the artwork page's viewer. */
   kismet_bg?: string
+  /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
+   *  A badge signal only — rendering keys on `content.mime`. */
+  kismet_zine?: { pages: number; access: 'public' | 'collectors' }
   }
   // Set by /api/moment from the kismetart:hidden-moments KV. True when the
   // creator has hidden the moment from public feeds. Detail page renders

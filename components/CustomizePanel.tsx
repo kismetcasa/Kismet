@@ -45,7 +45,14 @@ interface Source {
 // picker produced.
 function momentSource(m: Moment): Source {
   const r = resolveMomentMedia(m.metadata ?? {})
-  const still = r.kind === 'video' ? (r.poster ?? m.metadata?.image) : (r.poster ?? r.src ?? m.metadata?.image)
+  // A model's or a zine's `src` is already its still; never fall back to
+  // `metadata.image` for those — on the degenerate shape where `image` IS
+  // the GLB/PDF, that fallback would hand the bytes to an <img>.
+  const still = r.kind === 'video'
+    ? (r.poster ?? m.metadata?.image)
+    : r.kind === 'model' || r.kind === 'pdf'
+      ? r.src
+      : (r.poster ?? r.src ?? m.metadata?.image)
   return {
     ref: `${m.address.toLowerCase()}:${m.token_id}`,
     collectionAddress: m.address,

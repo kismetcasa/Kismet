@@ -1,12 +1,15 @@
 import { GLB_MIME } from '@/lib/glbFormat'
+import { PDF_MIME } from '@/lib/pdfFormat'
 import { isVideoMoment } from './isVideo'
 
-export type MomentMediaKind = 'video' | 'gif' | 'image' | 'text' | 'model' | 'none'
+export type MomentMediaKind = 'video' | 'gif' | 'image' | 'text' | 'model' | 'pdf' | 'none'
 
 interface MediaMeta {
   image?: string
   animation_url?: string
   content?: { mime?: string; uri?: string }
+  /** A zine's hint (lib/media/zineMedia.ZineHint) — a second signal only. */
+  kismet_zine?: { pages?: number; access?: string }
 }
 
 export interface ResolvedMedia {
@@ -31,6 +34,14 @@ export interface ResolvedMedia {
    *  correct-but-static tile rather than feeding GLB bytes to an <img> (or,
    *  server-side, to sharp). */
   modelSrc?: string
+  /** The PDF itself, for `pdf` (zine) moments only — `src` is the COVER, for
+   *  exactly the reason `modelSrc` is not `src`: every surface that never
+   *  learns about zines renders a correct cover instead of handing PDF
+   *  bytes to an <img> or to sharp. The reader mounts on the artwork detail
+   *  view alone (components/MomentZine). */
+  pdfSrc?: string
+  /** Page count from the zine's metadata hint, when it carries one. */
+  pages?: number
 }
 
 // ar:// content is hash-addressed (no extension), so the extension test
@@ -61,6 +72,23 @@ function resolveModelSrc(meta: MediaMeta): string | undefined {
   return undefined
 }
 
+function isPdfUrl(url?: string): boolean {
+  return !!url && url.split(/[?#]/, 1)[0]!.toLowerCase().endsWith('.pdf')
+}
+
+/** The PDF URI for a zine, or undefined if this isn't one. The mime is the
+ *  primary signal (Kismet mints self-carry it); the extension covers an
+ *  external mint; the `kismet_zine` hint covers an index row that lost its
+ *  `content` field (the VIDEO_PLAYBACK_RCA.md feed-row shape) — but only
+ *  when no mime contradicts it. */
+function resolvePdfSrc(meta: MediaMeta): string | undefined {
+  if (meta.content?.mime === PDF_MIME) return meta.content.uri ?? meta.animation_url
+  if (isPdfUrl(meta.animation_url)) return meta.animation_url
+  if (isPdfUrl(meta.content?.uri)) return meta.content!.uri
+  if (meta.kismet_zine?.access === 'public' && meta.animation_url && !meta.content?.mime) return meta.animation_url
+  return undefined
+}
+
 /**
  * Single source of truth for "what does this moment render, and how".
  *
@@ -78,7 +106,7 @@ function resolveModelSrc(meta: MediaMeta): string | undefined {
  * attempted as an image (the card/detail view fall back to the thumbhash
  * blur if it errors), which is strictly better than a blank tile.
  *
- * Precedence: video → text → model → gif → still image → none.
+ * Precedence: video → text → model → pdf → gif → still image → none.
  */
 export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
   if (isVideoMoment(meta)) {
@@ -104,6 +132,17 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
     // blur, than an <img> pointed at GLB bytes.
     const still = meta.image && meta.image !== modelSrc ? meta.image : undefined
     return { kind: 'model', src: still, modelSrc }
+  }
+
+  // A zine (PDF). Same fail-safe shape as a model: the cover in `src`, the
+  // document in its own field, and the degenerate `image === pdf` guard so
+  // a hand-written token never hands PDF bytes to an <img>.
+  const pdfSrc = resolvePdfSrc(meta)
+  if (pdfSrc) {
+    const still = meta.image && meta.image !== pdfSrc ? meta.image : undefined
+    const hinted = meta.kismet_zine?.pages
+    const pages = typeof hinted === 'number' && Number.isInteger(hinted) && hinted > 0 ? hinted : undefined
+    return { kind: 'pdf', src: still, pdfSrc, pages }
   }
 
   const animIsGif = isGifUrl(meta.animation_url)

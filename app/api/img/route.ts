@@ -312,6 +312,11 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
     // arrives as octet-stream and takes the old path, which is why
     // lib/media/modelMedia.asGlbFile tags them at upload.
     !ct.startsWith('model/') &&
+    // A zine's PDF, for the same reason as a model: our client never asks
+    // (the reader fetches through the no-?w= streaming URL), so a ?w= on
+    // one is hand-crafted or mislabeled and must not buffer 64 MiB into a
+    // compute slot to reach sharp's pass-through.
+    !ct.startsWith('application/pdf') &&
     (!declaredLen || Number(declaredLen) <= MAX_RESIZE_SOURCE_BYTES)
   if (!resizable) {
     // Costs one headers-only fetch (body cancelled) before the streaming
@@ -529,6 +534,14 @@ export async function GET(req: NextRequest) {
     // ar://<txid> / ipfs://<cid> are content-addressed — bytes never change.
     'Cache-Control': 'public, max-age=31536000, immutable',
   })
+  // A PDF is never rendered inline on our origin — the stance the
+  // collector-file routes already take. The zine reader reads the bytes with
+  // fetch(), which an attachment disposition does not affect; a direct
+  // navigation to the proxy saves the file instead of opening the browser's
+  // PDF viewer under kismet.art. "Open PDF" links use the gateway URL.
+  if ((headers.get('Content-Type') ?? '').toLowerCase().startsWith('application/pdf')) {
+    headers.set('Content-Disposition', 'attachment')
+  }
 
   // Own the byte-range contract when the upstream ignored the range. iOS +
   // macOS Safari (AVFoundation) probe every <video> with `Range: bytes=0-1`

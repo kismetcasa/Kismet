@@ -7,6 +7,7 @@ import {
   type CfileKind,
 } from './collectorFileTypes.ts'
 import { GLB_MAGIC } from './glbFormat.ts'
+import { PDF_MAGIC } from './pdfFormat.ts'
 
 /**
  * Pure core of the collector-file feature (COLLECTOR_DOWNLOADS_DESIGN.md):
@@ -152,7 +153,7 @@ export const CFILE_KINDS: Record<
   { ext: string; mime: string; magic?: number[]; magicAt?: number; requireBit?: { at: number; mask: number } }
 > = {
   zip: { ...CFILE_KIND_META.zip, magic: [0x50, 0x4b, 0x03, 0x04] },
-  pdf: { ...CFILE_KIND_META.pdf, magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
+  pdf: { ...CFILE_KIND_META.pdf, magic: [...PDF_MAGIC] }, // %PDF- (lib/pdfFormat)
   glb: { ...CFILE_KIND_META.glb, magic: [...GLB_MAGIC] }, // glTF (lib/glbFormat)
   gbc: { ...CFILE_KIND_META.gbc, magic: [...GB_LOGO_HEAD], magicAt: GB_LOGO_AT, requireBit: { at: GB_CGB_FLAG_AT, mask: 0x80 } },
   gb: { ...CFILE_KIND_META.gb, magic: [...GB_LOGO_HEAD], magicAt: GB_LOGO_AT },

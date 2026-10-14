@@ -82,6 +82,9 @@ import { RaffleCallout } from './RaffleCallout'
 const ModelPreview = dynamic(() => import('./ModelPreview').then((m) => m.ModelPreview), { ssr: false })
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentModel } from './MomentModel'
+import { MomentZine } from './MomentZine'
+import { readZineHint } from '@/lib/media/zineMedia'
+import { PDF_MIME } from '@/lib/pdfFormat'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { normalizeMediaUrl, guessMediaTypeFromUrl } from '@/lib/media/normalizeMediaUrl'
@@ -235,6 +238,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [imgError, setImgError] = useState(false)
   const [videoError, setVideoError] = useState(false)
   const [modelError, setModelError] = useState(false)
+  const [zineError, setZineError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -1077,6 +1081,9 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // thumbhash: rebuilding the metadata from scratch used to drop it, so a
       // title edit silently reset the artist's chosen backdrop to the default.
       let bg = detail.metadata.kismet_bg
+      // A zine's hint, carried for the same reason (validated — anyone can
+      // write token JSON).
+      const zineHint = readZineHint(detail.metadata.kismet_zine)
 
       // 1a) RE-POINT MEDIA — point the moment at content already on Arweave.
       // No upload: Arweave is content-addressed, so re-sending bytes only
@@ -1312,6 +1319,12 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         // Only a 3D binding carries a backdrop; a re-point or upload of any
         // other kind drops it along with the model.
         ...(contentField?.mime === GLB_MIME && bg ? { kismet_bg: bg } : {}),
+        // Only a zine binding (or a collectors-only zine, whose pages are not
+        // in the metadata at all) keeps its hint; replacing the media with
+        // anything else drops it along with the PDF.
+        ...(zineHint && (contentField?.mime === PDF_MIME || zineHint.access === 'collectors')
+          ? { kismet_zine: zineHint }
+          : {}),
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })
@@ -1438,8 +1451,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const isTextMoment = media.kind === 'text'
   const isVideo = media.kind === 'video'
   const isModel = media.kind === 'model'
+  const isZine = media.kind === 'pdf'
   // Still images and gifs open the zoom lightbox; videos use native
-  // fullscreen via their controls, and a model promotes to its own viewer.
+  // fullscreen via their controls, a model promotes to its own viewer, and
+  // a zine opens its reader.
   const isZoomable = media.kind === 'image' || media.kind === 'gif'
   // Low-fi blur for the no-preview fallback. When every gateway is exhausted
   // or the codec is undecodable there's no poster left to show (MomentVideo
@@ -1652,7 +1667,21 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isModel && media.modelSrc && !modelError ? (
+              {isZine && media.pdfSrc && !zineError ? (
+                // A zine: the cover, and a tap-to-load reader over the PDF —
+                // see components/MomentZine. The reader is the only surface
+                // that ever parses the document.
+                <MomentZine
+                  src={media.pdfSrc}
+                  poster={media.src}
+                  thumbhash={meta.kismet_thumbhash}
+                  alt={meta.name ?? 'artwork'}
+                  title={meta.name ?? 'zine'}
+                  pages={media.pages}
+                  storageKey={`${address.toLowerCase()}:${tokenId}`}
+                  onAllError={() => setZineError(true)}
+                />
+              ) : isModel && media.modelSrc && !modelError ? (
                 // The one WebGL surface in the app. Tap-to-load, so the
                 // multi-megabyte parse is only paid by a viewer who asked —
                 // see components/MomentModel.

@@ -51,7 +51,9 @@ export function prepareFrame(file: File, stage: keyof MachineFrames): Promise<Pr
 async function prepare(file: File, stage: keyof MachineFrames): Promise<PreparedFrame | string> {
   const verdict = await checkMintMedia(file)
   if (!verdict.ok) return verdict.reason
-  if (verdict.kind === 'model') return 'Use an image, a gif or a video'
+  // Explicit, not a fall-through: any kind this gate does not name would
+  // otherwise land in the still-image `else` below as a broken frame.
+  if (verdict.kind === 'model' || verdict.kind === 'pdf') return 'Use an image, a gif or a video'
   let frame: PreparedFrame
   let seconds: number | null = null
   if (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')) {

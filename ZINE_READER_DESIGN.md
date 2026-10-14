@@ -969,6 +969,78 @@ wrapper as `animation_url`; a text-only "zine" mode (writing moments exist).
 
 ---
 
+## 19. Round 2 — decisions (2026-10-14) and one discrepancy
+
+Luciano's answers to §18, now the spec:
+
+| Question | Decision |
+|---|---|
+| Default mode | **Public.** |
+| Phase order | **Public reader first.** Collectors-only is Phase 2. |
+| Naming | **"Zine" everywhere** — badge, copy, chip, the `kismet_zine` key — distinct from the collector-download PDFs. Any PDF may be a zine (a comic, a catalogue): the word is the product, not a content rule. |
+| Download on public zines | **Yes**, in the reader chrome, to the gateway URL. |
+| Discovery chip | **No chip.** The first filter surface should be a button on the Discover page (the footer's Discover link, `components/SiteFooter.tsx`). Deferred until everything else is complete. What exists there today: `DiscoverMarketView` already carries a "media" pill menu (images / video / gifs / writing / 3D, `DiscoverFilters.tsx:493-541`), so "zines" is a three-line addition to that menu when wanted; a dedicated button is a separate design. |
+| One-page PDFs | **Allowed.** The single page is the cover and the only page. |
+| Cover | Optional. See the discrepancy below. |
+
+**The cover, and the one discrepancy.** The round-2 answer reads: *"cover
+image (optional); if they upload then checked 'use as cover image'; if they
+use as cover image, cover is uploaded to Arweave instead of the PDF — this is
+more or less the private option but user chosen."* Two things in that do not
+fit the rest of the design:
+
+1. **A public zine always uploads a cover JPEG as well as the PDF.** The
+   token's `image` must be a still (feed cards, OG cards, other marketplaces
+   render nothing else), and a PDF cannot be one. So "cover instead of PDF"
+   describes only the collectors-only mode. In public mode the cover is *in
+   addition to* the PDF: page 1 rendered at pick time, or an uploaded image.
+2. **Coupling "uploaded a cover" to "collectors-only" conflates two
+   independent choices.** An artist who wants a nicer thumbnail on a public
+   zine would silently make it private, and a collectors-only zine could no
+   longer use its first page as the public cover (which decision 4 of round 1
+   allowed).
+
+What is built, which honours the intent (simple, user-chosen) without the
+coupling: the cover upload is **optional and independent** — upload one and it
+is the cover, remove it and the page marked in the preview is; the PDF goes to
+Arweave regardless (public mode). Collectors-only, in Phase 2, is its own
+explicit choice on a PDF pick, worded for its consequence: *"collectors only —
+the zine stays off Arweave; only the cover is public."* No "use as cover"
+checkbox: uploading a cover image means using it.
+
+## 20. Implementation record — Phase 0 + Phase 1 (public zines)
+
+What shipped on `claude/dazzling-carson-gdrzti`, and where the reasoning
+lives in the code.
+
+| File | Role |
+|---|---|
+| `lib/pdfFormat.ts` | The PDF identity (`.pdf`, `application/pdf`, `%PDF-`) in ONE place, re-exported into `lib/collectorFileTypes` and `lib/collectorFileCore` — the GLB rule applied to PDF. |
+| `lib/media/zineMedia.ts` | `ZINE_MAX_PAGES` (420), `ZINE_MAX_BYTES` (= `CFILE_MAX_BYTES`), `ZINE_SOFT_WARN_BYTES` (16 MiB), the injectable `PdfInspector`, `sniffPdfFile`, `asPdfFile`, `zineMomentFields`, `readZineHint`, and every copy string derived from the constants. Pure. |
+| `lib/media/mintMedia.ts` | `checkMintMedia(file, { inspectPdf })` — the `pdf` verdict with its page count; without a parser a PDF is refused (the edit flow and the machine frames pass none). |
+| `lib/pdfjs.ts` | The one pdf.js loader: legacy build, dynamic import, worker + wasm + font URLs under `/pdfjs/`, `openPdf` (bytes transferred to the worker), `inspectPdfFile`, `renderPageToBlob` (canvas → JPEG → canvas zeroed, 16 MP / 4096 px caps), `renderZineCoverFile`. |
+| `scripts/copy-pdfjs-assets.mjs` | `postinstall` copy of the worker, wasm decoders, standard fonts, CMaps and ICC into `public/pdfjs/` (gitignored), so the worker always matches the installed API. |
+| `lib/media/resolveMomentMedia.ts` | `kind: 'pdf'` with `src` = cover and `pdfSrc` = the PDF, keyed on `content.mime`, a `.pdf` extension, or the `kismet_zine` hint when no mime contradicts it; the `image === pdf` guard. |
+| `components/ZinePreview.tsx` | Mint-form preview: pages through the PDF, captures the chosen page as the cover file. |
+| `components/MintForm.tsx` | PDF pick with the parser, pick identity + page count, the preview, the optional cover upload, the binding (`animation_url` = PDF, `content.mime` = `application/pdf`, `kismet_zine`), the shared "no poster, no mint" guard for models and zines (fixes §17.2), the resumed-session poster re-upload. |
+| `components/MomentZine.tsx` | The detail view's tap-to-load entry: owned download (`fetchMediaBlob` with the `%PDF-` check), the engine and the reader chunk fetched in parallel, `?page=` deep link and `localStorage` resume, "open the PDF" fallback. |
+| `components/ZineReader.tsx` | The reader: paged, swipe / tap zones / keys / scrubber, spreads on wide landscape viewports, double-tap and pinch zoom with drag-pan, chrome that hides itself, a dialog with focus trap and live page announcements, blobs not canvases, one render at a time, everything revoked on close, "Download PDF", fullscreen. |
+| `components/ZineBadge.tsx` | The card badge ("zine", with the page count in its label). |
+| `components/MomentCard.tsx`, `FeaturedMoment.tsx`, `PatronArtworkShowcase.tsx`, `MarketOvals.tsx`, `CustomizePanel.tsx`, `app/api/profile/[address]/theme/route.ts` | Render the cover for `pdf` (and, where it was missing, `model` — §17.1 fixed). |
+| `app/api/img/route.ts` | `application/pdf` never enters the resize path and is served as an attachment. |
+| `lib/experience/frameUpload.ts`, `lib/structuredData.ts`, `app/artwork/[address]/[tokenId]/opengraph-image.tsx` | Explicit refusal; "Digital document"; the `ZINE` label. |
+| `lib/inprocess.ts`, `lib/kv.ts` | `kismet_zine` on the metadata types. |
+| `components/MomentDetailView.tsx` | The `isZine` branch; `kismet_zine` carried through metadata edits (the `kismet_bg` lesson). |
+| `lib/media/modelFetch.ts` | `fetchMediaBlob(urls, { expect })` — the owned download generalized over a `MediaExpectation` (magic, MIME, label); `fetchModelBlob` is the GLB instance, byte-for-byte unchanged in behaviour (`verify:model-fetch` passes untouched). |
+| `scripts/verify-zine-media.ts` | The oracle (63 checks, in `verify:flows`): one PDF definition, one cap, the gate with an injected parser, the fail-safe resolver shape, the hint reader, the download's magic check and copy. `verify-model-media`'s "a pdf is REJECTED" row is now "refused without a parser". |
+| `scripts/e2e/zine.mjs`, `scripts/e2e/make-pdf.mjs` | The browser check (hand-built fixture PDFs; mint preview pixels, lazy pdf.js, the reader on desktop and phone, spreads, zoom, deep link, gestures, the feed badge) — see `scripts/e2e/README.md`. |
+
+**Verified on a clean build (2026-10-14):** `tsc --noEmit`, `eslint .`,
+`verify:zine-media`, `verify:model-media`, `verify:model-fetch`,
+`verify:collector-file`, `verify:a11y`, `next build`, `check:bundle` (no
+route grew past the 10 % guard; no baseline bump), and `scripts/e2e/zine.mjs`
+against the built app in headless Chromium.
+
 ## Appendix A — verified vs. assumed
 
 **Verified in this session.** Every `file:line` above (read from the tree at

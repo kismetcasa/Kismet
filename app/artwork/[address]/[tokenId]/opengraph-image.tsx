@@ -70,6 +70,10 @@ export default async function Image({ params }: Props) {
       // of it shadowed the text case and mislabeled every text mint "VIDEO".
       if (mime?.startsWith('text/')) {
         label = 'WRITING'
+      } else if (mime === 'application/pdf') {
+        // A zine carries its PDF in animation_url; the rule below would
+        // otherwise label it VIDEO on the text-only fallback card.
+        label = 'ZINE'
       } else if (mime?.startsWith('video/') || detail.metadata?.animation_url) {
         label = 'VIDEO'
       }

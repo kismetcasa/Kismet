@@ -1,5 +1,6 @@
 import { formatCfileSize } from '@/lib/collectorFileTypes'
 import { MODEL_MAX_BYTES, inspectGlbFile } from './modelMedia'
+import { ZINE_COPY, ZINE_MAX_BYTES, ZINE_MAX_PAGES, sniffPdfFile, type PdfInspection, type PdfInspector } from './zineMedia'
 
 /**
  * The mint form's MEDIA gate: the one place that decides whether a picked
@@ -21,7 +22,17 @@ import { MODEL_MAX_BYTES, inspectGlbFile } from './modelMedia'
 
 export type MintMediaVerdict =
   | { ok: true; kind: 'image' | 'video' | 'model' }
+  /** A zine (ZINE_READER_DESIGN.md). `pages` comes from the injected parser
+   *  and is the ONLY source of the page count every later step uses. */
+  | { ok: true; kind: 'pdf'; pages: number }
   | { ok: false; reason: string }
+
+export interface MintMediaOptions {
+  /** The PDF parser (lib/pdfjs.inspectPdfFile in the browser; a fake in the
+   *  oracle). Without one a PDF is refused: the edit flow and the machine
+   *  stage frames pass nothing, and so never admit a zine by accident. */
+  inspectPdf?: PdfInspector
+}
 
 /**
  * Extension fallback for files the OS hands over with an empty `File.type`.
@@ -38,7 +49,7 @@ export type MintMediaVerdict =
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|bmp|tiff?|hei[cf]|ico|apng|svg)$/
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv|avi|mpe?g|3gp)$/
 
-export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
+export async function checkMintMedia(file: File, opts: MintMediaOptions = {}): Promise<MintMediaVerdict> {
   const type = file.type.toLowerCase()
   if (type.startsWith('image/')) return { ok: true, kind: 'image' }
   if (type.startsWith('video/')) return { ok: true, kind: 'video' }
@@ -65,13 +76,32 @@ export async function checkMintMedia(file: File): Promise<MintMediaVerdict> {
     return { ok: true, kind: 'model' }
   }
 
+  // A zine. Magic bytes again, never `File.type` (which a browser may well
+  // set to application/pdf for a renamed non-PDF). The caps are checked in
+  // cost order: size is free, the page count needs the parser.
+  if (await sniffPdfFile(file)) {
+    if (!opts.inspectPdf) return { ok: false, reason: ZINE_COPY.notHere }
+    if (file.size > ZINE_MAX_BYTES) return { ok: false, reason: ZINE_COPY.tooLarge(file.size) }
+    let inspection: PdfInspection
+    try {
+      inspection = await opts.inspectPdf(file)
+    } catch {
+      inspection = { kind: 'unreadable' }
+    }
+    if (inspection.kind === 'password') return { ok: false, reason: ZINE_COPY.password }
+    if (inspection.kind === 'unreadable' || inspection.pages < 1) return { ok: false, reason: ZINE_COPY.unreadable }
+    if (inspection.pages > ZINE_MAX_PAGES) return { ok: false, reason: ZINE_COPY.tooManyPages(inspection.pages) }
+    return { ok: true, kind: 'pdf', pages: inspection.pages }
+  }
+
   // Typeless-but-plausible media (see VIDEO_EXT / IMAGE_EXT). Checked AFTER
-  // the GLB sniff so a mislabeled model is still identified by its bytes.
+  // the GLB and PDF sniffs so a mislabeled file is still identified by its
+  // bytes.
   const name = file.name.toLowerCase()
   if (VIDEO_EXT.test(name)) return { ok: true, kind: 'video' }
   if (IMAGE_EXT.test(name)) return { ok: true, kind: 'image' }
 
-  return { ok: false, reason: 'Use an image, video, gif, or a .glb 3D model' }
+  return { ok: false, reason: 'Use an image, video, gif, a .glb 3D model, or a PDF zine' }
 }
 
 /**

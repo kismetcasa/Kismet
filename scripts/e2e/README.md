@@ -395,3 +395,36 @@ machine share card. About three minutes.
   picked and unpicked; each piece shown by its title, pasted or picked; a link
   to mint the capsule.
 
+
+## Zines — `zine.mjs`
+
+The same harness for the PDF zine feature (ZINE_READER_DESIGN.md §15). It
+writes its own fixtures (`make-pdf.mjs`: hand-built, spec-valid PDFs with an
+unembedded standard font and a DCT-encoded image page, plus a 421-page one
+over the cap and a renamed non-PDF), serves them wherever the app resolves
+`ar://`, and asserts what only a browser can show:
+
+- **Mint** — the media input advertises `.pdf`; no pdf.js asset is fetched
+  before a pick; a real PDF previews page 1 by its pixels and fetches the
+  worker from our origin exactly once; paging the preview reaches the image
+  page; "use as cover" moves the cover mark; the optional cover-image row is
+  offered.
+- **Gate** — a renamed non-PDF and a 421-page PDF are rejected with the right
+  copy and leave no preview; a one-page PDF is accepted.
+- **Reader (desktop)** — the cover paints and offers `read · 6 pages`; nothing
+  pdf.js is fetched before the tap; the reader is a labelled dialog whose page
+  1 renders the fixture's pixels; no `<canvas>` is left in the DOM; the cover
+  opens alone and ArrowRight turns to the 2–3 spread; `?page=` follows the
+  reader and clears on the cover; End/Home; the spread toggle; double-click
+  zooms and un-zooms; the scrubber jumps; "Download PDF" points at the gateway;
+  Escape closes and restores the affordance.
+- **Reader (phone)** — single pages only, fitted to the viewport; a swipe and
+  the edge tap zones turn pages; the chrome hides itself and a centre tap
+  brings it back.
+- **Feed** — the profile grid card wears the `zine, 6 pages` badge, renders the
+  cover, and fetches nothing from pdf.js.
+
+```sh
+# with the server from the recipe above running on :3100
+node scripts/e2e/zine.mjs          # fixtures land in .e2e/, screenshots in .e2e/shots/z*.png
+```

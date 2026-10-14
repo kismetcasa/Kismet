@@ -3,6 +3,7 @@
 // UI consumes live here. The single import is itself a zero-import,
 // client-safe module, so this file stays browser-safe.
 import { GLB_EXT, GLB_MIME } from './glbFormat.ts'
+import { PDF_EXT, PDF_MIME } from './pdfFormat.ts'
 
 /** Plaintext size ceiling per version — the ONE definition every picker and
  *  the server enforce (a "dial" per the design; changing it here changes it
@@ -25,10 +26,11 @@ export const CFILE_MAX_BYTES = 64 * 1024 * 1024
  *  adding magic bytes — so a kind's identity has exactly one definition
  *  that both the pickers and the server share.
  *
- *  `glb` is the one kind whose identity is shared with ANOTHER feature
- *  (primary mint media also accepts GLB), so its ext/MIME/magic live in
- *  lib/glbFormat and are re-exported into both registries — the two paths
- *  must never disagree about what a GLB is.
+ *  `glb` and `pdf` are the kinds whose identity is shared with ANOTHER
+ *  feature (primary mint media accepts a GLB as a 3D moment and a PDF as a
+ *  zine), so their ext/MIME/magic live in lib/glbFormat and lib/pdfFormat
+ *  and are re-exported into both registries — the two paths must never
+ *  disagree about what a GLB or a PDF is.
  *
  *  `gb` / `gbc` are Game Boy cartridge images. The first collector file ever
  *  requested was one (COLLECTOR_DOWNLOADS_DESIGN.md §0: a playable pixel-art
@@ -41,7 +43,7 @@ export type CfileKind = 'zip' | 'pdf' | 'glb' | 'svg' | 'gb' | 'gbc'
 
 export const CFILE_KIND_META: Record<CfileKind, { ext: string; mime: string }> = {
   zip: { ext: '.zip', mime: 'application/zip' },
-  pdf: { ext: '.pdf', mime: 'application/pdf' },
+  pdf: { ext: PDF_EXT, mime: PDF_MIME },
   glb: { ext: GLB_EXT, mime: GLB_MIME },
   svg: { ext: '.svg', mime: 'image/svg+xml' },
   gb: { ext: '.gb', mime: 'application/x-gameboy-rom' },
