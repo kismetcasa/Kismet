@@ -52,6 +52,7 @@ import {
 } from '../lib/media/modelFetch.ts'
 import { GLB_MAGIC, GLB_MIME } from '../lib/glbFormat.ts'
 import { writeImagePdf } from '../lib/media/optimizePdf.ts'
+import { canResumeUpload, resumeNeedsPoster } from '../lib/media/mintResume.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -155,6 +156,7 @@ check('gate: a parser that throws is an unreadable PDF, not an uncaught error',
 
 const cover = await checkCoverImage(pdfFile())
 check('cover gate: a PDF is never a cover', !cover.ok)
+check('cover gate: a PDF gets the cover slot’s own copy, not the zine’s', !cover.ok && cover.reason === 'Use a still image or a gif for the cover')
 
 const kindOf = async (f: File) => {
   const v = await checkMintMedia(f, { inspectPdf: ok16 })
@@ -306,6 +308,30 @@ check('writer: xref entries are exactly 20 bytes, free head included',
   const offsets = [...writtenText.matchAll(/^(\d{10}) 00000 n /gm)].map((x) => Number(x[1]))
   check('writer: every xref offset lands on its object',
     offsets.length === 12 && offsets.every((o, i) => writtenText.slice(o, o + `${i + 1} 0 obj`.length) === `${i + 1} 0 obj`), String(offsets.length))
+}
+
+
+// ── 8. The mint form's resume decisions ───────────────────────────────────
+{
+  const pdf = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], 'issue.pdf', { type: PDF_MIME })
+  const coverA = new File([new Uint8Array(3)], 'a.jpg', { type: 'image/jpeg' })
+  const coverB = new File([new Uint8Array(3)], 'b.jpg', { type: 'image/jpeg' })
+  const glb = new File([new Uint8Array(4)], 'm.glb', { type: 'model/gltf-binary' })
+  const banked = (mediaFile: File, coverSource: File | null, verifyFailures = 0) => ({ source: pdf, mediaFile, coverSource, verifyFailures })
+  const publicPick = { isZine: true, access: 'public' as const, cover: coverA }
+  const collectorsPick = { isZine: true, access: 'collectors' as const, cover: coverA }
+  check('resume: a public zine resumes a session that banked the PDF', canResumeUpload(banked(pdf, coverA), pdf, publicPick, 3))
+  check('resume: a public zine never resumes a session banked under collectors (the cover as media)', !canResumeUpload(banked(coverA, coverA), pdf, publicPick, 3))
+  check('resume: a collectors-only zine resumes a session that banked the cover', canResumeUpload(banked(coverA, coverA), pdf, collectorsPick, 3))
+  check('resume: a collectors-only zine never resumes a session banked under public (the PDF as media)', !canResumeUpload(banked(pdf, coverA), pdf, collectorsPick, 3))
+  check('resume: a cover changed since the banked attempt is a miss', !canResumeUpload(banked(pdf, coverA), pdf, { ...publicPick, cover: coverB }, 3))
+  check('resume: an unknown banked cover (a reload) counts as a match', canResumeUpload(banked(pdf, null), pdf, { ...publicPick, cover: coverB }, 3))
+  check('resume: a different pick is a miss', !canResumeUpload(banked(pdf, coverA), coverB, publicPick, 3))
+  check('resume: a session given up on is a miss', !canResumeUpload(banked(pdf, coverA, 3), pdf, publicPick, 3))
+  check('resume: no session, no resume', !canResumeUpload(null, pdf, publicPick, 3))
+  check('resume: a non-zine pick ignores the zine rules', canResumeUpload({ source: glb, mediaFile: glb, coverSource: null, verifyFailures: 0 }, glb, { isZine: false, access: 'public', cover: null }, 3))
+  check('resume: a banked PDF or model owes a poster', resumeNeedsPoster({ mediaFile: pdf }) && resumeNeedsPoster({ mediaFile: glb }))
+  check('resume: a banked cover (a collectors-only zine’s media) owes none — it would be uploaded twice', !resumeNeedsPoster({ mediaFile: coverA }))
 }
 
 console.log(failures === 0 ? '\nverify-zine-media: all checks passed' : `\nverify-zine-media: ${failures} FAILED`)

@@ -21,6 +21,7 @@ import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { checkCoverImage, checkMintMedia } from '@/lib/media/mintMedia'
 import { ZINE_COPY, ZINE_OPTIMIZE_LONG_EDGE, ZINE_SOFT_WARN_BYTES, asPdfFile, type ZineAccess, zineMomentFields } from '@/lib/media/zineMedia'
+import { canResumeUpload, resumeNeedsPoster } from '@/lib/media/mintResume'
 import { PDF_EXT, PDF_MIME } from '@/lib/pdfFormat'
 import { inspectPdfFile } from '@/lib/pdfjs'
 import { ZinePreview } from './ZinePreview'
@@ -1284,19 +1285,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // prepare + upload work entirely and goes straight to verifying
         // txids whose propagation clocks have been running since that
         // attempt.
-        const cachedUpload =
-          mediaUploadRef.current &&
-          mediaUploadRef.current.source === file &&
-          mediaUploadRef.current.verifyFailures < MAX_REUSE_FAILURES &&
-          // A zine's banked upload is the PDF (public) or the cover (collectors
-          // only); a session banked under the other choice would mint the
-          // wrong thing, so it is not resumed.
-          !(isZinePick && (zineAccess === 'public') !== (mediaUploadRef.current.mediaFile.type === PDF_MIME)) &&
-          // ...and a cover changed since that attempt (another upload, or
-          // another page chosen) is a different artwork, not a resume.
-          !(isZinePick && mediaUploadRef.current.coverSource && mediaUploadRef.current.coverSource !== (zineCover ?? zinePoster))
-            ? mediaUploadRef.current
-            : null
+        // The decision is pure (lib/media/mintResume, oracle-pinned): the same
+        // file, not given up on, and for a zine the same choice of who can
+        // read it and the same cover.
+        const cachedUpload = canResumeUpload(
+          mediaUploadRef.current,
+          file,
+          { isZine: isZinePick, access: zineAccess, cover: zineCover ?? zinePoster },
+          MAX_REUSE_FAILURES,
+        )
+          ? mediaUploadRef.current
+          : null
 
         let mediaFile: File
         let posterFile: File | null
@@ -1324,18 +1323,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // resume record keeps no File) — so a poster whose UPLOAD failed
           // last time gets another attempt below instead of a resumed
           // session minting a model or a zine with no `image`.
-          // Only when the banked media NEEDS a poster (a PDF, a model): a
-          // collectors-only zine banks the cover as its media and would
-          // otherwise upload that same cover a second time as its poster.
+          // Only when the banked media NEEDS a poster (a PDF, a model —
+          // lib/media/mintResume): a collectors-only zine banks the cover as
+          // its media and would otherwise upload it a second time as a poster.
           posterFile =
             cachedUpload.posterFile ??
-            (cachedUpload.mediaFile.type === PDF_MIME || cachedUpload.mediaFile.type === GLB_MIME
-              ? isZinePick
-                ? (zineCover ?? zinePoster)
-                : isModelPick
-                  ? modelPoster
-                  : null
-              : null)
+            (resumeNeedsPoster(cachedUpload) ? (isZinePick ? (zineCover ?? zinePoster) : isModelPick ? modelPoster : null) : null)
           mediaUri = cachedUpload.mediaUri
           posterUri = cachedUpload.posterUri
           thumbhash = cachedUpload.thumbhash

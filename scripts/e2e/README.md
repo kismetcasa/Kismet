@@ -437,7 +437,16 @@ history-backed close, resume and worker reuse on reopen, and the mint form's
 access control and "optimize for phones" pass — on a tiny fixture ("already
 compact") and on `heavy.pdf`, a 6 MB noise scan the optimizer shrinks, where
 "collectors only" and the chosen cover page must survive the optimized
-re-pick and its undo. The holder path (the card's `read`
+re-pick and its undo, and clearing the pick mid-pass aborts it. Three more
+reader sections use their own fixtures: C1 (`long.pdf`, 60 slow pages with
+one landscape: a scrubber drag starts only a handful of renders, counted at
+the worker, and a landscape page is rendered for its real slot), C2
+(`odd.pdf`, 5 pages: no turn past the last spread) and C3 (the zine URL
+answering 500: a failed open leaves no dead history entry). The server half
+of a collectors-only zine — the attach with its page count and the view
+route's gate for holders, the artwork's managers and nobody else — is
+`npm run verify:cfile-view`, which boots the built app with Redis and the
+chain mocked (part of `npm run check`). The holder path (the card's `read`
 and the collector-file view route feeding the reader) needs a holder session
 and is covered by the oracle plus a manual check.
 

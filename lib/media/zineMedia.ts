@@ -98,7 +98,7 @@ export const ZINE_COPY = {
    *  frames, where a PDF is not a supported replacement. */
   notHere: 'A PDF mints as a zine from the mint form',
   largeWarning: (bytes: number): string =>
-    `${formatCfileSize(bytes)} — readers on phones download the whole zine before the first page; under ${formatCfileSize(ZINE_SOFT_WARN_BYTES)} keeps that to a few seconds`,
+    `${formatCfileSize(bytes)} — readers on phones download the whole zine before the first page; under ${formatCfileSize(ZINE_SOFT_WARN_BYTES)} keeps that to a few seconds. "Optimize for phones" on the preview re-renders the pages smaller`,
   noCover: 'Could not render a cover from this PDF — pick another page as the cover, or upload a cover image',
   readerUnavailable: 'The reader could not start in this browser — open the PDF instead',
   /** The mode control in the mint form. */

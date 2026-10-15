@@ -12,6 +12,12 @@
  *   heavy.pdf      3 pages carrying a 2500 × 2500 noise JPEG (several MB),
  *                  which "optimize for phones" CAN shrink — the fixture for
  *                  the choices that must survive that re-pick
+ *   long.pdf       60 pages, the same noise JPEG drawn on EVERY page (one
+ *                  shared XObject, so the file stays one image big) and
+ *                  page 2 landscape: every page is slow to render, which is
+ *                  what the render-cancellation and width-after-aspect
+ *                  checks need
+ *   odd.pdf        5 pages — a spread that ends on the back cover
  *   notapdf.pdf    text bytes with a .pdf name — the magic sniff's case
  *   cover.jpg      the ar://cover-txid still (solid, so a pixel read is
  *                  unambiguous)
@@ -75,7 +81,7 @@ function stream(dict, body) {
  * page 2. Objects: 1 catalog, 2 pages, 3 font, [4 image], then per page a
  * page object and a content stream.
  */
-export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine' }) {
+export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine', landscape = [], imageOnPages = [2] }) {
   const objects = []
   const add = (body) => { objects.push(body); return objects.length }
   const catalogIdx = add('') // placeholder, filled last
@@ -94,23 +100,26 @@ export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine' }) 
   const pageIdxs = []
   for (let i = 1; i <= count; i++) {
     const [r, g, b] = PAGE_COLORS[(i - 1) % PAGE_COLORS.length]
-    let content = `q ${r} ${g} ${b} rg 0 0 ${A5[2]} ${A5[3]} re f Q\n`
-    content += `BT /F1 36 Tf 1 1 1 rg 40 520 Td (${i === 1 ? title : `Page ${i}`}) Tj ET\n`
+    // A landscape page swaps the sheet: the reader's slot for it is wider
+    // than tall, which is what the width-after-aspect check needs.
+    const box = landscape.includes(i) ? [0, 0, A5[3], A5[2]] : A5
+    let content = `q ${r} ${g} ${b} rg 0 0 ${box[2]} ${box[3]} re f Q\n`
+    content += `BT /F1 36 Tf 1 1 1 rg 40 ${box[3] - 75} Td (${i === 1 ? title : `Page ${i}`}) Tj ET\n`
     content += `BT /F1 14 Tf 1 1 1 rg 40 40 Td (${i} / ${count}) Tj ET\n`
     const xobjects = []
-    if (imageIdx && i === 2) {
+    if (imageIdx && (imageOnPages === 'all' || imageOnPages.includes(i))) {
       // 300pt wide, centred.
       const w = 300
       const h = Math.round((w * imageSize.h) / imageSize.w)
-      const x = (A5[2] - w) / 2
-      const y = (A5[3] - h) / 2
+      const x = (box[2] - w) / 2
+      const y = (box[3] - h) / 2
       content += `q ${w} 0 0 ${h} ${x} ${y} cm /Im1 Do Q\n`
       xobjects.push(`/Im1 ${imageIdx} 0 R`)
     }
     const contentIdx = add(stream('', content))
     const resources = `/Font << /F1 ${fontIdx} 0 R >>${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}`
     const pageIdx = add(
-      `<< /Type /Page /Parent ${pagesIdx} 0 R /MediaBox [${A5.join(' ')}] /Resources << ${resources} >> /Contents ${contentIdx} 0 R >>`,
+      `<< /Type /Page /Parent ${pagesIdx} 0 R /MediaBox [${box.join(' ')}] /Resources << ${resources} >> /Contents ${contentIdx} 0 R >>`,
     )
     pageIdxs.push(pageIdx)
   }
@@ -132,10 +141,12 @@ export async function writeFixtures(dir) {
     .jpeg({ quality: 95 })
     .toBuffer()
   fs.writeFileSync(path.join(dir, 'heavy.pdf'), await buildPdf({ count: 3, imageJpeg: noise, title: 'Heavy' }))
+  fs.writeFileSync(path.join(dir, 'long.pdf'), await buildPdf({ count: 60, imageJpeg: noise, title: 'Long', landscape: [2], imageOnPages: 'all' }))
+  fs.writeFileSync(path.join(dir, 'odd.pdf'), await buildPdf({ count: 5, title: 'Odd' }))
   // The cover still: a solid magenta so a centre-pixel read is unambiguous.
   const cover = await sharp({ create: { width: 600, height: 850, channels: 3, background: { r: 190, g: 40, b: 150 } } }).jpeg({ quality: 85 }).toBuffer()
   fs.writeFileSync(path.join(dir, 'cover.jpg'), cover)
-  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'heavy.pdf', 'cover.jpg']
+  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'heavy.pdf', 'long.pdf', 'odd.pdf', 'cover.jpg']
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {

@@ -27,6 +27,8 @@ const EXE = process.env.E2E_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-l
 
 await writeFixtures(DIR)
 const ZINE = fs.readFileSync(path.join(DIR, 'zine.pdf'))
+const LONG = fs.readFileSync(path.join(DIR, 'long.pdf'))
+const ODD = fs.readFileSync(path.join(DIR, 'odd.pdf'))
 const COVER = fs.readFileSync(path.join(DIR, 'cover.jpg'))
 
 let fails = 0
@@ -53,17 +55,33 @@ const ART = `${BASE}/artwork/0x00000000000000000000000000000000000000aa/1`
 
 const browser = await chromium.launch({ executablePath: EXE })
 
+/** The fixture a txid names. */
+const PDF_BY_TXID = { 'zine-txid': ZINE, 'long-txid': LONG, 'odd-txid': ODD }
+const pdfFor = (u) => Object.entries(PDF_BY_TXID).find(([txid]) => u.includes(txid))?.[1] ?? null
+
 /** Serve the fixture bytes wherever the app resolves ar:// to. */
 async function wire(ctx) {
+  // Count the renders pdf.js is asked for (one GetOperatorList per page
+  // render): the evidence that a flip past a queued page cancels it.
+  await ctx.addInitScript(() => {
+    window.__pdfRenders = 0
+    const orig = Worker.prototype.postMessage
+    Worker.prototype.postMessage = function (msg, ...rest) {
+      try { if (msg && typeof msg === 'object' && msg.action === 'GetOperatorList') window.__pdfRenders++ } catch {}
+      return orig.call(this, msg, ...rest)
+    }
+  })
   await ctx.route('**/arweave.net/**', (route) => {
     const u = route.request().url()
-    if (u.includes('zine-txid')) return route.fulfill({ status: 200, contentType: 'application/pdf', body: ZINE })
+    const pdf = pdfFor(u)
+    if (pdf) return route.fulfill({ status: 200, contentType: 'application/pdf', body: pdf })
     if (u.includes('cover-txid')) return route.fulfill({ status: 200, contentType: 'image/jpeg', body: COVER })
     return route.fulfill({ status: 404, body: '' })
   })
   await ctx.route('**/api/img**', (route) => {
     const u = decodeURIComponent(route.request().url())
-    if (u.includes('zine-txid')) return route.fulfill({ status: 200, contentType: 'application/pdf', body: ZINE })
+    const pdf = pdfFor(u)
+    if (pdf) return route.fulfill({ status: 200, contentType: 'application/pdf', body: pdf })
     return route.fulfill({ status: 200, contentType: 'image/jpeg', body: COVER })
   })
   await ctx.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ZINE_META) }))
@@ -239,10 +257,22 @@ await mint.waitForSelector('img[alt="Page 1 preview"]', { timeout: 60000 })
 await mint.waitForTimeout(600)
 check('"collectors only" survives the undo as well', (await checkedAccess()) === 'collectors only', await checkedAccess())
 check('the cover page survives the undo as well', (await mint.locator('button:has-text("use as cover")').count()) === 1)
-
-// Clear via the form's own ×, then the rejections.
+// Leaving the pick mid-pass aborts the pass: no result, no error, nothing
+// rendered for a file nobody will mint.
+await mint.waitForTimeout(4500) // let the earlier toasts expire
+await mint.locator('button:has-text("optimize for phones")').click()
+await mint.waitForTimeout(500)
 await mint.locator('button:has(svg.lucide-x)').first().click()
 await mint.waitForSelector('img[alt^="Page"]', { state: 'detached', timeout: 10000 })
+await mint.waitForTimeout(4000)
+check('clearing the pick mid-optimize aborts the pass silently',
+  (await mint.locator('[data-sonner-toast]', { hasText: /Optimized for phones|Could not optimize/ }).count()) === 0)
+
+// Clear via the form's own × (unless the abort check already did), then the rejections.
+if (await mint.locator('img[alt^="Page"]').count()) {
+  await mint.locator('button:has(svg.lucide-x)').first().click()
+  await mint.waitForSelector('img[alt^="Page"]', { state: 'detached', timeout: 10000 })
+}
 console.log('\nB. Mint gate — rejections')
 for (const [file, expect] of [
   ['notapdf.pdf', 'or a PDF zine'],
@@ -282,6 +312,15 @@ await page.waitForSelector('[role="dialog"][aria-label="Reading E2E Zine"]', { t
 await pageImg(page, 1).waitFor({ timeout: 30000 })
 await page.waitForTimeout(400)
 check('the tap fetched the worker once', seen.worker === 1, JSON.stringify(seen))
+check('focus moves into the reader', await page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]')))
+// The chrome hides itself; keyboard focus landing on it brings it back, so
+// Tab never rests on an invisible control.
+const topBarOf = (pg) => pg.locator('[role="dialog"] div.absolute.left-0.right-0.z-10').first()
+await page.waitForTimeout(3200)
+check('the chrome hides on its own on a desktop too', ((await topBarOf(page).getAttribute('class')) ?? '').includes('opacity-0'))
+await page.keyboard.press('Tab')
+await page.waitForTimeout(250)
+check('Tab reveals the hidden chrome', ((await topBarOf(page).getAttribute('class')) ?? '').includes('opacity-100'))
 check('page 1 renders its pixels', near(await centreOf(page, pageImg(page, 1)), page1Rgb))
 check('no canvas is left in the DOM (pages are images, canvases are zeroed and dropped)', (await page.locator('canvas').count()) === 0)
 check('the cover opens alone even on a wide screen (a spread starts at page 2)', (await waitCounter(page, '1 / 6')) === '1 / 6')
@@ -318,6 +357,24 @@ await img2.dblclick()
 await page.waitForTimeout(400)
 const reset = await img2.boundingBox()
 check('a second double-click resets the zoom', !!reset && Math.abs(reset.width - before.width) < 2, `${reset?.width}`)
+// ctrl/⌘ + wheel (a trackpad pinch) zooms the reader and is consumed — the
+// listener is native and non-passive, so the page behind never zooms too.
+await page.evaluate(() => {
+  window.__wheelPrevented = null
+  window.addEventListener('wheel', (e) => { window.__wheelPrevented = e.defaultPrevented }, { passive: true })
+})
+const beforeWheel = await pageImg(page, 2).boundingBox()
+await page.mouse.move(640, 400)
+await page.keyboard.down('Control')
+await page.mouse.wheel(0, -240)
+await page.keyboard.up('Control')
+await page.waitForTimeout(400)
+const afterWheel = await pageImg(page, 2).boundingBox()
+check('ctrl+wheel zooms the page and the event is consumed',
+  (await page.evaluate(() => window.__wheelPrevented)) === true && !!beforeWheel && !!afterWheel && afterWheel.width > beforeWheel.width * 1.05,
+  `prevented=${await page.evaluate(() => window.__wheelPrevented)} ${beforeWheel?.width} -> ${afterWheel?.width}`)
+await page.keyboard.press('0')
+await page.waitForTimeout(300)
 await revealChrome(page)
 await page.locator('[role="dialog"] input[type="range"]').fill('5')
 check('the scrubber jumps straight to a page', (await waitCounter(page, '5 / 6')) === '5 / 6')
@@ -358,6 +415,7 @@ check('the scrubber jumps straight to a page', (await waitCounter(page, '5 / 6')
 await page.keyboard.press('Escape')
 await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
 check('Escape closes the reader', (await page.locator('[role="dialog"]').count()) === 0)
+check('focus returns to the read button', await page.evaluate(() => (document.activeElement?.textContent ?? '').includes('read')))
 check('closing restores the affordance', await page.locator('button:has-text("read · 6 pages")').isVisible())
 check('closing leaves no reader entry behind (the URL is the artwork’s)', page.url().startsWith(ART) && !page.url().includes('page='), page.url())
 // The back gesture closes the reader, not the artwork: opening pushes one
@@ -380,7 +438,98 @@ await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 1000
 check('browser back closes the reader', (await page.locator('[role="dialog"]').count()) === 0)
 check('browser back stays on the artwork page', page.url().startsWith(ART), page.url())
 check('the affordance is back after a history close', await page.locator('button:has-text("read · 6 pages")').isVisible())
+// A reader entry left by an EARLIER open, reached through forward: the
+// reader does not reopen on it, and a reader opened over it still closes
+// with one press (per-open tokens, not a boolean marker).
+await page.goForward()
+await page.waitForTimeout(500)
+check('forward onto an old reader entry does not reopen the reader', (await page.locator('[role="dialog"]').count()) === 0)
+await page.locator('button:has-text("read · 6 pages")').click()
+await page.waitForSelector('[role="dialog"][aria-label="Reading E2E Zine"]', { timeout: 30000 })
+await page.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 30000 })
+await page.keyboard.press('Escape')
+await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 }).catch(() => {})
+check('one Escape closes a reader opened over an older reader entry', (await page.locator('[role="dialog"]').count()) === 0)
+check('…and the artwork page is still the page', page.url().startsWith(ART), page.url())
 await page.close()
+
+// ───────────── C1. A long zine: render cancellation, the slot's real width ─────────────
+console.log('\nC1. A long zine — flips cancel renders; a page is rendered for its real slot')
+const LONG_META = { ...ZINE_META, metadata: { ...ZINE_META.metadata, name: 'E2E Long', animation_url: 'ar://long-txid', content: { uri: 'ar://long-txid', mime: 'application/pdf' }, kismet_zine: { pages: 60, access: 'public' } } }
+const longPg = await desktop.newPage()
+await longPg.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LONG_META) }))
+await longPg.goto(ART, { waitUntil: 'domcontentloaded' })
+await longPg.locator('button:has-text("read · 60 pages")').click()
+await longPg.waitForSelector('[role="dialog"][aria-label="Reading E2E Long"]', { timeout: 30000 })
+// The context remembers this artwork's reading position from the sections
+// above (same key), so the reader may resume mid-document: go Home first.
+await longPg.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 60000 })
+await longPg.keyboard.press('Home')
+await longPg.locator('[role="dialog"] img[alt="Page 1 of E2E Long"]').waitFor({ timeout: 60000 })
+await longPg.keyboard.press('ArrowRight')
+const long2 = longPg.locator('[role="dialog"] img[alt="Page 2 of E2E Long"]')
+await long2.waitFor({ timeout: 60000 })
+await longPg.waitForTimeout(400)
+const slot = await long2.evaluate((img) => ({ nw: img.naturalWidth, cw: img.clientWidth, dpr: window.devicePixelRatio }))
+check('a landscape page is rendered for its real slot, not a guessed aspect', slot.nw >= slot.cw * slot.dpr * 0.95, JSON.stringify(slot))
+await longPg.keyboard.press('Home')
+await longPg.locator('[role="dialog"] img[alt="Page 1 of E2E Long"]').waitFor({ timeout: 60000 })
+await longPg.waitForTimeout(1500)
+// Drag the scrubber across the document: 59 steps as fast as the keyboard
+// sends them. Every page is slow to render (the noise image); without
+// cancellation each one would render to completion before page 60 could.
+await revealChrome(longPg)
+const slider = longPg.locator('[role="dialog"] input[type="range"]')
+await slider.focus()
+const rendersBefore = await longPg.evaluate(() => window.__pdfRenders)
+const t0 = Date.now()
+for (let i = 0; i < 59; i++) await longPg.keyboard.press('ArrowRight')
+await longPg.locator('[role="dialog"] img[alt="Page 60 of E2E Long"]').waitFor({ timeout: 30000 })
+const landed = Date.now() - t0
+const rendersDuring = (await longPg.evaluate(() => window.__pdfRenders)) - rendersBefore
+check('a scrubber drag across 60 pages renders only what it lands on', rendersDuring <= 12, `${rendersDuring} renders started`)
+check('…and the target page is on screen within seconds', landed < 15000, `${landed} ms`)
+console.log(`    renders started during the drag: ${rendersDuring}; page 60 on screen after ${landed} ms`)
+await longPg.keyboard.press('Escape')
+await longPg.close()
+
+// ───────────── C2. An odd page count: no phantom turn past the back cover ─────────────
+console.log('\nC2. An odd page count — the last spread ends the book')
+const ODD_META = { ...ZINE_META, metadata: { ...ZINE_META.metadata, name: 'E2E Odd', animation_url: 'ar://odd-txid', content: { uri: 'ar://odd-txid', mime: 'application/pdf' }, kismet_zine: { pages: 5, access: 'public' } } }
+const oddPg = await desktop.newPage()
+await oddPg.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ODD_META) }))
+await oddPg.goto(ART, { waitUntil: 'domcontentloaded' })
+await oddPg.locator('button:has-text("read · 5 pages")').click()
+await oddPg.waitForSelector('[role="dialog"][aria-label="Reading E2E Odd"]', { timeout: 30000 })
+await oddPg.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 30000 })
+await oddPg.keyboard.press('End')
+check('End lands on the 4–5 spread', (await waitCounter(oddPg, '4–5 / 5')) === '4–5 / 5')
+const oddUrl = oddPg.url()
+await oddPg.keyboard.press('ArrowRight')
+await oddPg.waitForTimeout(500)
+check('ArrowRight past the last spread turns nothing', (await counterOf(oddPg)) === '4–5 / 5' && oddPg.url() === oddUrl)
+await revealChrome(oddPg)
+check('the next button is disabled on the last spread', await oddPg.locator('[role="dialog"] button[aria-label="Next page"]').isDisabled())
+await oddPg.keyboard.press('Escape')
+await oddPg.close()
+
+// ───────────── C3. A failed open: no dead history entry ─────────────
+console.log('\nC3. A failed open — the error state lives inside the history entry')
+const failPg = await desktop.newPage()
+await failPg.route(/arweave\.net|api\/img/, (r) => (decodeURIComponent(r.request().url()).includes('zine-txid') ? r.fulfill({ status: 500, body: 'nope' }) : r.fallback()))
+await failPg.goto(ART, { waitUntil: 'domcontentloaded' })
+await failPg.locator('button:has-text("read · 6 pages")').click()
+await failPg.locator('button:has-text("retry")').waitFor({ timeout: 90000 })
+const failUrl = failPg.url()
+const lenAtError = await failPg.evaluate(() => history.length)
+await failPg.locator('button:has-text("retry")').click()
+await failPg.waitForTimeout(600)
+await failPg.locator('button:has-text("retry")').waitFor({ timeout: 90000 })
+check('a retry adds no history entry', (await failPg.evaluate(() => history.length)) === lenAtError)
+await failPg.goBack()
+await failPg.waitForTimeout(600)
+check('back from a failed open restores the affordance, not a dead entry', (await failPg.locator('button:has-text("read · 6 pages")').count()) === 1 && failPg.url() === failUrl, failPg.url())
+await failPg.close()
 
 // ───────────── C3. Collectors-only zine: the card for a non-holder ─────────────
 // The zine IS the collector file. Its record is seeded into the Redis stub
@@ -503,6 +652,17 @@ check('a collectors-only zine card carries the badge from its hint',
   privCard && (await profile.locator('article [aria-label="zine, 6 pages, collectors only"]').count()) >= 1)
 check('a collectors-only card renders its cover',
   privCard && !!(await profile.locator('article img[alt="E2E Private Zine"]').first().getAttribute('src').catch(() => null)))
+// A collectors hint on a moment whose media is a model: the model's badge,
+// never both on top of each other.
+await desktop.route(/\/api\/timeline/, (r) => r.fulfill({
+  status: 200, contentType: 'application/json',
+  body: JSON.stringify({ status: 'success', moments: [{ ...ZINE_MOMENT, metadata: { name: 'E2E Model Zine', image: 'ar://cover-txid', animation_url: 'ar://model-txid', content: { uri: 'ar://model-txid', mime: 'model/gltf-binary' }, kismet_zine: { pages: 6, access: 'collectors' } } }],
+    pagination: { page: 1, limit: 20, total_pages: 1 } }),
+}))
+await profile.reload({ waitUntil: 'domcontentloaded' })
+const modelCard = await profile.waitForSelector('article', { timeout: 30000 }).then(() => true).catch(() => false)
+check('a collectors hint never badges "zine" over a model\'s badge',
+  modelCard && (await profile.locator('article [aria-label="3D artwork"]').count()) >= 1 && (await profile.locator('article [aria-label^="zine"]').count()) === 0)
 await profile.waitForTimeout(1500)
 check('no pdf.js asset is fetched by a feed', feedSeen.any === 0, JSON.stringify(feedSeen))
 await profile.screenshot({ path: path.join(SHOTS, 'z07-profile-badge.png'), clip: { x: 0, y: 80, width: 900, height: 700 } })

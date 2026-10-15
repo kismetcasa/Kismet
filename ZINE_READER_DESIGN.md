@@ -1403,6 +1403,95 @@ On the final build (2026-10-15):
   the measurement that decides how much the optimizer buys on an iPhone
   (§21.6).
 
+## 23. Validation (2026-10-15) — every finding, its decision, its proof
+
+The audit's findings were fixed on inspection first; this pass re-verified
+each one with a test that targets the behaviour, and took a second look at
+whether each fix was the right one for the design (§3–§10) rather than a
+patch. "e2e" is `scripts/e2e/zine.mjs` (section named), "oracle" is
+`verify:zine-media`, "gate" is the new `verify:cfile-view` (the collector
+file's view route against the built app with Redis and the chain mocked),
+"3D" is `scripts/e2e/model-media.mjs`.
+
+### 23.1 The reader
+
+| Finding | Decision | Proof |
+|---|---|---|
+| Flips never cancelled queued renders | Fixed: the window cancels what it no longer wants; a job for a page the reader left does nothing | e2e C1: a scrubber drag across a 60-page zine whose every page is slow starts ≤ 12 renders (counted at the worker), and page 60 is on screen within seconds |
+| First render sized from a guessed aspect | Fixed: the width is taken after the aspect is known; a learned aspect re-runs the window | e2e C1: a landscape page in a spread is rendered at ≥ 95 % of its slot × DPR |
+| The regression the first fix caused (rotation no longer re-queued) | Fixed: the window depends on the rotation explicitly | e2e C: rotate → page 5 re-renders; three more turns upright |
+| ctrl/⌘ + wheel also zoomed the page behind | Fixed: native, non-passive listener | e2e C: a ctrl + wheel zooms the page and `defaultPrevented` is true on the window |
+| Side effects in a state updater | Fixed: compared against a ref, run once | By construction (the updater is now pure); the e2e's page-change and resume checks still hold |
+| Phantom turn past an odd spread | Fixed: no turn past the last page; the button disables on the spread's right page | e2e C2: a 5-page zine on 4–5: ArrowRight turns nothing, the URL is unchanged, Next is disabled |
+| Pinch → one finger; pointer cancel | Fixed: re-based on the remaining finger; cancel clears state | Inspection: Playwright has no multi-touch; the re-base reads the current pan from a ref and the cancel path clears the pointer map, the gesture and the tap timer |
+| Zoom render installed for a page the user left | Fixed: dropped unless page and zoom still match | Inspection, plus the existing double-tap / reset checks |
+| Hidden chrome in the Tab order | Fixed: focus on a bar reveals it | e2e C: the chrome hides on a desktop, Tab reveals it |
+| Focus into the dialog, back to the opener | Confirmed (the trap focuses the first control) and fixed (the read button takes focus on close) | e2e C: `activeElement` is inside the dialog after the tap, on the read button after Escape |
+| A failed open leaves a dead entry per retry | Fixed: the error state lives inside the entry | e2e C3: the zine URL answers 500; a retry adds no entry; back from the error restores the affordance on the same URL |
+| A stale marker makes close need two presses | Fixed: per-open tokens | e2e C: forward onto an old reader entry does not reopen; a reader opened over it closes with one Escape |
+| Worker reset on any open error | Fixed: only when the worker is dead or the error names it | Inspection (the mint gate inspects a second pick while the preview holds a document; `verify:zine-media`'s gate rows cover the error kinds) |
+| Already-aborted render ran to completion | Fixed: `throwIfAborted` at entry | Covered by C1's render count |
+| Dead code and export-only constants | Removed | `tsc`, `eslint`, the oracles |
+
+### 23.2 The mint form and the optimizer
+
+| Finding | Decision | Proof |
+|---|---|---|
+| Optimize / undo lost the zine's choices | Fixed: a carry keyed on the installed file | e2e A2: "collectors only" and the chosen cover page survive the optimized re-pick and its undo, on a 6 MB fixture the optimizer shrinks |
+| A resumed collectors-only zine uploaded its cover twice | Fixed, and the decision made pure | oracle §8: a banked cover owes no poster; a banked PDF or model does |
+| A cover changed after a failed attempt was ignored | Fixed, pure | oracle §8: a changed cover is a miss, an unknown one (a reload) a match, the access mismatch both ways, a different pick, a session given up on |
+| The attach retry was immediate | Fixed: 2.5 s pause | Inspection (the route's transient answers are 503s; the pause is the only change) |
+| Non-ASCII titles stripped | Fixed: UTF-16BE | oracle §7: "Café №1" survives as `<FEFF…>` |
+| The form built the zine's fields inline | Fixed: `zineMomentFields` | oracle §4 pins the builder the form now calls; `tsc` ties the call to the type |
+| The optimize pass could not be cancelled | Fixed: aborted by a new pick or leaving the form | e2e A2: clearing the pick mid-pass produces neither a result nor an error |
+| "page 0 / N"; every page announced | Fixed: an opening step; the live region announces the phase only | Inspection (the busy shape is typed; the detail is `aria-hidden`) |
+| A PDF in a cover slot told where zines are minted | Fixed | oracle: the cover gate's own copy for a PDF |
+| The writer's `/Length`, `/Size`, xref entries | Pinned | oracle §7 rows |
+
+### 23.3 The store and the surfaces
+
+| Finding | Decision | Proof |
+|---|---|---|
+| The artist could not read their own collectors-only zine | Fixed: managers may view, view only | gate: a manager holding no edition reads the bytes (200, the same sha256, `attachment`, `private`); the ticket route still refuses them; a stranger is 403, no session 401; a failing permissions read keeps the 403 |
+| The page count: stored, carried, bounded | Confirmed | gate: `?pages=3` rides the attach into the descriptor and the public status; `?pages=999` is not stored; oracle: `readZineHint` refuses a count past the cap |
+| A public zine and a PDF collector file shared a resume key | Fixed: its own key, no `?page=` pickup | Inspection (`cfile:` prefix; `readStartPage(key, { url: false })`), the e2e's resume checks on the public zine unchanged |
+| The manage panel's page-count race | Fixed: a pick sequence; save waits | Inspection (the handler is sequenced on a ref and the save button disables while counting) |
+| A password-protected PDF told as "could not start" | Fixed: told as itself; the artist warned at attach | Inspection (the copy keys exist and are wired; a protected fixture would need a password-capable writer, which the repo deliberately lacks) |
+| The stale collectors hint | Fixed: the edit flow keeps it only while the media is a still and the collector file (when known) is a PDF; cards never badge over a model | e2e E: a model moment carrying a collectors hint shows the model's badge and no zine badge |
+| `collector download` on a zine; "your download is ready" | Fixed | e2e C3 (the card reads "collectors-only zine · … · 6 pages · v1") |
+| A PDF as a machine frame | Fixed: the frame's copy | Inspection |
+| The view route's stale comment; the doc's cache claim | Fixed | Read |
+
+### 23.4 Regressions, bloat, and what the pass itself found
+
+- The 3D suite's one stale assertion (the gate's copy) was the only
+  regression; it follows the product copy now.
+- The bundle, measured again against the base commit after the audit's
+  own changes (the lazy viewer, the hint module, the merged bar): §22.3's
+  table holds, and the mint route's +1.4 KB since the audit is the carry,
+  the abort and the builder call.
+- The validation pass found two of its own. The e2e's optimize section
+  cleared the form twice (the second clear is conditional now). And a 3D
+  check — the still fading after the model paints — failed twice in a row
+  although nothing on the 3D path had changed: the in-process route
+  harnesses (the agent routes' and the new gate script, which copied it)
+  start the built app through `npx next start` and stopped it with a
+  signal to the `npx` wrapper alone, so each run left a `next-server`
+  orphaned and spinning at full CPU on the mocks that had gone with the
+  harness. Three of them starved the browser's animation clock, and a CSS
+  transition that never advances reads as a fade that never happens. Both
+  harnesses now start the server in its own process group and stop the
+  group; the 3D suite passes again once the orphans are gone.
+
+### 23.5 What stays inspection-validated, and why
+
+Multi-touch (pinch hand-off) and the manage panel's pick race need a
+manager session and multi-touch input the browser harness does not have;
+both fixes are small and read in full. The holder's `read` in a browser
+remains the one path no harness here can drive end to end; its server half
+is the gate script above and its client half is the same reader the public
+zine uses.
+
 ## Appendix A — verified vs. assumed
 
 **Verified in this session.** Every `file:line` above (read from the tree at
