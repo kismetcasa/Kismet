@@ -164,11 +164,14 @@ assert.equal(detectCfileKind(Buffer.from('%PDF-<svg')), 'pdf', 'text sniff overr
 assert.equal(detectCfileKind(Buffer.from('<!--' + 'x'.repeat(8000) + '--><svg/>')), null, 'sniff scanned past its bound')
 
 // ---- 4c. Viewability + served Content-Types (immutable contracts) ---------
-assert.deepEqual([...CFILE_VIEWABLE_KINDS].sort(), ['glb', 'svg'], 'viewable set drifted')
+assert.deepEqual([...CFILE_VIEWABLE_KINDS].sort(), ['glb', 'pdf', 'svg'], 'viewable set drifted')
 assert.ok(isViewableCfileKind('glb') && isViewableCfileKind('svg'))
-// PDF/zip must NOT be viewable: the view route has no attachment semantics
-// for a save dialog, and PDF viewing was deliberately deferred (pdf.js).
-assert.ok(!isViewableCfileKind('pdf'), 'pdf became viewable without a viewer')
+// PDF is viewable since 2026-10-15: a collectors-only zine reads in the
+// page-by-page reader (components/ZineReader via CollectorFileViewer), the
+// dependency the public zine already pays for (ZINE_READER_DESIGN.md §10).
+assert.ok(isViewableCfileKind('pdf'), 'pdf lost its reader')
+// Zip and the cartridges must NOT be viewable: the view route has no
+// attachment semantics for a save dialog and nothing renders them.
 assert.ok(!isViewableCfileKind('zip'), 'zip became viewable')
 assert.ok(!isViewableCfileKind(undefined), 'legacy (kind-less) record became viewable')
 assert.equal(CFILE_KINDS.zip.mime, 'application/zip')
@@ -210,6 +213,22 @@ assert.equal(second.version.blobSeq, 2, 'blobSeq not sequenced')
 assert.equal(second.record.history[0].v, 1, 'superseded version not in history')
 assert.ok(second.record.history[0].stored, 'previous version lost its bytes inside the window')
 assert.deepEqual(second.prune, [], 'pruned inside the retention window')
+
+// A zine's page count rides the version like `kind` does — on a pdf only,
+// and only a positive integer (ZINE_READER_DESIGN.md §10).
+const pdfAttach = planAttach(second.record, base({ sha256: 'pdf-bytes', kind: 'pdf', name: 'issue.pdf', pages: 16 }))
+assert.ok(pdfAttach)
+assert.equal(pdfAttach.version.pages, 16, 'page count not stored on a pdf version')
+assert.equal(pdfAttach.record.history[0].kind, 'glb', 'history row lost its kind')
+const pdfReplaced = planAttach(pdfAttach.record, base({ sha256: 'zip-again', kind: 'zip', name: 'b.zip', pages: 16 }))
+assert.ok(pdfReplaced)
+assert.equal(pdfReplaced.version.pages, undefined, 'page count stored on a non-pdf')
+assert.equal(pdfReplaced.record.history[0].pages, 16, 'history row lost the page count')
+assert.equal(planAttach(null, base({ kind: 'pdf', name: 'x.pdf', pages: 0 }))?.version.pages, undefined, 'zero pages stored')
+assert.equal(planAttach(null, base({ kind: 'pdf', name: 'x.pdf', pages: 2.5 }))?.version.pages, undefined, 'fractional pages stored')
+const rolledBack = planRollback(pdfReplaced.record, pdfAttach.version.v, '0xArtist', now + 1)
+assert.ok(rolledBack, 'rollback to the pdf version refused')
+assert.equal(rolledBack.record.current?.pages, 16, 'rollback lost the page count')
 
 // Fill the window (v1..v3 stored), then one more: the OLDEST blob falls out.
 const third = planAttach(second.record, base({ sha256: 'third' }))

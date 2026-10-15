@@ -16,3 +16,11 @@ export function hapticNotifySuccess(): void {
     .then(({ sdk }) => sdk.haptics.notificationOccurred('success').catch(() => {}))
     .catch(() => {})
 }
+
+/** The light tick of a selection change — a page turn in the zine reader.
+ *  Same gating rule as above: call only inside a Mini App. */
+export function hapticSelection(): void {
+  void import('@farcaster/miniapp-sdk')
+    .then(({ sdk }) => sdk.haptics.selectionChanged().catch(() => {}))
+    .catch(() => {})
+}

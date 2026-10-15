@@ -428,3 +428,16 @@ over the cap and a renamed non-PDF), serves them wherever the app resolves
 # with the server from the recipe above running on :3100
 node scripts/e2e/zine.mjs          # fixtures land in .e2e/, screenshots in .e2e/shots/z*.png
 ```
+
+The zine check also covers the collectors-only mode as a non-holder sees it
+(the card's page count and "collect to read", the hint-driven badge), the
+reader's rotation, history-backed close and resume on reopen, and the mint form's access
+control and "optimize for phones" pass. The holder path (the card's `read`
+and the collector-file view route feeding the reader) needs a holder session
+and is covered by the oracle plus a manual check.
+
+`zine-showcase.mjs` drives the same build with a REAL zine PDF and
+photographs it (no assertions): `E2E_ZINE_PDF=… E2E_ZINE_COVER=…
+E2E_ZINE_TITLE=… E2E_ZINE_PAGES=… node scripts/e2e/zine-showcase.mjs`.
+It also runs the optimizer on the file and reports the before/after timings
+on a phone-sized viewport.

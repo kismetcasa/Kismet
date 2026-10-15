@@ -173,8 +173,18 @@ export interface RenderPageOptions {
   dpr?: number
   mime?: string
   quality?: number
+  /** Extra rotation in degrees (0, 90, 180, 270) on top of the page's own
+   *  /Rotate — a reader turning a landscape scan upright on a phone. */
+  rotation?: number
   /** Aborting cancels the render task; the promise then rejects. */
   signal?: AbortSignal
+}
+
+/** The page's displayed aspect (width / height) after its own /Rotate and
+ *  an extra rotation. */
+export function pageAspect(page: PdfPage, rotation = 0): number {
+  const vp = page.getViewport({ scale: 1, rotation: (page.rotate + rotation) % 360 })
+  return vp.width / vp.height
 }
 
 /**
@@ -188,13 +198,14 @@ export interface RenderPageOptions {
  */
 export async function renderPageToBlob(page: PdfPage, opts: RenderPageOptions): Promise<RenderedPage> {
   const dpr = opts.dpr ?? 1
-  const base = page.getViewport({ scale: 1 })
+  const rotation = (page.rotate + (opts.rotation ?? 0)) % 360
+  const base = page.getViewport({ scale: 1, rotation })
   let scale = (opts.cssWidth * dpr) / base.width
   const pixels = base.width * base.height * scale * scale
   if (pixels > PDF_RENDER_MAX_PIXELS) scale *= Math.sqrt(PDF_RENDER_MAX_PIXELS / pixels)
   const side = Math.max(base.width, base.height) * scale
   if (side > PDF_RENDER_MAX_SIDE) scale *= PDF_RENDER_MAX_SIDE / side
-  const viewport = page.getViewport({ scale })
+  const viewport = page.getViewport({ scale, rotation })
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.ceil(viewport.width))
   canvas.height = Math.max(1, Math.ceil(viewport.height))

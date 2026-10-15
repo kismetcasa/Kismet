@@ -51,6 +51,7 @@ import {
   fetchModelBlob,
 } from '../lib/media/modelFetch.ts'
 import { GLB_MAGIC, GLB_MIME } from '../lib/glbFormat.ts'
+import { writeImagePdf } from '../lib/media/optimizePdf.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail = ''): void => {
@@ -183,11 +184,20 @@ const already = pdfFile()
 check('asPdfFile: an already-typed PDF is returned as is', asPdfFile(already) === already)
 
 // ── 4. Classification + the fail-safe shape ────────────────────────────────
-const built = zineMomentFields({ pdfUri: PDF, coverUri: COVER, pages: 16, thumbhash: 'th' })
+const built = zineMomentFields({ access: 'public', pdfUri: PDF, coverUri: COVER, pages: 16, thumbhash: 'th' })
 check('builder: zineMomentFields writes the video/3D shape plus the hint',
-  built.image === COVER && built.animation_url === PDF && built.content.uri === PDF && built.content.mime === PDF_MIME &&
+  built.image === COVER && built.animation_url === PDF && built.content?.uri === PDF && built.content?.mime === PDF_MIME &&
     built.kismet_zine.pages === 16 && built.kismet_zine.access === 'public' && built.kismet_thumbhash === 'th')
-check('builder: no thumbhash, no key', !('kismet_thumbhash' in zineMomentFields({ pdfUri: PDF, coverUri: COVER, pages: 2 })))
+check('builder: no thumbhash, no key', !('kismet_thumbhash' in zineMomentFields({ access: 'public', pdfUri: PDF, coverUri: COVER, pages: 2 })))
+// Collectors-only: an image moment plus the hint — no animation_url, no
+// content, so every resolver and marketplace sees a still (§8.2).
+const privateBuilt = zineMomentFields({ access: 'collectors', coverUri: COVER, pages: 16, thumbhash: 'th' })
+check('builder: a collectors-only zine is the cover plus the hint, nothing else',
+  privateBuilt.image === COVER && !('animation_url' in privateBuilt) && !('content' in privateBuilt) &&
+    privateBuilt.kismet_zine.access === 'collectors' && privateBuilt.kismet_zine.pages === 16 && privateBuilt.kismet_thumbhash === 'th')
+check('builder: a collectors-only zine resolves as an image with the cover as src',
+  resolveMomentMedia(privateBuilt).kind === 'image' && resolveMomentMedia(privateBuilt).src === COVER)
+check('builder: the hint of a collectors-only zine reads back', readZineHint(privateBuilt.kismet_zine)?.access === 'collectors')
 const r = resolveMomentMedia(built)
 check('resolve: a Kismet zine classifies as `pdf`', r.kind === 'pdf', r.kind)
 check('resolve: pdfSrc is the PDF', r.pdfSrc === PDF, String(r.pdfSrc))
@@ -261,6 +271,35 @@ check('fetch: the 3D path is unchanged (GLB in, model/gltf-binary out)', modelBl
 check('fetch: the 3D copy still says "3D model"',
   describeModelFetchFailure([{ url: 'u', failure: { kind: 'stall' } }]).includes(GLB_EXPECTATION.label) &&
     describeModelFetchFailure([{ url: 'u', failure: { kind: 'too-large', bytes: 1 } }], PDF_EXPECTATION.label).includes('zine'))
+
+// ── 7. The optimizer's PDF writer (lib/media/optimizePdf) ──────────────────
+// Fed fixture "JPEGs" (the SOI marker is all a structural check needs), the
+// writer must produce a file the collector-file detector calls a pdf, with
+// the page count it was given, one image per page, and a valid xref.
+const fakeJpeg = (n: number) => {
+  const b = new Uint8Array(64 + n)
+  b.set([0xff, 0xd8, 0xff, 0xe0])
+  b.set([0xff, 0xd9], b.length - 2)
+  return b
+}
+const rasters = [1, 2, 3].map((n) => ({ jpeg: fakeJpeg(n), pixelWidth: 1414, pixelHeight: 2000, widthPt: 595.2, heightPt: 841.68 }))
+const written = writeImagePdf(rasters, { title: 'Issue (0) \\ test' })
+const writtenText = new TextDecoder('latin1').decode(written)
+check('writer: the output is a PDF by magic', hasPdfMagic(written) && detectCfileKind(Buffer.from(written)) === 'pdf')
+check('writer: the page tree counts every page', /\/Type \/Pages \/Kids \[[^\]]+\] \/Count 3 >>/.test(writtenText))
+check('writer: one DCT image per page, at the pixel size rendered',
+  (writtenText.match(/\/Filter \/DCTDecode/g) ?? []).length === 3 && writtenText.includes('/Width 1414 /Height 2000'))
+check('writer: pages keep their size in points', writtenText.includes('/MediaBox [0 0 595.20 841.68]'))
+check('writer: the title is escaped into the Info dictionary', writtenText.includes('/Title (Issue \\(0\\) \\\\ test)'))
+{
+  const m = /startxref\n(\d+)\n%%EOF/.exec(writtenText)
+  const at = m ? Number(m[1]) : -1
+  check('writer: startxref points at the xref table', at > 0 && writtenText.slice(at, at + 4) === 'xref', String(at))
+  // Every xref offset must land on "<n> 0 obj".
+  const offsets = [...writtenText.matchAll(/^(\d{10}) 00000 n /gm)].map((x) => Number(x[1]))
+  check('writer: every xref offset lands on its object',
+    offsets.length === 12 && offsets.every((o, i) => writtenText.slice(o, o + `${i + 1} 0 obj`.length) === `${i + 1} 0 obj`), String(offsets.length))
+}
 
 console.log(failures === 0 ? '\nverify-zine-media: all checks passed' : `\nverify-zine-media: ${failures} FAILED`)
 process.exit(failures === 0 ? 0 : 1)

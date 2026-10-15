@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { BookOpen, X } from 'lucide-react'
 import { MomentImage } from './MomentImage'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 import { modelFetchUrls } from '@/lib/media/gateway'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
@@ -17,6 +18,7 @@ import {
 } from '@/lib/media/modelFetch'
 import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'
 import { loadPdfJs, openPdf, type OpenedPdf } from '@/lib/pdfjs'
+import { readRotation, readStartPage, rememberPage, rememberRotation, useReaderHistory } from '@/lib/zineHistory'
 
 /**
  * The artwork detail view's entry to a public zine — the tap-to-load twin of
@@ -32,9 +34,10 @@ import { loadPdfJs, openPdf, type OpenedPdf } from '@/lib/pdfjs'
  * a byte readout and a gateway walk (lib/media/modelFetch — the reasons that
  * download is ours are recorded there).
  *
- * The reader owns the pages; this component owns the URL (`?page=N`) and the
- * resume position, so a shared link opens on its page and a return visit
- * picks up where the reader left off.
+ * The reader owns the pages; this component owns the URL (`?page=N`), the
+ * resume position and the history entry (lib/zineHistory): a shared link
+ * opens on its page, a return visit picks up where the reader left off, and
+ * the back gesture closes the reader instead of leaving the artwork.
  */
 
 const ZineReader = dynamic(() => import('./ZineReader').then((m) => m.ZineReader), { ssr: false })
@@ -58,43 +61,6 @@ interface Props {
   onAllError?: () => void
 }
 
-const RESUME_PREFIX = 'kismet:zine-page:'
-
-function readStartPage(storageKey: string): number | undefined {
-  try {
-    const fromUrl = Number(new URL(window.location.href).searchParams.get('page'))
-    if (Number.isInteger(fromUrl) && fromUrl > 0) return fromUrl
-    const stored = Number(window.localStorage.getItem(RESUME_PREFIX + storageKey))
-    if (Number.isInteger(stored) && stored > 1) return stored
-  } catch {
-    /* private mode, blocked storage: start at the cover */
-  }
-  return undefined
-}
-
-function rememberPage(storageKey: string, page: number): void {
-  try {
-    const url = new URL(window.location.href)
-    if (page > 1) url.searchParams.set('page', String(page))
-    else url.searchParams.delete('page')
-    window.history.replaceState(window.history.state, '', url.toString())
-    window.localStorage.setItem(RESUME_PREFIX + storageKey, String(page))
-  } catch {
-    /* best effort */
-  }
-}
-
-function forgetPageParam(): void {
-  try {
-    const url = new URL(window.location.href)
-    if (!url.searchParams.has('page')) return
-    url.searchParams.delete('page')
-    window.history.replaceState(window.history.state, '', url.toString())
-  } catch {
-    /* best effort */
-  }
-}
-
 export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageKey, onAllError }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState<string | null>(null)
@@ -107,6 +73,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   const openedRef = useRef<OpenedPdf | null>(null)
   const sessionRef = useRef(0)
   const lastProgressAtRef = useRef(0)
+  const { isInMiniApp } = useFarcaster()
   const urls = useMemo(() => modelFetchUrls(src), [src])
   // "Download PDF" goes to the gateway, never through our proxy (which
   // serves PDFs as attachments and would otherwise carry the egress).
@@ -127,6 +94,15 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
     abortRef.current = null
     releaseDoc()
   }, [releaseDoc])
+
+  // The actual exit. Reached through the history hook below (the back
+  // gesture, or the UI's close popping our entry), never called directly
+  // by a control.
+  const exitNow = useCallback(() => {
+    cancel()
+    setPhase('idle')
+  }, [cancel])
+  const closeViaHistory = useReaderHistory(phase === 'loading' || phase === 'reading', exitNow)
 
   const activate = useCallback(async () => {
     cancel()
@@ -177,16 +153,25 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
     }
   }, [urls, cancel, storageKey])
 
-  const exit = useCallback(() => {
-    cancel()
-    forgetPageParam()
-    setPhase('idle')
-  }, [cancel])
-
   // Unmount (navigation) stops a download in flight and frees the document.
   useEffect(() => () => cancel(), [cancel])
 
   const onPageChange = useCallback((page: number) => rememberPage(storageKey, page), [storageKey])
+  const onRotationChange = useCallback((r: number) => rememberRotation(storageKey, r), [storageKey])
+
+  // A Mini App opens URLs through its host; target=_blank goes nowhere in
+  // the RN webview. Same route the collector-file download takes.
+  const onDownload = useMemo(
+    () =>
+      isInMiniApp
+        ? () => {
+            void import('@farcaster/miniapp-sdk')
+              .then(({ sdk }) => sdk.actions.openUrl(downloadUrl))
+              .catch(() => {})
+          }
+        : undefined,
+    [isInMiniApp, downloadUrl],
+  )
 
   const hasStill = !!poster && !posterFailed
   useEffect(() => {
@@ -222,9 +207,13 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
           doc={opened.doc}
           title={title}
           startPage={startPage}
-          onClose={exit}
+          onClose={closeViaHistory}
           onPageChange={onPageChange}
-          downloadUrl={downloadUrl}
+          downloadUrl={onDownload ? undefined : downloadUrl}
+          onDownload={onDownload}
+          haptics={isInMiniApp}
+          startRotation={readRotation(storageKey)}
+          onRotationChange={onRotationChange}
         />
       ) : null}
       {phase === 'loading' ? (
@@ -234,7 +223,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
           </p>
           <button
             type="button"
-            onClick={exit}
+            onClick={closeViaHistory}
             aria-label="Cancel opening the zine"
             className="absolute top-2 right-2 z-10 w-8 h-8 bg-[#0d0d0d]/80 border border-line flex items-center justify-center text-dim hover:text-ink transition-colors"
           >
@@ -261,9 +250,15 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
               {phase === 'error' && (
                 <>
                   {' '}
-                  <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
-                    open the PDF
-                  </a>
+                  {onDownload ? (
+                    <button type="button" onClick={onDownload} className="underline hover:text-ink">
+                      open the PDF
+                    </button>
+                  ) : (
+                    <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
+                      open the PDF
+                    </a>
+                  )}
                 </>
               )}
             </p>

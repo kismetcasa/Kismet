@@ -1,0 +1,141 @@
+'use client'
+
+import { useCallback, useEffect, useRef } from 'react'
+
+/**
+ * Where a reader is in a zine, and how the reader sits in the browser's
+ * history — shared by the public entry (components/MomentZine) and the
+ * collectors-only one (components/CollectorFileViewer).
+ *
+ * THE BACK GESTURE CLOSES THE READER. On a phone the reader fills the
+ * screen, and the edge swipe (iOS), the back button (Android) and a Mini App
+ * host's own back control all mean "get me out of this" — without a history
+ * entry of its own, every one of them would leave the ARTWORK instead. So
+ * opening pushes one entry marked as ours; back pops it and the popstate
+ * closes the reader; closing from the UI goes through history.back() so the
+ * stack never keeps a dead entry. Next's App Router patches pushState and
+ * replaceState to carry its own state along, and restores the same page on
+ * the pop, so this composes with client navigation.
+ */
+
+const RESUME_PREFIX = 'kismet:zine-page:'
+const READER_STATE_KEY = 'kismetZineReader'
+
+/** The page to open on: a shared `?page=N` wins, then the remembered spot. */
+export function readStartPage(storageKey: string): number | undefined {
+  try {
+    const fromUrl = Number(new URL(window.location.href).searchParams.get('page'))
+    if (Number.isInteger(fromUrl) && fromUrl > 0) return fromUrl
+    const stored = Number(window.localStorage.getItem(RESUME_PREFIX + storageKey))
+    if (Number.isInteger(stored) && stored > 1) return stored
+  } catch {
+    /* private mode, blocked storage: start at the cover */
+  }
+  return undefined
+}
+
+/** Reflect the page in the URL (shareable) and remember it (resume). */
+export function rememberPage(storageKey: string, page: number): void {
+  try {
+    const url = new URL(window.location.href)
+    if (page > 1) url.searchParams.set('page', String(page))
+    else url.searchParams.delete('page')
+    // Spread the current state: Next's internals and our reader marker both
+    // live there and must survive the replace.
+    window.history.replaceState({ ...(window.history.state ?? {}) }, '', url.toString())
+    window.localStorage.setItem(RESUME_PREFIX + storageKey, String(page))
+  } catch {
+    /* best effort */
+  }
+}
+
+const ROTATE_PREFIX = 'kismet:zine-rotate:'
+
+/** A remembered extra rotation for a zine (a landscape scan read upright on
+ *  a phone), 0 / 90 / 180 / 270. */
+export function readRotation(storageKey: string): number {
+  try {
+    const stored = Number(window.localStorage.getItem(ROTATE_PREFIX + storageKey))
+    return [90, 180, 270].includes(stored) ? stored : 0
+  } catch {
+    return 0
+  }
+}
+
+export function rememberRotation(storageKey: string, rotation: number): void {
+  try {
+    if (rotation % 360 === 0) window.localStorage.removeItem(ROTATE_PREFIX + storageKey)
+    else window.localStorage.setItem(ROTATE_PREFIX + storageKey, String(rotation % 360))
+  } catch {
+    /* best effort */
+  }
+}
+
+export function clearPageParam(): void {
+  try {
+    const url = new URL(window.location.href)
+    if (!url.searchParams.has('page')) return
+    url.searchParams.delete('page')
+    window.history.replaceState({ ...(window.history.state ?? {}) }, '', url.toString())
+  } catch {
+    /* best effort */
+  }
+}
+
+function hasReaderEntry(): boolean {
+  const s = window.history.state as Record<string, unknown> | null
+  return !!s && s[READER_STATE_KEY] === true
+}
+
+/**
+ * Back-gesture-aware open/close. While `open`, one history entry marked as
+ * ours sits on top; a pop past it calls `onBackClose`. The returned function
+ * is the UI's close: it pops our entry (so the popstate closes the reader),
+ * or closes directly when no entry could be pushed.
+ */
+export function useReaderHistory(open: boolean, onBackClose: () => void): () => void {
+  const onBackRef = useRef(onBackClose)
+  onBackRef.current = onBackClose
+  const pushedRef = useRef(false)
+
+  useEffect(() => {
+    if (!open) return
+    try {
+      window.history.pushState({ ...(window.history.state ?? {}), [READER_STATE_KEY]: true }, '', window.location.href)
+      pushedRef.current = true
+    } catch {
+      pushedRef.current = false
+    }
+    const onPop = () => {
+      // Still on an entry of ours (a forward after a back): nothing to do.
+      if (hasReaderEntry()) return
+      pushedRef.current = false
+      onBackRef.current()
+    }
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      // Closed by other means while our entry is still on top (an unmount,
+      // a navigation): strip the marker so a later back lands on a plain
+      // artwork page rather than a reader that no longer exists.
+      if (pushedRef.current && hasReaderEntry()) {
+        pushedRef.current = false
+        try {
+          const s = { ...(window.history.state as Record<string, unknown>) }
+          delete s[READER_STATE_KEY]
+          window.history.replaceState(s, '', window.location.href)
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+  }, [open])
+
+  return useCallback(() => {
+    if (pushedRef.current && hasReaderEntry()) {
+      window.history.back()
+      return
+    }
+    onBackRef.current()
+  }, [])
+}

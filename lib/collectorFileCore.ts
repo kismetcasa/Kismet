@@ -268,6 +268,10 @@ export interface CfileVersion {
    *  Content-Type. Absent on records written before formats beyond zip
    *  existed; readers default to 'zip'. */
   kind?: CfileKind
+  /** A `pdf`'s page count as counted client-side at attach (display
+   *  metadata, never a control). Travels through history and rollback like
+   *  `kind` does. */
+  pages?: number
   name: string
   note?: string
   updatedAt: number
@@ -381,10 +385,16 @@ function applyRetention(
  *  the notify cooldown. */
 export function planAttach(
   record: CfileRecord | null,
-  input: { size: number; sha256: string; kind: CfileKind; name: string; note?: string; updatedBy: string; now: number },
+  input: { size: number; sha256: string; kind: CfileKind; name: string; note?: string; pages?: number; updatedBy: string; now: number },
 ): { record: CfileRecord; version: CfileVersion; prune: CfileBlobRef[] } | null {
   if (record?.current && record.current.sha256 === input.sha256) return null
   const seq = record?.nextBlobSeq ?? 1
+  // A page count is only meaningful on a PDF, and only a positive integer
+  // is one; anything else is dropped rather than stored as a lie.
+  const pages =
+    input.kind === 'pdf' && typeof input.pages === 'number' && Number.isInteger(input.pages) && input.pages > 0
+      ? input.pages
+      : undefined
   const version: CfileVersion = {
     v: nextVersionNumber(record),
     blobSeq: seq,
@@ -392,6 +402,7 @@ export function planAttach(
     size: input.size,
     sha256: input.sha256,
     kind: input.kind,
+    ...(pages ? { pages } : {}),
     name: input.name,
     ...(input.note ? { note: input.note } : {}),
     updatedAt: input.now,

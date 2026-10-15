@@ -1041,6 +1041,233 @@ lives in the code.
 route grew past the 10 % guard; no baseline bump), and `scripts/e2e/zine.mjs`
 against the built app in headless Chromium.
 
+## 21. Phase 2 — collectors-only zines, the phone, and Arjan's file (2026-10-15)
+
+Round 3 asked for three things: show Arjan's actual PDF going through the
+real build, validate the Phase 2 (collectors-only) design against the code
+and implement it, and work out what the reader needs on an iPhone and inside
+the Farcaster / Base Mini App. All three are done. The timings below come
+from the built app in headless Chromium with software rendering — a phone's
+JPEG decoder is faster than this sandbox and its JavaScript slower, so read
+them as an ordering, not as absolutes.
+
+### 21.1 Arjan's file through the real build
+
+**The file.** `trpplzin0_forPrinting.pdf`: 2.4 MB, PDF 1.3, six A4 pages
+(595 × 842 pt), each one baseline JPEG of 2480 × 3507 px (300 dpi, 8.7 MP),
+no `/Rotate`, not linearized, an unembedded Helvetica reference; the pages
+are the scans. It is a scanner's output wrapped for a print shop, and that is
+the finding: the "forPrinting" export is IMPOSED. Each PDF page is a print
+sheet carrying two zine pages side by side, turned 90°, in imposition order
+(the sheet that folds into the middle, not the page that reads next). A
+viewer cannot undo imposition; what it can do is turn the sheet upright, so
+Phase 2 adds a rotate control (§21.3, row 9) and Arjan will export a
+reading-order version for the mint. Every zine artist who only has a print
+file will hit this; the mint preview shows it before anything is uploaded.
+
+**What the viewer does with it.** `scripts/e2e/zine-showcase.mjs` drives the
+build with the real file and photographs it (`.e2e/arjan/shots/`, gitignored):
+the mint preview on page 1 and page 2, the optimized preview, the artwork
+page, the reader on the cover and on the 2–3 spread, the feed card, and the
+phone at DPR 3 — the cover, page 2, a double-tap zoom, and page 2 after the
+turns that make this file readable. The measurements are in §21.4.
+
+**What the measurements taught, including one wrong first reading.** The
+first showcase run put the next page on a phone at about 0.8 s, and the first
+draft of this section blamed the JPEG decode of an 8.7 MP scan. A trace of the
+worker traffic (`GetPage` → `toBlob`) said otherwise: in this Chromium the
+decode and draw of a 2480 × 3507 scan takes ~150 ms and the optimized 2000 px
+page ~40 ms; the next page was already rendered ~170 ms after the first; the
+0.8 s was the reader — a tap on the page edge waited out the 300 ms double-tap
+window before turning, and the measurement sat on top of that — plus the
+measurement itself. Three things followed, all shipped:
+
+1. **Edge taps turn at once** (§21.3, row 15). The double-tap window now
+   applies only to centre taps, where the chrome toggle and the zoom would
+   otherwise fight. A key turn was 16 ms; an edge tap is now the same.
+2. **The prerender window is one page either side on narrow viewports**
+   (≤ 700 px CSS; two on wide ones), kept for the reason that survives the
+   correction: Safari has no `ImageDecoder`, so pdf.js decodes JPEG in
+   JavaScript inside its worker, where an 8.7 MP page is several times the
+   work of a 2.8 MP one; two each way after every turn is heat, battery and
+   memory for pages the reader may never reach, and one ahead is ready before
+   anyone turns.
+3. **"Optimize for phones"** — an opt-in pass on the mint preview (§21.3,
+   row 8) that re-renders every page at 2000 px on the long edge and writes an
+   image-only PDF: 2.3 MB → 1.3 MB on the wire for this file, and a third of
+   the pixels per page for Safari's decoder. The sandbox cannot measure that
+   Safari gain; the first real iPhone session should (§21.6).
+
+### 21.2 Collectors-only — validated against the collector-file code, then shipped
+
+§8.2 and §10 said: a collectors-only zine is an image moment (the cover on
+Arweave) with the PDF in the private collector-file store. Validating that
+against the store before writing a line found no contradiction and three
+things worth being precise about:
+
+- **The store already had everything but "view a PDF".** The record
+  (`kismetart:cfile:<ref>`, a `CfileRecord` with a versioned `current` and
+  `history`), the chunked blob, the attach / replace / rollback / detach
+  planning (`lib/collectorFileCore`), the gated byte routes
+  (`/api/collector-file/view` for in-browser viewing, the ticket-first
+  `/download`), the quotas, the audience notifications and the admin
+  kill-switch are untouched. The one storage-layer change: `pdf` joined
+  `CFILE_VIEWABLE_KINDS` (`glb`, `pdf`, `svg`), so a holder's `read` is the
+  same same-origin gated fetch the GLB viewer makes, and the bytes go from
+  that response straight into `openPdf` — never through a URL, never cached
+  by the browser as a file.
+- **The page count lives on the version row** (`CfileVersion.pages`, `pages?`
+  on the public descriptor). It is display metadata: counted client-side at
+  attach (`sniffPdfFile` → `inspectPdfFile`), sent as `?pages=` (1..420, else
+  ignored), stored only for `kind === 'pdf'`, and carried through replace and
+  rollback exactly as `kind` is — `verify:collector-file` pins that. It is
+  never a control; the reader counts pages from the document it opens.
+- **Attach is awaited at mint, with one retry.** The moment mints as an image
+  moment (the rendered or uploaded cover, `kismet_zine: { pages, access:
+  'collectors' }`, no `animation_url`); the form then attaches the PDF as the
+  collector file under one toast ("Minted — attaching the zine for
+  collectors…") and retries once before telling the artist to attach it from
+  the artwork page. The mint never blocks on the attach, and the artist is
+  never left believing the zine is readable when it is not. A cached upload
+  from an earlier attempt is discarded when the access mode flipped, because
+  the two modes upload different files (the PDF vs. the cover).
+
+What the artist sees: a "Who can read it" control (everyone / collectors
+only; everyone is the default, per round 3) with one line of consequence each
+("the PDF is stored on Arweave — public and permanent" / "stored privately on
+Kismet; only the cover is public…"); in collectors-only mode the collector-file
+slot reads "the zine is the collector file · N pages — only collectors can
+read it" and hides its own upload. What a reader sees: the badge says
+"zine, N pages, collectors only" (from the hint — the metadata carries no
+PDF); the artwork page shows the cover and no reader; the collector card says
+"collector download · issue-1.pdf · 2.3 MB · 6 pages · v1" with `read` for
+holders and "collect to read" for everyone else; a holder's `read` opens the
+same reader (history-backed close, resume, rotation, haptics) over the private
+bytes, behind a progress shell ("opening zine… 1.2 MB of 2.3 MB") while they
+arrive.
+
+Verified: `verify:zine-media` (the collectors builder: image + hint, no
+`animation_url` / `content`), `verify:collector-file` (viewable kinds; `pages`
+through attach, replace and rollback), the e2e's mint-form access control (the
+radio flips what is uploaded) and its C3 section — the record is seeded into
+the Redis stub so the SERVER-RENDERED page carries the descriptor exactly as
+production does; a non-holder sees the card, the count and "collect to read",
+gets no `read`, loads nothing from pdf.js, and costs zero status requests. Not
+verified in a browser: the holder's `read` (it needs a holder session the
+sandbox cannot mint); the view route's gate is unchanged and oracle-covered,
+and the viewer's PDF branch is the Phase 1 reader over a `Uint8Array`.
+
+### 21.3 iPhone and Mini App — what was researched, what was decided
+
+The reader is a full-screen layer inside a webview that may be Safari, the
+Farcaster client's WKWebView, or the Base app's React Native webview. Each row
+is a concern, what is true of those hosts, and where the decision lives.
+
+| # | Concern | What is true | Decision (where) |
+|---|---|---|---|
+| 1 | **The back gesture** — iOS's edge swipe and a host's back button pop history | A reader that is React state alone is torn out from under the user by a back gesture: they lose the artwork page, not the reader | Opening pushes one history entry; popping it closes the reader; the X and Escape pop that entry themselves, so no dead reader entry is ever left behind (`lib/zineHistory.ts` `useReaderHistory`; e2e: "browser back closes the reader", "closing leaves no reader entry behind") |
+| 2 | **Horizontal swipes in a Mini App** — hosts own edge swipes for dismiss and navigation | `sdk.actions.ready({ disableNativeGestures: true })` is already how the app announces itself (`providers/FarcasterProvider.tsx`), so page swipes reach the reader | Nothing new to build; recorded so nobody removes that flag without knowing the reader depends on it |
+| 3 | **"Download PDF" in a Mini App** | A `target="_blank"` anchor goes nowhere in the RN webview | In a Mini App the button calls `sdk.actions.openUrl(gatewayUrl)` (the collector-file download's route); on the web it stays an `<a download>` to the gateway, never through our proxy (`components/MomentZine.tsx`) |
+| 4 | **Haptics** | Farcaster hosts expose `sdk.haptics`; Safari has no vibration API | `selectionChanged` on each page turn, Mini App only, through the existing capability-gated helper (`lib/farcasterHaptics.ts` `hapticSelection`); nothing on the web |
+| 5 | **Long-press on a page** | iOS raises the image callout (save / copy) on any `<img>` | `-webkit-touch-callout: none` on page images — the Download button is the sanctioned path; a nudge, not DRM (a public zine is public) |
+| 6 | **Rubber-banding, pull-to-refresh** | A swipe that overshoots scrolls the page behind the layer or refreshes it | `overscroll-behavior: none` on the reader root; body scroll locked while open, the previous overflow restored on close |
+| 7 | **Memory** — WebKit's per-page canvas budget and lazy canvas reclaim | The documented limits (§6.1): ~16.7 MP per canvas, a budget across live canvases, memory not returned until a canvas is zeroed | Unchanged from Phase 1 and now load-bearing: every render becomes a JPEG blob and its canvas is zeroed; 16 MP / 4096 px caps; blobs outside the window are revoked; the window is one page either side on narrow viewports (`ZineReader.tsx` `WINDOW_NARROW`) |
+| 8 | **Decode cost** — 300 dpi scans are 8–9 MP per page | ~150 ms per page here, with Chromium's native decoder (§21.4); Safari has no `ImageDecoder`, so pdf.js decodes JPEG in JavaScript and the page's pixel count is the cost | "Optimize for phones" at mint (`lib/media/optimizePdf.ts`, `components/ZineOptimizeBar.tsx`): each page re-rendered at 2000 px long edge, JPEG 0.85, written into an image-only PDF by `writeImagePdf` (one DCT XObject per page, the page's own aspect as its MediaBox, the title, a real xref — checked byte by byte in `verify:zine-media` §7). Opt-in, with undo; refused as "Already compact" when it saves under 15 %. The button's tooltip and the result toast state the one real trade: pages become images, so text stops being selectable — right for a scan, a choice for a born-digital zine |
+| 9 | **Landscape and imposed pages** (§21.1) | A sideways sheet on a portrait phone is unreadable at fit-to-width | A rotate control (and `r`; `R` turns the other way, for the sheet that lands upside down after the first turn — Arjan's does): quarter turns, remembered per artwork (`kismet:zine-rotate:<key>`), the zoom reset, renders in flight discarded so a turn never shows a stale orientation (e2e: "rotating turns the page a quarter turn", "keeps the place", "three more quarter turns are upright again") |
+| 10 | **Safe areas** — the notch and the home indicator | Only pages with `viewport-fit=cover` draw under them; this app sets none | Nothing to do; the chrome never sits under the indicator |
+| 11 | **Fullscreen** | iPhone Safari has no element fullscreen API | The button appears only when `document.fullscreenEnabled` is true; the reader is already a full-viewport layer, so an iPhone loses nothing |
+| 12 | **Chrome auto-hide** | On touch every swipe moves the pointer; revealing on pointer move would flash the chrome on every page turn | Reveal on pointer move for non-touch pointers only; on touch a centre tap toggles it (e2e: the phone section) |
+| 13 | **Escape and focus** | The scrubber and a zoomed page can hold focus | Escape is captured at the window, so the dialog closes from anywhere inside it; the focus trap and live announcements are Phase 1 |
+| 14 | **Opening twice** — the mint gate then the preview, or a reader closed and reopened | pdf.js destroys a worker it created with the document; a worker handed in stays ours (`pdfjs-dist@6.4.299` `getDocument` sets `task._worker` only when no worker was supplied) | One `PDFWorker` per page session for every document; a worker that fails is replaced, never reused (`lib/pdfjs.ts`); the mint pick → preview time halved with it (§21.4); e2e: a reopen after a history close resumes on the last page without a second worker fetch |
+| 15 | **Tap latency** | An edge tap that waits out a 300 ms double-tap window before turning reads as lag on every page (measured, §21.1) | Edge taps turn at once; the double-tap window applies to centre taps only, where the chrome toggle and the zoom would fight (`ZineReader.tsx` `endPointer`) |
+
+Considered and not done, with the reason: a service worker to cache the PDF
+(the app has none; Arweave bytes are immutable and the browser cache already
+keeps them); range requests / progressive loading (v2 per §6.3 — Arjan's file
+is not linearized, and the gateway's `Accept-Ranges` cannot be verified from
+here); WebP page blobs (no measurable gain on photographic scans, and JPEG is
+universal); keeping canvases instead of blobs (row 7); the native viewer
+(`<iframe>` / `<object>`) on iOS (a scrolling preview with no page turn,
+inconsistent inside the Mini App webviews — rejected in §4.3 and confirmed
+here).
+
+### 21.4 Measurements
+
+Headless Chromium (software rendering) against the built app on
+`localhost`, the PDF served from memory, so the network is not in these
+numbers; a phone's JavaScript is slower and (in Safari) so is its JPEG
+decode, see §21.1. `scripts/e2e/zine-showcase.mjs` with Arjan's file.
+
+| Step | Phase 1 build (10-14) | Phase 2 build (10-15) |
+|---|---|---|
+| Mint: PDF picked → page 1 preview on screen | 2.56 s | 1.10 s (one worker shared by the gate and the preview) |
+| Mint: "optimize for phones", 6 pages | — | 1.41 s; 2.3 MB → 1.3 MB |
+| Desktop (1280 px, 2× DPR): tap → page 1 (download + parse + render) | 0.96 s | 0.99 s |
+| Desktop: → the 2–3 spread | 35 ms | 32 ms |
+| Phone (390 px, 3× DPR): tap → page 1 | 0.95 s | 0.98 s |
+| Phone: edge tap → page 2 | 0.81 s (the 300 ms tap wait; the tap came 0.3 s after page 1, before its prerender had landed) | 28 ms, after a 1.5 s dwell |
+| Phone, the optimized file: tap → page 1 | — | 1.12 s |
+| Phone, the optimized file: edge tap → page 2 | — | 25 ms |
+| One page, decode + draw (worker trace, `GetOperatorList` → `toBlob`) | — | ~150 ms at 2480 × 3507; ~40 ms at 2000 px |
+| Key turn → next page | — | 16 ms |
+
+Where the ~1 s to the first page goes (the trace): ~0.2 s for the reader
+chunk and the bytes, ~0.3 s for the worker to parse the whole file, ~0.2 s
+to render page 1, ~0.15 s for the blob to decode and paint as an image. The
+parse is proportional to the file, which is the case for the optimizer today
+and for progressive loading in v2.
+
+### 21.5 Verification (2026-10-15)
+
+- `npm run check` on the final build: `tsc --noEmit`, `eslint .`,
+  `check:resource-hints`, `check:bundle` (no route grew past the 10 % guard;
+  the `/play/*` routes it lists as new to the baseline are not this work and
+  were left for their owner), every `verify:*` suite — `verify:zine-media`
+  and `verify:collector-file` with their Phase 2 rows, `verify:model-media`,
+  `verify:model-fetch`, `verify:a11y` among them — and the agent routes
+  end-to-end (203 checks).
+- `next build`; the one warning is a dependency's own (`ox`), present before
+  this work.
+- `scripts/e2e/zine.mjs` against the built app with the Redis stub: 75
+  checks, all passing — sections A/B (the mint form, the access control, the
+  optimizer), C (the reader: spreads, keys, scrubber, zoom, rotation, Escape,
+  the history close, the resume on reopen, worker reuse), C3 (the
+  collectors-only card as a non-holder, record seeded), D (the phone: swipe,
+  tap zones, chrome), E (the feed: badges, covers, no pdf.js).
+- `scripts/e2e/zine-showcase.mjs` with Arjan's file: the screenshots in
+  §21.1 and the timings in §21.4, on the same build.
+- Two scratch traces (not committed) of pdf.js worker traffic: the reopen
+  after a history close, and the phone page turn — the second found the tap
+  wait and the real decode figures (§21.1).
+
+### 21.6 Still open
+
+- **The Discover button** — deferred by decision (round 3) until the rest was
+  complete; §11.5 still says where it goes.
+- **Arjan's reading-order export** — the minted file should be the
+  reading-order one; the print file reads sideways in sheet order even with
+  rotation.
+- **The holder's `read` in a browser** — needs a holder session; the server
+  half is oracle-covered and the client half is the Phase 1 reader. The first
+  real collectors-only mint should be opened by a holder on an iPhone before
+  it is announced.
+- **Progressive loading (v2)** — the "download the whole zine first" cost is
+  now a mint-time choice (optimize) rather than a reader-time one; range-based
+  loading remains the way to make a 40 MB zine open fast and should arrive
+  together with a linearize step.
+
+Files for Phase 2:
+
+| File | Role |
+|---|---|
+| `lib/collectorFileTypes.ts`, `lib/collectorFileCore.ts`, `lib/collectorFile.ts`, `app/api/collector-file/route.ts` | `pdf` is viewable; `pages` on the version row, in the public descriptor and on the attach route (`?pages=`, 1..420). |
+| `lib/media/zineMedia.ts` | `zineMomentFields` takes a public (PDF + cover) or a collectors (cover only) input; the access copy. |
+| `components/MintForm.tsx`, `components/ZineOptimizeBar.tsx`, `lib/media/optimizePdf.ts` | The access control, the awaited attach with its retry, the optimizer and its bar. |
+| `components/CollectorFileCard.tsx`, `components/CollectorFileViewer.tsx`, `components/CollectorFileManagePanel.tsx` | `read` / "collect to read" and the page count; the viewer's PDF branch; the page count at attach. |
+| `components/ZineReader.tsx`, `components/MomentZine.tsx`, `lib/zineHistory.ts`, `lib/farcasterHaptics.ts`, `lib/pdfjs.ts` | Rotation, the narrow prerender window, the history-backed close, the Mini App download and haptics, the touch callout and overscroll rules, the shared worker. |
+| `components/ZineBadge.tsx`, `components/MomentCard.tsx`, `components/FeaturedMoment.tsx` | The badge from the hint, with "collectors only". |
+| `scripts/verify-zine-media.ts`, `scripts/verify-collector-file.ts`, `scripts/e2e/zine.mjs`, `scripts/e2e/zine-showcase.mjs`, `scripts/e2e/redis-stub.mjs` | The oracles; the e2e's Phase 2 sections; the showcase; the stub's seeded record. |
+
 ## Appendix A — verified vs. assumed
 
 **Verified in this session.** Every `file:line` above (read from the tree at
@@ -1058,7 +1285,10 @@ docs); that the Base-app DM screenshot is not a Kismet surface.
 progressive path through our proxy regardless); the live Turbo price; Arjan's
 actual file; the Manifold page for issue #0.
 
-**Assumed, to be measured on the first build.** The artwork route's bundle
-delta (expected ≈ +0.3 %); page-1 render time on a scanned page (expected
-≤ 300 ms); WebP support in `toBlob` on the target Safari versions (JPEG is the
-universal fallback either way).
+**Assumed at the time of the design, measured since (§21.4).** The artwork
+route's bundle delta: under the 10 % guard on every build, no baseline bump
+(`check:bundle`). Page-1 render time on a scanned page: ~150 ms for a 300 dpi
+A4 scan in Chromium, so the ≤ 300 ms assumption held there — the ~1 s to the
+first page is the file's parse and the image decode on top of it, and
+Safari's JavaScript JPEG decode remains the open measurement (§21.6). WebP in
+`toBlob`: not needed; every page blob is JPEG.

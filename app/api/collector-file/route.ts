@@ -34,6 +34,7 @@ import {
   writeCfileBlobChunks,
 } from '@/lib/collectorFile'
 import { formatCfileSize } from '@/lib/collectorFileTypes'
+import { ZINE_MAX_PAGES } from '@/lib/media/zineMedia'
 import { parseCfileParams, requireCfileManager } from '@/lib/collectorFileGate'
 import { notifyCollectorsOfUpdate, CFILE_FANOUT_CEILING } from '@/lib/collectorFileFanout'
 
@@ -175,6 +176,13 @@ export async function PUT(req: NextRequest) {
   const rawNote = req.nextUrl.searchParams.get('note') ?? ''
   const note = rawNote.trim().slice(0, 140) || undefined
   const wantNotify = req.nextUrl.searchParams.get('notify') === '1'
+  // `?pages=` — a PDF's page count as the client's parser counted it, for
+  // the card's "· 16 pages" (display metadata like `note`; the reader counts
+  // for itself when it opens the file). Bounded so a hand-crafted request
+  // can at most mislabel its own artwork; planAttach stores it only on a
+  // `pdf`.
+  const rawPages = Number(req.nextUrl.searchParams.get('pages') ?? '')
+  const pages = Number.isInteger(rawPages) && rawPages >= 1 && rawPages <= ZINE_MAX_PAGES ? rawPages : undefined
 
   if (activePuts >= MAX_CONCURRENT_PUTS) {
     return errorResponse(503, 'Another upload is in progress — try again in a moment')
@@ -190,7 +198,7 @@ export async function PUT(req: NextRequest) {
     // Magic bytes decide the format; the claimed name/extension never does.
     const kind = detectCfileKind(plaintext)
     if (!kind) {
-      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, GLB or SVG')
+      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, 3D model (.glb), SVG or Game Boy ROM (.gb/.gbc)')
     }
     const name = normalizeCfileName(decodedName, kind)
 
@@ -229,6 +237,7 @@ export async function PUT(req: NextRequest) {
         kind,
         name,
         note,
+        pages,
         updatedBy: caller,
         now: Date.now(),
       })

@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Columns2, Download, Maximize2, Minimize2, Square, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Columns2, Download, Maximize2, Minimize2, RotateCw, Square, X } from 'lucide-react'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
-import { renderPageToBlob, type PdfDocument } from '@/lib/pdfjs'
+import { hapticSelection } from '@/lib/farcasterHaptics'
+import { pageAspect, renderPageToBlob, type PdfDocument } from '@/lib/pdfjs'
 
 /**
  * The zine reader — a paged, full-screen reader over an open pdf.js document
@@ -37,10 +38,20 @@ interface Props {
   onPageChange?: (page: number) => void
   /** A world-readable URL for "Download PDF" (public zines only). */
   downloadUrl?: string
+  /** Replaces the link with a button that the parent handles — a Mini App
+   *  opens URLs through its host, not through target=_blank. */
+  onDownload?: () => void
+  /** Tick the host's selection haptic on every page turn (Mini App only;
+   *  the helper is a no-op elsewhere but costs a chunk, so it is gated). */
+  haptics?: boolean
+  /** Extra rotation to open with (0 / 90 / 180 / 270) — a landscape scan a
+   *  reader turned upright last time. */
+  startRotation?: number
+  onRotationChange?: (rotation: number) => void
 }
 
 type PageRender =
-  | { ok: true; url: string; aspect: number; cssWidth: number }
+  | { ok: true; url: string; aspect: number; cssWidth: number; rotation: number }
   | { ok: false; aspect: number }
 
 const MIN_ZOOM = 1
@@ -49,8 +60,16 @@ const DOUBLE_TAP_ZOOM = 2.5
 const SWIPE_PX = 40
 const DOUBLE_TAP_MS = 300
 const CHROME_HIDE_MS = 2500
-/** Keep renders for pages within this distance of the one in view. */
-const WINDOW = 2
+/** Keep renders for pages within this distance of the one in view. A phone
+ *  pre-renders one neighbour each way: decoding and drawing an 8.7 MP scan
+ *  measured ~150 ms in Chromium, which decodes JPEG natively, and Safari —
+ *  no ImageDecoder, so pdf.js decodes JPEG in JavaScript — is several times
+ *  slower; two each way after every turn is heat, battery and memory for
+ *  pages the reader may never reach, and the next page is ready either way.
+ *  A wide screen, which also shows spreads, keeps two. */
+const WINDOW_WIDE = 2
+const WINDOW_NARROW = 1
+const NARROW_MAX_WIDTH = 700
 /** Spreads need a landscape viewport at least this wide. */
 const SPREAD_MIN_WIDTH = 900
 const STAGE_PAD = 12
@@ -84,7 +103,18 @@ function usePrefersReducedMotion(): boolean {
   return reduce
 }
 
-export function ZineReader({ doc, title, startPage, onClose, onPageChange, downloadUrl }: Props) {
+export function ZineReader({
+  doc,
+  title,
+  startPage,
+  onClose,
+  onPageChange,
+  downloadUrl,
+  onDownload,
+  haptics = false,
+  startRotation = 0,
+  onRotationChange,
+}: Props) {
   const pages = doc.numPages
   const [page, setPageState] = useState(() => clamp(Math.floor(startPage ?? 1) || 1, 1, pages))
   const [stage, setStage] = useState({ w: 0, h: 0 })
@@ -93,6 +123,13 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [chrome, setChrome] = useState(true)
   const [fullscreen, setFullscreen] = useState(false)
+  // Extra rotation for the whole document: a scan of a landscape spread on a
+  // portrait sheet reads sideways on a phone until it is turned. Every render
+  // carries the rotation it was made at, and a change throws the cache away.
+  const [rotation, setRotation] = useState(() => ([90, 180, 270].includes(startRotation) ? startRotation : 0))
+  const rotationRef = useRef(rotation)
+  const onRotationChangeRef = useRef(onRotationChange)
+  onRotationChangeRef.current = onRotationChange
   const [, bump] = useState(0)
   const rerender = useCallback(() => bump((n) => n + 1), [])
   const reduceMotion = usePrefersReducedMotion()
@@ -159,7 +196,12 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
   const [left, right] = spread ? spreadFor(page, pages) : [page, null]
   const visible = useMemo(() => (right ? [left, right] : [left]), [left, right])
 
-  const aspectOf = useCallback((n: number) => aspectsRef.current.get(n) ?? aspectsRef.current.get(1) ?? DEFAULT_ASPECT, [])
+  // Aspects are cached UNROTATED; the displayed aspect flips with the
+  // rotation (a quarter turn swaps width and height).
+  const aspectOf = useCallback((n: number) => {
+    const base = aspectsRef.current.get(n) ?? aspectsRef.current.get(1) ?? DEFAULT_ASPECT
+    return rotation % 180 === 0 ? base : 1 / base
+  }, [rotation])
 
   /** CSS size of a page's slot at zoom 1. */
   const fitBox = useCallback((n: number): { w: number; h: number } => {
@@ -193,24 +235,22 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
 
   const ensureRendered = useCallback((n: number, cssWidth: number) => {
     const existing = rendersRef.current.get(n)
-    // A render at (or close to) the needed width is reused; a much wider
-    // viewport (a rotation, a window resize) gets a fresh one.
-    if (existing && (!existing.ok || existing.cssWidth >= cssWidth * 0.8)) return
+    // A render at (or close to) the needed width and at the current rotation
+    // is reused; a much wider viewport (a window resize) gets a fresh one.
+    if (existing && (!existing.ok || (existing.rotation === rotationRef.current && existing.cssWidth >= cssWidth * 0.8))) return
     if (pendingRef.current.has(n)) return
     pendingRef.current.add(n)
     enqueue(async (signal) => {
+      const rot = rotationRef.current
       try {
         const pdfPage = await doc.getPage(n)
-        if (!aspectsRef.current.has(n)) {
-          const vp = pdfPage.getViewport({ scale: 1 })
-          aspectsRef.current.set(n, vp.width / vp.height)
-        }
-        const rendered = await renderPageToBlob(pdfPage, { cssWidth, dpr: dprRef.current, signal })
-        if (!liveRef.current) {
-          return
-        }
+        if (!aspectsRef.current.has(n)) aspectsRef.current.set(n, pageAspect(pdfPage, 0))
+        const rendered = await renderPageToBlob(pdfPage, { cssWidth, dpr: dprRef.current, rotation: rot, signal })
+        // The document was turned while this rendered: the result is for a
+        // rotation nobody is looking at any more.
+        if (!liveRef.current || rot !== rotationRef.current) return
         revokeRender(rendersRef.current.get(n))
-        rendersRef.current.set(n, { ok: true, url: URL.createObjectURL(rendered.blob), aspect: rendered.aspect, cssWidth })
+        rendersRef.current.set(n, { ok: true, url: URL.createObjectURL(rendered.blob), aspect: rendered.aspect, cssWidth, rotation: rot })
       } catch (err) {
         if (signal.aborted || !liveRef.current) return
         if (err && typeof err === 'object' && (err as { name?: string }).name === 'RenderingCancelledException') return
@@ -226,7 +266,8 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
   useEffect(() => {
     if (!stage.w || !stage.h) return
     const order: number[] = [...visible]
-    for (let d = 1; d <= WINDOW; d++) {
+    const window = stage.w <= NARROW_MAX_WIDTH ? WINDOW_NARROW : WINDOW_WIDE
+    for (let d = 1; d <= window; d++) {
       if (left - d >= 1) order.push(left - d)
       const after = (right ?? left) + d
       if (after <= pages) order.push(after)
@@ -252,8 +293,7 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       if (aspectsRef.current.has(n)) continue
       void doc.getPage(n).then((p) => {
         if (cancelled || !liveRef.current) return
-        const vp = p.getViewport({ scale: 1 })
-        aspectsRef.current.set(n, vp.width / vp.height)
+        aspectsRef.current.set(n, pageAspect(p, 0))
         rerender()
       }).catch(() => {})
     }
@@ -272,10 +312,11 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       const have = zoomRenderRef.current
       if (have && have.page === page && Math.abs(have.zoom - zoom) < 0.05) return
       enqueue(async (signal) => {
+        const rot = rotationRef.current
         try {
           const pdfPage = await doc.getPage(page)
-          const rendered = await renderPageToBlob(pdfPage, { cssWidth: want, dpr: dprRef.current, signal })
-          if (!liveRef.current) return
+          const rendered = await renderPageToBlob(pdfPage, { cssWidth: want, dpr: dprRef.current, rotation: rot, signal })
+          if (!liveRef.current || rot !== rotationRef.current) return
           dropZoomRender()
           zoomRenderRef.current = { page, zoom, url: URL.createObjectURL(rendered.blob) }
           rerender()
@@ -285,7 +326,8 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       })
     }, 220)
     return () => clearTimeout(zoomRenderTimerRef.current)
-  }, [zoom, page, spread, doc, enqueue, fitBox, dropZoomRender, rerender])
+  }, [zoom, page, spread, rotation, doc, enqueue, fitBox, dropZoomRender, rerender])
+
 
   // Unmount: stop everything, release every URL. The maps are captured here
   // rather than read through the refs in the cleanup, which runs after the
@@ -312,15 +354,45 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
     setPan({ x: 0, y: 0 })
   }, [])
 
+  const hapticsRef = useRef(haptics)
+  hapticsRef.current = haptics
   const setPage = useCallback((n: number) => {
     const next = clamp(Math.round(n), 1, pages)
     setPageState((cur) => {
       if (next === cur) return cur
       onPageChangeRef.current?.(next)
+      // A page turn feels like one in a Mini App: the host's selection tick.
+      if (hapticsRef.current) hapticSelection()
       return next
     })
     resetZoom()
   }, [pages, resetZoom])
+
+  // Turning the document invalidates every render. Done HERE, synchronously,
+  // before the state update: the window effect that schedules fresh renders
+  // runs on the commit that follows, and must find the cache empty and the
+  // ref already turned — an effect that invalidated afterwards would abort
+  // the very jobs that effect had just queued, and nothing would re-queue
+  // them (the e2e caught exactly that: a skeleton forever after a rotate).
+  const rotateBy = useCallback((delta: 90 | 270) => {
+    const next = (rotationRef.current + delta) % 360
+    rotationRef.current = next
+    for (const c of abortsRef.current) c.abort()
+    abortsRef.current.clear()
+    pendingRef.current.clear()
+    for (const r of rendersRef.current.values()) revokeRender(r)
+    rendersRef.current.clear()
+    dropZoomRender()
+    onRotationChangeRef.current?.(next)
+    setRotation(next)
+    resetZoom()
+  }, [dropZoomRender, resetZoom])
+  /** The button and `r`: a quarter turn clockwise. `R` (shift) turns the
+   *  other way — a scanned sheet that lands upside down after the first
+   *  turn needed the counter-clockwise one, and three taps is the touch
+   *  path; the turn is remembered per artwork, so it is set once. */
+  const rotate = useCallback(() => rotateBy(90), [rotateBy])
+  const rotateBack = useCallback(() => rotateBy(270), [rotateBy])
 
   const step = useCallback((dir: 1 | -1) => {
     if (spread) {
@@ -391,6 +463,10 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
           e.preventDefault(); if (!spread) zoomAbout(zoom / 1.5, { x: 0, y: 0 }); break
         case '0':
           e.preventDefault(); resetZoom(); break
+        case 'r':
+          e.preventDefault(); rotate(); break
+        case 'R':
+          e.preventDefault(); rotateBack(); break
         default:
           return
       }
@@ -398,7 +474,7 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [step, setPage, pages, spread, zoom, zoomAbout, resetZoom, pokeChrome])
+  }, [step, setPage, pages, spread, zoom, zoomAbout, resetZoom, rotate, rotateBack, pokeChrome])
 
   // ── pointer gestures: tap zones, swipe, double-tap, pinch, drag-pan ────
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
@@ -467,8 +543,9 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       return
     }
     if (g.moved) return
-    // A tap. Double-tap zooms; a single tap acts after the double-tap window
-    // so the two never fight.
+    // A tap. A double tap zooms (or resets the zoom); a single tap at an
+    // edge turns the page at once; a single tap in the centre acts after
+    // the double-tap window, so the chrome toggle and the zoom never fight.
     const now = Date.now()
     const last = lastTapRef.current
     const c = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
@@ -484,15 +561,22 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       else zoomAbout(DOUBLE_TAP_ZOOM, { x: e.clientX - c.x, y: e.clientY - c.y })
       return
     }
-    lastTapRef.current = { t: now, x: e.clientX, y: e.clientY }
     const frac = (e.clientX - rect.left) / rect.width
     clearTimeout(tapTimerRef.current)
+    // Turning is the reader's most frequent act, and waiting out the
+    // double-tap window first read as lag (300 ms on every turn, measured
+    // in the showcase). Double-tap zoom lives in the centre third and in
+    // the pinch; a second edge tap inside the window is simply the next turn.
+    if (zoom === 1 && (frac < 1 / 3 || frac > 2 / 3)) {
+      lastTapRef.current = null
+      step(frac < 1 / 3 ? -1 : 1)
+      return
+    }
+    lastTapRef.current = { t: now, x: e.clientX, y: e.clientY }
     tapTimerRef.current = setTimeout(() => {
       lastTapRef.current = null
       if (zoom > 1) { pokeChrome(); return }
-      if (frac < 1 / 3) step(-1)
-      else if (frac > 2 / 3) step(1)
-      else setChrome((v) => { if (!v) pokeChrome(); return !v })
+      setChrome((v) => { if (!v) pokeChrome(); return !v })
     }, DOUBLE_TAP_MS)
   }
 
@@ -557,6 +641,10 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       height: box.h * z,
       transform: zoomed ? `translate(${pan.x}px, ${pan.y}px)` : undefined,
       boxShadow: '0 1px 2px rgba(0,0,0,.6), 0 8px 24px rgba(0,0,0,.5)',
+      // iOS: a long press on an image otherwise opens the share/save sheet
+      // mid-read (and fights the pan gesture).
+      WebkitTouchCallout: 'none',
+      WebkitUserSelect: 'none',
     }
     if (!r) {
       return <div key={n} aria-hidden className="bg-white/[0.06] animate-pulse flex-shrink-0" style={style} />
@@ -595,6 +683,8 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
       aria-label={`Reading ${title}`}
       tabIndex={-1}
       className="fixed inset-0 z-[200] bg-[#0a0a0a] text-ink select-none outline-none"
+      // iOS: no rubber-banding of the page behind a full-screen reader.
+      style={{ overscrollBehavior: 'none' }}
       // A moving mouse (or pen) reveals the chrome. Pointer events, filtered,
       // rather than onMouseMove: a touch tap is followed by compatibility
       // mouse events, and a mousemove arriving right after the tap would
@@ -667,6 +757,15 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
         >
           <ChevronRight size={16} />
         </button>
+        <button
+          type="button"
+          onClick={rotate}
+          aria-label="Rotate pages"
+          title="Rotate pages (r · shift+r turns the other way)"
+          className="w-8 h-8 flex items-center justify-center text-dim hover:text-ink transition-colors"
+        >
+          <RotateCw size={14} />
+        </button>
         {pages > 1 && stage.w >= SPREAD_MIN_WIDTH && stage.w > stage.h && (
           <button
             type="button"
@@ -679,7 +778,17 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
             {spread ? <Square size={14} /> : <Columns2 size={14} />}
           </button>
         )}
-        {downloadUrl && (
+        {onDownload ? (
+          <button
+            type="button"
+            onClick={onDownload}
+            aria-label="Download PDF"
+            title="Download PDF"
+            className="w-8 h-8 flex items-center justify-center text-dim hover:text-ink transition-colors"
+          >
+            <Download size={14} />
+          </button>
+        ) : downloadUrl ? (
           <a
             href={downloadUrl}
             target="_blank"
@@ -690,7 +799,7 @@ export function ZineReader({ doc, title, startPage, onClose, onPageChange, downl
           >
             <Download size={14} />
           </a>
-        )}
+        ) : null}
         {fullscreenSupported && (
           <button
             type="button"

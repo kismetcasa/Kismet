@@ -101,33 +101,48 @@ export const ZINE_COPY = {
     `${formatCfileSize(bytes)} — readers on phones download the whole zine before the first page; under ${formatCfileSize(ZINE_SOFT_WARN_BYTES)} keeps that to a few seconds`,
   noCover: 'Could not render a cover from this PDF — pick another page as the cover, or upload a cover image',
   readerUnavailable: 'The reader could not start in this browser — open the PDF instead',
+  /** The mode control in the mint form. */
+  accessLabel: 'Who can read it',
+  accessPublic: 'everyone',
+  accessPublicHint: 'the PDF is stored on Arweave — public and permanent',
+  accessCollectors: 'collectors only',
+  accessCollectorsHint:
+    'stored privately on Kismet; only the cover is public — your first page, unless you upload a different cover. You can replace the zine later and collectors are notified.',
+  collectorsSlot: (pages: number): string => `the zine is the collector file · ${formatZinePages(pages)} — only collectors can read it`,
+  collectorsAttaching: 'Minted — attaching the zine for collectors…',
+  collectorsAttached: 'Collectors can read it from the artwork page.',
+  collectorsAttachFailed: (why: string): string => `${why} — attach the PDF from the artwork page (file button)`,
+  collectToRead: 'collect to read',
 } as const
 
+export type ZineMomentInput =
+  /** Public: the PDF is on Arweave and rides the video/3D binding. */
+  | { access: 'public'; pdfUri: string; coverUri: string; pages: number; thumbhash?: string | null }
+  /** Collectors-only: an image moment (the cover) whose pages live in the
+   *  private collector-file store; only the hint says it is a zine. */
+  | { access: 'collectors'; coverUri: string; pages: number; thumbhash?: string | null }
+
 /**
- * The metadata fields of a public zine — ONE definition for every producer
- * (the mint form today; the edit flow and the agent mint when they learn
- * zines), so none can drift from the shape the resolver and the oracle
- * expect: the cover in `image`, the PDF in `animation_url` + `content`, and
- * the hint.
+ * The metadata fields of a zine — ONE definition for every producer (the
+ * mint form today; the edit flow and the agent mint when they learn zines),
+ * so none can drift from the shape the resolver and the oracle expect: the
+ * cover in `image`, the PDF in `animation_url` + `content` when it is
+ * public, and the hint in both modes.
  */
-export function zineMomentFields(input: {
-  pdfUri: string
-  coverUri: string
-  pages: number
-  thumbhash?: string | null
-}): {
+export function zineMomentFields(input: ZineMomentInput): {
   image: string
-  animation_url: string
-  content: { uri: string; mime: string }
+  animation_url?: string
+  content?: { uri: string; mime: string }
   kismet_thumbhash?: string
   kismet_zine: ZineHint
 } {
   return {
     image: input.coverUri,
-    animation_url: input.pdfUri,
-    content: { uri: input.pdfUri, mime: PDF_MIME },
+    ...(input.access === 'public'
+      ? { animation_url: input.pdfUri, content: { uri: input.pdfUri, mime: PDF_MIME } }
+      : {}),
     ...(input.thumbhash ? { kismet_thumbhash: input.thumbhash } : {}),
-    kismet_zine: { pages: input.pages, access: 'public' },
+    kismet_zine: { pages: input.pages, access: input.access },
   }
 }
 

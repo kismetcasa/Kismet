@@ -50,12 +50,15 @@ export const CFILE_KIND_META: Record<CfileKind, { ext: string; mime: string }> =
   gbc: { ext: '.gbc', mime: 'application/x-gameboy-color-rom' },
 }
 
-/** Kinds the in-page viewer renders. PDF is deliberately absent (it opens
- *  natively everywhere; honest in-page rendering on iOS would cost a pdf.js
- *  dependency for convenience alone), zip has nothing to render, and a
- *  cartridge needs the emulator route (COLLECTOR_DOWNLOADS_DESIGN.md §7),
- *  which is its own build — until then a ROM is download-only. */
-export const CFILE_VIEWABLE_KINDS: readonly CfileKind[] = ['glb', 'svg']
+/** Kinds the in-page viewer renders. PDF joined on 2026-10-15: it was
+ *  deliberately absent while in-page rendering would have cost a pdf.js
+ *  dependency for convenience alone, and the public zine
+ *  (ZINE_READER_DESIGN.md) now pays for that dependency — so a
+ *  collectors-only zine reads in the same page-by-page reader. Zip has
+ *  nothing to render, and a cartridge needs the emulator route
+ *  (COLLECTOR_DOWNLOADS_DESIGN.md §7), which is its own build — until then a
+ *  ROM is download-only. */
+export const CFILE_VIEWABLE_KINDS: readonly CfileKind[] = ['glb', 'pdf', 'svg']
 
 export function isViewableCfileKind(kind: CfileKind | undefined): boolean {
   return !!kind && CFILE_VIEWABLE_KINDS.includes(kind)
@@ -94,6 +97,10 @@ export interface CfilePublic {
   /** Magic-detected format. Absent on records written before multi-format
    *  support — those are all zips, and callers default accordingly. */
   kind?: CfileKind
+  /** Page count of a `pdf`, as the uploading client counted it (display
+   *  metadata like `note`; the reader derives the real count when it opens
+   *  the file). Absent when the client sent none, or for other kinds. */
+  pages?: number
 }
 
 export interface CfileManageView {

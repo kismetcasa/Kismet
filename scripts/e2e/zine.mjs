@@ -114,6 +114,15 @@ const waitCounter = async (pg, want, ms = 8000) => {
   return last
 }
 const pageImg = (pg, n) => pg.locator(`[role="dialog"] img[alt="Page ${n} of E2E Zine"]`).first()
+// The chrome hides itself after a moment and, hidden, takes no pointer
+// events — a mouse reveals it by moving, which Playwright's click does not
+// do until its hit test passes. So move first, as a hand would.
+const revealChrome = async (pg) => {
+  await pg.mouse.move(600, 380)
+  await pg.waitForTimeout(120)
+  await pg.mouse.move(620, 400)
+  await pg.waitForTimeout(200)
+}
 
 // ───────────────────────── A. Mint form ─────────────────────────
 console.log('\nA. Mint form — picking a PDF zine')
@@ -175,6 +184,26 @@ check('a non-cover page offers "use as cover"', await useAsCover.isVisible())
 await useAsCover.click()
 await mint.waitForTimeout(300)
 check('choosing a page makes it the cover', (await mint.locator('text=/^cover$/').count()) === 1 && (await useAsCover.count()) === 0)
+// Who can read it: public by default, collectors-only an explicit choice
+// that takes over the collector-download slot.
+const access = mint.locator('[role="radiogroup"][aria-label="Who can read it"]')
+check('the access control is offered, public by default',
+  (await access.locator('[role="radio"][aria-checked="true"]').innerText()).trim().toLowerCase() === 'everyone')
+await access.locator('[role="radio"]', { hasText: 'collectors only' }).click()
+await mint.waitForTimeout(300)
+check('collectors-only takes the collector-download slot', (await mint.locator('text=the zine is the collector file').count()) === 1)
+check('the slot’s own picker is hidden while the zine holds it', (await mint.locator('button:has-text("choose file")').count()) === 0)
+await access.locator('[role="radio"]', { hasText: 'everyone' }).click()
+await mint.waitForTimeout(300)
+check('switching back frees the slot', (await mint.locator('button:has-text("choose file")').count()) === 1)
+// The optimizer is offered; on a fixture this small it reports "already
+// compact" rather than replacing the file.
+check('the "optimize for phones" pass is offered on the preview', await mint.locator('button:has-text("optimize for phones")').isVisible())
+await mint.locator('button:has-text("optimize for phones")').click()
+const compact = mint.locator('[data-sonner-toast]', { hasText: 'Already compact' })
+let compactSeen = true
+try { await compact.first().waitFor({ timeout: 30000 }) } catch { compactSeen = false }
+check('a tiny vector PDF is reported already compact (never made bigger)', compactSeen)
 
 // Clear via the form's own ×, then the rejections.
 await mint.locator('button:has(svg.lucide-x)').first().click()
@@ -203,6 +232,7 @@ console.log('\nC. Artwork detail (desktop) — the reader')
 const page = await desktop.newPage()
 const seen = trackPdfjs(page)
 page.on('console', (m) => { if (m.type() === 'error') console.log('    [console.error]', m.text().slice(0, 140)) })
+page.on('pageerror', (e) => console.log('    [pageerror]', String(e).slice(0, 300)))
 await page.goto(ART, { waitUntil: 'domcontentloaded' })
 const readBtn = page.locator('button:has-text("read · 6 pages")')
 await readBtn.waitFor({ timeout: 30000 })
@@ -238,6 +268,7 @@ await page.keyboard.press('Home')
 check('Home returns to the cover', (await waitCounter(page, '1 / 6')) === '1 / 6')
 check('page 1 drops the URL parameter', !page.url().includes('page='), page.url())
 
+await revealChrome(page)
 await page.locator('[role="dialog"] button[aria-label="Show single pages"]').click()
 await page.keyboard.press('ArrowRight')
 check('single-page mode turns one page at a time', (await waitCounter(page, '2 / 6')) === '2 / 6')
@@ -252,14 +283,112 @@ await img2.dblclick()
 await page.waitForTimeout(400)
 const reset = await img2.boundingBox()
 check('a second double-click resets the zoom', !!reset && Math.abs(reset.width - before.width) < 2, `${reset?.width}`)
+await revealChrome(page)
 await page.locator('[role="dialog"] input[type="range"]').fill('5')
 check('the scrubber jumps straight to a page', (await waitCounter(page, '5 / 6')) === '5 / 6')
+// Rotation: a landscape scan read upright. The page's box flips its aspect
+// and the counter stays put.
+{
+  try {
+    await pageImg(page, 5).waitFor({ timeout: 30000 })
+  } catch {
+    // Diagnostics before the assertion below fails: what the stage holds.
+    console.log('    stage after the scrubber jump:', JSON.stringify(await page.evaluate(() => {
+      const d = document.querySelector('[role="dialog"]')
+      return {
+        imgs: [...(d?.querySelectorAll('img') ?? [])].map((i) => i.getAttribute('alt')),
+        tiles: [...(d?.querySelectorAll('[role="img"]') ?? [])].map((i) => i.getAttribute('aria-label')),
+        skeletons: d?.querySelectorAll('.animate-pulse').length ?? 0,
+        counter: d?.querySelector('span.tabular-nums')?.textContent,
+      }
+    })))
+  }
+  const portrait = await pageImg(page, 5).boundingBox()
+  await revealChrome(page)
+  await page.locator('[role="dialog"] button[aria-label="Rotate pages"]').click()
+  await pageImg(page, 5).waitFor({ timeout: 30000 })
+  await page.waitForTimeout(400)
+  const turned = await pageImg(page, 5).boundingBox()
+  check('rotating turns the page a quarter turn (aspect flips)',
+    !!portrait && !!turned && portrait.height > portrait.width && turned.width > turned.height, `${JSON.stringify(portrait)} -> ${JSON.stringify(turned)}`)
+  check('rotating keeps the place', (await counterOf(page)) === '5 / 6')
+  await page.keyboard.press('r')
+  await page.keyboard.press('r')
+  await page.keyboard.press('r')
+  await pageImg(page, 5).waitFor({ timeout: 30000 })
+  await page.waitForTimeout(400)
+  const back = await pageImg(page, 5).boundingBox()
+  check('three more quarter turns are upright again', !!back && back.height > back.width)
+}
 await page.keyboard.press('Escape')
 await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
 check('Escape closes the reader', (await page.locator('[role="dialog"]').count()) === 0)
 check('closing restores the affordance', await page.locator('button:has-text("read · 6 pages")').isVisible())
-check('closing clears the page parameter', !page.url().includes('page='), page.url())
+check('closing leaves no reader entry behind (the URL is the artwork’s)', page.url().startsWith(ART) && !page.url().includes('page='), page.url())
+// The back gesture closes the reader, not the artwork: opening pushes one
+// history entry, and going back pops it.
+await page.locator('button:has-text("read · 6 pages")').click()
+await page.waitForSelector('[role="dialog"][aria-label="Reading E2E Zine"]', { timeout: 30000 })
+// The reader was closed on page 5, so it reopens there (localStorage
+// resume), not on the cover — on this wide viewport that is the 4–5 spread.
+await pageImg(page, 5).waitFor({ timeout: 30000 })
+check('reopening resumes at the last page read', (await counterOf(page)) === '4–5 / 6', await counterOf(page))
+// One pdf.js worker per page session: the second open reuses the first
+// open's worker (pdf.js only destroys a worker it created itself).
+check('reopening reuses the worker (no second worker fetch)', seen.worker === 1, JSON.stringify(seen))
+await page.keyboard.press('Home')
+await waitCounter(page, '1 / 6')
+await page.keyboard.press('ArrowRight')
+await waitCounter(page, '2–3 / 6')
+await page.goBack()
+await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
+check('browser back closes the reader', (await page.locator('[role="dialog"]').count()) === 0)
+check('browser back stays on the artwork page', page.url().startsWith(ART), page.url())
+check('the affordance is back after a history close', await page.locator('button:has-text("read · 6 pages")').isVisible())
 await page.close()
+
+// ───────────── C3. Collectors-only zine: the card for a non-holder ─────────────
+// The zine IS the collector file. Its record is seeded into the Redis stub
+// (scripts/e2e/redis-stub.mjs keeps a plain SET), so the server-rendered
+// page carries the public descriptor exactly as production does — the card
+// mounts from first paint and, for a non-holder, never asks /status. The
+// moment itself is an image moment (the cover) carrying the hint.
+console.log('\nC3. Collectors-only zine — the card, seen by a non-holder')
+const PRIVATE_META = {
+  ...ZINE_META,
+  metadata: {
+    name: 'E2E Private Zine',
+    description: 'Collectors only.',
+    image: 'ar://cover-txid',
+    kismet_zine: { pages: 6, access: 'collectors' },
+  },
+}
+const redis = (cmd) => fetch('http://localhost:6399', { method: 'POST', body: JSON.stringify(cmd) }).then((r) => r.json())
+const [, artAddress, artToken] = new URL(ART).pathname.match(/\/artwork\/([^/]+)\/([^/]+)/)
+const CFILE_KEY = `kismetart:cfile:${artAddress.toLowerCase()}:${BigInt(artToken)}`
+const seededAt = Date.now()
+await redis(['SET', CFILE_KEY, JSON.stringify({
+  current: { v: 1, blobSeq: 1, chunks: 1, size: 2400000, sha256: 'ab'.repeat(32), kind: 'pdf', pages: 6, name: 'issue-1.pdf', updatedAt: seededAt, updatedBy: '0x000000000000000000000000000000000000dead', stored: true },
+  history: [], nextBlobSeq: 2, createdAt: seededAt,
+})])
+const priv = await desktop.newPage()
+const privSeen = trackPdfjs(priv)
+let statusFetches = 0
+priv.on('request', (r) => { if (r.url().includes('/api/collector-file/status')) statusFetches++ })
+await priv.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PRIVATE_META) }))
+await priv.goto(ART, { waitUntil: 'domcontentloaded' })
+await priv.locator('text=collector download').first().waitFor({ timeout: 30000 }).catch(() => {})
+await priv.waitForTimeout(1500)
+check('the card names the zine with its page count', (await priv.locator('p', { hasText: /collector download · issue-1\.pdf · .* · 6 pages · v1/ }).count()) === 1)
+check('a non-holder is told to collect to READ', (await priv.locator('text=collect to read').count()) === 1)
+check('a non-holder gets no read button', (await priv.locator('button:has-text("read")').count()) === 0)
+check('the media slot shows the cover, with no reader affordance (the pages are not in the metadata)',
+  (await priv.locator('img[alt="E2E Private Zine"]').first().isVisible().catch(() => false)) && (await priv.locator('button:has-text("read · 6 pages")').count()) === 0)
+check('nothing from pdf.js is fetched for a non-holder', privSeen.any === 0, JSON.stringify(privSeen))
+check('a server-rendered page with a known descriptor costs a non-holder no status request', statusFetches === 0, String(statusFetches))
+await priv.screenshot({ path: path.join(SHOTS, 'z08-private-card.png'), clip: { x: 0, y: 100, width: 1280, height: 900 } })
+await priv.close()
+await redis(['DEL', CFILE_KEY])
 
 // ───────────────── D. Artwork detail, phone: gestures ─────────────────
 console.log('\nD. Artwork detail (phone) — swipe and tap zones')
@@ -327,6 +456,18 @@ check('the feed card carries the zine badge with its page count',
   cardMounted && (await profile.locator('article [aria-label="zine, 6 pages"]').count()) >= 1)
 check('the card renders the COVER, not the PDF',
   cardMounted && !!(await profile.locator('article img[alt="E2E Zine"]').first().getAttribute('src').catch(() => null)))
+// A collectors-only zine is an image moment with a hint; the hint badges it.
+await desktop.route(/\/api\/timeline/, (r) => r.fulfill({
+  status: 200, contentType: 'application/json',
+  body: JSON.stringify({ status: 'success', moments: [{ ...ZINE_MOMENT, metadata: { name: 'E2E Private Zine', image: 'ar://cover-txid', kismet_zine: { pages: 6, access: 'collectors' } } }],
+    pagination: { page: 1, limit: 20, total_pages: 1 } }),
+}))
+await profile.reload({ waitUntil: 'domcontentloaded' })
+const privCard = await profile.waitForSelector('article', { timeout: 30000 }).then(() => true).catch(() => false)
+check('a collectors-only zine card carries the badge from its hint',
+  privCard && (await profile.locator('article [aria-label="zine, 6 pages, collectors only"]').count()) >= 1)
+check('a collectors-only card renders its cover',
+  privCard && !!(await profile.locator('article img[alt="E2E Private Zine"]').first().getAttribute('src').catch(() => null)))
 await profile.waitForTimeout(1500)
 check('no pdf.js asset is fetched by a feed', feedSeen.any === 0, JSON.stringify(feedSeen))
 await profile.screenshot({ path: path.join(SHOTS, 'z07-profile-badge.png'), clip: { x: 0, y: 80, width: 900, height: 700 } })

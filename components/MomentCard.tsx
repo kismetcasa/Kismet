@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { Copy, Check, EyeOff, ArrowUpRight, Pin } from 'lucide-react'
 import { ModelBadge } from './ModelBadge'
 import { ZineBadge } from './ZineBadge'
+import { readZineHint } from '@/lib/media/zineMedia'
 import { useAccount, useReadContract } from 'wagmi'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { usePendingAction } from '@/hooks/usePendingAction'
@@ -518,6 +519,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
   }
 
   const media = resolveMomentMedia(meta)
+  const zineHint = readZineHint(meta.kismet_zine)
   // Every Patron Collection moment is a physical-artwork scan whose source
   // 413s the next/image optimizer on EVERY view — a doomed round trip (the
   // optimizer re-fetches the multi-MB source just to refuse it) before the
@@ -595,10 +597,16 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           // claiming a fifth position no other overlay uses.
           <ModelBadge className={`absolute top-2 ${isOwnMoment && moment.hidden ? 'right-9' : 'right-2'}`} />
         )}
-        {media.kind === 'pdf' && (
+        {(media.kind === 'pdf' || zineHint?.access === 'collectors') && (
           // A zine's cover is a still like any other; the badge is the only
-          // signal there are pages to read. Same corner rules as 3D.
-          <ZineBadge pages={media.pages} className={`absolute top-2 ${isOwnMoment && moment.hidden ? 'right-9' : 'right-2'}`} />
+          // signal there are pages to read. A collectors-only zine is an image
+          // moment to the resolver, so its hint carries the badge. Same
+          // corner rules as 3D.
+          <ZineBadge
+            pages={media.pages ?? zineHint?.pages}
+            access={zineHint?.access}
+            className={`absolute top-2 ${isOwnMoment && moment.hidden ? 'right-9' : 'right-2'}`}
+          />
         )}
         {isOwnMoment && moment.hidden && (
           <span className="absolute top-2 right-2 z-10 p-1 bg-[#0d0d0d]/80 border border-line">

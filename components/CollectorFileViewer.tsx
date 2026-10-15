@@ -1,16 +1,19 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { X } from 'lucide-react'
-import { CFILE_KIND_META, type CfileKind } from '@/lib/collectorFileTypes'
+import { CFILE_KIND_META, formatCfileSize, type CfileKind } from '@/lib/collectorFileTypes'
 import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
+import { openPdf, type OpenedPdf } from '@/lib/pdfjs'
+import { readRotation, readStartPage, rememberPage, rememberRotation, useReaderHistory } from '@/lib/zineHistory'
+import { ZINE_COPY } from '@/lib/media/zineMedia'
 
 /**
  * In-page viewer for a collector file (design "Format extension"). Fetches
  * the gated bytes from /api/collector-file/view — a same-origin request, so
  * FarcasterProvider's patched window.fetch attaches the Quick Auth JWT and
- * a Mini App authenticates exactly like the web does — turns them into a
- * blob URL, and renders per kind.
+ * a Mini App authenticates exactly like the web does — and renders per kind.
  *
  * SVG SAFETY, the one rule this file exists to hold:
  * an SVG may contain <script>, event handlers and foreignObject, and blob:
@@ -24,7 +27,14 @@ import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
  *
  * GLB is inert data with no such hazard; <model-viewer> is imported lazily
  * (~444 KB chunk, outside the artwork route's manifest) on first open.
+ *
+ * PDF (a collectors-only zine, ZINE_READER_DESIGN.md §10) never becomes a
+ * URL at all: the bytes go straight to pdf.js in its worker and the same
+ * page-by-page reader public zines use mounts over the page. The bytes stay
+ * in memory only, and the document is closed when the reader is.
  */
+
+const ZineReader = dynamic(() => import('./ZineReader').then((m) => m.ZineReader), { ssr: false })
 
 interface Props {
   collection: string
@@ -36,37 +46,39 @@ interface Props {
    *  rendering the superseded file while the card advertised the update. */
   v: number
   onClose: () => void
+  /** Inside a Mini App: the reader ticks a haptic on each page turn. */
+  miniApp?: boolean
 }
 
 /** Focusable descendants, for the dialog focus contract below. */
 const FOCUSABLE = 'a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])'
 
-export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClose }: Props) {
+export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClose, miniApp = false }: Props) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [opened, setOpened] = useState<OpenedPdf | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<{ loaded: number; total: number | null } | null>(null)
   const urlRef = useRef<string | null>(null)
+  const openedRef = useRef<OpenedPdf | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const storageKey = `${collection.toLowerCase()}:${tokenId}`
+  // The back gesture closes this viewer — the loading shell included — rather
+  // than the artwork page (lib/zineHistory). The UI's close goes through it
+  // too, so the stack never keeps a dead entry.
+  const closeViaHistory = useReaderHistory(true, onClose)
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     ;(async () => {
       try {
         // The custom element must be defined before <model-viewer> renders,
         // and its module is heavy — load it while the bytes are in flight.
-        const mod = kind === 'glb' ? await import('@google/model-viewer') : null
-        if (mod) {
-          // Point Draco/KTX2 at OUR copies. model-viewer otherwise fetches
-          // these from www.gstatic.com at render time — an undeclared
-          // third-party origin that would also break under an enforcing
-          // CSP. See public/model-decoders/README.md.
-          // Set on the global config the element constructor reads — the
-          // static setter this used to assign never held (lib/media/
-          // modelViewerConfig).
-          configureModelViewerDecoders()
-        }
+        const modPromise = kind === 'glb' ? import('@google/model-viewer') : Promise.resolve(null)
         const res = await fetch(
           `/api/collector-file/view?collection=${collection}&tokenId=${tokenId}&v=${v}`,
+          { signal: controller.signal },
         )
         if (!res.ok) {
           const body = (await res.json().catch(() => null)) as { error?: string } | null
@@ -79,25 +91,84 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
               : (body?.error ?? 'Could not load this file'),
           )
         }
-        const bytes = await res.arrayBuffer()
+        // Read the body ourselves for a byte readout: a zine can be tens of
+        // megabytes, and a bare "loading…" past ten seconds reads as a hang.
+        const declared = res.headers.get('content-length')
+        const total = declared && /^\d+$/.test(declared) ? Number(declared) : null
+        const chunks: Uint8Array[] = []
+        let loaded = 0
+        if (res.body) {
+          const reader = res.body.getReader()
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            chunks.push(value)
+            loaded += value.byteLength
+            if (!cancelled) setProgress({ loaded, total })
+          }
+        }
+        const bytes = new Uint8Array(loaded)
+        let at = 0
+        for (const c of chunks) {
+          bytes.set(c, at)
+          at += c.byteLength
+        }
+        if (cancelled) return
+        if (kind === 'pdf') {
+          // Straight into the worker (the typed array is transferred, so no
+          // second copy lingers here); never a URL.
+          const o = await openPdf(bytes)
+          if (cancelled) {
+            void o.close().catch(() => {})
+            return
+          }
+          openedRef.current = o
+          setOpened(o)
+          return
+        }
+        const mod = await modPromise
+        if (mod) {
+          // Point Draco/KTX2 at OUR copies. model-viewer otherwise fetches
+          // these from www.gstatic.com at render time — an undeclared
+          // third-party origin that would also break under an enforcing
+          // CSP. See public/model-decoders/README.md.
+          // Set on the global config the element constructor reads — the
+          // static setter this used to assign never held (lib/media/
+          // modelViewerConfig).
+          configureModelViewerDecoders()
+        }
         if (cancelled) return
         // Explicit type: the blob's MIME is what makes <img> render an SVG
         // and <model-viewer> accept a GLB — never inferred from the response.
-        const url = URL.createObjectURL(new Blob([bytes], { type: CFILE_KIND_META[kind].mime }))
+        const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: CFILE_KIND_META[kind].mime }))
         urlRef.current = url
         setBlobUrl(url)
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load this file')
+        if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return
+        setError(
+          err instanceof Error && err.message && !(kind === 'pdf' && err.name === 'PdfPasswordError')
+            ? err.message
+            : kind === 'pdf'
+              ? ZINE_COPY.readerUnavailable
+              : 'Could not load this file',
+        )
       }
     })()
     return () => {
       cancelled = true
+      // Closing mid-download stops the transfer: a 64 MiB file must not keep
+      // streaming for nobody.
+      controller.abort()
       // Release the object URL, or every open leaks its bytes for the life
       // of the document — these are up to CFILE_MAX_BYTES (64 MiB) each.
       if (urlRef.current) {
         URL.revokeObjectURL(urlRef.current)
         urlRef.current = null
       }
+      // And the document, so the worker releases the file.
+      const o = openedRef.current
+      openedRef.current = null
+      if (o) void o.close().catch(() => {})
     }
   }, [collection, tokenId, kind, v])
 
@@ -105,13 +176,15 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
   // Order): focus moves INTO the dialog on open, Tab cycles within it, and
   // focus RETURNS to whatever opened it on close. Escape and the labelled
   // close button are the required ways out — a trap without an exit is
-  // itself the 2.1.2 violation.
+  // itself the 2.1.2 violation. The zine reader brings its own contract
+  // (and captures Escape itself) once it is on screen.
   useEffect(() => {
+    if (opened) return
     const opener = document.activeElement as HTMLElement | null
     closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        closeViaHistory()
         return
       }
       if (e.key !== 'Tab') return
@@ -132,7 +205,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
       window.removeEventListener('keydown', onKey)
       opener?.focus?.()
     }
-  }, [onClose])
+  }, [closeViaHistory, opened])
 
   // model-viewer reports its own load failures on an `error` event — a
   // corrupt GLB (or a decoder that failed to load) otherwise leaves an
@@ -148,6 +221,30 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
     return () => el.removeEventListener('error', handler)
   }, [])
 
+  const onPageChange = useCallback((page: number) => rememberPage(storageKey, page), [storageKey])
+  const onRotationChange = useCallback((r: number) => rememberRotation(storageKey, r), [storageKey])
+
+  if (opened) {
+    return (
+      <ZineReader
+        doc={opened.doc}
+        title={name}
+        startPage={readStartPage(storageKey)}
+        onClose={closeViaHistory}
+        onPageChange={onPageChange}
+        haptics={miniApp}
+        startRotation={readRotation(storageKey)}
+        onRotationChange={onRotationChange}
+      />
+    )
+  }
+
+  const readout = progress
+    ? progress.total
+      ? `${formatCfileSize(progress.loaded)} of ${formatCfileSize(progress.total)}`
+      : formatCfileSize(progress.loaded)
+    : null
+
   return (
     <div
       ref={dialogRef}
@@ -160,7 +257,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
         <p className="text-[11px] font-mono text-muted truncate">{name}</p>
         <button
           ref={closeRef}
-          onClick={onClose}
+          onClick={closeViaHistory}
           aria-label="Close viewer"
           className="p-1.5 text-muted hover:text-ink transition-colors"
         >
@@ -171,7 +268,9 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
         {error ? (
           <p className="text-[11px] font-mono text-muted text-center max-w-xs">{error}</p>
         ) : !blobUrl ? (
-          <p className="text-[11px] font-mono text-muted">loading…</p>
+          <p className="text-[11px] font-mono text-muted">
+            {kind === 'pdf' ? 'opening zine…' : 'loading…'}{readout ? ` ${readout}` : ''}
+          </p>
         ) : kind === 'glb' ? (
           // @ts-expect-error — custom element registered by the lazy import.
           <model-viewer

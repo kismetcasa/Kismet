@@ -13,6 +13,8 @@ import {
   type CfileManageView,
   type CfilePublic,
 } from '@/lib/collectorFileTypes'
+import { formatZinePages, sniffPdfFile } from '@/lib/media/zineMedia'
+import { inspectPdfFile } from '@/lib/pdfjs'
 
 /**
  * Artist-side manage panel for an artwork's collector file — an inline panel
@@ -40,6 +42,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
   const [view, setView] = useState<CfileManageView | null>(null)
   const [loading, setLoading] = useState(true)
   const [picked, setPicked] = useState<File | null>(null)
+  const [pickedPages, setPickedPages] = useState<number | null>(null)
   const [note, setNote] = useState('')
   const [notify, setNotify] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -72,7 +75,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function handlePick(f: File | null) {
+  async function handlePick(f: File | null) {
     if (!f) return
     if (f.size > CFILE_MAX_BYTES) {
       toast.error('File too large', { description: `The limit is ${formatCfileSize(CFILE_MAX_BYTES)} per version` })
@@ -83,6 +86,14 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       return
     }
     setPicked(f)
+    setPickedPages(null)
+    // A PDF's page count rides the PUT for the card's "· 16 pages". Best
+    // effort: a file the parser cannot open (a password, a broken export)
+    // is still a legitimate download, just one with no count.
+    if (await sniffPdfFile(f)) {
+      const inspection = await inspectPdfFile(f).catch(() => null)
+      if (inspection?.kind === 'ok') setPickedPages(inspection.pages)
+    }
   }
 
   async function handleSave() {
@@ -92,6 +103,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       await ensureSession()
       const params = new URLSearchParams({ collection, tokenId })
       if (note.trim()) params.set('note', note.trim().slice(0, 140))
+      if (pickedPages) params.set('pages', String(pickedPages))
       // The EFFECTIVE notify mirrors exactly what the checkbox renders:
       // under cooldown or over the ceiling it shows disabled-unchecked, so
       // the request must not carry notify=1 (and the toast must not claim
@@ -127,6 +139,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
         })
       }
       setPicked(null)
+      setPickedPages(null)
       setNote('')
       if (inputRef.current) inputRef.current.value = ''
       await refresh()
@@ -242,14 +255,16 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             type="file"
             accept={CFILE_ACCEPT_ATTR}
             className="hidden"
-            onChange={(e) => handlePick(e.target.files?.[0] ?? null)}
+            onChange={(e) => void handlePick(e.target.files?.[0] ?? null)}
           />
           <button
             onClick={() => inputRef.current?.click()}
             disabled={saving}
             className="py-2 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors disabled:opacity-50"
           >
-            {picked ? `${picked.name} · ${formatCfileSize(picked.size)}` : view?.file ? 'choose replacement file' : 'choose file'}
+            {picked
+              ? `${picked.name} · ${formatCfileSize(picked.size)}${pickedPages ? ` · ${formatZinePages(pickedPages)}` : ''}`
+              : view?.file ? 'choose replacement file' : 'choose file'}
           </button>
 
           {picked && (

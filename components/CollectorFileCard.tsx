@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { toast } from 'sonner'
-import { ArrowDownToLine, Eye, Link as LinkIcon } from 'lucide-react'
+import { ArrowDownToLine, BookOpen, Eye, Link as LinkIcon } from 'lucide-react'
+import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
@@ -206,7 +207,11 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
 
   const updateAvailable = downloadedV !== null && file.v > downloadedV
   const updated = new Date(file.updatedAt)
-  const metaLine = `${file.name} · ${formatCfileSize(file.size)} · v${file.v}`
+  // A collectors-only zine: the card is where its pages are reached, so it
+  // says so — "read", the page count, and "collect to read" for everyone
+  // else (ZINE_READER_DESIGN.md §10).
+  const isZine = file.kind === 'pdf'
+  const metaLine = `${file.name} · ${formatCfileSize(file.size)}${isZine && file.pages ? ` · ${formatZinePages(file.pages)}` : ''} · v${file.v}`
 
   return (
     <div className="px-5 pb-3">
@@ -244,6 +249,8 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
                   </Link>
                 </>
               )
+            ) : isZine ? (
+              ZINE_COPY.collectToRead
             ) : (
               'collect to download'
             )}
@@ -264,10 +271,10 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
             {isViewableCfileKind(file?.kind) && (
               <button
                 onClick={() => setViewing(true)}
-                title="View in the browser"
+                title={isZine ? 'Read in the browser' : 'View in the browser'}
                 className="px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors flex items-center gap-1.5"
               >
-                <Eye size={12} /> view
+                {isZine ? <BookOpen size={12} /> : <Eye size={12} />} {isZine ? 'read' : 'view'}
               </button>
             )}
             <button
@@ -288,6 +295,7 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
           name={file.name}
           v={file.v}
           onClose={() => setViewing(false)}
+          miniApp={isInMiniApp}
         />
       )}
     </div>
