@@ -1,4 +1,5 @@
 import { redis, mgetChunked } from './redis'
+import type { ZineHint } from './media/zineHint'
 import { PLATFORM_COLLECTION } from './config'
 import { inprocessUrl } from './inprocess'
 import { getHiddenCollectionsSet } from './hiddenCollections'
@@ -57,7 +58,7 @@ export interface CollectionMeta {
   kismet_bg?: string
   /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
    *  A badge signal only — rendering keys on `content.mime`. */
-  kismet_zine?: { pages: number; access: 'public' | 'collectors' }
+  kismet_zine?: ZineHint
   // Token ID minted as the collection cover at deploy time (Kismet
   // create-form flow with mint-cover enabled — currently always '1').
   // The featured-collection row dedupes this token from its mint-card

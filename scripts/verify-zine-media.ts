@@ -24,7 +24,7 @@
  *        scripts/verify-zine-media.ts
  */
 
-import { PDF_EXT, PDF_MAGIC, PDF_MIME, hasPdfExt, hasPdfMagic } from '../lib/pdfFormat.ts'
+import { PDF_EXT, PDF_MAGIC, PDF_MIME, hasPdfMagic } from '../lib/pdfFormat.ts'
 import { CFILE_KIND_META, CFILE_MAX_BYTES, formatCfileSize } from '../lib/collectorFileTypes.ts'
 import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
@@ -83,8 +83,6 @@ check('pdfFormat: magic test rejects a near-miss',
   !hasPdfMagic(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00])))
 check('pdfFormat: magic test rejects a too-short head',
   !hasPdfMagic(new Uint8Array([0x25, 0x50, 0x44])))
-check('pdfFormat: extension test is case-insensitive and exact',
-  hasPdfExt('Issue.PDF') && !hasPdfExt('issue.pdf.zip'))
 
 // ── 2. One cap, and copy that derives from it ───────────────────────────────
 check('caps: the page cap is 420', ZINE_MAX_PAGES === 420, String(ZINE_MAX_PAGES))
@@ -291,6 +289,15 @@ check('writer: one DCT image per page, at the pixel size rendered',
   (writtenText.match(/\/Filter \/DCTDecode/g) ?? []).length === 3 && writtenText.includes('/Width 1414 /Height 2000'))
 check('writer: pages keep their size in points', writtenText.includes('/MediaBox [0 0 595.20 841.68]'))
 check('writer: the title is escaped into the Info dictionary', writtenText.includes('/Title (Issue \\(0\\) \\\\ test)'))
+check('writer: every image stream declares its exact byte length', [65, 66, 67].every((n) => writtenText.includes(`/Length ${n} >>`)))
+check('writer: the trailer counts every object plus the free head', writtenText.includes('/Size 13'))
+check('writer: xref entries are exactly 20 bytes, free head included',
+  [...writtenText.matchAll(/^\d{10} \d{5} [nf] ?\r?\n/gm)].length === 13 &&
+    [...writtenText.matchAll(/^\d{10} \d{5} [nf] ?\r?\n/gm)].every((m) => m[0].length === 20))
+{
+  const t = new TextDecoder('latin1').decode(writeImagePdf(rasters.slice(0, 1), { title: 'Café №1' }))
+  check('writer: a non-ASCII title is a UTF-16BE hex string, not stripped', /\/Title <FEFF00430061006600e9002021160031>/i.test(t))
+}
 {
   const m = /startxref\n(\d+)\n%%EOF/.exec(writtenText)
   const at = m ? Number(m[1]) : -1

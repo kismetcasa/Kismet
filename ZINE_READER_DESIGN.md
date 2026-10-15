@@ -1114,8 +1114,9 @@ things worth being precise about:
   kill-switch are untouched. The one storage-layer change: `pdf` joined
   `CFILE_VIEWABLE_KINDS` (`glb`, `pdf`, `svg`), so a holder's `read` is the
   same same-origin gated fetch the GLB viewer makes, and the bytes go from
-  that response straight into `openPdf` — never through a URL, never cached
-  by the browser as a file.
+  that response straight into `openPdf` — never through a navigable URL
+  (the response is `attachment`, and `private, max-age=3600` as the view
+  route's standing policy for every viewable kind).
 - **The page count lives on the version row** (`CfileVersion.pages`, `pages?`
   on the public descriptor). It is display metadata: counted client-side at
   attach (`sniffPdfFile` → `inspectPdfFile`), sent as `?pages=` (1..420, else
@@ -1172,7 +1173,7 @@ is a concern, what is true of those hosts, and where the decision lives.
 | 5 | **Long-press on a page** | iOS raises the image callout (save / copy) on any `<img>` | `-webkit-touch-callout: none` on page images — the Download button is the sanctioned path; a nudge, not DRM (a public zine is public) |
 | 6 | **Rubber-banding, pull-to-refresh** | A swipe that overshoots scrolls the page behind the layer or refreshes it | `overscroll-behavior: none` on the reader root; body scroll locked while open, the previous overflow restored on close |
 | 7 | **Memory** — WebKit's per-page canvas budget and lazy canvas reclaim | The documented limits (§6.1): ~16.7 MP per canvas, a budget across live canvases, memory not returned until a canvas is zeroed | Unchanged from Phase 1 and now load-bearing: every render becomes a JPEG blob and its canvas is zeroed; 16 MP / 4096 px caps; blobs outside the window are revoked; the window is one page either side on narrow viewports (`ZineReader.tsx` `WINDOW_NARROW`) |
-| 8 | **Decode cost** — 300 dpi scans are 8–9 MP per page | ~150 ms per page here, with Chromium's native decoder (§21.4); Safari has no `ImageDecoder`, so pdf.js decodes JPEG in JavaScript and the page's pixel count is the cost | "Optimize for phones" at mint (`lib/media/optimizePdf.ts`, `components/ZineOptimizeBar.tsx`): each page re-rendered at 2000 px long edge, JPEG 0.85, written into an image-only PDF by `writeImagePdf` (one DCT XObject per page, the page's own aspect as its MediaBox, the title, a real xref — checked byte by byte in `verify:zine-media` §7). Opt-in, with undo; refused as "Already compact" when it saves under 15 %. The button's tooltip and the result toast state the one real trade: pages become images, so text stops being selectable — right for a scan, a choice for a born-digital zine |
+| 8 | **Decode cost** — 300 dpi scans are 8–9 MP per page | ~150 ms per page here, with Chromium's native decoder (§21.4); Safari has no `ImageDecoder`, so pdf.js decodes JPEG in JavaScript and the page's pixel count is the cost | "Optimize for phones" at mint (`lib/media/optimizePdf.ts`, `components/OptimizeBar.tsx`): each page re-rendered at 2000 px long edge, JPEG 0.85, written into an image-only PDF by `writeImagePdf` (one DCT XObject per page, the page's own aspect as its MediaBox, the title, a real xref — checked byte by byte in `verify:zine-media` §7). Opt-in, with undo; refused as "Already compact" when it saves under 15 %. The button's tooltip and the result toast state the one real trade: pages become images, so text stops being selectable — right for a scan, a choice for a born-digital zine |
 | 9 | **Landscape and imposed pages** (§21.1) | A sideways sheet on a portrait phone is unreadable at fit-to-width | A rotate control (and `r`; `R` turns the other way, for the sheet that lands upside down after the first turn — Arjan's does): quarter turns, remembered per artwork (`kismet:zine-rotate:<key>`), the zoom reset, renders in flight discarded so a turn never shows a stale orientation (e2e: "rotating turns the page a quarter turn", "keeps the place", "three more quarter turns are upright again") |
 | 10 | **Safe areas** — the notch and the home indicator | Only pages with `viewport-fit=cover` draw under them; this app sets none | Nothing to do; the chrome never sits under the indicator |
 | 11 | **Fullscreen** | iPhone Safari has no element fullscreen API | The button appears only when `document.fullscreenEnabled` is true; the reader is already a full-viewport layer, so an iPhone loses nothing |
@@ -1262,11 +1263,145 @@ Files for Phase 2:
 |---|---|
 | `lib/collectorFileTypes.ts`, `lib/collectorFileCore.ts`, `lib/collectorFile.ts`, `app/api/collector-file/route.ts` | `pdf` is viewable; `pages` on the version row, in the public descriptor and on the attach route (`?pages=`, 1..420). |
 | `lib/media/zineMedia.ts` | `zineMomentFields` takes a public (PDF + cover) or a collectors (cover only) input; the access copy. |
-| `components/MintForm.tsx`, `components/ZineOptimizeBar.tsx`, `lib/media/optimizePdf.ts` | The access control, the awaited attach with its retry, the optimizer and its bar. |
+| `components/MintForm.tsx`, `components/OptimizeBar.tsx`, `lib/media/optimizePdf.ts` | The access control, the awaited attach with its retry, the optimizer and its bar. |
 | `components/CollectorFileCard.tsx`, `components/CollectorFileViewer.tsx`, `components/CollectorFileManagePanel.tsx` | `read` / "collect to read" and the page count; the viewer's PDF branch; the page count at attach. |
 | `components/ZineReader.tsx`, `components/MomentZine.tsx`, `lib/zineHistory.ts`, `lib/farcasterHaptics.ts`, `lib/pdfjs.ts` | Rotation, the narrow prerender window, the history-backed close, the Mini App download and haptics, the touch callout and overscroll rules, the shared worker. |
 | `components/ZineBadge.tsx`, `components/MomentCard.tsx`, `components/FeaturedMoment.tsx` | The badge from the hint, with "collectors only". |
 | `scripts/verify-zine-media.ts`, `scripts/verify-collector-file.ts`, `scripts/e2e/zine.mjs`, `scripts/e2e/zine-showcase.mjs`, `scripts/e2e/redis-stub.mjs` | The oracles; the e2e's Phase 2 sections; the showcase; the stub's seeded record. |
+
+## 22. Audit (2026-10-15) — the whole implementation, end to end
+
+**Method.** The branch's full diff against its base (`096a705`, 48 files);
+three independent reviews, each briefed with files and a goal and none of
+my conclusions — the reader stack, the mint form with the optimizer, the
+collector-file store with every surface; every verify suite; both browser
+suites (the zine's and the 3D one, which exercises the mint form and the
+owned download the two features share); a build of the base commit beside
+the branch build for the bundle delta per route; and a walk through the
+artist's and the collector's journeys looking for what neither test nor
+reviewer measures. Every finding below was verified against the code before
+it was acted on; the reviewers' claims that did not hold (the reader "never
+takes focus" — the focus trap does) were dropped.
+
+### 22.1 Fixed — would have shipped wrong
+
+| # | What | Where | The fix |
+|---|---|---|---|
+| 1 | "Optimize for phones" (and its undo) lost "collectors only", the uploaded cover and the page chosen as the cover: the optimized file goes through the same async pick gate as a drop, whose completion resets a new pick's choices — a timer fired before the gate had parsed the PDF. A collectors-only zine would have minted public. | `MintForm` | The choices that belong to the zine ride a carry keyed on the file about to be installed; the `[file]` effect restores them when that file lands. Pinned by e2e A2 on a fixture the optimizer can shrink. |
+| 2 | A collectors-only zine resumed after a failed attempt uploaded its cover a second time, as a poster (the banked media IS the cover). | `MintForm` | The poster fallback applies only when the banked media needs one (a PDF, a model). |
+| 3 | A cover changed after a failed attempt (another upload, another page) was ignored on resume: the bank was keyed on the PDF alone. | `MintForm` | The bank carries the cover's identity; a different one is a miss (a reload's record, which keeps no File, counts as unknown, not different). |
+| 4 | Page flips never cancelled queued renders: a scrubber drag across a 400-page zine queued every page it passed, each rendered to completion. | `ZineReader` | Queued jobs are cancelled when the window no longer wants their page, and a job that starts for a page the reader has left does nothing. |
+| 5 | The first render on a landscape viewport was sized from a guessed aspect (the default, or page 1's) and stayed soft until the next turn. | `ZineReader` | The width is taken after the page's aspect is known; a learned aspect re-runs the window. |
+| 6 | ctrl/⌘ + wheel (a trackpad pinch) zoomed the reader AND the page behind it — React registers wheel passively, where `preventDefault` is a no-op. | `ZineReader` | A native, non-passive wheel listener. |
+| 7 | A failed open left a dead history entry, one more per retry: the entry was popped when the phase turned to error. | `MomentZine` | The error state lives inside the entry. |
+| 8 | A reader entry left by an earlier open (reachable through the browser's forward button) made the close need two presses. | `lib/zineHistory` | One token per open; only this open's entry counts. |
+| 9 | A public zine and a PDF attached as its collector file shared one resume key — and the `?page=` link opened the collector file at that page. | `CollectorFileViewer` | Its own key; no URL pickup. |
+| 10 | The manage panel could PUT the previous pick's page count (a large PDF counted after a smaller one was picked), or none when saved mid-count. | `CollectorFileManagePanel` | A pick sequence; save waits for the count. |
+| 11 | A stale collectors hint: re-pointing the media at a model badged the card twice; a detached or replaced collector file kept the "zine" badge. | `MomentDetailView`, `MomentCard`, `FeaturedMoment` | The edit flow keeps the hint only while the media is a still and the collector file (when the page knows it) is a PDF; cards never badge a zine over a model's or a video's badge. A detached zine keeps its badge until the artist's next metadata edit — §22.5. |
+| 12 | The page-change callback and the haptic ran inside a state updater — twice under StrictMode. | `ZineReader` | Moved out, compared against a ref. |
+| 13 | A phantom turn at the end of an odd spread (page 5 of 5 shown on 4–5: next slid, ticked and wrote `?page=5` with no visual change). | `ZineReader` | No turn past the last page; the button disables on the spread's right page. |
+| 14 | A pinch that dropped to one finger panned from the lifted finger's start; a cancelled pointer (the browser took the gesture) acted as a tap. | `ZineReader` | The remaining finger re-bases the gesture; cancel clears state only. |
+| 15 | Any open failure but a malformed file destroyed the shared worker — with other documents on it (the mint preview while the gate inspects a second pick). | `lib/pdfjs` | Reset only when the worker is dead or the error names it. |
+| 16 | A render whose signal was aborted during the preceding `getPage` ran to completion and was discarded. | `lib/pdfjs` | `throwIfAborted` at entry. |
+| 17 | The crisper zoom render for a page the reader had left was installed anyway and shown at fit size on return. | `ZineReader` | Dropped unless page and zoom still match. |
+| 18 | A non-ASCII zine title ("Café №1", a Japanese title) was stripped from the optimized PDF's Info dictionary. | `lib/media/optimizePdf` | UTF-16BE hex strings; an oracle row. |
+| 19 | A PDF dropped into any cover slot, or as a machine frame, was told where zines are minted instead of what the slot takes. | `lib/media/mintMedia`, `lib/experience/frameUpload` | The slot's own copy. |
+
+### 22.2 Left to be desired, now provided
+
+| # | For | What | Where |
+|---|---|---|---|
+| 20 | the artist | They could not read their own collectors-only zine: the view gate admitted holders only, and the artist typically holds no edition. | `/api/collector-file/view` admits the artwork's managers (the predicate the attach/replace routes use), view only — no ticket, no download, no downloader stat; the manage panel gets `read` / `view` for viewable kinds and shows the zine's page count. The view route's comment, which still said "glb/svg", now says what it serves. |
+| 21 | the collector | The card said "collector download" of a zine, "your download is ready" after collecting one, and a password-protected PDF failed with "could not start in this browser". | "collectors-only zine ·", "your zine is ready — read it", "This PDF is password-protected — download it and open it with the password"; the artist attaching one is warned that collectors will download, not read. |
+| 22 | keyboard and screen-reader users | Hidden chrome stayed in the Tab order (invisible buttons took focus); on close, focus went to the document top because the read button had unmounted. | Focus landing on a hidden bar reveals it; the read button that returns on close takes focus. |
+| 23 | the artist | The optimize pass could not be cancelled (420 pages for a file nobody will mint), showed "page 0 / N" first, and read every page to a screen reader. | Aborted by a new pick or by leaving the form; an "opening" step; the live region announces the phase, the page counter is visual. |
+| 24 | the artist | The attach-after-mint retry was back-to-back; the route's transient answers are 503s that a second request a millisecond later meets again. | A 2.5 s pause before the one retry. |
+| 25 | the codebase | The zine's metadata fields were assembled inline in the form; the "one definition" (`zineMomentFields`) was called by the oracle alone. | The form calls it; the oracle now pins what ships. |
+
+### 22.3 Bloat removed
+
+- `ModelOptimizeBar` and `ZineOptimizeBar` were the same component with a
+  different busy label: one `OptimizeBar` (`components/OptimizeBar.tsx`),
+  the callers word the step and the button.
+- Dead: `clearPageParam`, `hasPdfExt`, `PageRender.aspect` and
+  `RenderedPage.aspect`, the optimizer's `longEdge` / `quality` options; four
+  constants exported from `lib/pdfjs.ts` and one from `optimizePdf.ts` that
+  nothing imported are module-private; the hint's shape is declared once
+  (`ZineHint`) instead of three times; the resolver reads the hint through
+  `readZineHint` (which now also bounds `pages` by the cap, so a hand-written
+  token cannot badge "99999999 pages"); the attach route's 415 copy derives
+  from `CFILE_KIND_LABEL`.
+- `CollectorFileViewer` (the GLB / SVG / PDF viewer and the PDF engine's
+  loader behind it) is loaded on the click that opens it, not with the
+  artwork route.
+- Bundle, measured against a build of the base commit with the same
+  `node_modules` (uncompressed JS per route, `.next/app-build-manifest.json`):
+
+  | Route | Base | Branch | Delta |
+  |---|---|---|---|
+  | `/mint` | 1340 KB | 1357 KB | +16.6 KB (1.24 %) |
+  | `/artwork/[address]/[tokenId]` and its modal twin | 1311 KB | 1324 KB | +12.7 KB (0.97 %) |
+  | `/` | 1276 KB | 1282 KB | +6.0 KB |
+  | `/profile/[address]` | 1323 KB | 1328 KB | +5.7 KB |
+  | `/collection/[address]` | 1285 KB | 1291 KB | +5.4 KB |
+  | `/play/create-*` (a shared chunk) | 1182 KB | 1185 KB | +3.7 KB |
+  | every other route | | | ≤ 1.3 KB |
+
+
+  Everything the mint route gained is on its critical path by design (the
+  pick gate, the preview, the access control); the artwork route's gain is
+  the zine entry (`MomentZine`) and the badge; the reader, the optimizer and
+  pdf.js itself load on a tap or a pick. No route grew past the 10 % guard
+  (`check:bundle`), no baseline bump.
+
+### 22.4 Regressions
+
+- The 3D browser suite (88 checks) found one: its assertion on the mint
+  gate's rejection copy expected the old wording ("… or a .glb 3D model");
+  the branch's copy also names PDF zines. The assertion follows the product
+  copy. Everything else in it — the posed preview, capture, optimize for
+  web, the owned download, the viewer — passes on the branch.
+- `verify:model-media`, `verify:model-fetch`, `verify:collector-file` and
+  the rest of `verify:flows` pass; `checkMintMedia`'s order (typed image /
+  video → GLB → PDF → extension fallback) adds one 5-byte sniff for typeless
+  files and nothing for typed ones; the collector-file kinds and their
+  magic are unchanged; `/api/img`, the OG route and structured data were
+  read for a path to a collectors-only PDF and have none.
+- Two behaviour changes are deliberate, not regressions: a 3D model whose
+  poster upload fails now refuses to mint without an `image` (§17.2, the
+  resume re-uploads only the poster); every pre-existing `pdf` collector
+  file now offers `read` as well as `download`.
+
+### 22.5 Verification
+
+On the final build (2026-10-15):
+
+- `next build` (the one warning is a dependency's own, `ox`); `npm run check`
+  — typecheck, lint, resource hints, the bundle guard (no route past 10 %,
+  no baseline bump), every verify suite including the writer's new rows
+  (`/Length`, `/Size`, 20-byte xref entries, the UTF-16 title) and the agent
+  routes end-to-end (203).
+- `scripts/e2e/zine.mjs`: 81 checks, all passing — the 75 before, plus A2
+  (a heavy scan is optimized; "collectors only" and the chosen cover page
+  survive the optimized re-pick and its undo).
+- `scripts/e2e/model-media.mjs`: 88 checks, all passing.
+- The base-commit build comparison in §22.3.
+- What the audit's own first run caught: when the render queue changed, the
+  window effect lost the dependency it had on the rotation through `fitBox`,
+  and page 5 never re-rendered after a turn; the e2e's rotation check failed
+  on the first pipeline and the dependency is explicit now. The fixture the
+  optimizer can shrink exposed nothing further.
+
+
+### 22.6 Still open
+
+- A detached or replaced collectors-only zine keeps its "zine" badge until
+  the artist's next metadata edit (the badge is token metadata; a detach is a
+  Kismet-side action with no on-chain write). The edit flow drops it then.
+- The Discover button (deferred by decision), Arjan's reading-order export,
+  the holder's `read` in a browser, and Safari's JavaScript JPEG decode as
+  the measurement that decides how much the optimizer buys on an iPhone
+  (§21.6).
 
 ## Appendix A — verified vs. assumed
 

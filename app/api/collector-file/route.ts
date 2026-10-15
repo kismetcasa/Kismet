@@ -33,7 +33,7 @@ import {
   toPublicDescriptor,
   writeCfileBlobChunks,
 } from '@/lib/collectorFile'
-import { formatCfileSize } from '@/lib/collectorFileTypes'
+import { formatCfileSize, CFILE_KIND_LABEL } from '@/lib/collectorFileTypes'
 import { ZINE_MAX_PAGES } from '@/lib/media/zineMedia'
 import { parseCfileParams, requireCfileManager } from '@/lib/collectorFileGate'
 import { notifyCollectorsOfUpdate, CFILE_FANOUT_CEILING } from '@/lib/collectorFileFanout'
@@ -198,7 +198,7 @@ export async function PUT(req: NextRequest) {
     // Magic bytes decide the format; the claimed name/extension never does.
     const kind = detectCfileKind(plaintext)
     if (!kind) {
-      return errorResponse(415, 'Not an accepted file type — upload a zip, PDF, 3D model (.glb), SVG or Game Boy ROM (.gb/.gbc)')
+      return errorResponse(415, `Not an accepted file type — upload a ${CFILE_KIND_LABEL}`)
     }
     const name = normalizeCfileName(decodedName, kind)
 

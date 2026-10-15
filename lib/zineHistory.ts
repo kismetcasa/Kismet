@@ -22,9 +22,11 @@ const RESUME_PREFIX = 'kismet:zine-page:'
 const READER_STATE_KEY = 'kismetZineReader'
 
 /** The page to open on: a shared `?page=N` wins, then the remembered spot. */
-export function readStartPage(storageKey: string): number | undefined {
+export function readStartPage(storageKey: string, opts: { url?: boolean } = {}): number | undefined {
   try {
-    const fromUrl = Number(new URL(window.location.href).searchParams.get('page'))
+    // `?page=` addresses the artwork's own zine; a collector file read from
+    // the same page passes url: false so a shared link never opens it there.
+    const fromUrl = opts.url === false ? NaN : Number(new URL(window.location.href).searchParams.get('page'))
     if (Number.isInteger(fromUrl) && fromUrl > 0) return fromUrl
     const stored = Number(window.localStorage.getItem(RESUME_PREFIX + storageKey))
     if (Number.isInteger(stored) && stored > 1) return stored
@@ -71,21 +73,16 @@ export function rememberRotation(storageKey: string, rotation: number): void {
   }
 }
 
-export function clearPageParam(): void {
+/** The token of the entry on top, if it is a reader entry of this page. */
+function readerEntryToken(): number | null {
   try {
-    const url = new URL(window.location.href)
-    if (!url.searchParams.has('page')) return
-    url.searchParams.delete('page')
-    window.history.replaceState({ ...(window.history.state ?? {}) }, '', url.toString())
+    const v = (window.history.state as Record<string, unknown> | null)?.[READER_STATE_KEY]
+    return typeof v === 'number' ? v : null
   } catch {
-    /* best effort */
+    return null
   }
 }
-
-function hasReaderEntry(): boolean {
-  const s = window.history.state as Record<string, unknown> | null
-  return !!s && s[READER_STATE_KEY] === true
-}
+let nextToken = 0
 
 /**
  * Back-gesture-aware open/close. While `open`, one history entry marked as
@@ -97,18 +94,24 @@ export function useReaderHistory(open: boolean, onBackClose: () => void): () => 
   const onBackRef = useRef(onBackClose)
   onBackRef.current = onBackClose
   const pushedRef = useRef(false)
+  // One token per open, so an entry left by an EARLIER open (reachable again
+  // through the browser's forward button) is never mistaken for this one —
+  // a boolean marker made the close need two presses in that sequence.
+  const tokenRef = useRef(0)
 
   useEffect(() => {
     if (!open) return
+    const token = ++nextToken
+    tokenRef.current = token
     try {
-      window.history.pushState({ ...(window.history.state ?? {}), [READER_STATE_KEY]: true }, '', window.location.href)
+      window.history.pushState({ ...(window.history.state ?? {}), [READER_STATE_KEY]: token }, '', window.location.href)
       pushedRef.current = true
     } catch {
       pushedRef.current = false
     }
     const onPop = () => {
-      // Still on an entry of ours (a forward after a back): nothing to do.
-      if (hasReaderEntry()) return
+      // Still on this open's entry: nothing to do.
+      if (readerEntryToken() === token) return
       pushedRef.current = false
       onBackRef.current()
     }
@@ -118,7 +121,7 @@ export function useReaderHistory(open: boolean, onBackClose: () => void): () => 
       // Closed by other means while our entry is still on top (an unmount,
       // a navigation): strip the marker so a later back lands on a plain
       // artwork page rather than a reader that no longer exists.
-      if (pushedRef.current && hasReaderEntry()) {
+      if (pushedRef.current && readerEntryToken() === token) {
         pushedRef.current = false
         try {
           const s = { ...(window.history.state as Record<string, unknown>) }
@@ -132,7 +135,7 @@ export function useReaderHistory(open: boolean, onBackClose: () => void): () => 
   }, [open])
 
   return useCallback(() => {
-    if (pushedRef.current && hasReaderEntry()) {
+    if (pushedRef.current && readerEntryToken() === tokenRef.current) {
       window.history.back()
       return
     }

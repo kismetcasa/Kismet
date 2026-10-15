@@ -34,6 +34,3 @@ export function hasPdfMagic(head: Uint8Array): boolean {
   return head.length >= PDF_MAGIC.length && PDF_MAGIC.every((b, i) => head[i] === b)
 }
 
-export function hasPdfExt(name: string): boolean {
-  return name.toLowerCase().endsWith(PDF_EXT)
-}

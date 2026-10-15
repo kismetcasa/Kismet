@@ -597,7 +597,7 @@ function MomentCardImpl({ moment, hidePriceSupply, priority, compact, showCreato
           // claiming a fifth position no other overlay uses.
           <ModelBadge className={`absolute top-2 ${isOwnMoment && moment.hidden ? 'right-9' : 'right-2'}`} />
         )}
-        {(media.kind === 'pdf' || zineHint?.access === 'collectors') && (
+        {(media.kind === 'pdf' || (zineHint?.access === 'collectors' && media.kind !== 'model' && media.kind !== 'video')) && (
           // A zine's cover is a still like any other; the badge is the only
           // signal there are pages to read. A collectors-only zine is an image
           // moment to the resolver, so its hint carries the badge. Same

@@ -1,4 +1,5 @@
 import { formatEther, formatUnits } from 'viem'
+import type { ZineHint } from './media/zineHint'
 import { USDC_BASE } from './zoraMint'
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ interface MomentMetadataInline {
   kismet_bg?: string
   /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
    *  A badge signal only — rendering keys on `content.mime`. */
-  kismet_zine?: { pages: number; access: 'public' | 'collectors' }
+  kismet_zine?: ZineHint
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
@@ -421,7 +422,7 @@ export interface MomentDetail {
   kismet_bg?: string
   /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
    *  A badge signal only — rendering keys on `content.mime`. */
-  kismet_zine?: { pages: number; access: 'public' | 'collectors' }
+  kismet_zine?: ZineHint
   }
   // Set by /api/moment from the kismetart:hidden-moments KV. True when the
   // creator has hidden the moment from public feeds. Detail page renders

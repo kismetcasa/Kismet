@@ -34,14 +34,14 @@ export const PDFJS_ASSET_ROOT = '/pdfjs/'
  *  above ~16.7 M pixels (4096 × 4096) and accounts every live canvas against
  *  a per-page memory budget; pdf.js's own viewer uses 2^25 on desktop. One
  *  conservative number for every surface. */
-export const PDF_RENDER_MAX_PIXELS = 16 * 1024 * 1024
+const PDF_RENDER_MAX_PIXELS = 16 * 1024 * 1024
 /** And a per-side cap, because the pixel budget alone admits a 20 000 × 800
  *  strip that WebKit still refuses. */
-export const PDF_RENDER_MAX_SIDE = 4096
+const PDF_RENDER_MAX_SIDE = 4096
 /** `maxImageSize` for getDocument: pdf.js skips decoding an EMBEDDED image
  *  larger than this (in pixels), so a pathological 20k × 20k scan costs a
  *  blank area, not the tab. */
-export const PDF_MAX_EMBEDDED_IMAGE_PIXELS = 64 * 1024 * 1024
+const PDF_MAX_EMBEDDED_IMAGE_PIXELS = 64 * 1024 * 1024
 
 type PdfJsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs')
 type PdfWorker = InstanceType<PdfJsModule['PDFWorker']>
@@ -136,9 +136,11 @@ export async function openPdf(data: ArrayBuffer | Uint8Array): Promise<OpenedPdf
   } catch (err) {
     await task.destroy().catch(() => {})
     if (isPasswordException(err)) throw new PdfPasswordError()
-    // A malformed file is the file's fault; anything else may be the
-    // worker's, and a worker that has died stays dead until replaced.
-    if (!(err && typeof err === 'object' && (err as { name?: unknown }).name === 'InvalidPDFException')) resetWorker()
+    // A malformed file is the file's fault and the worker is fine — other
+    // documents may be open on it (the mint preview while the gate inspects
+    // a second pick). Only a worker that has died, or an error that names
+    // it, replaces it.
+    if (sharedWorker?.destroyed || /worker/i.test(err instanceof Error ? err.message : '')) resetWorker()
     throw err
   }
 }
@@ -163,8 +165,6 @@ export interface RenderedPage {
   /** Pixel size of the render. */
   width: number
   height: number
-  /** The page's own aspect (width / height) after its /Rotate. */
-  aspect: number
 }
 
 export interface RenderPageOptions {
@@ -197,6 +197,9 @@ export function pageAspect(page: PdfPage, rotation = 0): number {
  * workaround (WebKit bug 195325) is to set width and height to 0 yourself.
  */
 export async function renderPageToBlob(page: PdfPage, opts: RenderPageOptions): Promise<RenderedPage> {
+  // Aborted while the caller awaited getPage: the listener below would never
+  // fire for a signal already aborted, and the render would run to completion.
+  opts.signal?.throwIfAborted()
   const dpr = opts.dpr ?? 1
   const rotation = (page.rotate + (opts.rotation ?? 0)) % 360
   const base = page.getViewport({ scale: 1, rotation })
@@ -220,7 +223,7 @@ export async function renderPageToBlob(page: PdfPage, opts: RenderPageOptions): 
       canvas.toBlob(resolve, opts.mime ?? 'image/jpeg', opts.quality ?? 0.9),
     )
     if (!blob) throw new Error('page encode failed')
-    return { blob, width, height, aspect: base.width / base.height }
+    return { blob, width, height }
   } finally {
     opts.signal?.removeEventListener('abort', onAbort)
     canvas.width = 0
@@ -235,7 +238,7 @@ export async function renderPageToBlob(page: PdfPage, opts: RenderPageOptions): 
 /** Long edge of the cover JPEG rendered from a page at mint time. Matches
  *  the other posters' consumers: the OG hero draws at 800 × 800 and /api/img
  *  downscales to 2048, so 1200 is comfortably above both. */
-export const ZINE_COVER_LONG_EDGE = 1200
+const ZINE_COVER_LONG_EDGE = 1200
 
 /**
  * The cover for a zine minted without an uploaded one: a page rendered to a

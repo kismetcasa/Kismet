@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { X } from 'lucide-react'
 import { CFILE_KIND_META, formatCfileSize, type CfileKind } from '@/lib/collectorFileTypes'
@@ -62,7 +62,12 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
   const openedRef = useRef<OpenedPdf | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
-  const storageKey = `${collection.toLowerCase()}:${tokenId}`
+  // Its own resume key: the artwork's public zine, when there is one, keeps
+  // `collection:tokenId`, and a `?page=` link addresses that zine, not this
+  // file (readStartPage url: false).
+  const storageKey = `cfile:${collection.toLowerCase()}:${tokenId}`
+  const startPage = useMemo(() => readStartPage(storageKey, { url: false }), [storageKey])
+  const startRotation = useMemo(() => readRotation(storageKey), [storageKey])
   // The back gesture closes this viewer — the loading shell included — rather
   // than the artwork page (lib/zineHistory). The UI's close goes through it
   // too, so the stack never keeps a dead entry.
@@ -99,12 +104,18 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
         let loaded = 0
         if (res.body) {
           const reader = res.body.getReader()
+          let shownAt = 0
           for (;;) {
             const { done, value } = await reader.read()
             if (done) break
             chunks.push(value)
             loaded += value.byteLength
-            if (!cancelled) setProgress({ loaded, total })
+            // One paint per 100 ms, not one per network chunk.
+            const now = Date.now()
+            if (!cancelled && (now - shownAt >= 100 || loaded === total)) {
+              shownAt = now
+              setProgress({ loaded, total })
+            }
           }
         }
         const bytes = new Uint8Array(loaded)
@@ -146,11 +157,13 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
       } catch (err) {
         if (cancelled || (err instanceof DOMException && err.name === 'AbortError')) return
         setError(
-          err instanceof Error && err.message && !(kind === 'pdf' && err.name === 'PdfPasswordError')
-            ? err.message
-            : kind === 'pdf'
-              ? ZINE_COPY.readerUnavailable
-              : 'Could not load this file',
+          kind === 'pdf' && err instanceof Error && err.name === 'PdfPasswordError'
+            ? ZINE_COPY.passwordCollector
+            : err instanceof Error && err.message
+              ? err.message
+              : kind === 'pdf'
+                ? ZINE_COPY.readerUnavailable
+                : 'Could not load this file',
         )
       }
     })()
@@ -229,11 +242,11 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
       <ZineReader
         doc={opened.doc}
         title={name}
-        startPage={readStartPage(storageKey)}
+        startPage={startPage}
         onClose={closeViaHistory}
         onPageChange={onPageChange}
         haptics={miniApp}
-        startRotation={readRotation(storageKey)}
+        startRotation={startRotation}
         onRotationChange={onRotationChange}
       />
     )

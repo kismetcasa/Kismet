@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useAccount, useSignMessage } from 'wagmi'
 import { toast } from 'sonner'
@@ -9,7 +10,9 @@ import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
-import { CollectorFileViewer } from './CollectorFileViewer'
+// Opened on a click only; keeps the viewer (and the PDF engine's loader)
+// off the artwork route's critical path.
+const CollectorFileViewer = dynamic(() => import('./CollectorFileViewer').then((m) => m.CollectorFileViewer), { ssr: false })
 import { formatCfileSize, type CfilePublic, isViewableCfileKind } from '@/lib/collectorFileTypes'
 import { formatPrice } from '@/lib/inprocess'
 
@@ -219,12 +222,12 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
         <ArrowDownToLine size={14} className="text-accent flex-shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-[11px] font-mono text-ink truncate">
-            collector download · {metaLine}
+            {isZine ? 'collectors-only zine' : 'collector download'} · {metaLine}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {hasCollected ? (
               justCollected ? (
-                <span className="text-accent">your download is ready</span>
+                <span className="text-accent">{isZine ? ZINE_COPY.collectedReady : 'your download is ready'}</span>
               ) : updateAvailable ? (
                 <span className="text-accent">update available — v{file.v}</span>
               ) : (

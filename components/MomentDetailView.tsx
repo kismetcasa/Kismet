@@ -1319,10 +1319,15 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         // Only a 3D binding carries a backdrop; a re-point or upload of any
         // other kind drops it along with the model.
         ...(contentField?.mime === GLB_MIME && bg ? { kismet_bg: bg } : {}),
-        // Only a zine binding (or a collectors-only zine, whose pages are not
-        // in the metadata at all) keeps its hint; replacing the media with
-        // anything else drops it along with the PDF.
-        ...(zineHint && (contentField?.mime === PDF_MIME || zineHint.access === 'collectors')
+        // Only a zine binding keeps its hint — or a collectors-only zine,
+        // whose pages are not in the metadata at all, while the media is
+        // still a still and the collector file (when this page knows it) is
+        // still a PDF. Re-pointing the media at a video or a model, or a
+        // detached or replaced collector file, drops a hint that would
+        // otherwise badge a zine nobody can read.
+        ...(zineHint &&
+        (contentField?.mime === PDF_MIME ||
+          (zineHint.access === 'collectors' && !contentField && !(initialCfile !== undefined && cfile?.kind !== 'pdf')))
           ? { kismet_zine: zineHint }
           : {}),
       }

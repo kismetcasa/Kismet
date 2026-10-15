@@ -20,17 +20,15 @@ import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
 import { checkCoverImage, checkMintMedia } from '@/lib/media/mintMedia'
-import { ZINE_COPY, ZINE_SOFT_WARN_BYTES, asPdfFile, type ZineAccess } from '@/lib/media/zineMedia'
+import { ZINE_COPY, ZINE_OPTIMIZE_LONG_EDGE, ZINE_SOFT_WARN_BYTES, asPdfFile, type ZineAccess, zineMomentFields } from '@/lib/media/zineMedia'
 import { PDF_EXT, PDF_MIME } from '@/lib/pdfFormat'
 import { inspectPdfFile } from '@/lib/pdfjs'
 import { ZinePreview } from './ZinePreview'
-import { ZineOptimizeBar } from './ZineOptimizeBar'
+import { OptimizeBar } from './OptimizeBar'
 import type { PdfOptimizeStep } from '@/lib/media/optimizePdf'
 
-/** The long edge the optimizer renders at, as copy ("2000 px"). Mirrors
- *  lib/media/optimizePdf.ZINE_OPTIMIZE_LONG_EDGE without importing the
- *  module statically (it pulls pdf.js helpers; the toast only needs words). */
-const ZINE_OPTIMIZE_LONG_EDGE_LABEL = '2000 px'
+/** The long edge the optimizer renders at, as copy ("2000 px"). */
+const ZINE_OPTIMIZE_LONG_EDGE_LABEL = `${ZINE_OPTIMIZE_LONG_EDGE} px`
 // The pass re-renders every page as a JPEG (lib/media/optimizePdf): right for
 // a scanned zine, which is images already, and a real trade for a born-digital
 // one, whose text stops being selectable — so the button says so, and the
@@ -45,7 +43,6 @@ import {
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
 import { ModelPreview } from './ModelPreview'
-import { ModelOptimizeBar } from './ModelOptimizeBar'
 import type { OptimizeStep } from '@/lib/media/optimizeModel'
 import { ModelPoseBar } from './ModelPoseBar'
 import { uploadJson } from '@/lib/arweave/uploadJson'
@@ -122,6 +119,9 @@ interface UploadedMediaSession {
   source: File
   mediaFile: File
   posterFile: File | null
+  /** A zine's cover as picked at the banked attempt (the upload, or the
+   *  page captured by the preview), so a cover changed since is a miss. */
+  coverSource: File | null
   needsServerTranscode: boolean
   serverTranscode: { animationUri: string; posterUri: string; thumbhash: string | null } | null
   mediaUri: string
@@ -386,6 +386,24 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // moment to every resolver) and the PDF goes to the private collector-file
   // store right after the mint — the same file, two homes, chosen here.
   const [zineAccess, setZineAccess] = useState<ZineAccess>('public')
+  const zineAccessRef = useRef(zineAccess)
+  zineAccessRef.current = zineAccess
+  const zineCoverRef = useRef(zineCover)
+  zineCoverRef.current = zineCover
+  // The page the preview captures as the cover (ZinePreview reports it).
+  const zineCoverPageRef = useRef(1)
+  // What a re-pick through the gate must not lose. `replaceFile` (optimize,
+  // undo) installs a new File object through the same async gate as a drop,
+  // and the `[file]` effect resets a new pick's choices — so the choices that
+  // belong to the zine rather than to the File object (who can read it, the
+  // uploaded cover, the page chosen as the cover) ride across, keyed on the
+  // object about to be installed. A timer could not do this: the gate parses
+  // the PDF first, and the reset ran after any timer had fired.
+  const zineCarryRef = useRef<{ file: File; access: ZineAccess; cover: File | null; coverPage: number } | null>(null)
+  // The optimize pass in flight: aborted by a new pick or by leaving the
+  // form, so 400 pages are never rendered for a file nobody will mint.
+  const zineOptimizeAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => zineOptimizeAbortRef.current?.abort(), [])
   // "Optimize for phones" (lib/media/optimizePdf): every page re-rendered at
   // a phone-sized long edge into a new PDF, offered on the preview. The
   // result goes back through the same pick gate as any drop (page count and
@@ -395,10 +413,15 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const [zineOptimized, setZineOptimized] = useState<{ file: File; original: File; before: number; after: number } | null>(null)
   const zineOptimizeRunningRef = useRef(false)
   useEffect(() => {
+    zineOptimizeAbortRef.current?.abort()
+    const carry = zineCarryRef.current
+    zineCarryRef.current = null
+    const carried = carry && carry.file === file ? carry : null
+    zineCoverPageRef.current = carried?.coverPage ?? 1
     setModelPoster(null)
     setZinePoster(null)
-    setZineCover(null)
-    setZineAccess('public')
+    setZineCover(carried?.cover ?? null)
+    setZineAccess(carried?.access ?? 'public')
     setZineOptimized((o) => (o && o.file !== file ? null : o))
     if (file && zinePickRef.current?.file === file && file.size > ZINE_SOFT_WARN_BYTES) {
       toast.warning('Large zine', { description: ZINE_COPY.largeWarning(file.size) })
@@ -430,31 +453,34 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     const source = file
     if (!source || !isZinePick || zineOptimizeRunningRef.current) return
     zineOptimizeRunningRef.current = true
-    setZineOptimizing({ kind: 'page', page: 0, pages: zinePages })
+    const controller = new AbortController()
+    zineOptimizeAbortRef.current = controller
+    setZineOptimizing({ kind: 'opening' })
     try {
       const { optimizeZinePdf } = await import('@/lib/media/optimizePdf')
-      const result = await optimizeZinePdf(source, { onStep: setZineOptimizing })
+      const result = await optimizeZinePdf(source, { onStep: setZineOptimizing, signal: controller.signal })
       // The artist picked something else while this ran: discard, never install.
       if (fileRef.current !== source) return
       if (result.unchanged) {
         toast('Already compact', { description: 'No smaller version could be produced.' })
         return
       }
-      // A collectors-only choice survives the re-pick: the `[file]` effect
-      // resets it, so it is restored once the optimized file is installed.
-      const access = zineAccess
+      // The zine's choices ride across the re-pick (zineCarryRef).
+      zineCarryRef.current = { file: result.file, access: zineAccessRef.current, cover: zineCoverRef.current, coverPage: zineCoverPageRef.current }
       replaceFile(result.file)
       setZineOptimized({ file: result.file, original: source, before: result.before, after: result.after })
-      setTimeout(() => setZineAccess(access), 0)
       toast.success('Optimized for phones', {
         description: `${formatCfileSize(result.before)} → ${formatCfileSize(result.after)} · ${result.pages} pages re-rendered as ${ZINE_OPTIMIZE_LONG_EDGE_LABEL} images (text is no longer selectable) · undo in the preview`,
       })
     } catch (err) {
+      // A new pick or leaving the form: nothing to say.
+      if (controller.signal.aborted) return
       toast.error('Could not optimize', {
         description: err instanceof Error ? err.message : 'Try re-exporting the PDF',
       })
     } finally {
       zineOptimizeRunningRef.current = false
+      if (zineOptimizeAbortRef.current === controller) zineOptimizeAbortRef.current = null
       setZineOptimizing(null)
     }
   }
@@ -1239,6 +1265,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               // bytes are irrelevant — we persisted the effective type.
               mediaFile: new File([], file.name, { type: persisted.mediaType }),
               posterFile: null,
+              // No File survives a reload: the cover is unknown, not
+              // different (the resume check treats null as a match).
+              coverSource: null,
               needsServerTranscode: persisted.needsServerTranscode,
               serverTranscode: persisted.serverTranscode,
               mediaUri: persisted.mediaUri,
@@ -1262,7 +1291,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // A zine's banked upload is the PDF (public) or the cover (collectors
           // only); a session banked under the other choice would mint the
           // wrong thing, so it is not resumed.
-          !(isZinePick && (zineAccess === 'public') !== (mediaUploadRef.current.mediaFile.type === PDF_MIME))
+          !(isZinePick && (zineAccess === 'public') !== (mediaUploadRef.current.mediaFile.type === PDF_MIME)) &&
+          // ...and a cover changed since that attempt (another upload, or
+          // another page chosen) is a different artwork, not a resume.
+          !(isZinePick && mediaUploadRef.current.coverSource && mediaUploadRef.current.coverSource !== (zineCover ?? zinePoster))
             ? mediaUploadRef.current
             : null
 
@@ -1292,9 +1324,18 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // resume record keeps no File) — so a poster whose UPLOAD failed
           // last time gets another attempt below instead of a resumed
           // session minting a model or a zine with no `image`.
+          // Only when the banked media NEEDS a poster (a PDF, a model): a
+          // collectors-only zine banks the cover as its media and would
+          // otherwise upload that same cover a second time as its poster.
           posterFile =
             cachedUpload.posterFile ??
-            (isZinePick ? (zineCover ?? zinePoster) : isModelPick ? modelPoster : null)
+            (cachedUpload.mediaFile.type === PDF_MIME || cachedUpload.mediaFile.type === GLB_MIME
+              ? isZinePick
+                ? (zineCover ?? zinePoster)
+                : isModelPick
+                  ? modelPoster
+                  : null
+              : null)
           mediaUri = cachedUpload.mediaUri
           posterUri = cachedUpload.posterUri
           thumbhash = cachedUpload.thumbhash
@@ -1454,6 +1495,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             source: file!,
             mediaFile,
             posterFile,
+            coverSource: isZinePick ? (zineCover ?? zinePoster) : null,
             needsServerTranscode,
             serverTranscode: null,
             mediaUri,
@@ -1569,7 +1611,25 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }
         }
         const imageUri = finalImageUri
-        const metadata = {
+        // A zine's fields come from their one definition (lib/media/zineMedia
+        // zineMomentFields — the shape the resolver and the oracle pin):
+        // the cover in `image`, the PDF in `animation_url` + `content` when
+        // public, the hint in both modes.
+        const zineFields =
+          isZinePick && zinePages > 0 && imageUri
+            ? zineMomentFields(
+                zineAccess === 'collectors'
+                  ? { access: 'collectors', coverUri: imageUri, pages: zinePages, thumbhash: finalThumbhash }
+                  : { access: 'public', pdfUri: animationUri ?? mediaUri, coverUri: imageUri, pages: zinePages, thumbhash: finalThumbhash },
+              )
+            : null
+        const metadata = zineFields
+          ? {
+              name: name.trim(),
+              description: description.trim(),
+              ...zineFields,
+            }
+          : {
           name: name.trim(),
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
@@ -1589,10 +1649,6 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // page's live viewer can render on the same one instead of the
           // page's. Only meaningful for models; omitted otherwise.
           ...(isModelMedia ? { kismet_bg: modelBg } : {}),
-          // A zine's hint: the page count for badges and discovery without
-          // fetching the PDF, and where the pages live. The resolver keys on
-          // content.mime; this is a second signal, never the first.
-          ...(isZinePick && zinePages > 0 ? { kismet_zine: { pages: zinePages, access: zineAccess } } : {}),
         }
         const metadataKey = JSON.stringify(metadata)
         const metadataUri = await uploadJsonCached(metadata, metadataKey)
@@ -1752,7 +1808,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           toast.loading(ZINE_COPY.collectorsAttaching, { id: 'mint' })
           const staged = { file: asPdfFile(file!), pages: zinePages }
           let attached = await attachStagedCfile(data.contractAddress, data.tokenId, staged, { quiet: true })
-          if (!attached.ok) attached = await attachStagedCfile(data.contractAddress, data.tokenId, staged, { quiet: true })
+          if (!attached.ok) {
+            // The route's transient answers are 503s (its single PUT slot, a
+            // permissions read that timed out): a back-to-back retry meets
+            // the same state, a short pause usually does not.
+            await new Promise((r) => setTimeout(r, 2500))
+            attached = await attachStagedCfile(data.contractAddress, data.tokenId, staged, { quiet: true })
+          }
           toast.success('Minted!', {
             id: 'mint',
             description: attached.ok ? `Token #${data.tokenId} · ${ZINE_COPY.collectorsAttached}` : `Token #${data.tokenId}`,
@@ -1997,15 +2059,31 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       file={file!}
                       onPoster={setZinePoster}
                       onError={(msg) => toast.error('PDF zine', { description: msg })}
+                      initialCoverPage={zineCoverPageRef.current}
+                      onCoverPage={(p) => { zineCoverPageRef.current = p }}
                     />
-                    <ZineOptimizeBar
+                    <OptimizeBar
+                      label="optimize for phones"
                       hint={ZINE_OPTIMIZE_HINT}
                       size={file!.size}
-                      busy={zineOptimizing}
+                      busy={
+                        zineOptimizing
+                          ? {
+                              phase: 'optimizing…',
+                              detail:
+                                zineOptimizing.kind === 'page'
+                                  ? `page ${zineOptimizing.page} / ${zineOptimizing.pages}`
+                                  : zineOptimizing.kind === 'writing'
+                                    ? 'writing'
+                                    : undefined,
+                            }
+                          : null
+                      }
                       optimized={zineOptimized && zineOptimized.file === file ? { before: zineOptimized.before } : null}
                       onOptimize={() => { void optimizeZinePick() }}
                       onUndo={() => {
                         if (!zineOptimized) return
+                        zineCarryRef.current = { file: zineOptimized.original, access: zineAccess, cover: zineCover, coverPage: zineCoverPageRef.current }
                         replaceFile(zineOptimized.original)
                         setZineOptimized(null)
                       }}
@@ -2029,9 +2107,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       onError={(msg) => toast.error('3D model', { description: msg })}
                     />
                     <ModelPoseBar value={modelBg} onChange={setModelBg} />
-                    <ModelOptimizeBar
+                    <OptimizeBar
+                      label="optimize for web"
                       size={file!.size}
-                      busy={optimizing}
+                      busy={optimizing ? { phase: 'optimizing…', detail: optimizing } : null}
                       optimized={optimized && optimized.file === file ? { before: optimized.before } : null}
                       onOptimize={() => { void optimizeModelPick() }}
                       onUndo={() => {

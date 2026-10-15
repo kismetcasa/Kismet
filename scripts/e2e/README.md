@@ -135,7 +135,7 @@ is trivially true when `x` is absent.
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
   `modelMomentFields` builder — each of which this file or `verify:model-media`
   covers; the wiring itself is unverified in a browser. The "optimize for web"
-  pass is mint-only (`ModelOptimizeBar` is mounted by `MintForm` alone).
+  pass is mint-only (`OptimizeBar` is mounted by `MintForm` alone).
 - The collector-file 3D viewer (`components/CollectorFileViewer`) needs a
   holder session, so it is not driven here either. It calls the same
   `configureModelViewerDecoders()` the mint preview proves at the network level
@@ -430,9 +430,14 @@ node scripts/e2e/zine.mjs          # fixtures land in .e2e/, screenshots in .e2e
 ```
 
 The zine check also covers the collectors-only mode as a non-holder sees it
-(the card's page count and "collect to read", the hint-driven badge), the
-reader's rotation, history-backed close and resume on reopen, and the mint form's access
-control and "optimize for phones" pass. The holder path (the card's `read`
+(the card's page count and "collect to read", the hint-driven badge; the
+record is seeded into the Redis stub, which keeps a plain `SET`, so the
+server-rendered page carries it as production would), the reader's rotation,
+history-backed close, resume and worker reuse on reopen, and the mint form's
+access control and "optimize for phones" pass — on a tiny fixture ("already
+compact") and on `heavy.pdf`, a 6 MB noise scan the optimizer shrinks, where
+"collectors only" and the chosen cover page must survive the optimized
+re-pick and its undo. The holder path (the card's `read`
 and the collector-file view route feeding the reader) needs a holder session
 and is covered by the oracle plus a manual check.
 

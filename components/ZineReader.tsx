@@ -51,8 +51,8 @@ interface Props {
 }
 
 type PageRender =
-  | { ok: true; url: string; aspect: number; cssWidth: number; rotation: number }
-  | { ok: false; aspect: number }
+  | { ok: true; url: string; cssWidth: number; rotation: number }
+  | { ok: false }
 
 const MIN_ZOOM = 1
 const MAX_ZOOM = 4
@@ -130,7 +130,7 @@ export function ZineReader({
   const rotationRef = useRef(rotation)
   const onRotationChangeRef = useRef(onRotationChange)
   onRotationChangeRef.current = onRotationChange
-  const [, bump] = useState(0)
+  const [tick, bump] = useState(0)
   const rerender = useCallback(() => bump((n) => n + 1), [])
   const reduceMotion = usePrefersReducedMotion()
 
@@ -140,7 +140,11 @@ export function ZineReader({
   // Rendered pages (fit-size) and the single zoomed render of the page in view.
   const rendersRef = useRef(new Map<number, PageRender>())
   const aspectsRef = useRef(new Map<number, number>())
-  const pendingRef = useRef(new Set<number>())
+  // Queued renders by page, with the controller that cancels each; the set
+  // of pages the window wants right now, consulted when a job starts and
+  // when its result lands, so a flip past a queued page costs nothing.
+  const pendingRef = useRef(new Map<number, AbortController>())
+  const wantedRef = useRef(new Set<number>())
   const zoomRenderRef = useRef<{ page: number; zoom: number; url: string } | null>(null)
   const zoomRenderTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // One render at a time; every render carries an abort signal the flip
@@ -151,6 +155,14 @@ export function ZineReader({
   const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const onPageChangeRef = useRef(onPageChange)
   onPageChangeRef.current = onPageChange
+  // The current page, zoom and pan as refs, for handlers and jobs that must
+  // read the latest value without re-subscribing on every change.
+  const pageRef = useRef(page)
+  pageRef.current = page
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  const panRef = useRef(pan)
+  panRef.current = pan
 
   useFocusTrap(rootRef, true)
 
@@ -211,6 +223,8 @@ export function ZineReader({
     const w = Math.min(availW, availH * aspect)
     return { w, h: w / aspect }
   }, [spread, stage.w, stage.h, aspectOf])
+  const fitBoxRef = useRef(fitBox)
+  fitBoxRef.current = fitBox
 
   // ── rendering ─────────────────────────────────────────────────────────
   const revokeRender = (r: PageRender | undefined) => {
@@ -233,33 +247,39 @@ export function ZineReader({
     return controller
   }, [])
 
-  const ensureRendered = useCallback((n: number, cssWidth: number) => {
+  const ensureRendered = useCallback((n: number) => {
+    const cssWidth = fitBoxRef.current(n).w
     const existing = rendersRef.current.get(n)
     // A render at (or close to) the needed width and at the current rotation
     // is reused; a much wider viewport (a window resize) gets a fresh one.
     if (existing && (!existing.ok || (existing.rotation === rotationRef.current && existing.cssWidth >= cssWidth * 0.8))) return
     if (pendingRef.current.has(n)) return
-    pendingRef.current.add(n)
-    enqueue(async (signal) => {
+    const controller = enqueue(async (signal) => {
+      // Queued for a page the reader has since left: nothing to do.
+      if (!wantedRef.current.has(n)) return
       const rot = rotationRef.current
       try {
         const pdfPage = await doc.getPage(n)
         if (!aspectsRef.current.has(n)) aspectsRef.current.set(n, pageAspect(pdfPage, 0))
-        const rendered = await renderPageToBlob(pdfPage, { cssWidth, dpr: dprRef.current, rotation: rot, signal })
-        // The document was turned while this rendered: the result is for a
-        // rotation nobody is looking at any more.
-        if (!liveRef.current || rot !== rotationRef.current) return
+        // The width is taken NOW, with the aspect known: queued before it
+        // was (the default, or page 1's), a landscape page on a landscape
+        // viewport would be rendered for a slot half its size and stay soft.
+        const width = fitBoxRef.current(n).w
+        const rendered = await renderPageToBlob(pdfPage, { cssWidth: width, dpr: dprRef.current, rotation: rot, signal })
+        // Turned, or flipped away, while this rendered: nobody is looking.
+        if (!liveRef.current || rot !== rotationRef.current || !wantedRef.current.has(n)) return
         revokeRender(rendersRef.current.get(n))
-        rendersRef.current.set(n, { ok: true, url: URL.createObjectURL(rendered.blob), aspect: rendered.aspect, cssWidth, rotation: rot })
+        rendersRef.current.set(n, { ok: true, url: URL.createObjectURL(rendered.blob), cssWidth: width, rotation: rot })
       } catch (err) {
         if (signal.aborted || !liveRef.current) return
         if (err && typeof err === 'object' && (err as { name?: string }).name === 'RenderingCancelledException') return
-        rendersRef.current.set(n, { ok: false, aspect: aspectsRef.current.get(n) ?? DEFAULT_ASPECT })
+        rendersRef.current.set(n, { ok: false })
       } finally {
-        pendingRef.current.delete(n)
+        if (pendingRef.current.get(n) === controller) pendingRef.current.delete(n)
         if (liveRef.current) rerender()
       }
     })
+    pendingRef.current.set(n, controller)
   }, [doc, enqueue, rerender])
 
   // Render the pages in view first, then their neighbours; evict the rest.
@@ -272,17 +292,27 @@ export function ZineReader({
       const after = (right ?? left) + d
       if (after <= pages) order.push(after)
     }
-    for (const n of order) ensureRendered(n, fitBox(n).w)
     const keep = new Set(order)
+    wantedRef.current = keep
+    // Pages queued for a view the reader has left: cancelled now, so a
+    // scrubber drag across a long zine never renders every page it passed.
+    for (const [n, c] of pendingRef.current) {
+      if (!keep.has(n)) {
+        c.abort()
+        pendingRef.current.delete(n)
+      }
+    }
+    for (const n of order) ensureRendered(n)
     for (const [n, r] of rendersRef.current) {
       if (!keep.has(n)) {
         revokeRender(r)
         rendersRef.current.delete(n)
       }
     }
-    // Pages queued but no longer wanted: abort by letting the job see a
-    // stale window — cheap, and the queue is short by construction.
-  }, [visible, left, right, pages, stage.w, stage.h, ensureRendered, fitBox])
+    // `tick` re-runs this when a render or an aspect lands, so a page whose
+    // slot grew once its aspect was known is re-rendered for the real slot;
+    // `rotation` re-runs it after a turn emptied the cache (rotateBy).
+  }, [visible, left, right, pages, stage.w, stage.h, ensureRendered, tick, rotation])
 
   // Page sizes for the skeletons: learn the aspects of the pages in view
   // before their render lands, so the slot has the right shape from the
@@ -316,7 +346,8 @@ export function ZineReader({
         try {
           const pdfPage = await doc.getPage(page)
           const rendered = await renderPageToBlob(pdfPage, { cssWidth: want, dpr: dprRef.current, rotation: rot, signal })
-          if (!liveRef.current || rot !== rotationRef.current) return
+          // Turned, turned the page, or zoomed back out meanwhile: not wanted.
+          if (!liveRef.current || rot !== rotationRef.current || pageRef.current !== page || zoomRef.current <= 1) return
           dropZoomRender()
           zoomRenderRef.current = { page, zoom, url: URL.createObjectURL(rendered.blob) }
           rerender()
@@ -358,14 +389,15 @@ export function ZineReader({
   hapticsRef.current = haptics
   const setPage = useCallback((n: number) => {
     const next = clamp(Math.round(n), 1, pages)
-    setPageState((cur) => {
-      if (next === cur) return cur
-      onPageChangeRef.current?.(next)
-      // A page turn feels like one in a Mini App: the host's selection tick.
-      if (hapticsRef.current) hapticSelection()
-      return next
-    })
     resetZoom()
+    // Compared against the ref, not inside the updater: StrictMode runs
+    // updaters twice, and a page turn's side effects must happen once.
+    if (next === pageRef.current) return
+    pageRef.current = next
+    setPageState(next)
+    onPageChangeRef.current?.(next)
+    // A page turn feels like one in a Mini App: the host's selection tick.
+    if (hapticsRef.current) hapticSelection()
   }, [pages, resetZoom])
 
   // Turning the document invalidates every render. Done HERE, synchronously,
@@ -397,7 +429,10 @@ export function ZineReader({
   const step = useCallback((dir: 1 | -1) => {
     if (spread) {
       const [l, r] = spreadFor(page, pages)
-      setPage(dir > 0 ? (r ?? l) + 1 : l - 1)
+      const last = r ?? l
+      // The last spread may end on the back cover already: no phantom turn.
+      if (dir > 0 ? last >= pages : l <= 1) return
+      setPage(dir > 0 ? last + 1 : l - 1)
     } else {
       setPage(page + dir)
     }
@@ -458,9 +493,9 @@ export function ZineReader({
           e.preventDefault(); setPage(pages); break
         case '+':
         case '=':
-          e.preventDefault(); if (!spread) zoomAbout(zoom * 1.5, { x: 0, y: 0 }); break
+          e.preventDefault(); if (!spread) zoomAbout(zoomRef.current * 1.5, { x: 0, y: 0 }); break
         case '-':
-          e.preventDefault(); if (!spread) zoomAbout(zoom / 1.5, { x: 0, y: 0 }); break
+          e.preventDefault(); if (!spread) zoomAbout(zoomRef.current / 1.5, { x: 0, y: 0 }); break
         case '0':
           e.preventDefault(); resetZoom(); break
         case 'r':
@@ -474,7 +509,7 @@ export function ZineReader({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [step, setPage, pages, spread, zoom, zoomAbout, resetZoom, rotate, rotateBack, pokeChrome])
+  }, [step, setPage, pages, spread, zoomAbout, resetZoom, rotate, rotateBack, pokeChrome])
 
   // ── pointer gestures: tap zones, swipe, double-tap, pinch, drag-pan ────
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
@@ -522,12 +557,22 @@ export function ZineReader({
     }
   }
 
+  // A cancelled pointer (the browser took the gesture) acts on nothing.
+  const cancelPointer = (e: React.PointerEvent) => {
+    pointersRef.current.delete(e.pointerId)
+    clearTimeout(tapTimerRef.current)
+    if (pointersRef.current.size === 0) gestureRef.current = null
+  }
+
   const endPointer = (e: React.PointerEvent) => {
     const g = gestureRef.current
     pointersRef.current.delete(e.pointerId)
     if (!g) return
     if (g.pinch) {
-      if (pointersRef.current.size === 0) gestureRef.current = null
+      // A pinch that drops to one finger continues as a pan from where that
+      // finger is now, not from the lifted finger's start.
+      const rest = [...pointersRef.current.values()][0]
+      gestureRef.current = rest ? { startX: rest.x, startY: rest.y, startPan: panRef.current, moved: true, pinch: null } : null
       return
     }
     gestureRef.current = null
@@ -582,17 +627,22 @@ export function ZineReader({
 
   // Wheel: ctrl/⌘ zooms about the cursor; otherwise a horizontal or vertical
   // flick turns the page (rate-limited so a trackpad does not skip ahead).
+  // Attached natively with passive: false — React registers wheel as
+  // passive, where preventDefault is a no-op and a trackpad pinch would
+  // zoom the reader AND the page behind it.
   const wheelCooldownRef = useRef(0)
-  const onWheel = (e: React.WheelEvent) => {
+  const onWheelRef = useRef<(e: WheelEvent) => void>(() => {})
+  onWheelRef.current = (e: WheelEvent) => {
+    const z = zoomRef.current
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault()
       if (spread) return
       const c = stageCentre()
-      zoomAbout(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), { x: e.clientX - c.x, y: e.clientY - c.y })
+      zoomAbout(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), { x: e.clientX - c.x, y: e.clientY - c.y })
       return
     }
-    if (zoom > 1) {
-      setPan((p) => clampPan({ x: p.x - e.deltaX, y: p.y - e.deltaY }, zoom))
+    if (z > 1) {
+      setPan((p) => clampPan({ x: p.x - e.deltaX, y: p.y - e.deltaY }, z))
       return
     }
     const now = Date.now()
@@ -601,6 +651,13 @@ export function ZineReader({
     wheelCooldownRef.current = now
     step(d > 0 ? 1 : -1)
   }
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const h = (e: WheelEvent) => onWheelRef.current(e)
+    el.addEventListener('wheel', h, { passive: false })
+    return () => el.removeEventListener('wheel', h)
+  }, [])
 
   // ── fullscreen ────────────────────────────────────────────────────────
   const fullscreenSupported = typeof document !== 'undefined' && !!document.fullscreenEnabled
@@ -700,8 +757,7 @@ export function ZineReader({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        onWheel={onWheel}
+        onPointerCancel={cancelPointer}
       >
         <div
           className="absolute inset-0 flex items-center justify-center"
@@ -713,8 +769,9 @@ export function ZineReader({
 
       <p className="sr-only" aria-live="polite">{announce}</p>
 
-      {/* Top chrome: title, counter, close. */}
-      <div className={`${chromeClass} top-0 h-12 from-black/80 to-transparent`}>
+      {/* Top chrome: title, counter, close. Keyboard focus landing on a
+          hidden bar reveals it, so Tab never rests on an invisible control. */}
+      <div className={`${chromeClass} top-0 h-12 from-black/80 to-transparent`} onFocus={pokeChrome}>
         <p className="min-w-0 flex-1 truncate text-[11px] font-mono text-dim">{title}</p>
         <span className="text-[11px] font-mono text-muted tabular-nums">{counter}</span>
         <button
@@ -728,11 +785,11 @@ export function ZineReader({
       </div>
 
       {/* Bottom chrome: prev, scrubber, next, and the small controls. */}
-      <div className={`${chromeClass} bottom-0 h-14 from-transparent to-black/85`}>
+      <div className={`${chromeClass} bottom-0 h-14 from-transparent to-black/85`} onFocus={pokeChrome}>
         <button
           type="button"
           onClick={() => step(-1)}
-          disabled={page <= 1}
+          disabled={left <= 1}
           aria-label="Previous page"
           className="w-8 h-8 flex items-center justify-center text-dim hover:text-ink disabled:opacity-30 transition-colors"
         >
@@ -751,7 +808,7 @@ export function ZineReader({
         <button
           type="button"
           onClick={() => step(1)}
-          disabled={page >= pages}
+          disabled={(right ?? left) >= pages}
           aria-label="Next page"
           className="w-8 h-8 flex items-center justify-center text-dim hover:text-ink disabled:opacity-30 transition-colors"
         >

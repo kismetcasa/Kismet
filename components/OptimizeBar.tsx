@@ -1,29 +1,36 @@
 'use client'
 
 import { formatCfileSize } from '@/lib/collectorFileTypes'
-import type { PdfOptimizeStep } from '@/lib/media/optimizePdf'
 
 /**
- * The size chip on a zine preview, with the one action attached to it:
+ * The size chip on a mint preview, with the one action attached to it — a
+ * 3D model's "optimize for web" (lib/media/optimizeModel) or a zine's
  * "optimize for phones" (lib/media/optimizePdf). Shows the live size of what
- * will ship, the page being re-rendered, and — once optimized — the size it
- * was, with an undo, so replacing the artist's file is never silent. The
- * twin of ModelOptimizeBar.
+ * will ship, the step in progress, and — once optimized — the size it was,
+ * with an undo, so replacing the artist's file is never silent. One
+ * component for both passes; the caller words the step and the button.
  */
-export function ZineOptimizeBar({
+export function OptimizeBar({
   size,
   busy,
   optimized,
+  label,
   hint,
   onOptimize,
   onUndo,
 }: {
   size: number
-  busy: PdfOptimizeStep | null
+  /** The step in progress, or null when idle. The phase is what the live
+   *  region announces ("optimizing…", once); the detail ("textures",
+   *  "page 3 / 420") is visual only, so a screen reader is not read every
+   *  page of a long zine. */
+  busy: { phase: string; detail?: string } | null
   optimized: { before: number } | null
+  /** The button's text. */
+  label: string
   /** What the pass does to the file, as the button's tooltip — the artist
-   *  is replacing their export, so the consequence is stated up front. */
-  hint: string
+   *  is replacing their export, so a consequence is stated up front. */
+  hint?: string
   onOptimize: () => void
   onUndo: () => void
 }) {
@@ -34,7 +41,10 @@ export function ZineOptimizeBar({
     >
       <span className="text-ink">{formatCfileSize(size)}</span>
       {busy ? (
-        <span>{busy.kind === 'page' ? `optimizing page ${busy.page} / ${busy.pages}` : 'writing…'}</span>
+        <span>
+          {busy.phase}
+          {busy.detail ? <span aria-hidden="true"> {busy.detail}</span> : null}
+        </span>
       ) : optimized ? (
         <>
           <span>was {formatCfileSize(optimized.before)}</span>
@@ -53,7 +63,7 @@ export function ZineOptimizeBar({
           title={hint}
           className="uppercase tracking-wider text-dim hover:text-ink transition-colors"
         >
-          optimize for phones
+          {label}
         </button>
       )}
     </div>

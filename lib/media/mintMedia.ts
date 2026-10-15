@@ -111,7 +111,9 @@ export async function checkMintMedia(file: File, opts: MintMediaOptions = {}): P
  */
 export async function checkCoverImage(file: File): Promise<MintMediaVerdict> {
   const verdict = await checkMintMedia(file)
-  if (verdict.ok && verdict.kind !== 'image') {
+  // Every non-image answer gets the cover's own copy — a PDF dropped into a
+  // cover slot is told "a still image", not where zines are minted.
+  if (!verdict.ok || verdict.kind !== 'image') {
     return { ok: false, reason: 'Use a still image or a gif for the cover' }
   }
   return verdict

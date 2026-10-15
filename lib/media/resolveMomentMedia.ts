@@ -1,4 +1,5 @@
 import { GLB_MIME } from '@/lib/glbFormat'
+import { readZineHint } from './zineHint'
 import { PDF_MIME } from '@/lib/pdfFormat'
 import { isVideoMoment } from './isVideo'
 
@@ -140,9 +141,7 @@ export function resolveMomentMedia(meta: MediaMeta): ResolvedMedia {
   const pdfSrc = resolvePdfSrc(meta)
   if (pdfSrc) {
     const still = meta.image && meta.image !== pdfSrc ? meta.image : undefined
-    const hinted = meta.kismet_zine?.pages
-    const pages = typeof hinted === 'number' && Number.isInteger(hinted) && hinted > 0 ? hinted : undefined
-    return { kind: 'pdf', src: still, pdfSrc, pages }
+    return { kind: 'pdf', src: still, pdfSrc, pages: readZineHint(meta.kismet_zine)?.pages }
   }
 
   const animIsGif = isGifUrl(meta.animation_url)

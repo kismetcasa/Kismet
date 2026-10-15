@@ -69,6 +69,12 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   const [parsing, setParsing] = useState(false)
   const [opened, setOpened] = useState<OpenedPdf | null>(null)
   const [startPage, setStartPage] = useState<number | undefined>(undefined)
+  const [startRotation, setStartRotation] = useState(0)
+  // The affordance is unmounted while the reader is up, so the focus trap
+  // finds no opener to return to; the button that comes back on close takes
+  // focus itself, keyboard and screen-reader users land where they left.
+  const readButtonRef = useRef<HTMLButtonElement>(null)
+  const restoreFocusRef = useRef(false)
   const abortRef = useRef<AbortController | null>(null)
   const openedRef = useRef<OpenedPdf | null>(null)
   const sessionRef = useRef(0)
@@ -100,9 +106,17 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   // by a control.
   const exitNow = useCallback(() => {
     cancel()
+    restoreFocusRef.current = true
     setPhase('idle')
   }, [cancel])
-  const closeViaHistory = useReaderHistory(phase === 'loading' || phase === 'reading', exitNow)
+  useEffect(() => {
+    if (phase !== 'idle' || !restoreFocusRef.current) return
+    restoreFocusRef.current = false
+    readButtonRef.current?.focus({ preventScroll: true })
+  }, [phase])
+  // The entry covers the error state too: a failed open that popped its
+  // entry left a dead one behind, and each retry added another.
+  const closeViaHistory = useReaderHistory(phase !== 'idle', exitNow)
 
   const activate = useCallback(async () => {
     cancel()
@@ -141,6 +155,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
       }
       openedRef.current = o
       setStartPage(readStartPage(storageKey))
+      setStartRotation(readRotation(storageKey))
       setOpened(o)
       setPhase('reading')
     } catch (err) {
@@ -212,7 +227,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
           downloadUrl={onDownload ? undefined : downloadUrl}
           onDownload={onDownload}
           haptics={isInMiniApp}
-          startRotation={readRotation(storageKey)}
+          startRotation={startRotation}
           onRotationChange={onRotationChange}
         />
       ) : null}
@@ -236,6 +251,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
               has pages", not as a stray control. */}
           <div className="absolute inset-0 flex items-end justify-center p-4 pointer-events-none">
             <button
+              ref={readButtonRef}
               type="button"
               onClick={activate}
               className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors"

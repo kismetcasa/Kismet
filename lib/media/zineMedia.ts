@@ -1,4 +1,7 @@
 import { CFILE_MAX_BYTES, formatCfileSize } from '../collectorFileTypes.ts'
+import { ZINE_MAX_PAGES, readZineHint, type ZineAccess, type ZineHint } from './zineHint'
+
+export { ZINE_MAX_PAGES, readZineHint, type ZineAccess, type ZineHint }
 import { PDF_MAGIC, PDF_MIME, hasPdfMagic } from '../pdfFormat.ts'
 
 /**
@@ -22,8 +25,6 @@ import { PDF_MAGIC, PDF_MIME, hasPdfMagic } from '../pdfFormat.ts'
  * on the surfaces that render pages (lib/pdfjs).
  */
 
-/** Hard page ceiling, enforced at pick time from the parsed page count. */
-export const ZINE_MAX_PAGES = 420
 
 /**
  * Hard byte ceiling — ONE number with the collector-file store
@@ -42,19 +43,18 @@ export const ZINE_MAX_BYTES = CFILE_MAX_BYTES
  *  so on a phone link this is the size where the wait becomes a real one. */
 export const ZINE_SOFT_WARN_BYTES = 16 * 1024 * 1024
 
-/** Where the pages live. `public`: the PDF is on Arweave (permanent, world-
- *  readable). `collectors`: only the cover is on Arweave; the PDF is in the
- *  private collector-file store and only holders can read it. */
-export type ZineAccess = 'public' | 'collectors'
+/** The long edge, in pixels, that "optimize for phones" re-renders every
+ *  page at (lib/media/optimizePdf). 2000 px is above any phone's width at
+ *  3× DPR for a portrait page and a third of the pixels of a 300 dpi A4
+ *  scan — pure here so the mint form's copy can name it without the
+ *  optimizer module. */
+export const ZINE_OPTIMIZE_LONG_EDGE = 2000
+
 
 /** `metadata.kismet_zine` — the discovery and badge signal (a page count
  *  without fetching the PDF). RENDERING never keys on it: the resolver
  *  classifies by `content.mime`; the hint is a second signal for an index
  *  row that lost its `content` field, and it is harmless when stale. */
-export interface ZineHint {
-  pages: number
-  access: ZineAccess
-}
 
 export type PdfInspection =
   | { kind: 'ok'; pages: number }
@@ -113,6 +113,11 @@ export const ZINE_COPY = {
   collectorsAttached: 'Collectors can read it from the artwork page.',
   collectorsAttachFailed: (why: string): string => `${why} — attach the PDF from the artwork page (file button)`,
   collectToRead: 'collect to read',
+  collectedReady: 'your zine is ready — read it',
+  /** A collector opening a password-protected PDF in the viewer. */
+  passwordCollector: 'This PDF is password-protected — download it and open it with the password',
+  /** The artist attaching one as the collector file. */
+  passwordCfile: 'Collectors can download it, but not read it here — attach a copy without a password to make it readable',
 } as const
 
 export type ZineMomentInput =
@@ -146,12 +151,3 @@ export function zineMomentFields(input: ZineMomentInput): {
   }
 }
 
-/** Validate a `kismet_zine` value read from metadata (anyone can write
- *  token JSON; a hint is only ever trusted as far as a badge). */
-export function readZineHint(value: unknown): ZineHint | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const v = value as { pages?: unknown; access?: unknown }
-  if (typeof v.pages !== 'number' || !Number.isInteger(v.pages) || v.pages < 1) return undefined
-  if (v.access !== 'public' && v.access !== 'collectors') return undefined
-  return { pages: v.pages, access: v.access }
-}

@@ -1,5 +1,6 @@
 'use client'
 
+import { ZINE_OPTIMIZE_LONG_EDGE } from './zineMedia'
 import { PDF_MIME } from '../pdfFormat'
 import { openPdf, renderPageToBlob, type PdfPage } from '../pdfjs'
 
@@ -29,14 +30,13 @@ import { openPdf, renderPageToBlob, type PdfPage } from '../pdfjs'
 /** Long edge of a re-rendered page in pixels. 2000 covers a 3× phone's
  *  ~1200 px page with room for a 1.6× zoom before it softens; A4 at this
  *  size is 1414 × 2000 = 2.8 M pixels, ~3× faster to decode than 300 dpi. */
-export const ZINE_OPTIMIZE_LONG_EDGE = 2000
-export const ZINE_OPTIMIZE_QUALITY = 0.85
+const ZINE_OPTIMIZE_QUALITY = 0.85
 /** An "optimized" file that is not at least this much smaller is reported
  *  unchanged and the original is kept — re-encoding a small vector PDF into
  *  JPEG pages would only make it bigger and blurrier. */
 const MIN_SAVING = 0.15
 
-export type PdfOptimizeStep = { kind: 'page'; page: number; pages: number } | { kind: 'writing' }
+export type PdfOptimizeStep = { kind: 'opening' } | { kind: 'page'; page: number; pages: number } | { kind: 'writing' }
 
 export interface PdfOptimizeResult {
   file: File
@@ -49,9 +49,9 @@ export interface PdfOptimizeResult {
 
 export interface PdfOptimizeOptions {
   onStep?: (step: PdfOptimizeStep) => void
+  /** Aborting stops between pages (and cancels the page in flight); the
+   *  promise then rejects with the signal's reason. */
   signal?: AbortSignal
-  longEdge?: number
-  quality?: number
 }
 
 interface RasterPage {
@@ -78,9 +78,14 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out
 }
 
-/** Escape a string for a PDF literal string `( … )`. */
+/** A PDF text string: a literal `( … )` when it is printable ASCII, else a
+ *  UTF-16BE hex string with the byte-order mark, so "Café №1" and a Japanese
+ *  title survive instead of losing every non-ASCII character. */
 function pdfString(s: string): string {
-  return `(${s.replace(/[\\()]/g, (c) => `\\${c}`).replace(/[^\x20-\x7e]/g, '')})`
+  if (/^[\x20-\x7e]*$/.test(s)) return `(${s.replace(/[\\()]/g, (c) => `\\${c}`)})`
+  let hex = 'FEFF'
+  for (let i = 0; i < s.length; i++) hex += s.charCodeAt(i).toString(16).padStart(4, '0')
+  return `<${hex}>`
 }
 
 /**
@@ -163,8 +168,8 @@ async function rasterize(page: PdfPage, longEdge: number, quality: number, signa
 }
 
 export async function optimizeZinePdf(file: File, opts: PdfOptimizeOptions = {}): Promise<PdfOptimizeResult> {
-  const longEdge = opts.longEdge ?? ZINE_OPTIMIZE_LONG_EDGE
-  const quality = opts.quality ?? ZINE_OPTIMIZE_QUALITY
+  const longEdge = ZINE_OPTIMIZE_LONG_EDGE
+  const quality = ZINE_OPTIMIZE_QUALITY
   const before = file.size
   const opened = await openPdf(await file.arrayBuffer())
   try {

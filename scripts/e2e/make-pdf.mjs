@@ -9,6 +9,9 @@
  *                  the copied standard font), and a JPEG image on page 2
  *   one-page.pdf   the allowed single page
  *   too-many.pdf   421 pages, one over ZINE_MAX_PAGES
+ *   heavy.pdf      3 pages carrying a 2500 × 2500 noise JPEG (several MB),
+ *                  which "optimize for phones" CAN shrink — the fixture for
+ *                  the choices that must survive that re-pick
  *   notapdf.pdf    text bytes with a .pdf name — the magic sniff's case
  *   cover.jpg      the ar://cover-txid still (solid, so a pixel read is
  *                  unambiguous)
@@ -123,10 +126,16 @@ export async function writeFixtures(dir) {
   fs.writeFileSync(path.join(dir, 'one-page.pdf'), await buildPdf({ count: 1, title: 'One Page' }))
   fs.writeFileSync(path.join(dir, 'too-many.pdf'), await buildPdf({ count: 421, title: 'Too Many' }))
   fs.writeFileSync(path.join(dir, 'notapdf.pdf'), Buffer.from('this is not a pdf, whatever the name says\n'))
+  // Noise does not compress: a scan-sized JPEG the optimizer's 2000 px
+  // re-render shrinks by far more than its 15 % threshold.
+  const noise = await sharp({ create: { width: 2500, height: 2500, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 60 } } })
+    .jpeg({ quality: 95 })
+    .toBuffer()
+  fs.writeFileSync(path.join(dir, 'heavy.pdf'), await buildPdf({ count: 3, imageJpeg: noise, title: 'Heavy' }))
   // The cover still: a solid magenta so a centre-pixel read is unambiguous.
   const cover = await sharp({ create: { width: 600, height: 850, channels: 3, background: { r: 190, g: 40, b: 150 } } }).jpeg({ quality: 85 }).toBuffer()
   fs.writeFileSync(path.join(dir, 'cover.jpg'), cover)
-  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'cover.jpg']
+  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'heavy.pdf', 'cover.jpg']
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {

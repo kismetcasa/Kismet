@@ -455,7 +455,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               signal that there is a model to tap through to; top-right is the
               free corner here (the star owns top-left). */}
           {media.kind === 'model' && <ModelBadge className="absolute top-2 right-2" />}
-          {(media.kind === 'pdf' || zineHint?.access === 'collectors') && (
+          {(media.kind === 'pdf' || (zineHint?.access === 'collectors' && media.kind !== 'model' && media.kind !== 'video')) && (
             <ZineBadge pages={media.pages ?? zineHint?.pages} access={zineHint?.access} className="absolute top-2 right-2" />
           )}
           {/* Admin control — tap to feature, hold to set this Mint Pass Display.

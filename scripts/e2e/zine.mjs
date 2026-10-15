@@ -205,6 +205,41 @@ let compactSeen = true
 try { await compact.first().waitFor({ timeout: 30000 }) } catch { compactSeen = false }
 check('a tiny vector PDF is reported already compact (never made bigger)', compactSeen)
 
+// ── A2. Optimize on a file it CAN shrink: the choices that belong to the
+// zine — who can read it, the page chosen as the cover — must survive the
+// re-pick the optimized file goes through, and the undo after it. (The
+// re-pick runs the async gate, which resets a NEW pick's choices; a timer
+// cannot restore them, a carry keyed on the installed file can.)
+console.log('\nA2. Optimize — the zine’s choices survive the re-pick')
+await mint.locator('button:has(svg.lucide-x)').first().click()
+await mint.waitForSelector('img[alt^="Page"]', { state: 'detached', timeout: 10000 })
+check('a heavy scan is accepted and previewed', (await pickZine(mint, 'heavy.pdf')) === 'preview')
+await mint.waitForSelector('img[alt="Page 1 preview"]', { timeout: 60000 })
+await mint.locator('button[aria-label="Next page"]').first().click()
+await mint.waitForSelector('img[alt="Page 2 preview"]', { timeout: 60000 })
+await mint.locator('button:has-text("use as cover")').click()
+await mint.waitForTimeout(300)
+await access.locator('[role="radio"]', { hasText: 'collectors only' }).click()
+await mint.waitForTimeout(300)
+await mint.locator('button:has-text("optimize for phones")').click()
+const optimizedToast = mint.locator('[data-sonner-toast]', { hasText: 'Optimized for phones' })
+let optimizedSeen = true
+try { await optimizedToast.first().waitFor({ timeout: 180000 }) } catch { optimizedSeen = false }
+check('a heavy scan is optimized (a smaller file is installed)', optimizedSeen)
+await mint.locator('text=/^was /').first().waitFor({ timeout: 30000 }).catch(() => {})
+await mint.waitForSelector('img[alt="Page 1 preview"]', { timeout: 60000 })
+await mint.waitForTimeout(600)
+const checkedAccess = async () => (await access.locator('[role="radio"][aria-checked="true"]').innerText()).trim().toLowerCase()
+check('"collectors only" survives the optimized re-pick', (await checkedAccess()) === 'collectors only', await checkedAccess())
+// Page 1 is not the cover (page 2 was chosen), so it still offers the button.
+check('the page chosen as the cover survives the re-pick', (await mint.locator('button:has-text("use as cover")').count()) === 1)
+await mint.locator('button:has-text("undo")').click()
+await mint.locator('text=/^was /').first().waitFor({ state: 'detached', timeout: 30000 }).catch(() => {})
+await mint.waitForSelector('img[alt="Page 1 preview"]', { timeout: 60000 })
+await mint.waitForTimeout(600)
+check('"collectors only" survives the undo as well', (await checkedAccess()) === 'collectors only', await checkedAccess())
+check('the cover page survives the undo as well', (await mint.locator('button:has-text("use as cover")').count()) === 1)
+
 // Clear via the form's own ×, then the rejections.
 await mint.locator('button:has(svg.lucide-x)').first().click()
 await mint.waitForSelector('img[alt^="Page"]', { state: 'detached', timeout: 10000 })
@@ -377,9 +412,9 @@ let statusFetches = 0
 priv.on('request', (r) => { if (r.url().includes('/api/collector-file/status')) statusFetches++ })
 await priv.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PRIVATE_META) }))
 await priv.goto(ART, { waitUntil: 'domcontentloaded' })
-await priv.locator('text=collector download').first().waitFor({ timeout: 30000 }).catch(() => {})
+await priv.locator('text=collectors-only zine').first().waitFor({ timeout: 30000 }).catch(() => {})
 await priv.waitForTimeout(1500)
-check('the card names the zine with its page count', (await priv.locator('p', { hasText: /collector download · issue-1\.pdf · .* · 6 pages · v1/ }).count()) === 1)
+check('the card names the zine with its page count', (await priv.locator('p', { hasText: /collectors-only zine · issue-1\.pdf · .* · 6 pages · v1/ }).count()) === 1)
 check('a non-holder is told to collect to READ', (await priv.locator('text=collect to read').count()) === 1)
 check('a non-holder gets no read button', (await priv.locator('button:has-text("read")').count()) === 0)
 check('the media slot shows the cover, with no reader affordance (the pages are not in the metadata)',

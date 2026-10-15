@@ -25,21 +25,29 @@ import { openPdf, renderPageToBlob, renderZineCoverFile, type OpenedPdf } from '
  */
 
 interface Props {
-  /** The picked PDF. */
+  /** The picked PDF. ONE file per mount: the caller keys the component on
+   *  the pick, and a new file arriving in place resets every page state. */
   file: File
   /** Fires with the newest captured cover, or null if capture failed. */
   onPoster: (poster: File | null) => void
   /** Fires when the document itself can't be shown. */
   onError: (message: string) => void
+  /** The page to capture as the cover at mount (clamped to the document) —
+   *  how the chosen page survives "optimize for phones" and its undo. */
+  initialCoverPage?: number
+  /** Fires with the page the cover is captured from, whenever it changes. */
+  onCoverPage?: (page: number) => void
 }
 
 const PREVIEW_MAX_CSS_WIDTH = 720
 
-export function ZinePreview({ file, onPoster, onError }: Props) {
+export function ZinePreview({ file, onPoster, onError, initialCoverPage, onCoverPage }: Props) {
   const [opened, setOpened] = useState<OpenedPdf | null>(null)
   const [pageCount, setPageCount] = useState(0)
   const [page, setPage] = useState(1)
-  const [coverPage, setCoverPage] = useState(1)
+  const [coverPage, setCoverPage] = useState(Math.max(1, Math.floor(initialCoverPage ?? 1)))
+  const onCoverPageRef = useRef(onCoverPage)
+  onCoverPageRef.current = onCoverPage
   const [pageUrl, setPageUrl] = useState<string | null>(null)
   const [rendering, setRendering] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -54,6 +62,13 @@ export function ZinePreview({ file, onPoster, onError }: Props) {
 
   useEffect(() => {
     liveRef.current = true
+    // A file arriving in place (the caller keys on the pick, so this is the
+    // mount in practice): the previous document's page state must not be
+    // applied to the new one.
+    setOpened(null)
+    setPageUrl(null)
+    setPageCount(0)
+    setPage(1)
     let current: OpenedPdf | null = null
     ;(async () => {
       try {
@@ -65,6 +80,8 @@ export function ZinePreview({ file, onPoster, onError }: Props) {
         current = o
         setOpened(o)
         setPageCount(o.doc.numPages)
+        // The carried cover page may exceed this document's count.
+        setCoverPage((p) => Math.min(p, o.doc.numPages))
       } catch {
         if (liveRef.current) onErrorRef.current(ZINE_COPY.unreadable)
       }
@@ -117,6 +134,7 @@ export function ZinePreview({ file, onPoster, onError }: Props) {
       try {
         const cover = await renderZineCoverFile(opened.doc, coverPage, file.name)
         if (cancelled || !liveRef.current) return
+        onCoverPageRef.current?.(coverPage)
         onPosterRef.current(cover)
       } catch {
         if (cancelled || !liveRef.current) return
