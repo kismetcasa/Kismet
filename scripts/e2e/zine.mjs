@@ -212,6 +212,17 @@ check('a cover image offers to be removed', await mint.locator('button:has-text(
 await mint.locator('button:has-text("remove")').click()
 await mint.waitForTimeout(300)
 check('removing the cover image restores the upload-cover prompt', await mint.locator('button:has-text("upload cover")').isVisible())
+// Edge: a non-image dropped on the cover slot (the artist picks the zine
+// itself by mistake) is refused with the cover's own copy, and nothing is set.
+await mint.setInputFiles('input[type="file"][accept="image/*,.gif"]', path.join(DIR, 'zine.pdf'))
+{
+  const bad = mint.locator('[data-sonner-toast]', { hasText: 'Unsupported cover' })
+  let badSeen = true
+  try { await bad.first().waitFor({ timeout: 15000 }) } catch { badSeen = false }
+  check('a non-image cover is refused (Unsupported cover)', badSeen)
+  check('a refused cover never becomes the cover', (await mint.locator('text=/cover image · /').count()) === 0)
+}
+await mint.waitForTimeout(4500)
 // Who can read it: public by default, collectors-only an explicit choice
 // that takes over the collector-download slot.
 const access = mint.locator('[role="radiogroup"][aria-label="Who can read it"]')
