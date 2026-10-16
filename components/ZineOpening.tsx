@@ -160,8 +160,11 @@ export function ZineOpening({ title, cover, backdrop, readout, fraction, error, 
     return () => a.cancel()
   }, [leaving, reduce])
 
-  // Focus the way out; Escape takes it. (Once the reader is up it captures
-  // Escape itself, and this layer no longer takes input.)
+  // Focus the way out; Escape takes it — and ONLY it, captured on window as
+  // the reader does: the in-app overlay route closes on Escape too (its own
+  // window listener calls router.back()), and both acting would pop two
+  // history entries. (Once the reader is up it takes Escape itself, and this
+  // layer no longer takes input.)
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true })
   }, [])
@@ -169,11 +172,12 @@ export function ZineOpening({ title, cover, backdrop, readout, fraction, error, 
     if (leaving) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      e.stopImmediatePropagation()
       e.preventDefault()
       onCloseRef.current()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [leaving])
 
   const layer = (

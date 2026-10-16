@@ -28,7 +28,8 @@ const dst = resolve(ROOT, 'public/pdfjs')
 
 if (!existsSync(src)) {
   // Don't fail the install — see copy-ffmpeg-core.mjs for why. The build
-  // (and lib/pdfjs at runtime) fail loudly if the files are still missing.
+  // fails loudly if the files are still missing (scripts/check-public-assets
+  // .mjs, run as prebuild).
   console.warn(`[copy-pdfjs-assets] ${src} not found — skipping`)
   process.exit(0)
 }

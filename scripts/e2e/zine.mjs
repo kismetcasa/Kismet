@@ -465,12 +465,16 @@ check('ArrowRight on a wide screen turns to the 2–3 spread', (await waitCounte
 await pageImg(page, 2).waitFor({ timeout: 30000 })
 await pageImg(page, 3).waitFor({ timeout: 30000 })
 check('both pages of the spread are on screen', (await pageImg(page, 2).isVisible()) && (await pageImg(page, 3).isVisible()))
+// The URL follows the page the reader settles on (a scrubber drag must not
+// call replaceState once per page — WebKit throws past ~100 in 10 s).
+await page.waitForFunction(() => location.search.includes('page=2'), null, { timeout: 3000 }).catch(() => {})
 check('the URL carries the page for sharing', page.url().includes('page=2'), page.url())
 await page.screenshot({ path: path.join(SHOTS, 'z04-reader-spread.png') })
 await page.keyboard.press('End')
 check('End goes to the back cover, alone', (await waitCounter(page, '6 / 6')) === '6 / 6')
 await page.keyboard.press('Home')
 check('Home returns to the cover', (await waitCounter(page, '1 / 6')) === '1 / 6')
+await page.waitForFunction(() => !location.search.includes('page='), null, { timeout: 3000 }).catch(() => {})
 check('page 1 drops the URL parameter', !page.url().includes('page='), page.url())
 
 // Every page-turn key runs its branch (ArrowRight is above; here ArrowUp,
@@ -531,6 +535,24 @@ await page.keyboard.press('-')
 await page.waitForTimeout(250)
 const kzOut = await pageImg(page, 2).boundingBox()
 check('"-" zooms the page back out', !!kzOut && !!kzIn && kzOut.width < kzIn.width, `${kzIn?.width} -> ${kzOut?.width}`)
+await page.keyboard.press('0')
+await page.waitForTimeout(300)
+// Browser and system shortcuts stay theirs: with ⌘ (Meta) or Alt held, a
+// reader key does nothing in the reader — ⌘R must reload, not rotate, and
+// ⌘+ zoom the browser, not the page. (Ctrl+R would reload this very page.)
+const km0 = await pageImg(page, 2).boundingBox()
+await page.keyboard.press('Meta+=')
+await page.keyboard.press('Alt+r')
+await page.waitForTimeout(350)
+const km1 = await pageImg(page, 2).boundingBox().catch(() => null)
+check('with ⌘ or Alt held, the reader leaves the key to the browser (no zoom, no rotation)',
+  !!km0 && !!km1 && Math.abs(km1.width - km0.width) < 2 && Math.abs(km1.height - km0.height) < 2, `${JSON.stringify(km0)} -> ${JSON.stringify(km1)}`)
+// Should the guard ever break, undo what it let through: a rotation is
+// remembered per artwork and would otherwise fail every later section.
+if (km0 && (!km1 || Math.abs(km1.width / km1.height - km0.width / km0.height) > 0.2)) {
+  await page.keyboard.press('Shift+R')
+  await pageImg(page, 2).waitFor({ timeout: 30000 }).catch(() => {})
+}
 await page.keyboard.press('0')
 await page.waitForTimeout(300)
 // A plain wheel flick (no modifier, not zoomed) turns the page — the other
@@ -633,6 +655,15 @@ await page.close()
 console.log('\nC1. A long zine — flips cancel renders; a page is rendered for its real slot')
 const LONG_META = { ...ZINE_META, metadata: { ...ZINE_META.metadata, name: 'E2E Long', animation_url: 'ar://long-txid', content: { uri: 'ar://long-txid', mime: 'application/pdf' }, kismet_zine: { pages: 60, access: 'public' } } }
 const longPg = await desktop.newPage()
+// Count the reader's URL writes (replaceState calls carrying ?page=).
+await longPg.addInitScript(() => {
+  window.__pageWrites = 0
+  const orig = history.replaceState
+  history.replaceState = function (state, unused, url) {
+    if (url && String(url).includes('page=')) window.__pageWrites++
+    return orig.call(this, state, unused, url)
+  }
+})
 await longPg.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LONG_META) }))
 await longPg.goto(ART, { waitUntil: 'domcontentloaded' })
 await longPg.locator('button:has-text("read · 60 pages")').click()
@@ -658,6 +689,7 @@ await revealChrome(longPg)
 const slider = longPg.locator('[role="dialog"] input[type="range"]')
 await slider.focus()
 const rendersBefore = await longPg.evaluate(() => window.__pdfRenders)
+const writesBefore = await longPg.evaluate(() => window.__pageWrites)
 const t0 = Date.now()
 for (let i = 0; i < 59; i++) await longPg.keyboard.press('ArrowRight')
 await longPg.locator(`${READER} [data-view="current"] img[alt="Page 60 of E2E Long"]`).waitFor({ timeout: 30000 })
@@ -666,6 +698,10 @@ const rendersDuring = (await longPg.evaluate(() => window.__pdfRenders)) - rende
 check('a scrubber drag across 60 pages renders only what it lands on', rendersDuring <= 12, `${rendersDuring} renders started`)
 check('…and the target page is on screen within seconds', landed < 15000, `${landed} ms`)
 console.log(`    renders started during the drag: ${rendersDuring}; page 60 on screen after ${landed} ms`)
+await longPg.waitForFunction(() => location.search.includes('page=60'), null, { timeout: 3000 }).catch(() => {})
+const writes = (await longPg.evaluate(() => window.__pageWrites)) - writesBefore
+check('…and writes the URL once it settles, not once per page (WebKit throws past ~100 in 10 s)',
+  writes <= 3 && longPg.url().includes('page=60'), `${writes} URL writes; ${longPg.url()}`)
 await longPg.keyboard.press('Escape')
 await longPg.close()
 
@@ -706,6 +742,28 @@ await failPg.goBack()
 await failPg.waitForTimeout(600)
 check('back from a failed open restores the affordance, not a dead entry', (await failPg.locator('button:has-text("read · 6 pages")').count()) === 1 && failPg.url() === failUrl, failPg.url())
 await failPg.close()
+// No cover to show AND a file that will not open: the failure still stays in
+// the frame — retry, the PDF itself — and closing it returns to the read
+// button. The slot is never handed back mid-error.
+{
+  const nc = await desktop.newPage()
+  const NO_COVER = { ...ZINE_META, metadata: { ...ZINE_META.metadata, image: undefined } }
+  await nc.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(NO_COVER) }))
+  await nc.route(/arweave\.net|api\/img/, (r) => (decodeURIComponent(r.request().url()).includes('zine-txid') ? r.fulfill({ status: 500, body: 'nope' }) : r.fallback()))
+  await nc.goto(ART, { waitUntil: 'domcontentloaded' })
+  const ncRead = nc.locator('button:has-text("read · 6 pages")')
+  await ncRead.waitFor({ timeout: 30000 })
+  await ncRead.click()
+  const ncRetry = nc.locator('[role="dialog"][aria-label^="Opening"] button:has-text("retry")')
+  await ncRetry.waitFor({ timeout: 90000 }).catch(() => {})
+  await nc.waitForTimeout(1000)
+  check('with no cover and a file that will not open, the failure stays in the frame (retry, the PDF)',
+    (await ncRetry.count()) === 1 && (await nc.locator('[role="dialog"] >> text=open the PDF').count()) === 1)
+  await nc.keyboard.press('Escape')
+  await nc.waitForTimeout(800)
+  check('…and closing it returns to the read button, the artwork still the page', (await ncRead.isVisible().catch(() => false)) && nc.url() === ART, nc.url())
+  await nc.close()
+}
 
 // ───────────── C3. Collectors-only zine: the card for a non-holder ─────────────
 // The zine IS the collector file. Its record is seeded into the Redis stub
@@ -748,6 +806,20 @@ check('nothing from pdf.js is fetched for a non-holder', privSeen.any === 0, JSO
 check('a server-rendered page with a known descriptor costs a non-holder no status request', statusFetches === 0, String(statusFetches))
 await priv.screenshot({ path: path.join(SHOTS, 'z08-private-card.png'), clip: { x: 0, y: 100, width: 1280, height: 900 } })
 await priv.close()
+// A PDF collector file that is NOT the artwork's zine — a print-res export
+// beside a public zine (§11): readable like any PDF, never called a zine.
+await redis(['SET', CFILE_KEY, JSON.stringify({
+  current: { v: 1, blobSeq: 1, chunks: 1, size: 2400000, sha256: 'cd'.repeat(32), kind: 'pdf', pages: 6, name: 'print-res.pdf', updatedAt: seededAt, updatedBy: '0x000000000000000000000000000000000000dead', stored: true },
+  history: [], nextBlobSeq: 2, createdAt: seededAt,
+})])
+const extraPg = await desktop.newPage()
+await extraPg.goto(ART, { waitUntil: 'domcontentloaded' })
+await extraPg.locator('text=print-res.pdf').first().waitFor({ timeout: 30000 }).catch(() => {})
+await extraPg.waitForTimeout(1500)
+check('a PDF collector file beside a public zine is a collector download, not a zine',
+  (await extraPg.locator('p', { hasText: /collector download · print-res\.pdf · .* · 6 pages · v1/ }).count()) === 1 && (await extraPg.locator('text=collectors-only zine').count()) === 0)
+check('…and a non-holder is told to collect to download', (await extraPg.locator('text=collect to download').count()) === 1)
+await extraPg.close()
 await redis(['DEL', CFILE_KEY])
 
 // ───────────── C4. Dragging: the page follows the hand ─────────────
@@ -925,6 +997,46 @@ console.log('\nC5. Reduced motion — fades in place of slides and the expand')
   await calmPhone.close()
 }
 
+// ───────────── C6. A failed page render: the tile, then a retry ─────────────
+console.log('\nC6. A failed page render — the tile, then a retry once the reader moves on')
+{
+  const fp = await desktop.newPage()
+  // One page encode fails (the canvas comes back empty, as under memory
+  // pressure on iOS); every later one works.
+  await fp.addInitScript(() => {
+    window.__failEncodes = 0
+    const orig = HTMLCanvasElement.prototype.toBlob
+    HTMLCanvasElement.prototype.toBlob = function (cb, ...rest) {
+      if (window.__failEncodes > 0) {
+        window.__failEncodes--
+        setTimeout(() => cb(null), 0)
+        return
+      }
+      return orig.call(this, cb, ...rest)
+    }
+  })
+  await fp.goto(`${ART}?page=1`, { waitUntil: 'domcontentloaded' })
+  const fpRead = fp.locator('button:has-text("read · 6 pages")')
+  await fpRead.waitFor({ timeout: 30000 })
+  await fp.evaluate(() => { window.__failEncodes = 1 })
+  await fpRead.click()
+  const tile = fp.locator(`${READER} [data-view="current"] [role="img"][aria-label="Page 1 could not be rendered"]`)
+  await tile.waitFor({ timeout: 30000 }).catch(() => {})
+  check('a page that fails to render shows its tile, and the reader opens all the same', await tile.isVisible().catch(() => false))
+  await fp.waitForTimeout(800)
+  await fp.locator(READER).focus()
+  await fp.keyboard.press('ArrowRight')
+  await waitCounter(fp, '2–3 / 6')
+  await fp.waitForTimeout(800)
+  await fp.keyboard.press('ArrowLeft')
+  await waitCounter(fp, '1 / 6')
+  const fp1 = fp.locator(`${READER} [data-view="current"] img[alt="Page 1 of E2E Zine"]`)
+  await fp1.waitFor({ timeout: 10000 }).catch(() => {})
+  check('…and once the reader moves on and back, the page renders (the failure is retried)', await fp1.isVisible().catch(() => false))
+  await fp.keyboard.press('Escape')
+  await fp.close()
+}
+
 // ───────────────── D. Artwork detail, phone: gestures ─────────────────
 console.log('\nD. Artwork detail (phone) — swipe and tap zones')
 const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true })
@@ -1047,6 +1159,51 @@ await profile.waitForTimeout(1500)
 check('no pdf.js asset is fetched by a feed', feedSeen.any === 0, JSON.stringify(feedSeen))
 await profile.screenshot({ path: path.join(SHOTS, 'z07-profile-badge.png'), clip: { x: 0, y: 80, width: 900, height: 700 } })
 await profile.close()
+
+// ───────────── E2. The overlay route: Escape closes the zine, not the artwork ─────────────
+// From a feed, an artwork opens as an overlay (the intercepting route) whose
+// own Escape goes back. A zine layer above it must take Escape alone — two
+// layers acting on one key would pop two history entries and drop the reader
+// back on the feed.
+console.log('\nE2. Overlay — Escape closes the zine layer, never the artwork overlay under it')
+{
+  const ov = await desktop.newPage()
+  await ov.route(/\/api\/timeline/, (r) => r.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ status: 'success', moments: [ZINE_MOMENT], pagination: { page: 1, limit: 20, total_pages: 1 } }),
+  }))
+  // The zine's bytes held back, so the opening frame is still up for the first Escape.
+  let holdZine = true
+  await ov.route(/arweave\.net|api\/img/, async (r) => {
+    if (!decodeURIComponent(r.request().url()).includes('zine-txid')) return r.fallback()
+    if (holdZine) await new Promise((res) => setTimeout(res, 1500))
+    return r.fulfill({ status: 200, contentType: 'application/pdf', body: ZINE }).catch(() => {})
+  })
+  await ov.goto(`${BASE}/profile/0x000000000000000000000000000000000000dEaD`, { waitUntil: 'domcontentloaded' })
+  await ov.waitForSelector('article', { timeout: 30000 })
+  await ov.locator('a[href="/artwork/0x00000000000000000000000000000000000000aa/1"]').first().click()
+  const ovRead = ov.locator('button:has-text("read · 6 pages")')
+  await ovRead.waitFor({ timeout: 30000 })
+  const overlay = ov.locator('[role="dialog"][aria-label="Artwork detail"]')
+  const overlayUp = async () => ov.url().includes('/artwork/') && (await overlay.count()) === 1 && (await ovRead.isVisible().catch(() => false))
+  check('a feed card opens the artwork over the feed (the overlay route)', await overlayUp(), ov.url())
+  await ovRead.click()
+  await ov.locator('[role="dialog"][aria-label="Opening E2E Zine"]').waitFor({ timeout: 3000 }).catch(() => {})
+  await ov.waitForTimeout(200)
+  await ov.keyboard.press('Escape')
+  await ov.waitForTimeout(800)
+  check('Escape on the opening frame cancels the zine — the artwork overlay stays', await overlayUp(), ov.url())
+  holdZine = false
+  if (ov.url().includes('/artwork/')) {
+    await ovRead.click()
+    await ov.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 }).catch(() => {})
+    await ov.waitForTimeout(400)
+    await ov.keyboard.press('Escape')
+    await ov.waitForTimeout(800)
+  }
+  check('Escape in the reader closes the reader — the artwork overlay stays', await overlayUp(), ov.url())
+  await ov.close()
+}
 await desktop.close()
 
 await browser.close()

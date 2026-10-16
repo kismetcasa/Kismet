@@ -209,6 +209,11 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
     closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // This viewer only — captured, so the overlay route's own Escape
+        // (router.back()) never also runs: two history pops would leave the
+        // artwork for the page under it.
+        e.stopImmediatePropagation()
+        e.preventDefault()
         closeViaHistory()
         return
       }
@@ -225,9 +230,9 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
         first.focus()
       }
     }
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, { capture: true })
     return () => {
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, { capture: true })
       opener?.focus?.()
     }
   }, [closeViaHistory, opened, kind])
@@ -246,7 +251,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
     return () => el.removeEventListener('error', handler)
   }, [])
 
-  const onPageChange = useCallback((page: number) => rememberPage(storageKey, page), [storageKey])
+  const onPageChange = useCallback((page: number) => rememberPage(storageKey, page, { url: false }), [storageKey])
   const onRotationChange = useCallback((r: number) => rememberRotation(storageKey, r), [storageKey])
 
   const onFirstPage = useCallback(() => setOpening((o) => (o ? 'leaving' : o)), [])

@@ -102,6 +102,10 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
     }
     setPicked(f)
     setPickedPages(null)
+    // Every pick starts uncounted: a count still running for an earlier pick
+    // is superseded (its result is dropped below), and must not hold Save
+    // disabled for a file that is not a PDF.
+    setCounting(false)
     const seq = ++pickSeqRef.current
     // A PDF's page count rides the PUT for the card's "· 16 pages". Best
     // effort: a file the parser cannot open (a password, a broken export)

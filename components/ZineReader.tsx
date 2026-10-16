@@ -446,6 +446,10 @@ export function ZineReader({
     const moved = left !== lastLeftRef.current
     lastLeftRef.current = left
     if (moved) {
+      // A page that failed to render gets another try once the reader moves
+      // on — the failure may have been passing (canvas memory under
+      // pressure on iOS). Once per move, never in a loop.
+      for (const [n, r] of rendersRef.current) if (!r.ok) rendersRef.current.delete(n)
       const now = performance.now()
       const scrubbing = now - lastViewAtRef.current < SCRUB_MS
       lastViewAtRef.current = now
@@ -737,6 +741,9 @@ export function ZineReader({
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+      // Browser and system shortcuts stay theirs: ⌘R reloads rather than
+      // rotating, and ⌘+ / ⌘− / ⌘0 zoom the browser — the reader re-fits.
+      if (e.ctrlKey || e.metaKey || e.altKey) return
       switch (e.key) {
         case 'ArrowRight':
         case 'ArrowDown':

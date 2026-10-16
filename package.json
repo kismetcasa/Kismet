@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/check-build-secrets.mjs",
+    "prebuild": "node scripts/check-build-secrets.mjs && node scripts/check-public-assets.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

@@ -237,7 +237,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const [imgError, setImgError] = useState(false)
   const [videoError, setVideoError] = useState(false)
   const [modelError, setModelError] = useState(false)
-  const [zineError, setZineError] = useState(false)
   const descRef = useRef<HTMLParagraphElement>(null)
   // Seeded from server-prefetched KV metadata when available so the
   // collection chip renders on first paint instead of popping in after
@@ -1665,7 +1664,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               className={`relative aspect-square bg-surface ${isZoomable ? 'cursor-zoom-in' : ''}`}
               onClick={() => { if (isZoomable) setLightboxOpen(true) }}
             >
-              {isZine && media.pdfSrc && !zineError ? (
+              {isZine && media.pdfSrc ? (
                 // A zine: the cover, and a tap-to-load reader over the PDF —
                 // see components/MomentZine. The reader is the only surface
                 // that ever parses the document.
@@ -1677,7 +1676,6 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                   title={meta.name ?? 'zine'}
                   pages={media.pages}
                   storageKey={`${address.toLowerCase()}:${tokenId}`}
-                  onAllError={() => setZineError(true)}
                 />
               ) : isModel && media.modelSrc && !modelError ? (
                 // The one WebGL surface in the app. Tap-to-load, so the
@@ -2457,6 +2455,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             justCollected={collected}
             listing={initialListing}
             cover={media.src ? { src: media.src, thumbhash: meta.kismet_thumbhash } : undefined}
+            zine={readZineHint(detail?.metadata?.kismet_zine)?.access === 'collectors'}
           />
 
           {/* Mobile / mini-app: sale-window date centered under the action row.

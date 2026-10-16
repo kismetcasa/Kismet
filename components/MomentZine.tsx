@@ -58,11 +58,12 @@ interface Props {
   pages?: number
   /** Resume key — the artwork's `collection:tokenId`. */
   storageKey: string
-  /** Fires when neither the zine nor its cover can be shown. */
-  onAllError?: () => void
 }
 
-export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageKey, onAllError }: Props) {
+// A zine never hands its slot back on failure: an open that fails stays in
+// the opening frame with retry and the PDF itself a tap away, and closing it
+// returns to the read button — with or without a cover to show (§26).
+export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageKey }: Props) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState<string | null>(null)
   const [posterFailed, setPosterFailed] = useState(false)
@@ -90,8 +91,6 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   // "Download PDF" goes to the gateway, never through our proxy (which
   // serves PDFs as attachments and would otherwise carry the egress).
   const downloadUrl = useMemo(() => gatewayUrls(src)[0], [src])
-  const onAllErrorRef = useRef(onAllError)
-  onAllErrorRef.current = onAllError
 
   const releaseDoc = useCallback(() => {
     const o = openedRef.current
@@ -196,9 +195,6 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   )
 
   const hasStill = !!poster && !posterFailed
-  useEffect(() => {
-    if (phase === 'error' && !hasStill) onAllErrorRef.current?.()
-  }, [phase, hasStill])
 
   const backdrop = useMemo(() => zineBackdrop(thumbhashAverageRgb(thumbhash)), [thumbhash])
 

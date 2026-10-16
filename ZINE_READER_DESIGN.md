@@ -297,7 +297,7 @@ viewport like the lightbox (`z-[200]`, near-black backdrop), closes on Esc, the
 X, or the browser back gesture, locks body scroll, traps focus. It is portaled
 to `document.body` so it also sits above the in-app overlay route
 (`components/ModalOverlay.tsx`, whose own z-60 X and Escape listener would
-otherwise fight it — the collector-file viewer has that bug today, §17).
+otherwise fight it — the collector-file viewer had that bug, §17; fixed in §26).
 
 ### 5.4 Navigation
 
@@ -936,7 +936,7 @@ wrapper as `animation_url`; a text-only "zine" mode (writing moments exist).
    after the other despite the comment (`:55-57, :68`); no `AbortController`;
    inside the overlay route it sits under `ModalOverlay`'s X and both Escape
    listeners fire. The reader's shell fixes these for `pdf`; the same shell
-   should serve glb/svg.
+   should serve glb/svg. (The Escape half is fixed for every kind in §26.)
 5. **Stale copy**: `route.ts:193` omits ROMs; `CT_OK` (`:154`) lacks the ROM
    MIMEs; `MintForm.tsx:2442` omits SVG; the design doc's data model says
    `kind: zip|pdf|glb` and claims attach-at-mint is out of v1.
@@ -1746,6 +1746,57 @@ where the old reader showed a text label in the slot for that second. These
 are this container's figures (Chromium, a local server); a phone's own CPU
 and network add to them, and Safari's JavaScript JPEG decode remains the
 open measurement (§21.6).
+
+## 26. Pre-merge review (2026-10-16) — ten findings, the Docker image, the proof
+
+The brief: before the merge, review the branch for anything missed. A code
+review of `main...HEAD` (8 commits, 59 files; `main` has not moved since the
+branch began, so there is nothing to merge in) returned ten findings,
+unverified. Each was traced to a real path before anything changed; every one
+a harness here can reach was reproduced on the build before its fix — the
+new check FAILING there — and passes on the build after it.
+
+### 26.1 The findings
+| # | Finding | Verdict | Fix | Proof |
+|---|---|---|---|---|
+| 1 | The Docker image ships without `public/pdfjs/` | **Confirmed — every zine broken in production.** Coolify builds the Dockerfile; its builder stage carries only `node_modules` from the deps stage and re-ran only the ffmpeg copy; `public/pdfjs/` is gitignored, so a clean context has none. The copy script's comment said the build would "fail loudly"; nothing checked | the builder re-runs `copy-pdfjs-assets.mjs`; `.dockerignore` keeps a workstation copy out (pdf.js refuses a worker of another version); a new `prebuild` check, `scripts/check-public-assets.mjs`, fails the build when the worker or its assets are missing or of another version | a real `docker build` of the old and new Dockerfiles from a clean context: the old image's `/app/public` has no `pdfjs/` and serves the worker as **404**; the new one has it and serves **200**, 1.32 MB, version 6.4.299. The check fails on a missing set and on a stale worker, passes on a good one, and ran inside the image build |
+| 2 | The manage panel's Save stays disabled after a PDF then a non-PDF pick | Confirmed: the non-PDF pick never touched `counting`, and the superseded count skipped its reset | every pick starts uncounted | owner-gated (no wallet in the harness, §24.2) — traced |
+| 3 | Escape on the opening frame (and the non-PDF collector viewer) pops two history entries under the overlay route | Confirmed — the overlay route's own Escape calls `router.back()`; only the reader captured the key. The viewer half is the §17 bug, now gone | captured on window with `stopImmediatePropagation`, as the reader | E2 (new): before, Escape on the frame dropped the reader back on the feed (`/profile`); after, the artwork overlay stays, and again after the reader's own Escape |
+| 4 | Every PDF collector file is called a zine | Partly: "read" for any PDF is §10's design, the wording is not — a print-res export beside a public zine (§11) read "collectors-only zine" | the zine wording follows the artwork's `kismet_zine` hint (access "collectors"); any PDF keeps its page count and "read" | C3 (new): before, the print-res PDF read as a zine; after, "collector download", "collect to download" |
+| 5 | The collector-file reader writes `?page=` into the artwork's URL | Confirmed — `?page=` addresses the public zine, so an artwork with both would open the wrong document's page | `rememberPage(…, { url: false })` | holder-gated — traced |
+| 6 | The scrubber floods `replaceState` | Confirmed — one call per page; WebKit throws past ~100 in 10 s (and the resume write sat behind it in the same `try`) | the resume is written at once, the URL once the reader settles (300 ms), and only onto a reader's own history entry | C1 (new): before, 59 URL writes for a 59-step scrub; after, one |
+| 7 | Reader keys swallow browser shortcuts (⌘R rotated) | Confirmed | Ctrl/⌘/Alt combinations stay the browser's | C (new): before, Alt+R rotated the page; after, nothing moves |
+| 8 | A failed page render is never retried | Confirmed while the page stays in the render window | failed renders are dropped on each move and retried — once per move, never a loop | C6 (new): one page encode made to fail; before, page 1's tile survived moving away and back; after, page 1 renders |
+| 9 | With no cover, a failed open unmounts the error frame | Confirmed, and made worse by §25 (the frame, not a line of text, was lost; the history entry was left behind) | a zine never hands its slot back; closing the error returns to the read button | (new) before, the frame and the read button vanished; after, retry and the PDF stay, and Escape returns to the read button |
+| 10 | The collector viewer's own streaming loop briefly holds two copies (64 MiB → ~128 MiB peak) | Valid, not a defect — the public path (chunks → Blob → ArrayBuffer) has the same peak under the same cap | left for a follow-up: one shared reader that fills a buffer pre-sized from Content-Length, for both paths | — |
+
+The eleven new checks were first run against the unfixed build: the two
+that only set the scene passed (the failure tile shows; a feed card opens
+the overlay), the other nine failed — one of them only because the overlay
+was already gone — and every other check passed. A broken key guard no
+longer cascades: the check undoes a rotation it let through, since
+rotations are remembered per artwork.
+
+### 26.2 What this container cannot do
+- The image's two `apk add` steps (arm64 build tools; the runtime ffmpeg):
+  Alpine's CDN is refused (403) by this session's egress policy, so the test
+  build dropped those two lines and added the proxy's CA; every `COPY` and
+  `RUN` that decides what lands in `public/` is the real file's, verbatim.
+- WebKit itself: the `replaceState` limit is WebKit's documented behaviour;
+  the fix is proven by the call count in Chromium.
+
+### 26.3 Before the merge
+CI has never run on this branch — it runs on pull requests, and none is open.
+The same steps were run here: `npm ci`'s postinstall, the build, `npm run
+check`, and the blocking `npm audit --audit-level=critical` (exit 0; the one
+new dependency is `pdfjs-dist`, locked at 6.4.299).
+
+Re-verified on the fixed build: `npm run check` green (agent routes 203/0,
+collector-file view gate 18/0, the bundle guard); `scripts/e2e/zine.mjs`
+**176/0** (165 at §25, plus the eleven above); `scripts/e2e/model-media.mjs`
+88/0; the showcase on Arjan's file green (timed in the page: desktop page 1
+in 774 ms, phone 721 ms, the optimized file 622 ms). No `next-server` left
+behind.
 
 ## Appendix A — verified vs. assumed
 

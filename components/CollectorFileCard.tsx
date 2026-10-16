@@ -55,11 +55,15 @@ interface Props {
   listing?: { price: string; currency: 'eth' | 'usdc' } | null
   /** The artwork's cover: a collectors-only zine opens from it. */
   cover?: { src: string; thumbhash?: string }
+  /** The artwork says its collectors-only zine is this file (its
+   *  `kismet_zine` hint, access "collectors"). Any PDF here is readable in
+   *  the browser; only that one is called a zine. */
+  zine?: boolean
 }
 
 const TOAST_ID = 'cfile-download'
 
-export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing, cover }: Props) {
+export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing, cover, zine = false }: Props) {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp } = useFarcaster()
@@ -212,11 +216,13 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
 
   const updateAvailable = downloadedV !== null && file.v > downloadedV
   const updated = new Date(file.updatedAt)
-  // A collectors-only zine: the card is where its pages are reached, so it
-  // says so — "read", the page count, and "collect to read" for everyone
-  // else (ZINE_READER_DESIGN.md §10).
-  const isZine = file.kind === 'pdf'
-  const metaLine = `${file.name} · ${formatCfileSize(file.size)}${isZine && file.pages ? ` · ${formatZinePages(file.pages)}` : ''} · v${file.v}`
+  // Any PDF is read in the browser, with its page count (ZINE_READER_DESIGN
+  // .md §10). The artwork's collectors-only zine is also called one — "read
+  // it", "collect to read" — while a PDF that is not (a print-res export
+  // beside a public zine, a certificate) stays a collector download (§26).
+  const isPdf = file.kind === 'pdf'
+  const isZine = isPdf && zine
+  const metaLine = `${file.name} · ${formatCfileSize(file.size)}${isPdf && file.pages ? ` · ${formatZinePages(file.pages)}` : ''} · v${file.v}`
 
   return (
     <div className="px-5 pb-3">
@@ -276,10 +282,10 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
             {isViewableCfileKind(file?.kind) && (
               <button
                 onClick={() => setViewing(true)}
-                title={isZine ? 'Read in the browser' : 'View in the browser'}
+                title={isPdf ? 'Read in the browser' : 'View in the browser'}
                 className="px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors flex items-center gap-1.5"
               >
-                {isZine ? <BookOpen size={12} /> : <Eye size={12} />} {isZine ? 'read' : 'view'}
+                {isPdf ? <BookOpen size={12} /> : <Eye size={12} />} {isPdf ? 'read' : 'view'}
               </button>
             )}
             <button

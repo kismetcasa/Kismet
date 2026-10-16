@@ -36,19 +36,39 @@ export function readStartPage(storageKey: string, opts: { url?: boolean } = {}):
   return undefined
 }
 
-/** Reflect the page in the URL (shareable) and remember it (resume). */
-export function rememberPage(storageKey: string, page: number): void {
+/** The URL follows the page a reader settles on, this long after the last
+ *  turn. A scrubber drag changes the page on every input event, and WebKit
+ *  throws once replaceState runs ~100 times in 10 s (Chrome starts dropping
+ *  calls at 200) — a drag across a long zine would leave the URL behind. */
+const URL_SETTLE_MS = 300
+let urlWrite: ReturnType<typeof setTimeout> | undefined
+
+/** Remember the page (resume) at once and, unless `url: false`, reflect it
+ *  in the URL (shareable) once the reader settles. `url: false` is the
+ *  collector-file reader: `?page=` addresses the artwork's own zine. */
+export function rememberPage(storageKey: string, page: number, opts: { url?: boolean } = {}): void {
   try {
-    const url = new URL(window.location.href)
-    if (page > 1) url.searchParams.set('page', String(page))
-    else url.searchParams.delete('page')
-    // Spread the current state: Next's internals and our reader marker both
-    // live there and must survive the replace.
-    window.history.replaceState({ ...(window.history.state ?? {}) }, '', url.toString())
     window.localStorage.setItem(RESUME_PREFIX + storageKey, String(page))
   } catch {
-    /* best effort */
+    /* private mode, blocked storage: no resume */
   }
+  if (opts.url === false) return
+  clearTimeout(urlWrite)
+  urlWrite = setTimeout(() => {
+    // Only onto a reader's own entry: a write landing after the reader
+    // closed would put the page on the artwork's entry.
+    if (readerEntryToken() === null) return
+    try {
+      const url = new URL(window.location.href)
+      if (page > 1) url.searchParams.set('page', String(page))
+      else url.searchParams.delete('page')
+      // Spread the current state: Next's internals and our reader marker
+      // both live there and must survive the replace.
+      window.history.replaceState({ ...(window.history.state ?? {}) }, '', url.toString())
+    } catch {
+      /* best effort */
+    }
+  }, URL_SETTLE_MS)
 }
 
 const ROTATE_PREFIX = 'kismet:zine-rotate:'
