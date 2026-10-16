@@ -25,7 +25,6 @@ import { PDF_MAGIC, PDF_MIME, hasPdfMagic } from '../pdfFormat.ts'
  * on the surfaces that render pages (lib/pdfjs).
  */
 
-
 /**
  * Hard byte ceiling — ONE number with the collector-file store
  * (`CFILE_MAX_BYTES`), so switching an artwork between a public zine and a
@@ -49,12 +48,6 @@ export const ZINE_SOFT_WARN_BYTES = 16 * 1024 * 1024
  *  scan — pure here so the mint form's copy can name it without the
  *  optimizer module. */
 export const ZINE_OPTIMIZE_LONG_EDGE = 2000
-
-
-/** `metadata.kismet_zine` — the discovery and badge signal (a page count
- *  without fetching the PDF). RENDERING never keys on it: the resolver
- *  classifies by `content.mime`; the hint is a second signal for an index
- *  row that lost its `content` field, and it is harmless when stale. */
 
 export type PdfInspection =
   | { kind: 'ok'; pages: number }

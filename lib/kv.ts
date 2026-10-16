@@ -56,7 +56,7 @@ export interface CollectionMeta {
   /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
    *  the poster, replayed by the artwork page's viewer. */
   kismet_bg?: string
-  /** A zine's hint: page count and where the pages live (lib/media/zineMedia).
+  /** A zine's hint: page count and where the pages live (lib/media/zineHint).
    *  A badge signal only — rendering keys on `content.mime`. */
   kismet_zine?: ZineHint
   // Token ID minted as the collection cover at deploy time (Kismet

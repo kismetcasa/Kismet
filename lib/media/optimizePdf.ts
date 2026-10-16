@@ -9,17 +9,18 @@ import { openPdf, renderPageToBlob, type PdfPage } from '../pdfjs'
  * counterpart of lib/media/optimizeModel for 3D (ZINE_READER_DESIGN.md §21).
  *
  * WHY. A scanned zine is one 300 dpi JPEG per page: Arjan's issue #0 is six
- * A4 scans of 2480 × 3507 px (8.7 M pixels each). pdf.js must decode the
- * whole JPEG before it can draw the page, and that decode — not the
- * download, not our render — is where a phone spends its time: ~0.8 s per
- * page measured, and it scales with pixels, not bytes. A phone never shows
- * more than ~1200 px of a page, so 300 dpi buys nothing on screen. This pass
- * re-renders every page at a long edge of ZINE_OPTIMIZE_LONG_EDGE px (plenty
- * for a 3× phone and for zoom), writes a new PDF with one JPEG per page, and
- * hands it back through the same pick gate as any file. Page count, page
- * sizes (in points) and reading order are preserved; vector text and the
- * original file's text layer are rasterized, which is why this is opt-in
- * with an undo and is described as "for phones", not applied silently.
+ * A4 scans of 2480 × 3507 px (8.7 M pixels each). Every page shown is that
+ * JPEG decoded in full, and the cost scales with pixels, not bytes: ~150 ms
+ * a page in Chromium, which decodes natively, and several times that in
+ * Safari, where pdf.js decodes JPEG in JavaScript (ZINE_READER_DESIGN.md
+ * §21.1). A phone never shows more than ~1200 px of a page, so 300 dpi buys
+ * nothing on screen. This pass re-renders every page at a long edge of
+ * ZINE_OPTIMIZE_LONG_EDGE px (plenty for a 3× phone and for zoom), writes a
+ * new PDF with one JPEG per page, and hands it back through the same pick
+ * gate as any file. Page count, page sizes (in points) and reading order are
+ * preserved; vector text and the original file's text layer are rasterized,
+ * which is why this is opt-in with an undo and is described as "for phones",
+ * not applied silently.
  *
  * THE WRITER. A minimal, spec-valid PDF: a catalog, a page tree, one page
  * object + one DCTDecode image XObject + one content stream per page, and a
@@ -27,9 +28,8 @@ import { openPdf, renderPageToBlob, type PdfPage } from '../pdfjs'
  * deps" posture); scripts/e2e/make-pdf.mjs is the same writer in miniature.
  */
 
-/** Long edge of a re-rendered page in pixels. 2000 covers a 3× phone's
- *  ~1200 px page with room for a 1.6× zoom before it softens; A4 at this
- *  size is 1414 × 2000 = 2.8 M pixels, ~3× faster to decode than 300 dpi. */
+/** JPEG quality of a re-rendered page — the posters' quality, so an
+ *  optimized zine's pages look like its cover. */
 const ZINE_OPTIMIZE_QUALITY = 0.85
 /** An "optimized" file that is not at least this much smaller is reported
  *  unchanged and the original is kept — re-encoding a small vector PDF into
@@ -154,10 +154,10 @@ function aborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('Optimization cancelled', 'AbortError')
 }
 
-async function rasterize(page: PdfPage, longEdge: number, quality: number, signal?: AbortSignal): Promise<RasterPage> {
+async function rasterize(page: PdfPage, signal?: AbortSignal): Promise<RasterPage> {
   const vp = page.getViewport({ scale: 1 })
-  const cssWidth = vp.width >= vp.height ? longEdge : (longEdge * vp.width) / vp.height
-  const rendered = await renderPageToBlob(page, { cssWidth, dpr: 1, mime: 'image/jpeg', quality, signal })
+  const cssWidth = vp.width >= vp.height ? ZINE_OPTIMIZE_LONG_EDGE : (ZINE_OPTIMIZE_LONG_EDGE * vp.width) / vp.height
+  const rendered = await renderPageToBlob(page, { cssWidth, dpr: 1, mime: 'image/jpeg', quality: ZINE_OPTIMIZE_QUALITY, signal })
   return {
     jpeg: new Uint8Array(await rendered.blob.arrayBuffer()),
     pixelWidth: rendered.width,
@@ -168,8 +168,6 @@ async function rasterize(page: PdfPage, longEdge: number, quality: number, signa
 }
 
 export async function optimizeZinePdf(file: File, opts: PdfOptimizeOptions = {}): Promise<PdfOptimizeResult> {
-  const longEdge = ZINE_OPTIMIZE_LONG_EDGE
-  const quality = ZINE_OPTIMIZE_QUALITY
   const before = file.size
   const opened = await openPdf(await file.arrayBuffer())
   try {
@@ -186,7 +184,7 @@ export async function optimizeZinePdf(file: File, opts: PdfOptimizeOptions = {})
       aborted(opts.signal)
       opts.onStep?.({ kind: 'page', page: n, pages })
       const page = await opened.doc.getPage(n)
-      rasters.push(await rasterize(page, longEdge, quality, opts.signal))
+      rasters.push(await rasterize(page, opts.signal))
     }
     aborted(opts.signal)
     opts.onStep?.({ kind: 'writing' })

@@ -30,6 +30,7 @@ import { detectCfileKind } from '../lib/collectorFileCore.ts'
 import { resolveMomentMedia } from '../lib/media/resolveMomentMedia.ts'
 import { isVideoMoment } from '../lib/media/isVideo.ts'
 import { checkCoverImage, checkMintMedia } from '../lib/media/mintMedia.ts'
+import { zineHintAfterEdit } from '../lib/media/zineHint.ts'
 import {
   ZINE_COPY,
   ZINE_MAX_BYTES,
@@ -249,6 +250,23 @@ check('hint: garbage is undefined',
   readZineHint(null) === undefined && readZineHint('x') === undefined && readZineHint({ pages: '16', access: 'public' }) === undefined &&
     readZineHint({ pages: 0, access: 'public' }) === undefined && readZineHint({ pages: 2.5, access: 'public' }) === undefined &&
     readZineHint({ pages: 16, access: 'everyone' }) === undefined)
+
+// The hint a metadata edit carries forward (components/MomentDetailView
+// hands the resolved `content` field and what it knows of the collector file).
+const pub = { pages: 6, access: 'public' as const }
+const priv = { pages: 6, access: 'collectors' as const }
+const PDF_CONTENT = { uri: 'ar://z', mime: 'application/pdf' }
+check('edit: a zine binding keeps its hint', zineHintAfterEdit(pub, PDF_CONTENT, undefined) === pub && zineHintAfterEdit(priv, PDF_CONTENT, null) === priv)
+check('edit: re-pointing a public zine at a video or a model drops the hint',
+  zineHintAfterEdit(pub, { uri: 'ar://v', mime: 'video/mp4' }, undefined) === undefined && zineHintAfterEdit(pub, { uri: 'ar://m', mime: 'model/gltf-binary' }, undefined) === undefined)
+check('edit: a public zine turned into a still drops the hint', zineHintAfterEdit(pub, undefined, undefined) === undefined)
+check('edit: a collectors-only zine keeps its hint while the media is a still and the file is unknown or a PDF',
+  zineHintAfterEdit(priv, undefined, undefined) === priv && zineHintAfterEdit(priv, undefined, 'pdf') === priv)
+check('edit: a collectors-only zine whose file was detached or replaced by a zip drops the hint',
+  zineHintAfterEdit(priv, undefined, null) === undefined && zineHintAfterEdit(priv, undefined, 'zip') === undefined)
+check('edit: a collectors-only zine re-pointed at a video or a model drops the hint',
+  zineHintAfterEdit(priv, { uri: 'ar://v', mime: 'video/mp4' }, 'pdf') === undefined && zineHintAfterEdit(priv, { uri: 'ar://m' }, 'pdf') === undefined)
+check('edit: no hint stays no hint', zineHintAfterEdit(undefined, PDF_CONTENT, 'pdf') === undefined)
 
 // ── 6. The owned download accepts a zine by its bytes ───────────────────────
 const respond = (bytes: Uint8Array, type: string) => async () =>

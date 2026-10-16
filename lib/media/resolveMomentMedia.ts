@@ -9,7 +9,7 @@ interface MediaMeta {
   image?: string
   animation_url?: string
   content?: { mime?: string; uri?: string }
-  /** A zine's hint (lib/media/zineMedia.ZineHint) — a second signal only. */
+  /** A zine's hint (lib/media/zineHint) — a second signal only. */
   kismet_zine?: { pages?: number; access?: string }
 }
 

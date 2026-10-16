@@ -1492,6 +1492,99 @@ remains the one path no harness here can drive end to end; its server half
 is the gate script above and its client half is the same reader the public
 zine uses.
 
+## 24. Line review (2026-10-16) — every added line against measured coverage
+
+The brief: every line about to be committed earns its keep with validated
+evidence. So line coverage of the whole branch diff was measured and each
+added line read against it — not "looks reached" but a count.
+
+### 24.1 How coverage was measured
+- **Browser.** Both end-to-end suites (`scripts/e2e/zine.mjs`,
+  `scripts/e2e/model-media.mjs`) ran under a V8-coverage hook against a
+  source-mapped production build; Playwright's per-page coverage was mapped
+  back through `.next/static/chunks/*.js.map` to the TypeScript sources, taking
+  the innermost covered range at each mapped position for a per-line count.
+- **Node.** The verify oracles ran under `NODE_V8_COVERAGE` (type stripping
+  keeps source positions, so the counts land on the real lines).
+- The two were merged (max count per line) and intersected with the lines the
+  branch ADDED (`git diff -U0` against the base `096a705`), counting only code
+  lines — comments, braces and JSX punctuation excluded.
+
+The build carried one temporary line for this — `productionBrowserSourceMaps`
+behind an `E2E_COVERAGE` env guard — reverted before the commit; it changes
+nothing the app ships, and the committed build emits no source maps.
+
+### 24.2 The numbers
+Of **2,079** added code lines, **1,542 (74%)** execute under a named e2e check
+or oracle row. The rest is not untested by choice — it is every path no
+harness in this repo can reach, in four groups:
+
+| residue | lines | why no harness here reaches it |
+|---|---|---|
+| Server routes + holder/manager/owner-gated client (the API routes, `CollectorFileViewer`, `CollectorFileManagePanel`, the mint SUBMIT + attach path) | ~300 | no wallet connector or chain in the browser harness, and no mint. The server half — who may read/write and the exact bytes — is the `verify:cfile-view` and `verify:collector-file` oracles; the pure decisions (resume, the metadata builder) are `verify:zine-media`; the client half is the same pdf.js reader the public-zine e2e drives end to end |
+| Home / collection / profile-owner components carrying the one-line still-and-badge guard (`FeaturedMoment`, `CustomizePanel`, `PatronArtworkShowcase`) | ~12 | those pages are not visited by the suites; the identical guard is e2e-proven on `MomentCard` (feed E) |
+| Mini App + multi-touch + fullscreen runtime (`farcasterHaptics`, the reader's pinch / one-finger re-base / fullscreen / Mini App download button) | ~30 | `isInMiniApp` is false outside a Farcaster host; Playwright drives one pointer; headless fullscreen is unreliable |
+| Defensive / edge paths the happy path makes unreachable (`ZinePreview`'s own open/render failure — the mint gate rejects an unreadable PDF first; the render-failure tile; `zineHistory`'s storage-throw and navigation-close branches; pdf.js's chunk-load and worker-death resets) | ~40 | each is a real production fallback, read in full; the gate or the browser makes it unreachable from a test |
+
+Two lines read "uncovered" only as coverage artifacts and are proven by an
+assertion: `zineMedia.asPdfFile`'s re-wrap line (the oracle asserts the
+re-wrapped type) and `pdfjs.isPasswordException` (the new locked-PDF test
+asserts the password toast, which only fires if it returns true).
+
+### 24.3 What this pass changed
+**Cut — did not earn its keep.**
+- `zineHistory.readerEntryToken`: the `try/catch` around `window.history.state`
+  (reading `.state` does not throw) — removed.
+- `lib/media/zineMedia.ts`: a stale orphaned doc comment left by the audit.
+- Comment references to the old `lib/media/zineMedia` home of the hint type
+  corrected to `lib/media/zineHint` (`lib/kv`, `lib/inprocess`,
+  `resolveMomentMedia`); `optimizePdf`'s WHY note rewritten to the measured
+  figures (~150 ms a page in Chromium, several times that in Safari's JS JPEG
+  decode) in place of the earlier wrong "~0.8 s".
+
+**Pinned — an untestable inline decision became a pure helper.**
+The edit flow's "does this edit keep the zine hint?" was a three-way inline
+expression in `MomentDetailView` that no harness drove. It is now
+`zineHint.zineHintAfterEdit`, a pure function, with seven oracle rows
+(`verify:zine-media`) over every branch: a PDF binding keeps the hint; a
+re-point to a video, a model or a plain still drops it; a collectors-only zine
+keeps it while its media is a still and its collector file is a PDF or unknown,
+and drops it once the file is detached or replaced by another kind.
+
+**Tested — inspection-only paths given real evidence.**
+- Real password-protected and malformed PDF fixtures (`make-pdf.mjs`) drive the
+  mint gate end to end, so pdf.js's own `PasswordException → {kind:'password'}`
+  and malformed `→ {kind:'unreadable'}` mapping is proven, not just the gate's
+  reasons (the oracle already pinned those with a fake inspector).
+- A zine over the 16 MiB soft warning: the warning fires, names the optimizer,
+  and the zine is still accepted.
+- The optional cover IMAGE upload — the headline cover feature, previously
+  exercised only as page-as-cover.
+- The reader's whole key map: ArrowUp / PageUp / Backspace / Space /
+  Shift+Space turns, +/-/0 keyboard zoom, Shift+R reverse rotate, and a plain
+  wheel flick (the non-ctrl half of the native wheel listener).
+
+**Fixed — one real bug the keyboard test surfaced.**
+`ZineReader.step()` read the current page from closed-over state, so a
+page-turn key pressed within a frame of the previous turn ran a step that still
+saw the old page and the turn was swallowed — invisible at human speed, caught
+by the rapid-key test. It now reads `pageRef.current` (the ref `setPage` keeps
+in step with the state), matching the file's own pattern, so a turn is never
+stale. The same test also pinned a harness truth worth recording: with the
+scrubber focused, the arrows drive the slider natively (which still turns the
+page) and the reader's own key handler only runs when focus is off the input —
+so the keyboard tests focus the dialog first.
+
+### 24.4 Re-verification
+On the clean build (no source maps): `npm run check` green — typecheck, lint,
+the bundle guard, and every verify oracle, including `verify:zine-media`
+(with the new edit-hint rows), `verify:collector-file`, `verify:agent:routes`
+(203/0) and `verify:cfile-view` (18/0). The browser suites on the
+(functionally identical) source-mapped build: `scripts/e2e/zine.mjs` 121/0 and
+`scripts/e2e/model-media.mjs` 88/0. The bundle stays within the 10 % guard; the
+diff is refactor-only (a pure helper, a ref read, comment corrections, test
+code), so §22.3's route table holds. No `next-server` orphan left behind.
+
 ## Appendix A — verified vs. assumed
 
 **Verified in this session.** Every `file:line` above (read from the tree at

@@ -27,3 +27,24 @@ export function readZineHint(value: unknown): ZineHint | undefined {
   if (v.access !== 'public' && v.access !== 'collectors') return undefined
   return { pages: v.pages, access: v.access }
 }
+
+/**
+ * The hint a metadata edit carries forward. Only a zine binding keeps it —
+ * or a collectors-only zine, whose pages are not in the metadata at all,
+ * while the media is still a still and the collector file, when the page
+ * knows it (`cfileKind` undefined = unknown, null = none), is still a PDF.
+ * Re-pointing the media at a video or a model, or a detached or replaced
+ * collector file, drops a hint that would otherwise badge a zine nobody can
+ * read. `content` is the metadata's `content` field after the edit.
+ */
+export function zineHintAfterEdit(
+  hint: ZineHint | undefined,
+  content: { uri?: string; mime?: string } | undefined,
+  cfileKind: string | null | undefined,
+): ZineHint | undefined {
+  if (!hint) return undefined
+  if (content?.mime === 'application/pdf') return hint
+  if (hint.access !== 'collectors' || content) return undefined
+  if (cfileKind !== undefined && cfileKind !== 'pdf') return undefined
+  return hint
+}

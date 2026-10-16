@@ -75,12 +75,8 @@ export function rememberRotation(storageKey: string, rotation: number): void {
 
 /** The token of the entry on top, if it is a reader entry of this page. */
 function readerEntryToken(): number | null {
-  try {
-    const v = (window.history.state as Record<string, unknown> | null)?.[READER_STATE_KEY]
-    return typeof v === 'number' ? v : null
-  } catch {
-    return null
-  }
+  const v = (window.history.state as Record<string, unknown> | null)?.[READER_STATE_KEY]
+  return typeof v === 'number' ? v : null
 }
 let nextToken = 0
 

@@ -18,6 +18,9 @@
  *                  what the render-cancellation and width-after-aspect
  *                  checks need
  *   odd.pdf        5 pages — a spread that ends on the back cover
+ *   locked.pdf     2 pages behind a user password (pdf.js asks for one)
+ *   broken.pdf     the magic bytes and nothing a parser can use
+ *   big.pdf        2 pages over the 16 MiB soft warning (one noise JPEG)
  *   notapdf.pdf    text bytes with a .pdf name — the magic sniff's case
  *   cover.jpg      the ar://cover-txid still (solid, so a pixel read is
  *                  unambiguous)
@@ -47,7 +50,7 @@ const A5 = [0, 0, 420, 595]
  * Serialize a PDF from a list of objects (strings or Buffers for the body of
  * `n 0 obj … endobj`), writing a correct xref table.
  */
-function serialize(objects) {
+function serialize(objects, { encrypt = null, id = null } = {}) {
   const parts = [Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\n', 'latin1')]
   const offsets = []
   let length = parts[0].length
@@ -62,7 +65,8 @@ function serialize(objects) {
   const xrefAt = length
   let xref = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
   for (const o of offsets) xref += `${String(o).padStart(10, '0')} 00000 n \n`
-  xref += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`
+  const extra = `${encrypt ? ` /Encrypt ${encrypt} 0 R` : ''}${id ? ` /ID [<${id}> <${id}>]` : ''}`
+  xref += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R${extra} >>\nstartxref\n${xrefAt}\n%%EOF\n`
   parts.push(Buffer.from(xref, 'latin1'))
   return Buffer.concat(parts)
 }
@@ -81,7 +85,7 @@ function stream(dict, body) {
  * page 2. Objects: 1 catalog, 2 pages, 3 font, [4 image], then per page a
  * page object and a content stream.
  */
-export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine', landscape = [], imageOnPages = [2] }) {
+export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine', landscape = [], imageOnPages = [2], locked = false }) {
   const objects = []
   const add = (body) => { objects.push(body); return objects.length }
   const catalogIdx = add('') // placeholder, filled last
@@ -125,7 +129,15 @@ export async function buildPdf({ count, imageJpeg = null, title = 'E2E Zine', la
   }
   objects[catalogIdx - 1] = `<< /Type /Catalog /Pages ${pagesIdx} 0 R >>`
   objects[pagesIdx - 1] = `<< /Type /Pages /Kids [${pageIdxs.map((n) => `${n} 0 R`).join(' ')}] /Count ${count} >>`
-  return serialize(objects)
+  // A user password: the standard security handler (RC4, R2) with /O and
+  // /U that no password derives — pdf.js tries the empty user password,
+  // fails the /U check and asks for one (PasswordException), which is all
+  // the gate's "password-protected" path needs. The streams are not
+  // encrypted; they are never reached.
+  const encrypt = locked
+    ? add(`<< /Filter /Standard /V 1 /R 2 /Length 40 /P -1 /O <${'ab'.repeat(32)}> /U <${'cd'.repeat(32)}> >>`)
+    : null
+  return serialize(objects, encrypt ? { encrypt, id: '00'.repeat(16) } : {})
 }
 
 export async function writeFixtures(dir) {
@@ -143,10 +155,19 @@ export async function writeFixtures(dir) {
   fs.writeFileSync(path.join(dir, 'heavy.pdf'), await buildPdf({ count: 3, imageJpeg: noise, title: 'Heavy' }))
   fs.writeFileSync(path.join(dir, 'long.pdf'), await buildPdf({ count: 60, imageJpeg: noise, title: 'Long', landscape: [2], imageOnPages: 'all' }))
   fs.writeFileSync(path.join(dir, 'odd.pdf'), await buildPdf({ count: 5, title: 'Odd' }))
+  fs.writeFileSync(path.join(dir, 'locked.pdf'), await buildPdf({ count: 2, title: 'Locked', locked: true }))
+  // Passes the magic sniff, fails the parse: no xref, no objects.
+  fs.writeFileSync(path.join(dir, 'broken.pdf'), Buffer.from('%PDF-1.4\n%\xe2\xe3\xcf\xd3\nthis is where the objects would be\n', 'latin1'))
+  // Over the soft warning (16 MiB): one noise JPEG too big to shrink into
+  // the budget is enough; page 1 stays a plain fill so the preview is quick.
+  const bigNoise = await sharp({ create: { width: 4300, height: 4300, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 60 } } })
+    .jpeg({ quality: 95 })
+    .toBuffer()
+  fs.writeFileSync(path.join(dir, 'big.pdf'), await buildPdf({ count: 2, imageJpeg: bigNoise, title: 'Big' }))
   // The cover still: a solid magenta so a centre-pixel read is unambiguous.
   const cover = await sharp({ create: { width: 600, height: 850, channels: 3, background: { r: 190, g: 40, b: 150 } } }).jpeg({ quality: 85 }).toBuffer()
   fs.writeFileSync(path.join(dir, 'cover.jpg'), cover)
-  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'heavy.pdf', 'long.pdf', 'odd.pdf', 'cover.jpg']
+  return ['zine.pdf', 'one-page.pdf', 'too-many.pdf', 'notapdf.pdf', 'heavy.pdf', 'long.pdf', 'odd.pdf', 'locked.pdf', 'broken.pdf', 'big.pdf', 'cover.jpg']
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {

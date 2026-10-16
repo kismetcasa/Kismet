@@ -83,8 +83,7 @@ const ModelPreview = dynamic(() => import('./ModelPreview').then((m) => m.ModelP
 import { MomentImage, MomentImg } from './MomentImage'
 import { MomentModel } from './MomentModel'
 import { MomentZine } from './MomentZine'
-import { readZineHint } from '@/lib/media/zineMedia'
-import { PDF_MIME } from '@/lib/pdfFormat'
+import { readZineHint, zineHintAfterEdit } from '@/lib/media/zineHint'
 import { MomentVideo } from './MomentVideo'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { normalizeMediaUrl, guessMediaTypeFromUrl } from '@/lib/media/normalizeMediaUrl'
@@ -1309,6 +1308,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
       // unchanged fields carry their existing values, a media change updates
       // animation_url/content (or clears them for a new still image), and a
       // cover change updates only image.
+      const keptHint = zineHintAfterEdit(zineHint, contentField, initialCfile !== undefined ? (cfile?.kind ?? null) : undefined)
       const newMetadata: Record<string, unknown> = {
         name: editName.trim(),
         description: editDesc.trim(),
@@ -1319,17 +1319,10 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
         // Only a 3D binding carries a backdrop; a re-point or upload of any
         // other kind drops it along with the model.
         ...(contentField?.mime === GLB_MIME && bg ? { kismet_bg: bg } : {}),
-        // Only a zine binding keeps its hint — or a collectors-only zine,
-        // whose pages are not in the metadata at all, while the media is
-        // still a still and the collector file (when this page knows it) is
-        // still a PDF. Re-pointing the media at a video or a model, or a
-        // detached or replaced collector file, drops a hint that would
-        // otherwise badge a zine nobody can read.
-        ...(zineHint &&
-        (contentField?.mime === PDF_MIME ||
-          (zineHint.access === 'collectors' && !contentField && !(initialCfile !== undefined && cfile?.kind !== 'pdf')))
-          ? { kismet_zine: zineHint }
-          : {}),
+        // Only a zine binding keeps its hint, or a collectors-only zine
+        // whose media is still a still and whose collector file is still a
+        // PDF (lib/media/zineHint — the decision is pure and oracle-pinned).
+        ...(keptHint ? { kismet_zine: keptHint } : {}),
       }
 
       toast.loading('Uploading metadata…', { id: 'edit-meta' })

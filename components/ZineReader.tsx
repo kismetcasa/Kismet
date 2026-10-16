@@ -10,8 +10,9 @@ import { pageAspect, renderPageToBlob, type PdfDocument } from '@/lib/pdfjs'
 /**
  * The zine reader — a paged, full-screen reader over an open pdf.js document
  * (ZINE_READER_DESIGN.md §5). Serves public zines (bytes from Arweave via
- * the owned download in MomentZine) and, later, collectors-only ones (bytes
- * from the collector-file view route); it never fetches anything itself.
+ * the owned download in MomentZine) and collectors-only ones (bytes from the
+ * collector-file view route, via CollectorFileViewer); it never fetches
+ * anything itself.
  *
  * THE MODEL IS A MAGAZINE, NOT A DOCUMENT VIEWER. One page (or one spread on
  * a wide screen) fills the viewport; swipe, edge taps, arrow keys and a
@@ -427,16 +428,22 @@ export function ZineReader({
   const rotateBack = useCallback(() => rotateBy(270), [rotateBy])
 
   const step = useCallback((dir: 1 | -1) => {
+    // Read the page from the ref, not the closed-over state: a key pressed
+    // within a frame of the previous turn (a held arrow, a fast reader) would
+    // otherwise run a step that still sees the old page and swallow the turn,
+    // since this handler re-subscribes only on the next commit. setPage keeps
+    // the ref in step with the state.
+    const p = pageRef.current
     if (spread) {
-      const [l, r] = spreadFor(page, pages)
+      const [l, r] = spreadFor(p, pages)
       const last = r ?? l
       // The last spread may end on the back cover already: no phantom turn.
       if (dir > 0 ? last >= pages : l <= 1) return
       setPage(dir > 0 ? last + 1 : l - 1)
     } else {
-      setPage(page + dir)
+      setPage(p + dir)
     }
-  }, [spread, page, pages, setPage])
+  }, [spread, pages, setPage])
 
   const pokeChrome = useCallback(() => {
     setChrome(true)

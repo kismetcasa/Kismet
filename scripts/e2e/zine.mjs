@@ -202,6 +202,16 @@ check('a non-cover page offers "use as cover"', await useAsCover.isVisible())
 await useAsCover.click()
 await mint.waitForTimeout(300)
 check('choosing a page makes it the cover', (await mint.locator('text=/^cover$/').count()) === 1 && (await useAsCover.count()) === 0)
+// The optional cover IMAGE (not a page) — the headline cover feature: once
+// uploaded it is what every card and share surface shows while the pages
+// stay the PDF (checkCoverImage gates it, then it becomes the cover chip).
+await mint.setInputFiles('input[type="file"][accept="image/*,.gif"]', path.join(DIR, 'cover.jpg'))
+await mint.waitForTimeout(600)
+check('uploading a cover image makes it the cover', (await mint.locator('text=/cover image · cover\\.jpg/').count()) === 1)
+check('a cover image offers to be removed', await mint.locator('button:has-text("remove")').isVisible())
+await mint.locator('button:has-text("remove")').click()
+await mint.waitForTimeout(300)
+check('removing the cover image restores the upload-cover prompt', await mint.locator('button:has-text("upload cover")').isVisible())
 // Who can read it: public by default, collectors-only an explicit choice
 // that takes over the collector-download slot.
 const access = mint.locator('[role="radiogroup"][aria-label="Who can read it"]')
@@ -277,6 +287,13 @@ console.log('\nB. Mint gate — rejections')
 for (const [file, expect] of [
   ['notapdf.pdf', 'or a PDF zine'],
   ['too-many.pdf', '420 pages'],
+  // A real password-protected PDF and a real broken one: the oracle pins the
+  // gate's REASONS with a fake inspector; these drive pdf.js itself, so the
+  // PasswordException → PdfPasswordError → {kind:'password'} mapping and the
+  // malformed → {kind:'unreadable'} mapping (lib/pdfjs.inspectPdfFile) are
+  // proven against the real parser, not a stand-in.
+  ['locked.pdf', 'without a password'],
+  ['broken.pdf', 'could not be read'],
 ]) {
   await pickZine(mint, file)
   const toast = mint.locator('[data-sonner-toast]', { hasText: expect })
@@ -287,6 +304,23 @@ for (const [file, expect] of [
   check(`${file} leaves no preview mounted`, (await mint.locator('img[alt^="Page"]').count()) === 0)
   await mint.waitForTimeout(4500)
 }
+// A zine over the 16 MiB soft warning is ACCEPTED (it is under the hard cap),
+// with a warning that names the optimizer — the only place MintForm's
+// ZINE_SOFT_WARN_BYTES branch fires.
+await mint.setInputFiles(MEDIA_INPUT, path.join(DIR, 'big.pdf'))
+{
+  const warn = mint.locator('[data-sonner-toast]', { hasText: 'Large zine' })
+  let warned = true
+  try { await warn.first().waitFor({ timeout: 30000 }) } catch { warned = false }
+  check('a zine over the soft limit warns and names "optimize for phones"', warned &&
+    /Optimize for phones/i.test((await warn.first().innerText()).replace(/\s+/g, ' ')))
+}
+await mint.waitForSelector('img[alt="Page 1 preview"]', { timeout: 60000 })
+check('…and is still accepted (previewed, not rejected)', (await mint.locator('img[alt="Page 1 preview"]').count()) === 1)
+await mint.locator('button:has(svg.lucide-x)').first().click()
+await mint.waitForSelector('img[alt^="Page"]', { state: 'detached', timeout: 10000 })
+await mint.waitForTimeout(4500)
+
 check('a one-page PDF is accepted (the page is the cover)', (await pickZine(mint, 'one-page.pdf')) === 'preview')
 await mint.waitForTimeout(400)
 check('its counter reads 1 / 1', (await mint.locator('text=/^1 \\/ 1$/').count()) === 1)
@@ -342,6 +376,21 @@ await page.keyboard.press('Home')
 check('Home returns to the cover', (await waitCounter(page, '1 / 6')) === '1 / 6')
 check('page 1 drops the URL parameter', !page.url().includes('page='), page.url())
 
+// Every page-turn key runs its branch (ArrowRight is above; here ArrowUp,
+// PageUp, Backspace, Space and Shift+Space — the reader's whole key map).
+// Focus the dialog, not the scrubber: a focused range input would eat the
+// arrows natively (and the reader's handler early-returns on an INPUT target).
+await page.locator('[role="dialog"]').first().focus()
+for (const [key, to] of [
+  ['ArrowRight', '2–3 / 6'], ['ArrowUp', '1 / 6'],
+  ['ArrowRight', '2–3 / 6'], ['PageUp', '1 / 6'],
+  ['ArrowRight', '2–3 / 6'], ['Backspace', '1 / 6'],
+  ['Space', '2–3 / 6'], ['Shift+Space', '1 / 6'],
+]) {
+  await page.keyboard.press(key)
+  check(`${key} turns the spread to ${to}`, (await waitCounter(page, to)) === to, await counterOf(page))
+}
+
 await revealChrome(page)
 await page.locator('[role="dialog"] button[aria-label="Show single pages"]').click()
 await page.keyboard.press('ArrowRight')
@@ -373,8 +422,28 @@ const afterWheel = await pageImg(page, 2).boundingBox()
 check('ctrl+wheel zooms the page and the event is consumed',
   (await page.evaluate(() => window.__wheelPrevented)) === true && !!beforeWheel && !!afterWheel && afterWheel.width > beforeWheel.width * 1.05,
   `prevented=${await page.evaluate(() => window.__wheelPrevented)} ${beforeWheel?.width} -> ${afterWheel?.width}`)
+// Keyboard zoom (+/-/0), single-page mode only. Focus the dialog first so the
+// keys reach the reader, not whatever control last held focus.
+await page.locator('[role="dialog"]').first().focus()
+const kz0 = await pageImg(page, 2).boundingBox()
+await page.keyboard.press('=')
+await page.waitForTimeout(250)
+const kzIn = await pageImg(page, 2).boundingBox()
+check('"=" zooms the page in', !!kz0 && !!kzIn && kzIn.width > kz0.width * 1.2, `${kz0?.width} -> ${kzIn?.width}`)
+await page.keyboard.press('-')
+await page.waitForTimeout(250)
+const kzOut = await pageImg(page, 2).boundingBox()
+check('"-" zooms the page back out', !!kzOut && !!kzIn && kzOut.width < kzIn.width, `${kzIn?.width} -> ${kzOut?.width}`)
 await page.keyboard.press('0')
 await page.waitForTimeout(300)
+// A plain wheel flick (no modifier, not zoomed) turns the page — the other
+// half of the native wheel listener the ctrl+wheel check exercised.
+await page.mouse.move(640, 400)
+await page.mouse.wheel(0, 240)
+check('a plain wheel flick turns the page forward', (await waitCounter(page, '3 / 6')) === '3 / 6', await counterOf(page))
+await page.waitForTimeout(500) // the wheel has a 400 ms cooldown
+await page.mouse.wheel(0, -240)
+check('a wheel flick back turns the page back', (await waitCounter(page, '2 / 6')) === '2 / 6', await counterOf(page))
 await revealChrome(page)
 await page.locator('[role="dialog"] input[type="range"]').fill('5')
 check('the scrubber jumps straight to a page', (await waitCounter(page, '5 / 6')) === '5 / 6')
@@ -411,6 +480,16 @@ check('the scrubber jumps straight to a page', (await waitCounter(page, '5 / 6')
   await page.waitForTimeout(400)
   const back = await pageImg(page, 5).boundingBox()
   check('three more quarter turns are upright again', !!back && back.height > back.width)
+  // Shift+R turns the OTHER way (rotateBack) — the key, not the button.
+  await page.keyboard.press('Shift+R')
+  await pageImg(page, 5).waitFor({ timeout: 30000 })
+  await page.waitForTimeout(300)
+  const other = await pageImg(page, 5).boundingBox()
+  check('Shift+R turns the other way (aspect flips, place kept)',
+    !!back && !!other && other.width > other.height && (await counterOf(page)) === '5 / 6')
+  await page.keyboard.press('r') // restore upright
+  await pageImg(page, 5).waitFor({ timeout: 30000 })
+  await page.waitForTimeout(300)
 }
 await page.keyboard.press('Escape')
 await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
