@@ -8,6 +8,9 @@ import { configureModelViewerDecoders } from '@/lib/media/modelViewerConfig'
 import { openPdf, type OpenedPdf } from '@/lib/pdfjs'
 import { readRotation, readStartPage, rememberPage, rememberRotation, useReaderHistory } from '@/lib/zineHistory'
 import { ZINE_COPY } from '@/lib/media/zineMedia'
+import { modelLoadReadout } from '@/lib/media/modelFetch'
+import { thumbhashAverageRgb } from '@/lib/media/thumbhash'
+import { ZineOpening, zineBackdrop } from './ZineOpening'
 
 /**
  * In-page viewer for a collector file (design "Format extension"). Fetches
@@ -48,16 +51,24 @@ interface Props {
   onClose: () => void
   /** Inside a Mini App: the reader ticks a haptic on each page turn. */
   miniApp?: boolean
+  /** The artwork's cover — a collectors-only zine opens from it, in the
+   *  same frame the public reader uses (components/ZineOpening). */
+  cover?: { src: string; thumbhash?: string }
 }
 
 /** Focusable descendants, for the dialog focus contract below. */
 const FOCUSABLE = 'a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])'
 
-export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClose, miniApp = false }: Props) {
+export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClose, miniApp = false, cover }: Props) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [opened, setOpened] = useState<OpenedPdf | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<{ loaded: number; total: number | null } | null>(null)
+  const [parsing, setParsing] = useState(false)
+  // A zine opens in the opening frame, which steps aside once the reader
+  // has painted its first page underneath.
+  const [opening, setOpening] = useState<'open' | 'leaving' | null>(kind === 'pdf' ? 'open' : null)
+  const backdrop = useMemo(() => zineBackdrop(thumbhashAverageRgb(cover?.thumbhash)), [cover?.thumbhash])
   const urlRef = useRef<string | null>(null)
   const openedRef = useRef<OpenedPdf | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -128,6 +139,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
         if (kind === 'pdf') {
           // Straight into the worker (the typed array is transferred, so no
           // second copy lingers here); never a URL.
+          setParsing(true)
           const o = await openPdf(bytes)
           if (cancelled) {
             void o.close().catch(() => {})
@@ -192,7 +204,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
   // itself the 2.1.2 violation. The zine reader brings its own contract
   // (and captures Escape itself) once it is on screen.
   useEffect(() => {
-    if (opened) return
+    if (opened || kind === 'pdf') return
     const opener = document.activeElement as HTMLElement | null
     closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
@@ -218,7 +230,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
       window.removeEventListener('keydown', onKey)
       opener?.focus?.()
     }
-  }, [closeViaHistory, opened])
+  }, [closeViaHistory, opened, kind])
 
   // model-viewer reports its own load failures on an `error` event — a
   // corrupt GLB (or a decoder that failed to load) otherwise leaves an
@@ -237,18 +249,46 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
   const onPageChange = useCallback((page: number) => rememberPage(storageKey, page), [storageKey])
   const onRotationChange = useCallback((r: number) => rememberRotation(storageKey, r), [storageKey])
 
-  if (opened) {
+  const onFirstPage = useCallback(() => setOpening((o) => (o ? 'leaving' : o)), [])
+  // Should the first page never report (a page that renders very slowly),
+  // the frame still steps aside rather than hold the reader behind a cover.
+  useEffect(() => {
+    if (!opened || opening !== 'open') return
+    const t = setTimeout(onFirstPage, 3000)
+    return () => clearTimeout(t)
+  }, [opened, opening, onFirstPage])
+
+  if (kind === 'pdf') {
     return (
-      <ZineReader
-        doc={opened.doc}
-        title={name}
-        startPage={startPage}
-        onClose={closeViaHistory}
-        onPageChange={onPageChange}
-        haptics={miniApp}
-        startRotation={startRotation}
-        onRotationChange={onRotationChange}
-      />
+      <>
+        {opened && (
+          <ZineReader
+            doc={opened.doc}
+            title={name}
+            startPage={startPage}
+            onClose={closeViaHistory}
+            onPageChange={onPageChange}
+            haptics={miniApp}
+            startRotation={startRotation}
+            onRotationChange={onRotationChange}
+            backdrop={backdrop}
+            onFirstPage={onFirstPage}
+          />
+        )}
+        {opening && (
+          <ZineOpening
+            title={name}
+            cover={cover}
+            backdrop={backdrop}
+            readout={modelLoadReadout(progress, parsing)}
+            fraction={progress?.total ? Math.min(1, progress.loaded / progress.total) : parsing ? 1 : null}
+            error={error ? { message: error } : null}
+            leaving={opening === 'leaving'}
+            onGone={() => setOpening(null)}
+            onClose={closeViaHistory}
+          />
+        )}
+      </>
     )
   }
 
@@ -282,7 +322,7 @@ export function CollectorFileViewer({ collection, tokenId, kind, name, v, onClos
           <p className="text-[11px] font-mono text-muted text-center max-w-xs">{error}</p>
         ) : !blobUrl ? (
           <p className="text-[11px] font-mono text-muted">
-            {kind === 'pdf' ? 'opening zine…' : 'loading…'}{readout ? ` ${readout}` : ''}
+            loading…{readout ? ` ${readout}` : ''}
           </p>
         ) : kind === 'glb' ? (
           // @ts-expect-error — custom element registered by the lazy import.

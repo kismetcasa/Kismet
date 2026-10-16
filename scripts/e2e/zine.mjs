@@ -17,6 +17,8 @@
 import { chromium } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import sharp from 'sharp'
+import { rgbaToThumbHash } from 'thumbhash'
 import { writeFixtures, PAGE_COLORS, IMAGE_RGB } from './make-pdf.mjs'
 
 const DIR = process.env.E2E_DIR || path.join(process.cwd(), '.e2e')
@@ -30,6 +32,13 @@ const ZINE = fs.readFileSync(path.join(DIR, 'zine.pdf'))
 const LONG = fs.readFileSync(path.join(DIR, 'long.pdf'))
 const ODD = fs.readFileSync(path.join(DIR, 'odd.pdf'))
 const COVER = fs.readFileSync(path.join(DIR, 'cover.jpg'))
+// The cover's real thumbhash, as a mint would write it: the opening frame
+// sizes the cover from it before any image loads, and the reading room takes
+// its light from the colour it encodes.
+const COVER_THUMBHASH = await (async () => {
+  const { data, info } = await sharp(COVER).resize(100, 100, { fit: 'inside' }).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  return Buffer.from(rgbaToThumbHash(info.width, info.height, data)).toString('base64')
+})()
 
 let fails = 0
 const check = (name, cond, detail = '') => {
@@ -49,9 +58,12 @@ const ZINE_META = {
     animation_url: 'ar://zine-txid',
     content: { uri: 'ar://zine-txid', mime: 'application/pdf' },
     kismet_zine: { pages: 6, access: 'public' },
+    kismet_thumbhash: COVER_THUMBHASH,
   },
 }
 const ART = `${BASE}/artwork/0x00000000000000000000000000000000000000aa/1`
+/** The reader dialog (the opening frame is a dialog too, briefly). */
+const READER = '[role="dialog"][aria-label^="Reading"]'
 
 const browser = await chromium.launch({ executablePath: EXE })
 
@@ -120,7 +132,7 @@ const centreOf = async (pg, locator) => {
 const near = (px, rgb, tol = 40) => Math.abs(px[0] - rgb[0]) < tol && Math.abs(px[1] - rgb[1]) < tol && Math.abs(px[2] - rgb[2]) < tol
 const page1Rgb = PAGE_COLORS[0].map((v) => Math.round(v * 255))
 const imageRgb = [IMAGE_RGB.r, IMAGE_RGB.g, IMAGE_RGB.b]
-const counterOf = async (pg) => (await pg.locator('[role="dialog"] span.tabular-nums').first().innerText()).trim()
+const counterOf = async (pg) => (await pg.locator(`${READER} span.tabular-nums`).first().innerText()).trim()
 const waitCounter = async (pg, want, ms = 8000) => {
   const t0 = Date.now()
   let last = ''
@@ -131,7 +143,7 @@ const waitCounter = async (pg, want, ms = 8000) => {
   }
   return last
 }
-const pageImg = (pg, n) => pg.locator(`[role="dialog"] img[alt="Page ${n} of E2E Zine"]`).first()
+const pageImg = (pg, n) => pg.locator(`${READER} [data-view="current"] img[alt="Page ${n} of E2E Zine"]`).first()
 // The chrome hides itself after a moment and, hidden, takes no pointer
 // events — a mouse reveals it by moving, which Playwright's click does not
 // do until its hit test passes. So move first, as a hand would.
@@ -337,6 +349,80 @@ await mint.waitForTimeout(400)
 check('its counter reads 1 / 1', (await mint.locator('text=/^1 \\/ 1$/').count()) === 1)
 await mint.close()
 
+// ───────────── C0. Opening: the cover becomes the reader before the file arrives ─────────────
+console.log('\nC0. Opening — the cover expands into the reader before the file has arrived')
+{
+  const openPg = await desktop.newPage()
+  // Hold the zine's bytes back: the frame must not wait for them.
+  await openPg.route(/arweave\.net|api\/img/, async (r) => {
+    if (!decodeURIComponent(r.request().url()).includes('zine-txid')) return r.fallback()
+    await new Promise((res) => setTimeout(res, 1500))
+    return r.fulfill({ status: 200, contentType: 'application/pdf', body: ZINE }).catch(() => {})
+  })
+  // The image optimizer refuses this cover, slowly (a heavy scan past its
+  // body cap), so the slot's cover arrives through the proxy fallback — the
+  // case where a second image component would start over at the optimizer
+  // and expand a blank skeleton.
+  await openPg.route('**/_next/image**', async (r) => {
+    await new Promise((res) => setTimeout(res, 800))
+    return r.fulfill({ status: 500, body: '' }).catch(() => {})
+  })
+  await openPg.goto(ART, { waitUntil: 'domcontentloaded' })
+  const openBtn = openPg.locator('button:has-text("read · 6 pages")')
+  await openBtn.waitFor({ timeout: 30000 })
+  await openPg.locator('img[alt="E2E Zine"]').first().waitFor({ timeout: 30000 })
+  // A reader taps a cover they can see: the slot's image has loaded.
+  await openPg.waitForFunction(() => {
+    const img = document.querySelector('img[alt="E2E Zine"]')
+    return !!img && img.complete && img.naturalWidth > 0
+  }, null, { timeout: 30000 })
+  await openPg.waitForTimeout(600)
+  const tTap = Date.now()
+  await openBtn.click()
+  const frame = openPg.locator('[role="dialog"][aria-label="Opening E2E Zine"]')
+  await frame.waitFor({ timeout: 2000 })
+  const upAfter = Date.now() - tTap
+  // The frame draws the very bitmap that was tapped (the slot's decoded
+  // image), so the expand never starts on a loading skeleton.
+  const coverAtOnce = await frame.locator('img').first().evaluate((img) => img.complete && img.naturalWidth > 0)
+  check('the opening frame is up at once, long before the file has arrived', upAfter < 600, `${upAfter} ms`)
+  check('…with the cover itself in it from the first frame (already decoded, no skeleton)', coverAtOnce)
+  await openPg.waitForTimeout(500) // the expand has played
+  const frameCover = await frame.locator('img').first().boundingBox()
+  check('the cover settles where the first page will sit (centred, fit to the stage)',
+    !!frameCover && frameCover.height > 700 && Math.abs(frameCover.x + frameCover.width / 2 - 640) < 4, JSON.stringify(frameCover))
+  check('the frame shows the download as it happens', (await frame.locator('[role="progressbar"]').count()) === 1)
+  const frameLight = await frame.locator('div').first().evaluate((d) => d.style.background)
+  // The fixture cover is magenta (190, 40, 150); the light must be that colour.
+  const tint = /rgba\((\d+),\s*(\d+),\s*(\d+),\s*0\.2\)/.exec(frameLight)
+  check('the frame is lit by the cover’s own colour (from its thumbhash)',
+    !!tint && +tint[1] > 140 && +tint[2] < 90 && +tint[3] > 100, frameLight.slice(0, 120))
+  await openPg.locator(`${READER} [data-view="current"] img[alt="Page 1 of E2E Zine"]`).waitFor({ timeout: 30000 })
+  await frame.waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+  check('the frame hands off to the reader and is gone', (await frame.count()) === 0)
+  const firstPage = await pageImg(openPg, 1).boundingBox()
+  check('page 1 lands where the cover was — no jump at the handoff',
+    !!frameCover && !!firstPage && Math.abs(firstPage.x - frameCover.x) < 6 && Math.abs(firstPage.height - frameCover.height) < 8,
+    `${JSON.stringify(frameCover)} → ${JSON.stringify(firstPage)}`)
+  check('the reader keeps the frame’s light', /radial-gradient/.test(await openPg.locator(`${READER} > div`).first().evaluate((d) => d.style.background)))
+  check('focus rests on the dialog, not on a hidden button',
+    await openPg.evaluate(() => document.activeElement?.getAttribute('role') === 'dialog'))
+  await openPg.keyboard.press('Escape')
+  await openPg.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
+  check('Escape closes the reader (a short fade, then gone)', (await openPg.locator('[role="dialog"]').count()) === 0)
+  // Cancelling while the file is still on its way.
+  await openBtn.click()
+  await frame.waitFor({ timeout: 2000 })
+  await openPg.waitForTimeout(300)
+  await openPg.keyboard.press('Escape')
+  await openPg.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 }).catch(() => {})
+  check('Escape cancels from the opening frame, mid-download', (await openPg.locator('[role="dialog"]').count()) === 0 && (await openBtn.isVisible()))
+  await openPg.waitForTimeout(2000) // the held response lands after the cancel
+  check('…and a response that lands after the cancel opens nothing', (await openPg.locator('[role="dialog"]').count()) === 0)
+  check('…and leaves the page scrollable again', await openPg.evaluate(() => document.body.style.overflow !== 'hidden'))
+  await openPg.close()
+}
+
 // ───────────────── C. Artwork detail, desktop: the reader ─────────────────
 console.log('\nC. Artwork detail (desktop) — the reader')
 const page = await desktop.newPage()
@@ -360,7 +446,7 @@ check('the tap fetched the worker once', seen.worker === 1, JSON.stringify(seen)
 check('focus moves into the reader', await page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]')))
 // The chrome hides itself; keyboard focus landing on it brings it back, so
 // Tab never rests on an invisible control.
-const topBarOf = (pg) => pg.locator('[role="dialog"] div.absolute.left-0.right-0.z-10').first()
+const topBarOf = (pg) => pg.locator(`${READER} div.absolute.left-0.right-0.z-10`).first()
 await page.waitForTimeout(3200)
 check('the chrome hides on its own on a desktop too', ((await topBarOf(page).getAttribute('class')) ?? '').includes('opacity-0'))
 await page.keyboard.press('Tab')
@@ -536,7 +622,7 @@ await page.waitForTimeout(500)
 check('forward onto an old reader entry does not reopen the reader', (await page.locator('[role="dialog"]').count()) === 0)
 await page.locator('button:has-text("read · 6 pages")').click()
 await page.waitForSelector('[role="dialog"][aria-label="Reading E2E Zine"]', { timeout: 30000 })
-await page.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 30000 })
+await page.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 })
 await page.keyboard.press('Escape')
 await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 }).catch(() => {})
 check('one Escape closes a reader opened over an older reader entry', (await page.locator('[role="dialog"]').count()) === 0)
@@ -553,17 +639,17 @@ await longPg.locator('button:has-text("read · 60 pages")').click()
 await longPg.waitForSelector('[role="dialog"][aria-label="Reading E2E Long"]', { timeout: 30000 })
 // The context remembers this artwork's reading position from the sections
 // above (same key), so the reader may resume mid-document: go Home first.
-await longPg.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 60000 })
+await longPg.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 60000 })
 await longPg.keyboard.press('Home')
-await longPg.locator('[role="dialog"] img[alt="Page 1 of E2E Long"]').waitFor({ timeout: 60000 })
+await longPg.locator(`${READER} [data-view="current"] img[alt="Page 1 of E2E Long"]`).waitFor({ timeout: 60000 })
 await longPg.keyboard.press('ArrowRight')
-const long2 = longPg.locator('[role="dialog"] img[alt="Page 2 of E2E Long"]')
+const long2 = longPg.locator(`${READER} [data-view="current"] img[alt="Page 2 of E2E Long"]`)
 await long2.waitFor({ timeout: 60000 })
 await longPg.waitForTimeout(400)
 const slot = await long2.evaluate((img) => ({ nw: img.naturalWidth, cw: img.clientWidth, dpr: window.devicePixelRatio }))
 check('a landscape page is rendered for its real slot, not a guessed aspect', slot.nw >= slot.cw * slot.dpr * 0.95, JSON.stringify(slot))
 await longPg.keyboard.press('Home')
-await longPg.locator('[role="dialog"] img[alt="Page 1 of E2E Long"]').waitFor({ timeout: 60000 })
+await longPg.locator(`${READER} [data-view="current"] img[alt="Page 1 of E2E Long"]`).waitFor({ timeout: 60000 })
 await longPg.waitForTimeout(1500)
 // Drag the scrubber across the document: 59 steps as fast as the keyboard
 // sends them. Every page is slow to render (the noise image); without
@@ -574,7 +660,7 @@ await slider.focus()
 const rendersBefore = await longPg.evaluate(() => window.__pdfRenders)
 const t0 = Date.now()
 for (let i = 0; i < 59; i++) await longPg.keyboard.press('ArrowRight')
-await longPg.locator('[role="dialog"] img[alt="Page 60 of E2E Long"]').waitFor({ timeout: 30000 })
+await longPg.locator(`${READER} [data-view="current"] img[alt="Page 60 of E2E Long"]`).waitFor({ timeout: 30000 })
 const landed = Date.now() - t0
 const rendersDuring = (await longPg.evaluate(() => window.__pdfRenders)) - rendersBefore
 check('a scrubber drag across 60 pages renders only what it lands on', rendersDuring <= 12, `${rendersDuring} renders started`)
@@ -591,7 +677,7 @@ await oddPg.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType
 await oddPg.goto(ART, { waitUntil: 'domcontentloaded' })
 await oddPg.locator('button:has-text("read · 5 pages")').click()
 await oddPg.waitForSelector('[role="dialog"][aria-label="Reading E2E Odd"]', { timeout: 30000 })
-await oddPg.locator('[role="dialog"] img[alt^="Page "]').first().waitFor({ timeout: 30000 })
+await oddPg.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 })
 await oddPg.keyboard.press('End')
 check('End lands on the 4–5 spread', (await waitCounter(oddPg, '4–5 / 5')) === '4–5 / 5')
 const oddUrl = oddPg.url()
@@ -664,6 +750,181 @@ await priv.screenshot({ path: path.join(SHOTS, 'z08-private-card.png'), clip: { 
 await priv.close()
 await redis(['DEL', CFILE_KEY])
 
+// ───────────── C4. Dragging: the page follows the hand ─────────────
+console.log('\nC4. Dragging — the page follows the hand, and lets go the way a page would')
+{
+  const dragPg = await desktop.newPage()
+  await dragPg.goto(ART, { waitUntil: 'domcontentloaded' })
+  await dragPg.locator('button:has-text("read · 6 pages")').click()
+  await dragPg.waitForSelector(READER, { timeout: 30000 })
+  await dragPg.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 })
+  await dragPg.keyboard.press('Home')
+  await waitCounter(dragPg, '1 / 6')
+  await pageImg(dragPg, 1).waitFor({ timeout: 30000 })
+  await dragPg.locator(`${READER} [data-view="next"] img[alt="Page 2 of E2E Zine"]`).waitFor({ state: 'attached', timeout: 30000 })
+  await dragPg.waitForTimeout(600)
+  const rest = await pageImg(dragPg, 1).boundingBox()
+  const drag = async (x0, x1, { steps = 15, hold = 0, gap = 0 } = {}) => {
+    await dragPg.mouse.move(x0, 400)
+    await dragPg.mouse.down()
+    for (let i = 1; i <= steps; i++) {
+      await dragPg.mouse.move(x0 + ((x1 - x0) * i) / steps, 400)
+      // Paced between moves, never after the last: a hand lifts while it
+      // is still moving (a release long after the last move is a hand that
+      // had stopped, and reads as no throw at all).
+      if (gap && i < steps) await dragPg.waitForTimeout(gap)
+    }
+    if (hold) await dragPg.waitForTimeout(hold)
+  }
+
+  // Past the cover there is nothing to turn to: the drag gives like a rubber band.
+  await drag(400, 700)
+  const pulled = await pageImg(dragPg, 1).boundingBox()
+  const give = pulled.x - rest.x
+  check('dragging back from the cover is resisted (the page gives less than half the hand)', give > 40 && give < 150, `${Math.round(give)} px for a 300 px drag`)
+  await dragPg.waitForTimeout(250)
+  await dragPg.mouse.up()
+  await dragPg.waitForTimeout(500)
+  check('…and springs back to the cover', (await counterOf(dragPg)) === '1 / 6' && Math.abs((await pageImg(dragPg, 1).boundingBox()).x - rest.x) < 2)
+
+  // Mid-drag the page tracks the hand and the next spread is already there.
+  await drag(1000, 700)
+  const mid = await pageImg(dragPg, 1).boundingBox()
+  check('mid-drag the page follows the hand 1:1', Math.abs(rest.x - mid.x - 280) < 25, `moved ${Math.round(rest.x - mid.x)} px for a 300 px drag (less the slop)`)
+  const nextBox = await dragPg.locator(`${READER} [data-view="next"] img[alt="Page 2 of E2E Zine"]`).boundingBox()
+  check('…with the next spread already on screen beside it, painted', !!nextBox && nextBox.x < 1280 && nextBox.x > 600, JSON.stringify(nextBox))
+  await dragPg.waitForTimeout(250) // the hand stops before letting go
+  await dragPg.mouse.up()
+  await dragPg.waitForTimeout(500)
+  check('a short drag let go at rest settles back, nothing turned', (await counterOf(dragPg)) === '1 / 6' && Math.abs((await pageImg(dragPg, 1).boundingBox()).x - rest.x) < 2)
+
+  // A slow drag past the middle turns.
+  await drag(1150, 300, { steps: 20, hold: 250 })
+  await dragPg.mouse.up()
+  check('a slow drag past the middle turns the page', (await waitCounter(dragPg, '2–3 / 6')) === '2–3 / 6', await counterOf(dragPg))
+  await dragPg.waitForTimeout(500)
+
+  // A flick turns from a few pixels.
+  await drag(900, 855, { steps: 3, gap: 16 })
+  await dragPg.mouse.up()
+  check('a flick turns the page from 45 px', (await waitCounter(dragPg, '4–5 / 6')) === '4–5 / 6', await counterOf(dragPg))
+  await dragPg.waitForTimeout(500)
+
+  // Past the middle, a pause, then the hand heads home and lets go: no turn.
+  await drag(1150, 330, { steps: 20, gap: 8, hold: 150 })
+  await dragPg.mouse.move(360, 400)
+  await dragPg.waitForTimeout(16)
+  await dragPg.mouse.move(390, 400)
+  await dragPg.mouse.up()
+  await dragPg.waitForTimeout(600)
+  check('a drag past the middle whose hand turns back does not turn', (await counterOf(dragPg)) === '4–5 / 6', await counterOf(dragPg))
+
+  // The opened spread is one sheet: one shadow, and the pages meet at the fold.
+  const p4 = await pageImg(dragPg, 4).boundingBox()
+  const p5 = await pageImg(dragPg, 5).boundingBox()
+  check('a spread’s two pages meet at the fold (no gap)', !!p4 && !!p5 && Math.abs(p4.x + p4.width - p5.x) < 1.5, `${p4 && p4.x + p4.width} vs ${p5 && p5.x}`)
+  const shadows = await dragPg.evaluate(() => [...document.querySelectorAll('[data-view="current"]')].map((e) => e.style.boxShadow || ''))
+  check('…and cast one shadow between them, not two', shadows.every((b) => b === '') && (await dragPg.locator(`${READER} [data-sheet]`).count()) >= 1, JSON.stringify(shadows))
+  check('the pages beside the view are hidden from screen readers',
+    await dragPg.evaluate(() => [...document.querySelectorAll('[data-view="next"],[data-view="prev"]')].every((e) => e.getAttribute('aria-hidden') === 'true')))
+
+  // Where you are, when the chrome has gone: one mark per page, lit to here.
+  await dragPg.waitForTimeout(3000)
+  const marks = dragPg.locator(`${READER} [data-position-marks]`)
+  check('with the chrome away, the position marks show (one per page)',
+    ((await marks.getAttribute('class')) ?? '').includes('opacity-100') && (await marks.locator('span').count()) === 6)
+  check('…lit up to the page in view', (await marks.locator('[data-read]').count()) === 5)
+
+  // A desktop cursor at an edge shows which way that click turns.
+  await dragPg.mouse.move(60, 400)
+  await dragPg.waitForTimeout(300)
+  check('a cursor at the left edge shows the turn-back hint',
+    ((await dragPg.locator(`${READER} [data-edge-hint="prev"]`).getAttribute('class')) ?? '').includes('opacity-100'))
+  await dragPg.mouse.move(640, 400)
+  await dragPg.waitForTimeout(300)
+  check('…and in the middle, no hint', !((await dragPg.locator(`${READER} [data-edge-hint="prev"]`).getAttribute('class')) ?? '').includes('opacity-100'))
+  // Pressed at the edge and dragged, the page is in hand: the hint steps
+  // aside (a short drag, let go at rest, settles back — nothing turns).
+  await dragPg.mouse.move(60, 400)
+  await dragPg.waitForTimeout(300)
+  await dragPg.mouse.down()
+  await dragPg.mouse.move(200, 400, { steps: 4 })
+  await dragPg.waitForTimeout(250)
+  check('…and a drag that takes the page puts the hint away',
+    !((await dragPg.locator(`${READER} [data-edge-hint="prev"]`).getAttribute('class')) ?? '').includes('opacity-100'))
+  await dragPg.mouse.up()
+  await dragPg.waitForTimeout(400)
+
+  // A key turn is the same slide (the track animates its transform).
+  await dragPg.locator(READER).focus()
+  await dragPg.keyboard.press('ArrowRight')
+  const sliding = await dragPg.evaluate(() => document.getAnimations().some((a) => {
+    const k = a.effect?.getKeyframes?.() ?? []
+    return k.some((f) => String(f.transform ?? '').includes('translate3d'))
+  }))
+  check('a key turn slides the page in (the same motion as a drag)', sliding)
+  check('…to the back cover, alone', (await waitCounter(dragPg, '6 / 6')) === '6 / 6')
+  await dragPg.keyboard.press('Escape')
+  await dragPg.close()
+}
+
+// ───────────── C5. Reduced motion: no slide, no expand ─────────────
+console.log('\nC5. Reduced motion — fades in place of slides and the expand')
+{
+  const calm = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2, reducedMotion: 'reduce' })
+  await wire(calm)
+  const cp = await calm.newPage()
+  await cp.goto(ART, { waitUntil: 'domcontentloaded' })
+  await cp.locator('button:has-text("read · 6 pages")').waitFor({ timeout: 30000 })
+  await cp.waitForTimeout(500)
+  await cp.locator('button:has-text("read · 6 pages")').click()
+  await cp.locator('[role="dialog"]').first().waitFor({ timeout: 5000 })
+  // Movement inside the zine's layers only (the artwork page may animate
+  // things of its own).
+  const movingIn = (pg) => pg.evaluate(() => document.getAnimations().filter((a) => {
+    const target = a.effect?.target
+    if (!target?.closest?.('[role="dialog"]')) return false
+    const k = a.effect?.getKeyframes?.() ?? []
+    return k.some((f) => /translate|scale/.test(String(f.transform ?? '')))
+  }).length)
+  check('reduced motion: the cover does not fly in', (await movingIn(cp)) === 0)
+  await cp.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 })
+  await cp.keyboard.press('Home')
+  await waitCounter(cp, '1 / 6')
+  await cp.waitForTimeout(400)
+  await cp.keyboard.press('ArrowRight')
+  check('reduced motion: a turn does not slide', (await movingIn(cp)) === 0)
+  check('…but still turns', (await waitCounter(cp, '2–3 / 6')) === '2–3 / 6')
+  // A long zine shows its place as one line: the fill jumps, never slides.
+  const lp = await calm.newPage()
+  await lp.route(/\/api\/moment\?/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(LONG_META) }))
+  await lp.goto(ART, { waitUntil: 'domcontentloaded' })
+  await lp.locator('button:has-text("read · 60 pages")').click()
+  await lp.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 60000 })
+  await lp.waitForTimeout(400)
+  await lp.keyboard.press('ArrowRight')
+  check('reduced motion: a long zine’s position line does not slide', (await movingIn(lp)) === 0)
+  await calm.close()
+
+  // Pulled down to close: the page fades where it is let go, it does not fly.
+  const calmPhone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, reducedMotion: 'reduce' })
+  await wire(calmPhone)
+  const pp = await calmPhone.newPage()
+  await pp.goto(ART, { waitUntil: 'domcontentloaded' })
+  await pp.locator('button:has-text("read · 6 pages")').click()
+  await pp.locator(`${READER} [data-view="current"] img[alt^="Page "]`).first().waitFor({ timeout: 30000 })
+  await pp.waitForTimeout(400)
+  const pcdp = await calmPhone.newCDPSession(pp)
+  const ptouch = (type, pts) => pcdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) })
+  await ptouch('touchStart', [[195, 300]])
+  for (let i = 1; i <= 14; i++) { await ptouch('touchMove', [[195, 300 + i * 22]]); await pp.waitForTimeout(16) }
+  await ptouch('touchEnd', [])
+  check('reduced motion: a page pulled down to close fades, it does not fly', (await movingIn(pp)) === 0)
+  await pp.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 }).catch(() => {})
+  check('…and the reader closes', (await pp.locator('[role="dialog"]').count()) === 0)
+  await calmPhone.close()
+}
+
 // ───────────────── D. Artwork detail, phone: gestures ─────────────────
 console.log('\nD. Artwork detail (phone) — swipe and tap zones')
 const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true })
@@ -692,7 +953,7 @@ await ph.touchscreen.tap(20, 420)
 check('tapping the left edge turns back', (await waitCounter(ph, '1 / 6')) === '1 / 6')
 await ph.touchscreen.tap(370, 420)
 check('tapping the right edge turns forward', (await waitCounter(ph, '2 / 6')) === '2 / 6')
-const topBar = ph.locator('[role="dialog"] > div.absolute.top-0')
+const topBar = ph.locator(`${READER} > div.absolute.top-0`)
 await ph.waitForTimeout(3000)
 check('the chrome hides itself after a moment', ((await topBar.getAttribute('class')) ?? '').includes('opacity-0'))
 await ph.touchscreen.tap(195, 420)
@@ -704,8 +965,37 @@ check('a second centre tap hides it again', ((await topBar.getAttribute('class')
 await ph.touchscreen.tap(195, 420)
 await ph.waitForTimeout(600)
 await ph.screenshot({ path: path.join(SHOTS, 'z06-phone-page2.png') })
-await ph.locator('[role="dialog"] button[aria-label="Close reader"]').click()
-await ph.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
+// Real multi-touch, through the DevTools protocol: Playwright's touchscreen
+// only taps, but Chrome turns protocol touches into touch pointer events,
+// exactly as a phone delivers them.
+const cdp = await phone.newCDPSession(ph)
+const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) })
+const fit = await pageImg(ph, 2).boundingBox()
+await touch('touchStart', [[165, 420], [225, 420]])
+for (let i = 1; i <= 12; i++) { await touch('touchMove', [[165 - i * 8, 420], [225 + i * 8, 420]]); await ph.waitForTimeout(16) }
+await touch('touchEnd', [])
+await ph.waitForTimeout(400)
+const pinched = await pageImg(ph, 2).boundingBox()
+check('two fingers pinch the page bigger (real multi-touch)', !!fit && !!pinched && pinched.width > fit.width * 1.5, `${fit?.width} → ${pinched?.width}`)
+await touch('touchStart', [[90, 420], [300, 420]])
+for (let i = 1; i <= 12; i++) { await touch('touchMove', [[90 + i * 8, 420], [300 - i * 8, 420]]); await ph.waitForTimeout(16) }
+await touch('touchEnd', [])
+await ph.waitForTimeout(500)
+const unpinched = await pageImg(ph, 2).boundingBox()
+check('…and pinching in brings it back to fit', !!unpinched && Math.abs(unpinched.width - fit.width) < 3, `${unpinched?.width} vs ${fit?.width}`)
+// Pull the page down: a short pull springs back, a long one closes.
+await touch('touchStart', [[195, 300]])
+for (let i = 1; i <= 4; i++) { await touch('touchMove', [[195, 300 + i * 15]]); await ph.waitForTimeout(16) }
+await ph.waitForTimeout(120)
+await touch('touchEnd', [])
+await ph.waitForTimeout(500)
+check('a short pull down springs back; the reader stays', (await ph.locator(READER).count()) === 1 && (await counterOf(ph)) === '2 / 6')
+await touch('touchStart', [[195, 300]])
+for (let i = 1; i <= 14; i++) { await touch('touchMove', [[195, 300 + i * 22]]); await ph.waitForTimeout(16) }
+await touch('touchEnd', [])
+await ph.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 }).catch(() => {})
+check('pulling the page down closes the reader (touch)', (await ph.locator('[role="dialog"]').count()) === 0)
+check('…back on the artwork, read button ready', await ph.locator('button:has-text("read · 6 pages")').isVisible())
 await ph.close()
 await phone.close()
 

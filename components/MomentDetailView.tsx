@@ -2183,6 +2183,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
                 primaryIsModel={isModel}
                 onClose={() => setManagingFile(false)}
                 onFileChange={setCfile}
+                cover={media.src ? { src: media.src, thumbhash: meta.kismet_thumbhash } : undefined}
               />
             )}
             <div className="flex items-center gap-1.5">
@@ -2455,6 +2456,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
             soldOut={mintedOut}
             justCollected={collected}
             listing={initialListing}
+            cover={media.src ? { src: media.src, thumbhash: meta.kismet_thumbhash } : undefined}
           />
 
           {/* Mobile / mini-app: sale-window date centered under the action row.

@@ -132,6 +132,10 @@ export function useReaderHistory(open: boolean, onBackClose: () => void): () => 
 
   return useCallback(() => {
     if (pushedRef.current && readerEntryToken() === tokenRef.current) {
+      // Once only: a second close before the pop lands (two layers closing
+      // in the same tick) must not go back again — that would leave the
+      // artwork page itself. It exits directly instead.
+      pushedRef.current = false
       window.history.back()
       return
     }

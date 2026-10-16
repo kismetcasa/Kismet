@@ -72,8 +72,31 @@ async function wire(ctx) {
 }
 
 const browser = await chromium.launch({ executablePath: EXE })
-const pageImg = (pg, n) => pg.locator(`[role="dialog"] img[alt="Page ${n} of ${TITLE}"]`).first()
-const counter = async (pg) => (await pg.locator('[role="dialog"] span.tabular-nums').first().innerText()).trim()
+const READER = '[role="dialog"][aria-label^="Reading"]'
+// The page in front (neighbours wait beside it on the track).
+const pageImg = (pg, n) => pg.locator(`${READER} [data-view="current"] img[alt="Page ${n} of ${TITLE}"]`).first()
+const counter = async (pg) => (await pg.locator(`${READER} span.tabular-nums`).first().innerText()).trim()
+// Tap → frame and tap → page 1, timed IN the page from the tap's own event:
+// the runner's polling, and the screenshot taken mid-expand, stay out of the
+// measured span (they added a quarter to half a second to runner-side
+// figures).
+const armTimer = (pg) => pg.evaluate((title) => {
+  const t = (window.__zineT = {})
+  addEventListener('click', () => { t.tap ??= performance.now() }, { capture: true })
+  new MutationObserver(() => {
+    if (!t.frame && document.querySelector('[role="dialog"][aria-label^="Opening"]')) t.frame = performance.now()
+    const img = !t.seen && document.querySelector(`[role="dialog"][aria-label^="Reading"] [data-view="current"] img[alt="Page 1 of ${title}"]`)
+    if (!img) return
+    t.seen = true
+    const done = () => { t.page1 = performance.now() }
+    if (img.complete && img.naturalWidth) done()
+    else img.addEventListener('load', done, { once: true })
+  }).observe(document.body, { childList: true, subtree: true })
+}, TITLE)
+const timed = async (pg, key) => {
+  await pg.waitForFunction((k) => window.__zineT[k], key, { timeout: 60000 })
+  return pg.evaluate((k) => Math.round(window.__zineT[k] - window.__zineT.tap), key)
+}
 
 // ── Mint preview (desktop) ────────────────────────────────────────────────
 const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 })
@@ -143,10 +166,14 @@ await page.goto(ART, { waitUntil: 'domcontentloaded' })
 await page.locator('button:has-text("read")').first().waitFor({ timeout: 30000 })
 await page.waitForTimeout(1200)
 await page.screenshot({ path: path.join(SHOTS, 'showcase-03-detail-idle.png'), clip: { x: 0, y: 60, width: 1280, height: 740 } })
-t0 = Date.now()
+await armTimer(page)
 await page.locator('button:has-text("read")').first().click()
+await page.locator('[role="dialog"][aria-label^="Opening"]').waitFor({ timeout: 5000 }).catch(() => {})
+await page.waitForTimeout(120)
+await page.screenshot({ path: path.join(SHOTS, 'showcase-03b-opening-expand.png') })
 await pageImg(page, 1).waitFor({ timeout: 60000 })
-console.log(`desktop: tap → page 1 on screen in ${ms(t0)} (download + parse + render)`)
+console.log(`desktop: tap → the cover is the reader in ${await timed(page, 'frame')} ms (the opening frame, timed in the page)`)
+console.log(`desktop: tap → page 1 on screen in ${await timed(page, 'page1')} ms (download + parse + render, under the frame; timed in the page)`)
 await page.waitForTimeout(600)
 await page.screenshot({ path: path.join(SHOTS, 'showcase-04-reader-cover.png') })
 t0 = Date.now()
@@ -156,6 +183,14 @@ await pageImg(page, 3).waitFor({ timeout: 60000 })
 console.log(`desktop: ArrowRight → spread 2–3 on screen in ${ms(t0)} (counter ${await counter(page)})`)
 await page.waitForTimeout(600)
 await page.screenshot({ path: path.join(SHOTS, 'showcase-05-reader-spread.png') })
+// Mid-drag: the spread follows the hand, the next one already beside it.
+await page.mouse.move(1000, 400)
+await page.mouse.down()
+for (let i = 1; i <= 12; i++) await page.mouse.move(1000 - i * 30, 400)
+await page.waitForTimeout(150)
+await page.screenshot({ path: path.join(SHOTS, 'showcase-05b-reader-drag.png') })
+await page.mouse.up()
+await page.waitForTimeout(700)
 await page.keyboard.press('Escape')
 await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 10000 })
 
@@ -176,10 +211,10 @@ await ph.goto(ART, { waitUntil: 'domcontentloaded' })
 await ph.locator('button:has-text("read")').first().waitFor({ timeout: 30000 })
 await ph.waitForTimeout(1000)
 await ph.screenshot({ path: path.join(SHOTS, 'showcase-07-phone-detail.png') })
-t0 = Date.now()
+await armTimer(ph)
 await ph.locator('button:has-text("read")').first().click()
 await pageImg(ph, 1).waitFor({ timeout: 60000 })
-console.log(`phone (DPR 3): tap → page 1 on screen in ${ms(t0)}`)
+console.log(`phone (DPR 3): tap → page 1 on screen in ${await timed(ph, 'page1')} ms (timed in the page)`)
 await ph.waitForTimeout(600)
 await ph.screenshot({ path: path.join(SHOTS, 'showcase-08-phone-cover.png') })
 // A reader dwells on the cover; the window renders page 2 meanwhile, so a
@@ -191,6 +226,20 @@ await pageImg(ph, 2).waitFor({ timeout: 60000 })
 console.log(`phone: tap right after a 1.5 s dwell → page 2 on screen in ${ms(t0)} (0–50 ms = prerendered)`)
 await ph.waitForTimeout(600)
 await ph.screenshot({ path: path.join(SHOTS, 'showcase-09-phone-page2.png') })
+// Mid-swipe with a real finger (DevTools touch): page 3 slides in beside it.
+{
+  const cdp = await phone.newCDPSession(ph)
+  const touch = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) })
+  await touch('touchStart', [[330, 420]])
+  for (let i = 1; i <= 10; i++) { await touch('touchMove', [[330 - i * 16, 420]]); await ph.waitForTimeout(16) }
+  await ph.waitForTimeout(120)
+  await ph.screenshot({ path: path.join(SHOTS, 'showcase-09b-phone-swipe.png') })
+  // Let go without throwing: under half the page, it settles back.
+  await ph.waitForTimeout(80)
+  await touch('touchEnd', [])
+  await ph.waitForTimeout(500)
+  console.log(`phone: a half-hearted swipe let go settles back (counter ${await counter(ph)})`)
+}
 // Zoom in on the page (double-tap) to show the re-render at zoom.
 await ph.touchscreen.tap(195, 500)
 await ph.waitForTimeout(80)
@@ -243,10 +292,10 @@ if (fs.existsSync(optimizedPath)) {
   const p2 = await phone2.newPage()
   await p2.goto(ART, { waitUntil: 'domcontentloaded' })
   await p2.locator('button:has-text("read")').first().waitFor({ timeout: 30000 })
-  t0 = Date.now()
+  await armTimer(p2)
   await p2.locator('button:has-text("read")').first().click()
   await pageImg(p2, 1).waitFor({ timeout: 60000 })
-  console.log(`phone, OPTIMIZED file (${(OPT.length / 1024).toFixed(0)} KB): tap → page 1 on screen in ${ms(t0)}`)
+  console.log(`phone, OPTIMIZED file (${(OPT.length / 1024).toFixed(0)} KB): tap → page 1 on screen in ${await timed(p2, 'page1')} ms (timed in the page)`)
   await p2.waitForTimeout(1500)
   t0 = Date.now()
   await p2.touchscreen.tap(370, 420)

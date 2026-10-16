@@ -53,11 +53,13 @@ interface Props {
    *  object = listed (price shown), null = none listed, undefined = unknown
    *  (overlay) → generic market pointer. */
   listing?: { price: string; currency: 'eth' | 'usdc' } | null
+  /** The artwork's cover: a collectors-only zine opens from it. */
+  cover?: { src: string; thumbhash?: string }
 }
 
 const TOAST_ID = 'cfile-download'
 
-export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing }: Props) {
+export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing, cover }: Props) {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp } = useFarcaster()
@@ -299,6 +301,7 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
           v={file.v}
           onClose={() => setViewing(false)}
           miniApp={isInMiniApp}
+          cover={cover}
         />
       )}
     </div>

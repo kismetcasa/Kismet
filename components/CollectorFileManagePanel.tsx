@@ -42,9 +42,11 @@ interface Props {
    *  the artwork, readable from the token metadata), so the panel says what a
    *  gated file can still add — GLB_3D_VIEWER_DESIGN.md §15. */
   primaryIsModel?: boolean
+  /** The artwork's cover: the artist's own read of a zine opens from it. */
+  cover?: { src: string; thumbhash?: string }
 }
 
-export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange, primaryIsModel }: Props) {
+export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange, primaryIsModel, cover }: Props) {
   const { ensureSession } = useUploadSession()
   const { isInMiniApp } = useFarcaster()
   const [view, setView] = useState<CfileManageView | null>(null)
@@ -280,6 +282,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
                   v={view.file.v}
                   onClose={() => setViewing(false)}
                   miniApp={isInMiniApp}
+                  cover={cover}
                 />
               )}
             </div>

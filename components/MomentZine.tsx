@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
-import { BookOpen, X } from 'lucide-react'
+import { BookOpen } from 'lucide-react'
 import { MomentImage } from './MomentImage'
+import { ZineOpening, measureCover, zineBackdrop, type ZineCover } from './ZineOpening'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { modelFetchUrls } from '@/lib/media/gateway'
 import { gatewayUrls } from '@/lib/arweave/gateways'
-import { thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
+import { thumbhashAverageRgb, thumbhashToBlurDataURL } from '@/lib/media/thumbhash'
 import {
   MediaFetchError,
   PDF_EXPECTATION,
@@ -70,6 +71,11 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   const [opened, setOpened] = useState<OpenedPdf | null>(null)
   const [startPage, setStartPage] = useState<number | undefined>(undefined)
   const [startRotation, setStartRotation] = useState(0)
+  // The full-screen opening frame (components/ZineOpening): up from the tap
+  // until the reader has painted its first page underneath, then fading.
+  const [opening, setOpening] = useState<'open' | 'leaving' | null>(null)
+  const coverRef = useRef<ZineCover | undefined>(undefined)
+  const slotRef = useRef<HTMLDivElement>(null)
   // The affordance is unmounted while the reader is up, so the focus trap
   // finds no opener to return to; the button that comes back on close takes
   // focus itself, keyboard and screen-reader users land where they left.
@@ -107,6 +113,7 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   const exitNow = useCallback(() => {
     cancel()
     restoreFocusRef.current = true
+    setOpening(null)
     setPhase('idle')
   }, [cancel])
   useEffect(() => {
@@ -193,6 +200,27 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
     if (phase === 'error' && !hasStill) onAllErrorRef.current?.()
   }, [phase, hasStill])
 
+  const backdrop = useMemo(() => zineBackdrop(thumbhashAverageRgb(thumbhash)), [thumbhash])
+
+  // The tap: measure the cover where it sits (the frame expands from there),
+  // raise the frame, and start the download — all in the same frame, so the
+  // reader responds at once instead of after the file has arrived.
+  const begin = useCallback(() => {
+    coverRef.current = hasStill ? { src: poster!, thumbhash, ...measureCover(slotRef.current) } : undefined
+    setOpening('open')
+    void activate()
+  }, [hasStill, poster, thumbhash, activate])
+
+  // The reader reports its first page; should that never come (a page that
+  // renders very slowly), the frame still steps aside rather than hold the
+  // reader hostage behind a cover.
+  const onFirstPage = useCallback(() => setOpening((o) => (o ? 'leaving' : o)), [])
+  useEffect(() => {
+    if (phase !== 'reading' || opening !== 'open') return
+    const t = setTimeout(onFirstPage, 3000)
+    return () => clearTimeout(t)
+  }, [phase, opening, onFirstPage])
+
   const blur = thumbhashToBlurDataURL(thumbhash)
   const still = hasStill ? (
     <MomentImage
@@ -215,8 +243,23 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
   const readLabel = pages ? `read · ${formatZinePages(pages)}` : 'read'
 
   return (
-    <div className="absolute inset-0">
+    <div ref={slotRef} className="absolute inset-0">
       {still}
+      {phase === 'idle' && (
+        // The affordance. Sits over the cover so it reads as "this artwork
+        // has pages", not as a stray control.
+        <div className="absolute inset-0 flex items-end justify-center p-4 pointer-events-none">
+          <button
+            ref={readButtonRef}
+            type="button"
+            onClick={begin}
+            className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors"
+          >
+            <BookOpen size={13} strokeWidth={1.5} />
+            {readLabel}
+          </button>
+        </div>
+      )}
       {phase === 'reading' && opened ? (
         <ZineReader
           doc={opened.doc}
@@ -229,58 +272,27 @@ export function MomentZine({ src, poster, thumbhash, alt, title, pages, storageK
           haptics={isInMiniApp}
           startRotation={startRotation}
           onRotationChange={onRotationChange}
+          backdrop={backdrop}
+          onFirstPage={onFirstPage}
         />
       ) : null}
-      {phase === 'loading' ? (
-        <>
-          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 px-2.5 py-1 bg-[#0d0d0d]/85 text-[11px] font-mono text-dim pointer-events-none whitespace-nowrap">
-            opening zine… {modelLoadReadout(download, parsing)}
-          </p>
-          <button
-            type="button"
-            onClick={closeViaHistory}
-            aria-label="Cancel opening the zine"
-            className="absolute top-2 right-2 z-10 w-8 h-8 bg-[#0d0d0d]/80 border border-line flex items-center justify-center text-dim hover:text-ink transition-colors"
-          >
-            <X size={14} />
-          </button>
-        </>
-      ) : phase !== 'reading' ? (
-        <>
-          {/* The affordance. Sits over the cover so it reads as "this artwork
-              has pages", not as a stray control. */}
-          <div className="absolute inset-0 flex items-end justify-center p-4 pointer-events-none">
-            <button
-              ref={readButtonRef}
-              type="button"
-              onClick={activate}
-              className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[#0d0d0d]/85 border border-line text-xs font-mono uppercase tracking-wider text-dim hover:text-ink hover:border-muted transition-colors"
-            >
-              <BookOpen size={13} strokeWidth={1.5} />
-              {phase === 'error' ? 'retry' : readLabel}
-            </button>
-          </div>
-          {message && (
-            <p className="absolute bottom-16 left-0 right-0 px-4 text-center text-[11px] font-mono text-muted">
-              {message}
-              {phase === 'error' && (
-                <>
-                  {' '}
-                  {onDownload ? (
-                    <button type="button" onClick={onDownload} className="underline hover:text-ink">
-                      open the PDF
-                    </button>
-                  ) : (
-                    <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-ink">
-                      open the PDF
-                    </a>
-                  )}
-                </>
-              )}
-            </p>
-          )}
-        </>
-      ) : null}
+      {opening && (
+        <ZineOpening
+          title={title}
+          cover={coverRef.current}
+          backdrop={backdrop}
+          readout={modelLoadReadout(download, parsing)}
+          fraction={download && download.total ? Math.min(1, download.loaded / download.total) : parsing ? 1 : null}
+          error={phase === 'error' ? {
+            message: message ?? ZINE_COPY.readerUnavailable,
+            onRetry: () => void activate(),
+            pdf: onDownload ? { onOpen: onDownload } : { href: downloadUrl },
+          } : null}
+          leaving={opening === 'leaving'}
+          onGone={() => setOpening(null)}
+          onClose={closeViaHistory}
+        />
+      )}
     </div>
   )
 }

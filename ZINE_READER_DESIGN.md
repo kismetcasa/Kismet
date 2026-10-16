@@ -243,6 +243,12 @@ storing N images anywhere.
 
 ## 5. The reader — "reading a magazine", designed
 
+> §25 (2026-10-16) refines this section after a second research pass: the
+> cover opens into the reader at the tap (5.2, 5.7), pages follow the finger
+> (5.4), the chrome hides on the first turn as well as at rest (5.4, 5.8), and
+> a page exported as a spread stands alone (5.5). Where the two differ, §25 is
+> what ships.
+
 ### 5.1 What the research says
 
 Across magazine and comic readers the conventions that survive on phones are
@@ -1584,6 +1590,162 @@ the bundle guard, and every verify oracle, including `verify:zine-media`
 `scripts/e2e/model-media.mjs` 88/0. The bundle stays within the 10 % guard; the
 diff is refactor-only (a pure helper, a ref read, comment corrections, test
 code), so §22.3's route table holds. No `next-server` orphan left behind.
+
+## 25. The reading experience, refined (2026-10-16) — research, then build
+
+The brief: research the best possible experience for this reader and build the
+smoothest, most beautiful one we can — better than the industry standard while
+keeping the feature simple. Two research passes ran first (one on how the best
+readers handle the reading loop, one on the web techniques and iOS limits that
+decide what feels native); this section records what they found, what was
+built, what was rejected and why, and the proof.
+
+### 25.1 What the research found
+- **The page follows the finger.** 1:1 tracking, a release judged on speed as
+  well as distance, an interruptible settle, a rubber band at the ends (Apple,
+  WWDC18 "Designing Fluid Interfaces"; Photos; Instagram; Issuu since 2017).
+  Commit rules in shipping code: Android's ViewPager turns on ≥ 400 dp/s over
+  ≥ 25 dp, else ≥ 60 % dragged; PhotoSwipe on ≥ 0.5 px/ms, else > 50 % unless
+  heading back faster than 0.1 px/ms; Swiper on a ≤ 300 ms gesture, else ≥ 50 %.
+- **Open from the thing you tapped; exits retrace entrances** (WWDC18;
+  PhotoSwipe's opener: the thumbnail zooms open, 333 ms).
+- **Chrome answers to reading, not a clock**: show the title on open, hide on
+  the first turn, never re-show on every turn, never hide a control that holds
+  focus (Apple HIG "Going full screen"; W3C WAI list on hidden controls).
+- **Position stays visible when the chrome goes** (Instagram's segments,
+  Kindle's corner readout).
+- **Spreads pair like a booklet, and a page that is already an opening stands
+  alone** (IIIF facing-pages: such pages "MUST be displayed by themselves";
+  Komga pairs the same way). Issuu pairs regardless, and spreads uploaded
+  pre-paired come out paired twice — a documented complaint.
+- **Show the object**: no page-curl, no sound, no drawn spine across art that
+  runs over the fold (Apple Books dropped its drawn spine for fixed-layout
+  books; W3C list on flip effects; Hacker News on novelty decay).
+- **Technique (2026)**: WebKit runs CSS `linear()` easing on the main thread
+  (WebKit 281429, still open April 2026 per 312407) — a spring encoded that way
+  would jank on every iPhone; a `cubic-bezier` stays on the compositor. Release
+  velocity: least squares over the last 100 ms, zero if the finger was still
+  40 ms before lifting (Flutter's tracker), coalesced pointer events included.
+  View Transitions exist in Safari/WKWebView 18 but freeze input while they
+  run and have flicker bugs (WebKit 300877); the manual expand (FLIP on the
+  compositor) is PhotoSwipe's approach too. Blur filters over moving content
+  cost every frame on iOS; a thumbhash's average colour costs nothing.
+
+### 25.2 What was built
+| Moment | Before | Now | Why |
+|---|---|---|---|
+| Tap "read" | the slot showed "opening zine…" over the cover; the reader appeared only after download + parse + render (~1 s, longer on a slow link) | the cover — the very bitmap that was tapped — leaves its place on the page and settles exactly where page 1 will be, full-screen, in the zine's own light, with a hairline progress bar; page 1 then sharpens out of it (`components/ZineOpening.tsx`) | §5.2/§5.7 promised "the cover on screen at t=0"; this is that, with the open retracing the tap |
+| Turning | release a swipe → the page changed with a 6 % slide | the page follows the finger; neighbours are already painted beside it; a throw turns from 20 px, a slow drag past the middle turns, a drag past the middle that turns back doesn't; ends rubber-band; every turn (keys, taps, wheel, buttons) is the same slide; a jump (scrubber, Home/End) lands at rest | the research's commit rules, the iOS rubber band (c = 0.55) |
+| The settle | 180 ms ease-out | a bezier shaped like a critically damped spring, opened at the finger's own release speed, interruptible mid-flight (a finger landing on a moving page catches it where it is) | `linear()` springs jank on WebKit; velocity matching removes the hitch at release |
+| Closing | X / Escape / back | also pull the page down (touch) — the artwork shows through as the room fades; X and Escape ease out | Photos/PhotoSwipe's dismiss; exits retrace entrances |
+| Spreads | an 8 px gap; any two pages paired | pages meet at the fold under one shadow; a landscape page (a spread exported as one page) stands alone across the stage and pairing restarts after it | IIIF/Komga pairing; one sheet casts one shadow |
+| The room | flat near-black | near-black lit by the cover's average colour (from its thumbhash: no image, no filter) | identity per zine at zero GPU cost |
+| Chrome | hid on a 2.5 s timer, re-shown by every key | shows on open, on a moving mouse and on a centre tap; hides on the first turn or after a moment at rest — never while a control has focus; focus rests on the dialog, not a hidden button | HIG; WAI on hidden focused controls |
+| Where am I | the counter, when the chrome showed | one mark per page (a line beyond 24), lit to the page in view, whenever the chrome is away | Stories-style ambient position |
+| Desktop | edge clicks turned, invisibly | a chevron appears at the edge the cursor is on | discoverability without clutter |
+| Zoom | jumped | double-tap and keys animate (PhotoSwipe's curve); pinch and wheel track the hand | — |
+| Reduced motion | the slide became a fade | also no expand, no scale, no zoom animation, no sliding fill; a pull-to-close fades where it is let go; drags still track (direct manipulation); slow-update displays (e-ink) count | Apple HIG, WCAG 2.3.3 |
+| Screen readers | every page a scrubber drag passed was announced | the page a reader settles on is announced | — |
+| Collectors-only | "opening zine…" text in a box | the same opening frame with the artwork's cover — fading in where page 1 will be, since its read button sits in the collector card, away from the cover — and the same reader | the collectible deserves the same first moment |
+
+### 25.3 Rejected, with the reason
+- **View Transitions API** for the open: freezes input while running, aspect
+  quirks, Safari flicker bugs; the manual expand does the same on the
+  compositor and works on iOS 17.
+- **A CSS `linear()` spring**: main-thread on WebKit (see above).
+- **A drawn gutter shade**: it would darken art that runs across the fold;
+  the scan keeps its own fold.
+- **Page-curl, sound**: novelty that decays; slow on phones; an accessibility
+  problem.
+- **A thumbnail overview grid**: valued for long books; zines are mostly short,
+  the scrubber and the position marks cover them, and every thumbnail is a full
+  JPEG decode (several times dearer in Safari). Kept for later, as spreads.
+- **Transform-driven pinch** (no React render per move): the render per move
+  is one element's style; worth doing if a device shows jank.
+
+### 25.4 Found while building
+- **The stage was a scroll container.** Neighbouring pages now wait off-stage
+  on the track, and `overflow: hidden` still lets anything that scrolls an
+  element into view move the whole track (the e2e driver did, mid-slide, and a
+  double-click turned back a page). `overflow: clip` clips without scrolling;
+  a guard resets any stray scroll where `clip` is unsupported.
+- **Scrubbing started a render per spread.** Learning every page's shape up
+  front made `getPage` instant, which removed a worker round trip that had
+  been hiding a fast scrub from the render queue: 31 renders started across a
+  60-page drag (the C1 budget is 12). Views now arriving within 90 ms of each
+  other defer their renders until the reader settles — reading-pace turns are
+  never delayed.
+- **The first page goes first.** The background shape pass (wide screens
+  only) started on a fixed 400 ms timer, a guess a slow tablet still
+  rendering page 1 would overrun; it now starts once the first view has
+  painted. Its cost is small — 0.1–0.2 ms a page of worker time in pdf.js
+  (Node: 1.3 ms for Arjan's file, 9.5 ms for 60 pages, 40 ms at the 420-page
+  cap) — so this is an ordering guarantee, not a measured speedup.
+- **A timing that measured the harness.** The showcase printed desktop page 1
+  at 1.33 s against the phone's 1.03 s; the desktop span held the screenshot
+  taken mid-expand, and every runner-side figure held the runner's own
+  polling. Timed in the page from the tap's own event, page 1 lands in
+  0.8–0.9 s on both (25.5). The showcase now times the open in the page.
+- **The expand could start on a skeleton.** The frame drew the cover through
+  a fresh image component, which runs its delivery chain from the top
+  (optimizer → proxy → gateways). When the slot's cover had arrived through
+  a fallback — the optimizer refusing a heavy scan — the frame's copy
+  started over at the optimizer and the expand played a blank, pale
+  skeleton for that round trip (reproduced: a slowly refusing optimizer
+  left the frame's cover unloaded 120 ms in; the showcase caught the same
+  sheet on Arjan's cover). The frame now draws the slot image's own
+  `currentSrc` — the bitmap that was tapped, already decoded. The e2e
+  opening section runs with that refusing optimizer and asserts the cover is
+  complete the moment the frame appears.
+- **Two fades at the handoff dip to dark.** While the opening frame is up the
+  first page paints at full opacity; the frame's own fade is the crossfade.
+- **Stacked scroll locks.** Two layers each "restoring what they found" leave
+  the page locked or unlocked depending on unmount order; the hold is now
+  counted (`lib/bodyScroll.ts`).
+- **A double close.** Two layers calling the history close in one tick would
+  go back twice and leave the artwork page; the close now pops our entry once
+  (`lib/zineHistory.ts`), the opening frame stops taking Escape once the
+  reader is up, and the reader captures Escape itself.
+- **A hint left lit under a drag.** A mouse that hovered an edge and then
+  pressed to drag left that edge's chevron lit over the incoming spread —
+  hover is ignored while a button is down, so nothing put it away (the
+  showcase's mid-drag frame showed it). Taking hold of the page now puts the
+  hint away; a plain click at the edge keeps it.
+- **Motion that reduced motion missed.** The strict check (no translate or
+  scale animation anywhere in the reader's layers) caught the opening frame's
+  progress fill still sliding; a probe then found the same in a long zine's
+  position line and in the pull-to-close release. All three now jump or fade.
+
+Each of the last four was reproduced on the build before its fix — the
+check or probe failing there — and passes on the build after it.
+
+### 25.5 Measurements and verification
+On the final build (no source maps; `next start` against the redis stub):
+
+| Suite | Result |
+|---|---|
+| `npm run check` | green — typecheck, lint, the bundle guard (no route past its threshold), every verify oracle; agent routes 203/0, collector-file view gate 18/0 |
+| `scripts/e2e/zine.mjs` | **165/0** (121 at §24). New: the opening (C0 — up at once, the tapped bitmap in it from the first frame even with the optimizer refusing the cover, settled where page 1 will sit, the download shown, the cover's light, no jump at the handoff, focus on the dialog, Escape mid-download and after, a late response opens nothing, the page scrollable again); the hand (C4 — rubber band at the cover, 1:1 tracking with the next spread painted beside it, snap-back, a slow turn, a flick from 45 px, a drag that heads back, the fold under one shadow, neighbours hidden from screen readers, the position marks, the edge hints and a drag putting them away, a key turn's slide); reduced motion (C5 — no expand, no slide, a long zine's line and a pull-to-close fade); a real two-finger pinch and pull-to-close through the DevTools protocol (D) |
+| `scripts/e2e/model-media.mjs` | 88/0 |
+| C1: a scrubber drag across 60 pages | 4–5 renders started (budget 12); page 60 on screen in ~0.7 s |
+
+Arjan's file (`trpplzine #0`: 6 pages, a 2.4 MB scan), timed in the page
+from the tap's own event, every open across the probe and the showcase runs:
+
+| Moment | Desktop 1280×800 @2× | Phone 390×844 @3× |
+|---|---|---|
+| Tap → the cover full-screen (the opening frame) | 10–15 ms | 10–15 ms |
+| Tap → page 1 (download + parse + render, under the frame) | 796–895 ms | 775–822 ms |
+| Page 1 → the frame gone (the crossfade) | 266–300 ms | 255–262 ms |
+| The optimized file (1.3 MB): tap → page 1 | — | 645–724 ms |
+| A turn onto a prerendered view (runner-side, an upper bound) | 25–91 ms (a spread) | 15–29 ms |
+
+So a reader sees the cover itself under their finger within a frame of the
+tap, and the zine's first page sharpens out of it under a second later —
+where the old reader showed a text label in the slot for that second. These
+are this container's figures (Chromium, a local server); a phone's own CPU
+and network add to them, and Safari's JavaScript JPEG decode remains the
+open measurement (§21.6).
 
 ## Appendix A — verified vs. assumed
 
