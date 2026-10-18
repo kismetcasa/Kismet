@@ -131,7 +131,7 @@ export async function POST(
   // and fail on. Palette then falls through to the thumbhash below.
   const extractRaw = resolved.kind === 'video'
     ? resolved.poster ?? md.image
-    : resolved.kind === 'model'
+    : resolved.kind === 'model' || resolved.kind === 'pdf'
       ? resolved.src
       : resolved.src ?? resolved.poster ?? md.image
   const extractUrl = extractRaw ? resolveUri(extractRaw) : ''
@@ -146,7 +146,7 @@ export async function POST(
   const stillRaw =
     resolved.kind === 'image'
       ? resolved.src ?? md.image
-      : resolved.kind === 'model'
+      : resolved.kind === 'model' || resolved.kind === 'pdf'
         ? resolved.src
         : resolved.poster
   const stillUrl = stillRaw ? resolveUri(stillRaw) : ''

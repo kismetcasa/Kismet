@@ -79,7 +79,9 @@ function PatronArtwork({ moment, priority }: { moment: Moment; priority?: boolea
           priority={priority}
           onAllError={() => setMediaError(true)}
         />
-      ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
+      ) : (media.kind === 'image' || media.kind === 'gif' || media.kind === 'model' || media.kind === 'pdf') && media.src && !mediaError ? (
+        // `model` and `pdf` carry their STILL in `src` (resolveMomentMedia);
+        // this surface shows the still and never mounts a viewer.
         <MomentImage
           src={media.src}
           alt={title}

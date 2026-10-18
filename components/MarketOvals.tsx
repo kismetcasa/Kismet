@@ -198,7 +198,7 @@ function MomentOvalImpl({
       ? media.poster
       : media.kind === 'gif'
         ? media.poster ?? media.src
-        : media.kind === 'image' || media.kind === 'model'
+        : media.kind === 'image' || media.kind === 'model' || media.kind === 'pdf'
           ? media.src
           : undefined
 

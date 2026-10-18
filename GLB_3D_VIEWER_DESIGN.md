@@ -268,7 +268,7 @@ What shipped, and where the reasoning lives in the code.
 | `scripts/verify-model-media.ts` | The media-path oracle, wired into `verify:flows` (30 assertions when this record was written; 62 as of 2026-09-29). |
 | `lib/media/modelFetch.ts` (2026-09-29) | The detail view's own GLB download: abort, 20 s stall watchdog, 5-minute hard timeout, 64 MiB cap, magic check on the first bytes, byte-counted progress, gateway walk, one `blob:` URL per attempt (fourth round, findings 25–26). |
 | `lib/media/modelViewerConfig.ts` (2026-09-29) | Points model-viewer at the self-hosted Draco/KTX2 files through the GLOBAL config its constructor reads — the only form that holds (finding 28). Called at all three mount sites. |
-| `lib/media/optimizeModel.ts`, `components/ModelOptimizeBar.tsx` (2026-09-29) | The mint form's optional "optimize for web" pass (textures to 2K, `dedup`/`prune`, Draco) and its chip (finding 27). |
+| `lib/media/optimizeModel.ts`, `components/OptimizeBar.tsx (shared with zines since 2026-10-15)` (2026-09-29) | The mint form's optional "optimize for web" pass (textures to 2K, `dedup`/`prune`, Draco) and its chip (finding 27). |
 | `scripts/verify-model-fetch.ts` (2026-09-29) | 39 checks against a mocked fetch: walk, watchdog, timeout, cap, magic, cancel, copy, readout. In `verify:flows`. |
 
 ### The four decisions that carry the feature
@@ -838,7 +838,7 @@ Known and deliberate, in rough priority order:
    rate-limits with 429s) needs the file's own curl check from a machine with
    egress. The ar.io Wayfinder SDK is the fuller answer to gateway selection.
 7. **"Optimize for web" runs only in the mint form (2026-09-29).**
-   `ModelOptimizeBar` is mounted by `MintForm` alone; the edit flow's media
+   `OptimizeBar` is mounted by `MintForm` alone; the edit flow's media
    replacement shares `ModelPreview` and the pose bar but not the pass.
 
 ## 15. Product question — resolved (2026-09-02)
@@ -881,7 +881,7 @@ weigh it. Anything with neither evidence nor an argument was removed.
 
 ### Removed by the first pass
 
-`ModelFetchProgress.attempt`; the `FetchedModel` result object (the function returns the `Blob`); `modelFetchUrls(uri, forceProxy)`'s second parameter; three dead state resets in `MomentModel.exit`; `disabled={urls.length === 0}` on the idle button; `ModelOptimizeBar`'s identity `STEP_LABEL` map; the promise-style branch in `loadDracoModule`; the `maxTexturePx` option of `optimizeGlb`. Each was a line with neither a reader nor an argument.
+`ModelFetchProgress.attempt`; the `FetchedModel` result object (the function returns the `Blob`); `modelFetchUrls(uri, forceProxy)`'s second parameter; three dead state resets in `MomentModel.exit`; `disabled={urls.length === 0}` on the idle button; `OptimizeBar`'s identity `STEP_LABEL` map; the promise-style branch in `loadDracoModule`; the `maxTexturePx` option of `optimizeGlb`. Each was a line with neither a reader nor an argument.
 
 ### Added by the first pass
 

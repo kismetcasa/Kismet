@@ -374,9 +374,13 @@ function freePort(): Promise<number> {
 async function startNext(env: Record<string, string>): Promise<{ base: string; child: ChildProcess }> {
   const port = await freePort()
   const log = createWriteStream(`${process.env.TMPDIR ?? '/tmp'}/verify-agent-routes.next.log`)
+  // Its own process group: `npx` wraps the server in a child, and a SIGTERM
+  // to the wrapper alone left `next-server` orphaned, spinning on the mocks
+  // that had gone with the harness (and starving everything after it).
   const child = spawn('npx', ['next', 'start', '-p', String(port), '-H', '127.0.0.1'], {
     env: { ...process.env, ...env, NODE_ENV: 'production' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   })
   child.stdout?.pipe(log)
   child.stderr?.pipe(log)
@@ -425,7 +429,11 @@ async function main() {
     ADMIN_ADDRESS: ADMIN,
   })
   const stop = () => {
-    child.kill('SIGTERM')
+    try {
+      if (child.pid) process.kill(-child.pid, 'SIGTERM')
+    } catch {
+      child.kill('SIGTERM')
+    }
     upstash.close()
   }
   process.on('exit', stop)

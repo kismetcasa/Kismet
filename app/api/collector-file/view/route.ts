@@ -10,7 +10,7 @@ import {
   isCfileBlocked,
   readCfileBlob,
 } from '@/lib/collectorFile'
-import { authorizeBySession, parseCfileParams } from '@/lib/collectorFileGate'
+import { authorizeBySession, canManageCfile, parseCfileParams } from '@/lib/collectorFileGate'
 
 export const runtime = 'nodejs'
 
@@ -39,8 +39,16 @@ export const runtime = 'nodejs'
  *      The cost, accepted: a collector who sells the edition (or a file
  *      blocked by an admin) keeps browser-cached viewing for the window —
  *      bytes they had already received.
- *   4. VIEWABLE KINDS ONLY — glb/svg. A zip or PDF here is a 415, not a
- *      quiet byte transfer through a route with no attachment semantics.
+ *   4. VIEWABLE KINDS ONLY — glb, svg and pdf (CFILE_VIEWABLE_KINDS; a PDF
+ *      is read by pdf.js from the fetched bytes, never navigated to). A zip
+ *      or a ROM here is a 415, not a quiet byte transfer through a route
+ *      with no attachment semantics.
+ *   5. MANAGERS MAY VIEW — the artwork's metadata editors, by the predicate
+ *      the attach/replace routes use (canManageCfile), whether or not they
+ *      hold an edition, so an artist can read their own collectors-only
+ *      zine. View only: no ticket, no download, not a downloader in the
+ *      stats. An RPC outage reads as 'unknown' and keeps the collector
+ *      gate's answer rather than turning a holder's 403 into a 503.
  *
  * Everything else — the two-path collector gate, the kill-switch, strict
  * fail-closed reads, the integrity check — is identical to the download
@@ -74,8 +82,10 @@ export async function GET(req: NextRequest) {
     const session = await getSessionAddress(req)
     if (!session) return errorResponse(401, 'Sign in to view')
     const gate = await authorizeBySession(params.collection, params.tokenId, session)
-    if (!gate.ok) return errorResponse(gate.status, gate.error)
-    if (!(await consumeUserQuota('cfile-view', gate.address, 1))) {
+    const manager = gate.ok ? false : (await canManageCfile(params.collection, params.tokenId, session)) === 'yes'
+    if (!gate.ok && !manager) return errorResponse(gate.status, gate.error)
+    const viewer = gate.ok ? gate.address : session.toLowerCase()
+    if (!(await consumeUserQuota('cfile-view', viewer, 1))) {
       return errorResponse(429, 'Daily view limit reached — try again tomorrow')
     }
 
