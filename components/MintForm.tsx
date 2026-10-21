@@ -642,7 +642,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       return { ok: false, error }
     }
   }
-  const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
+  const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'finalizing-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
   // Latest committed step, readable from the mint catch where the `step`
@@ -1458,10 +1458,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             mediaFile.type === GLB_MIME || mediaFile.type === PDF_MIME
               ? Promise.resolve(null) // a model or a zine has no timeline to probe
               : probeDurationSeconds(mediaFile).catch(() => null)
-          mediaUri = await uploadToArweave(mediaFile, (pct) => {
-            setUploadProgress(pct)
-            toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
-          })
+          mediaUri = await uploadToArweave(
+            mediaFile,
+            (pct) => {
+              setUploadProgress(pct)
+              toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
+            },
+            () => {
+              setStep('finalizing-media')
+              toast.loading('Finalizing media on Arweave…', { id: 'mint' })
+            },
+          )
           const posterUriPromise: Promise<string | null> = posterFile
             ? uploadToArweave(posterFile).catch((err) => {
                 console.warn('[MintForm] poster upload failed', err)
@@ -2853,6 +2860,7 @@ function stepLabel(step: string, progress: number): string {
   switch (step) {
     case 'preparing-media': return progress > 0 ? `optimizing animation… ${progress}%` : 'optimizing animation…'
     case 'uploading-media': return progress > 0 ? `uploading media… ${progress}%` : 'uploading media…'
+    case 'finalizing-media': return 'finalizing on Arweave…'
     case 'uploading-metadata': return 'uploading metadata…'
     case 'verifying-upload': return 'verifying Arweave propagation…'
     case 'minting': return 'minting…'
