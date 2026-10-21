@@ -8,9 +8,10 @@
 const uploadToArweave = async (
   file: File,
   getProgress: (progress: number) => void = () => {},
+  onFinalizing: () => void = () => {},
 ): Promise<string> => {
   const { uploadFile } = await importUploadFile()
-  return uploadFile(file, getProgress)
+  return uploadFile(file, getProgress, onFinalizing)
 }
 
 async function importUploadFile(): Promise<typeof import('./uploadFile')> {
