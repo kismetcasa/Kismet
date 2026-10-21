@@ -46,7 +46,7 @@
     "verify:experience": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-experience.ts && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-experience-flow.ts"
   },
   "dependencies": {
-    "@ardrive/turbo-sdk": "^1.42.0",
+    "@ardrive/turbo-sdk": "^1.44.1",
     "@base-org/account": "^2.5.10",
     "@coinbase/cdp-sdk": "1.51.2",
     "@farcaster/miniapp-node": "^0.2.0",
