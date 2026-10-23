@@ -9,6 +9,7 @@ import { formatPrice } from '@/lib/inprocess'
 import type { MachineCardData } from '@/lib/experience/cards'
 import { CoverCard } from './CoverCard'
 import { MachineAction } from './MachineAction'
+import { GRID_CLASSES, SHOWCASE_ITEM_CLASSES, SHOWCASE_ROW_CLASSES } from './profileLayout'
 
 // Its owner's alone, with the upload stack behind it, so a visitor's profile
 // never loads it (as MachineArtEditors on a machine's page).
@@ -114,12 +115,26 @@ const REVEAL_STATUS: Record<CreatorMachine['state'], string> = {
   delisted: 'delisted by a curator',
 }
 
-/** The profile's card grid, at the density its collections and mints use
- *  (ProfileView's GRID_CLASSES, PaginatedGrid's grid view): two to a row on a
- *  phone, six on a wide screen. */
-const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
-/** A cover's width at that density — the profile's collection covers' sizes. */
-const COVER_SIZES = '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw'
+/** A card's type at each of the profile's densities, as MomentCard sizes its
+ *  own: compact in the dense grid (the profile's collection cards), full in
+ *  the showcase (the play list's cards, MachineCards). With the cover's width
+ *  at each, for its `sizes` (MomentCard's). */
+const DENSITY = {
+  compact: {
+    name: 'text-[11px]',
+    state: 'text-[9px]',
+    line: 'text-[10px]',
+    button: 'py-1 text-[10px]',
+    sizes: '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, 16vw',
+  },
+  full: {
+    name: 'text-xs sm:text-sm',
+    state: 'text-[9px] sm:text-[10px]',
+    line: 'text-[10px] sm:text-[11px]',
+    button: 'py-1.5 text-xs',
+    sizes: '(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw',
+  },
+} as const
 
 export function ProfileMachines({
   machines,
@@ -127,9 +142,13 @@ export function ProfileMachines({
   signedIn,
   referralPaid,
   featuredIn = [],
+  layout = 'grid',
   onChange,
 }: {
   machines: CreatorMachine[]
+  /** The profile's layout for this view (./profileLayout): the dense grid of
+   *  the dashboard and the full profile, or the curated showcase. */
+  layout?: 'grid' | 'showcase'
   /** Other people's reveal machines featuring this person's work. */
   featuredIn?: FeaturedIn[]
   /** Owner view of a curator: referral rewards confirmed paid, in wei. */
@@ -164,13 +183,22 @@ export function ProfileMachines({
           sign in to see machines waiting for review
         </button>
       )}
-      {machines.length > 0 && (
-        <div className={GRID_CLASSES}>
-          {machines.map((m) => (
-            <MachineCard key={m.id} machine={m} own={own} signedIn={signedIn} nameOf={nameOf} onChange={onChange} />
-          ))}
-        </div>
-      )}
+      {machines.length > 0 &&
+        (layout === 'showcase' ? (
+          <div className={SHOWCASE_ROW_CLASSES}>
+            {machines.map((m) => (
+              <div key={m.id} className={SHOWCASE_ITEM_CLASSES}>
+                <MachineCard machine={m} density="full" own={own} signedIn={signedIn} nameOf={nameOf} onChange={onChange} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className={GRID_CLASSES}>
+            {machines.map((m) => (
+              <MachineCard key={m.id} machine={m} density="compact" own={own} signedIn={signedIn} nameOf={nameOf} onChange={onChange} />
+            ))}
+          </div>
+        ))}
       {own && machines.some((m) => m.kind === 'capsule' && m.prizes.recent.length > 0) && (
         <p className="text-[10px] font-mono text-subtle leading-relaxed">
           Capsule prizes are minted by Kismet when a paid capsule is opened. They are not airdrops: they
@@ -224,17 +252,19 @@ export function ProfileMachines({
 
 /**
  * One machine as its card in the play list shows it (MachineCards), at the
- * profile's density — and, for its creator, its standing in plain words, its
- * figures, and the controls on it.
+ * profile's density for this view — and, for its creator, its standing in
+ * plain words, its figures, and the controls on it.
  */
 function MachineCard({
   machine: m,
+  density,
   own,
   signedIn,
   nameOf,
   onChange,
 }: {
   machine: CreatorMachine
+  density: keyof typeof DENSITY
   /** The viewer is its creator, signed in: figures and controls. */
   own: boolean
   signedIn: boolean
@@ -245,33 +275,28 @@ function MachineCard({
   const href = m.state !== 'draft' && m.state !== 'review' ? `/play/${m.id}` : undefined
   // A cover picked but not yet saved shows on the card itself, where it will go.
   const [preview, setPreview] = useState<string | null>(null)
+  const t = DENSITY[density]
   return (
     <CoverCard
       href={href}
       image={preview ?? m.art?.image}
       thumbhash={preview ? undefined : m.art?.thumbhash}
       alt={m.name}
-      sizes={COVER_SIZES}
+      sizes={t.sizes}
     >
       <div className="flex items-center gap-2">
-        <h3 className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">
-          {href ? (
-            <Link href={href} className="hover:underline">
-              {m.name}
-            </Link>
-          ) : (
-            m.name
-          )}
-        </h3>
+        <h3 className={`flex-1 min-w-0 ${t.name} font-mono text-ink truncate`}>{m.name}</h3>
         <span
-          className={`text-[9px] font-mono uppercase tracking-wider shrink-0 ${
+          className={`${t.state} font-mono uppercase tracking-wider shrink-0 ${
             m.state === 'live' ? 'text-accent' : 'text-subtle'
           }`}
         >
-          {m.state}
+          {/* The play list's word for a machine off the shelves; the states
+              only its creator sees keep their own. */}
+          {m.state === 'ended' ? 'closed' : m.state}
         </span>
       </div>
-      <p className="text-[10px] font-mono text-muted leading-relaxed">
+      <p className={`${t.line} font-mono text-muted leading-relaxed`}>
         {signedIn ? `${(m.kind === 'reveal' ? REVEAL_STATUS : STATUS)[m.state]} · ` : ''}
         {m.kind === 'reveal' ? (
           <>reveal machine · {m.pieces} {m.pieces === 1 ? 'artwork' : 'artworks'}</>
@@ -285,11 +310,11 @@ function MachineCard({
           </>
         )}
       </p>
-      {m.stats && <MachineFigures kind={m.kind} stats={m.stats} />}
+      {m.stats && <MachineFigures kind={m.kind} stats={m.stats} className={t.line} />}
       {m.kind === 'capsule' && m.prizes.recent.length > 0 && (
         <ul className="flex flex-col gap-0.5">
           {m.prizes.recent.map((p) => (
-            <li key={`${p.txHash}:${p.unitIndex}`} className="text-[10px] font-mono text-subtle truncate">
+            <li key={`${p.txHash}:${p.unitIndex}`} className={`${t.line} font-mono text-subtle truncate`}>
               <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="text-dim hover:text-ink underline">
                 #{p.tokenId}
               </Link>{' '}
@@ -305,7 +330,7 @@ function MachineCard({
         {href && (
           <Link
             href={href}
-            className="w-full px-3 py-1 text-center text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+            className={`w-full px-3 ${t.button} text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors`}
           >
             {m.state !== 'live' ? 'view' : m.kind === 'reveal' ? 'pull' : 'play'}
           </Link>
@@ -335,7 +360,16 @@ function MachineCard({
 
 /** A machine's figures, for its creator: what came through it and what it took
  *  in, in each currency it was paid in. */
-function MachineFigures({ kind, stats }: { kind: 'capsule' | 'reveal'; stats: NonNullable<CreatorMachineCommon['stats']> }) {
+function MachineFigures({
+  kind,
+  stats,
+  className,
+}: {
+  kind: 'capsule' | 'reveal'
+  stats: NonNullable<CreatorMachineCommon['stats']>
+  /** Its type size, the card's. */
+  className: string
+}) {
   const taken = [
     BigInt(stats.ethWei) > 0n ? formatPrice(stats.ethWei, 'eth') : null,
     BigInt(stats.usdcMicro) > 0n ? formatPrice(stats.usdcMicro, 'usdc') : null,
@@ -343,7 +377,7 @@ function MachineFigures({ kind, stats }: { kind: 'capsule' | 'reveal'; stats: No
   const count = kind === 'capsule' ? stats.plays : stats.collects
   if (count === 0 && taken.length === 0) return null
   return (
-    <p className="text-[10px] font-mono text-dim">
+    <p className={`${className} font-mono text-dim`}>
       {count} {kind === 'capsule' ? (count === 1 ? 'capsule sold' : 'capsules sold') : count === 1 ? 'piece collected through it' : 'pieces collected through it'}
       {taken.length > 0 && <> · {taken.join(' + ')} taken in</>}
     </p>

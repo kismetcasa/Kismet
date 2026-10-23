@@ -98,34 +98,44 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const owner = !!session && session.toLowerCase() === creator
   const all = await listMachinesByCreator(creator)
   const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
-  // What each one's card shows, as the play list's cards do: its cover, or
-  // art it already has for a machine published before covers.
-  const art = await machineCovers(visible)
-  const machines = await Promise.all(
-    visible.map(async (m) => {
-      const common = {
-        id: m.id,
-        name: m.name,
-        state: m.state,
-        createdAt: m.createdAt,
-        cover: m.cover?.uri ?? null,
-        art: art.get(m.id) ?? null,
-        ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
-        // Its figures, for its creator: plays or collects, and what they took
-        // in (lib/experience/kismet — counted as they happen).
-        ...(owner ? { stats: await machineStats(m.id).catch(() => null) } : {}),
-      }
-      if (isReveal(m)) {
-        return { ...common, kind: 'reveal' as const, pieces: (await getPool(m.id).catch(() => [])).length }
-      }
-      const [capsules, plays, prizes] = await Promise.all([
-        readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
-        playCount(m.id).catch(() => 0),
-        prizesDelivered(m.id, 3).catch(() => ({ count: 0, recent: [] })),
-      ])
-      return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules, prizes }
-    }),
-  )
+  // A reveal machine's pool is read once per request, whoever asks: its
+  // lineup count below, and the art its card shows when it has no cover.
+  const pools = new Map<string, Promise<PoolEntry[]>>()
+  const poolOf = (id: string) => {
+    let pool = pools.get(id)
+    if (!pool) pools.set(id, (pool = getPool(id).catch(() => [] as PoolEntry[])))
+    return pool
+  }
+  const [art, machines] = await Promise.all([
+    // What each one's card shows, as the play list's cards do: its cover, or
+    // art it already has for a machine published before covers. Looked up
+    // alongside the figures below, not ahead of them.
+    machineCovers(visible, poolOf),
+    Promise.all(
+      visible.map(async (m) => {
+        const common = {
+          id: m.id,
+          name: m.name,
+          state: m.state,
+          createdAt: m.createdAt,
+          cover: m.cover?.uri ?? null,
+          ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
+          // Its figures, for its creator: plays or collects, and what they took
+          // in (lib/experience/kismet — counted as they happen).
+          ...(owner ? { stats: await machineStats(m.id).catch(() => null) } : {}),
+        }
+        if (isReveal(m)) {
+          return { ...common, kind: 'reveal' as const, pieces: (await poolOf(m.id)).length }
+        }
+        const [capsules, plays, prizes] = await Promise.all([
+          readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
+          playCount(m.id).catch(() => 0),
+          prizesDelivered(m.id, 3).catch(() => ({ count: 0, recent: [] })),
+        ])
+        return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules, prizes }
+      }),
+    ),
+  ])
   // A curator's own view also says what their reveal machines have earned
   // them: the mint referral on every collect, paid out to their wallet by
   // the daily run (lib/referralPayouts), counted once the chain confirms it.
@@ -144,7 +154,12 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   ).filter((f) => f !== null)
   const curates = owner && all.some(isReveal)
   const referralPaid = curates ? (await paidTo(creator).catch(() => 0n)).toString() : undefined
-  return NextResponse.json({ owner, machines, featuredIn, ...(referralPaid !== undefined ? { referralPaid } : {}) })
+  return NextResponse.json({
+    owner,
+    machines: machines.map((m) => ({ ...m, art: art.get(m.id) ?? null })),
+    featuredIn,
+    ...(referralPaid !== undefined ? { referralPaid } : {}),
+  })
 }
 
 /** The pages beside the machines under /play (app/play/*): a machine with one

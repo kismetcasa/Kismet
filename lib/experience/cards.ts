@@ -5,7 +5,7 @@ import { resolveOnchainSalesBatch } from '../saleConfig'
 import { hydrateArtworkMeta } from './artwork'
 import { entryKey } from './draw'
 import { getPool } from './store'
-import { isReveal, type Machine } from './types'
+import { isReveal, type Machine, type PoolEntry } from './types'
 
 /** A machine as its card in the play list shows it. A capsule card carries its
  *  capsule: ending the machine closes that sale on-chain (MachineAction). */
@@ -26,14 +26,21 @@ export type MachineCardData = {
  * Each machine's cover, by id: its own, or — for a machine published before
  * covers — art it already has (a capsule machine's capsule, a reveal
  * machine's first piece). One cached metadata read per machine without one.
+ * `readPool` reads a reveal machine's pool: a caller that reads the pools
+ * anyway passes its own, so each is read once (the creator's profile).
  */
-export async function machineCovers(machines: Machine[]): Promise<Map<string, MachineCardData['cover']>> {
+export async function machineCovers(
+  machines: Machine[],
+  readPool: (id: string) => Promise<PoolEntry[]> = getPool,
+): Promise<Map<string, MachineCardData['cover']>> {
   const uncovered = machines.filter((m) => !m.cover)
   const standIns = await Promise.all(
     uncovered.map(async (m) => {
       if (!isReveal(m)) return m.capsule
-      const pool = await getPool(m.id).catch(() => [])
-      return pool.sort((a, b) => (entryKey(a) < entryKey(b) ? -1 : 1))[0] ?? null
+      const pool = await readPool(m.id).catch(() => [] as PoolEntry[])
+      // The piece first by its key, the same stable pick as ever — found, not
+      // sorted, so a pool the caller shares is never reordered under it.
+      return pool.reduce<PoolEntry | null>((first, e) => (first && entryKey(first) <= entryKey(e) ? first : e), null)
     }),
   )
   const standInOf = new Map(uncovered.map((m, i) => [m.id, standIns[i]]))

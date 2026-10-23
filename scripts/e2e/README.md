@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (635)
+## What it asserts (644)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -350,6 +350,14 @@ machine share card. About three minutes.
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
   and ending a season on-chain; the seed and referral-payout jobs, each run
   recorded for the app's own schedule (lib/backgroundTasks) to wait on.
+- **Profiles** — a creator's machines as the play list's cards, in the layout
+  of the view around them: the dense grid on the creator's own dashboard and
+  on a full profile, the showcase's full-scale cards on a curated one (a row
+  to swipe on a phone), and never painted before the view is known; each
+  card's cover, or for one published before covers its capsule or first
+  piece, with each reveal machine's pool read once; "closed" as the play list
+  says it; a cover picked on a card shown there before it is saved, whether
+  or not the card's own image had loaded.
 - **Art** — the required cover, changed live, and always a still: one that
   moves, or an SVG, is refused as it is picked, and a GIF becomes its first
   frame; the stage (idle, dispense, open), its timing, skip and reduced

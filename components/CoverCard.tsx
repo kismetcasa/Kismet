@@ -31,19 +31,28 @@ export function CoverCard({
   overlay?: ReactNode
   children: ReactNode
 }) {
-  const [imgFailed, setImgFailed] = useState(false)
+  // The image that failed, not a flag: a card whose image changes (a cover
+  // picked on it previewing in place, then the one saved) shows the new one,
+  // while the one that failed is not fetched again. Each image also gets its
+  // own MomentImage (keyed below): one kept across a change would serve the
+  // new src through the old one's delivery mode for a render (a picked blob:
+  // asked of the proxy), and where it skips the direct walk (WebKit, in-app
+  // webviews) a proxy error gives up on the image at once.
+  const [failed, setFailed] = useState<string | null>(null)
+  const src = image && image !== failed ? image : null
   const coverClass = 'relative aspect-square w-full block overflow-hidden bg-surface'
   const cover = (
     <>
       {overlay}
-      {image && !imgFailed ? (
+      {src ? (
         <MomentImage
-          src={image}
+          key={src}
+          src={src}
           alt={alt}
           fill
           className="object-contain transition-transform duration-500 group-hover/img:scale-105"
           sizes={sizes}
-          onAllError={() => setImgFailed(true)}
+          onAllError={() => setFailed(src)}
           priority={priority}
           preferProxy
           thumbhash={thumbhash}

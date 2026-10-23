@@ -21,6 +21,7 @@ import type { EarningsAmounts } from '@/lib/earningsFormat'
 import { MomentCard } from './MomentCard'
 import { MarketCard } from './MarketCard'
 import { ProfileMachines, publicMachines, useCreatorMachines } from './ProfileMachines'
+import { GRID_CLASSES, SHOWCASE_ITEM_CLASSES, SHOWCASE_ROW_CLASSES } from './profileLayout'
 import { ProfileKismet, useKismet } from './ProfileKismet'
 import { CuratePanel } from './CuratePanel'
 import { useAdmin } from '@/contexts/AdminContext'
@@ -991,28 +992,13 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
 
   // ─── section content map ──────────────────────────────────────────────────
 
-  // Profile uses the compact card density everywhere — keeps each section
-  // glance-able even when a user has hundreds of mints/collected/listings.
-  // Grid is 2/3/4/6 across breakpoints (same density PaginatedGrid uses
-  // for its grid view); max-h caps the section at roughly 3 rows tall
-  // and the remainder scrolls inside the box. Skeleton uses the same
-  // shell so the loading state doesn't visually flip when content arrives.
-  const GRID_CLASSES = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3'
-  // Curated showcase layout (visitor view / owner "public view"), mirroring
-  // the featured tab's CollectionRow: a horizontal snap-swipe of fixed-width
-  // cards on phones, and a three-up row on web (lg+) — the same column count
-  // as the discover feed, so showcase cards render at the platform's standard
-  // full-card scale. (Was four-up to match the original 4-pin cap, but
-  // ~270px cards read too small next to every other surface; at the 6-pin
-  // cap the three-up grid fills exactly two rows.) The dense dashboard grid
-  // (GRID_CLASSES) still drives the owner's full mint/collected lists.
-  const SHOWCASE_ROW_CLASSES =
-    'flex gap-3 overflow-x-auto snap-x snap-mandatory [-webkit-overflow-scrolling:touch] lg:grid lg:grid-cols-3 lg:gap-4 lg:overflow-visible'
-  // grid grid-rows-1 makes the card fill the cell so every box in a section
-  // row is the same height regardless of content (price loaded, owned, text
-  // moment): the row stretches items to the tallest, this stretches the card
-  // to fill that height in turn.
-  const SHOWCASE_ITEM_CLASSES = 'grid grid-rows-1 w-72 flex-shrink-0 snap-start lg:w-auto'
+  // Profile uses the compact card density everywhere except the curated
+  // showcase. Both layouts — the dense grid (GRID_CLASSES) and the showcase
+  // (SHOWCASE_ROW_CLASSES / SHOWCASE_ITEM_CLASSES) — live in ./profileLayout,
+  // shared with the machines section so every section sits at one scale. In
+  // the dense grid, max-h caps the section at roughly 3 rows tall and the
+  // remainder scrolls inside the box. Skeleton uses the same shell so the
+  // loading state doesn't visually flip when content arrives.
   // ~3 rows worth of compact cards across breakpoints — a single value
   // is approximate (row height varies with card width) but lands close
   // enough that users see ~3 rows on mobile and ~3 rows on desktop.
@@ -1830,14 +1816,18 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               )
             })
             .concat(
-              shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0
+              // Laid out in the view's layout, so — like the sections above —
+              // shown only once the view is known (pinsLoaded): painted in the
+              // initial 'curated' guess, it would jump to the full profile's
+              // grid for a profile that never pinned.
+              pinsLoaded && (shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0)
                 ? [
                     <div key="machines" className="border-t border-line">
                       <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
                         Machines ({shelfMachines.length + creatorMachines.featuredIn.length})
                       </h2>
                       <div className="pb-8">
-                        <ProfileMachines machines={shelfMachines} featuredIn={creatorMachines.featuredIn} manage={false} signedIn={false} onChange={creatorMachines.reload} />
+                        <ProfileMachines machines={shelfMachines} featuredIn={creatorMachines.featuredIn} manage={false} signedIn={false} onChange={creatorMachines.reload} layout={showcaseView ? 'showcase' : 'grid'} />
                       </div>
                     </div>,
                   ]

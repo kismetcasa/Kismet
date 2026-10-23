@@ -234,6 +234,9 @@ const hashes = new Map()
 const sets = new Map()
 const zsets = new Map()
 const unsupported = new Set()
+/** Every command the mock serves while this holds an array: a check that
+ *  counts what one request read sets it, makes the request, and clears it. */
+let redisTap = null
 
 function sortedZ(m) {
   return [...m.entries()].sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1))
@@ -334,6 +337,7 @@ const redisServer = createServer((req, res) => {
       const parsed = JSON.parse(body)
       const run = (c) => {
         try {
+          redisTap?.push(c.map(String))
           const r = exec(c)
           if (DEBUG && ['set', 'eval', 'get'].includes(String(c[0]).toLowerCase())) console.error(`[redis] ${c[0]} ${String(c[1]).slice(0, 70)} -> ${JSON.stringify(r)?.slice(0, 40)}`)
           return { result: e(r) }
@@ -4608,6 +4612,30 @@ try {
           // Their two machines on sale, and the machines featuring their work.
           const c2Machines = 2 + ((await call(`/api/experience/machines?creator=${CREATOR2}`)).json?.featuredIn?.length ?? 0)
           check('their profile counts their own machines and those featuring them', c2Machines === 6, String(c2Machines))
+
+          // Each card shows what the machine's card in the play list shows: its
+          // cover, or for one published before covers (dry-season and
+          // new-voices, since the list's checks) its capsule or first piece.
+          const adminCards = (await call(`/api/experience/machines?creator=${ADMIN}`)).json?.machines ?? []
+          redisTap = []
+          const curatorCards = (await call(`/api/experience/machines?creator=${CURATOR}`)).json?.machines ?? []
+          const tapped = redisTap
+          redisTap = null
+          const withCover = [...adminCards, ...curatorCards].filter((m) => m.cover)
+          check('a profile card shows its machine\'s cover, or for one published before covers its capsule or first piece, as the play list does',
+            withCover.length > 0 && withCover.every((m) => m.art?.image === m.cover) &&
+              /dry-season-capsule/.test(adminCards.find((m) => m.id === 'dry-season')?.art?.image ?? '') &&
+              /reveal-one/.test(curatorCards.find((m) => m.id === 'new-voices' && !m.cover)?.art?.image ?? ''),
+            JSON.stringify([...adminCards, ...curatorCards].map((m) => [m.id, m.cover, m.art?.image])))
+          // The stand-in art and the lineup count both need a reveal machine's
+          // pool: one read serves both.
+          const poolReads = Object.fromEntries(curatorCards.filter((m) => m.kind === 'reveal')
+            .map((m) => [m.id, tapped.filter(([c, k]) => c.toLowerCase() === 'hgetall' && k === `kismetart:xp:${m.id}:pool`).length]))
+          check('and reads each reveal machine\'s pool once for both', Object.keys(poolReads).includes('new-voices') && Object.values(poolReads).every((n) => n === 1),
+            JSON.stringify(poolReads))
+
+          const cardOf = (pg, id) => pg.locator('article').filter({ has: pg.locator(`a[href="/play/${id}"]`) })
+          const widthOf = (loc) => loc.evaluate((el) => el.getBoundingClientRect().width).catch(() => 0)
           const visitor = await open(`/profile/${CREATOR2}`)
           await visitor.getByText(`Machines (${c2Machines})`).waitFor()
           // Settled, so an editor that loads late would have loaded.
@@ -4616,7 +4644,48 @@ try {
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
           check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0 &&
             (await visitor.getByRole('button', { name: /cover/ }).count()) === 0)
+          // A visitor sees the view the creator chose, and the machines take its
+          // layout. One who never pinned or chose shows the full profile: its
+          // dense grid, six to a row on a wide screen.
+          const vWidth = await widthOf(cardOf(visitor, 'browser-machine'))
+          check('a visitor of the full profile sees them in its dense grid, six to a row on a wide screen', vWidth > 140 && vWidth < 170, String(vWidth))
           await visitor.context().close()
+          // Never painted in a layout the view then changes: until the view
+          // arrives with the pins, the page's guess is the showcase, so the
+          // cards wait for it, as the sections above do.
+          const held = await open('/play')
+          let releasePins
+          const pinsHeld = new Promise((r) => { releasePins = r })
+          await held.route(/\/api\/profile\/[^/]+\/pins(\?|$)/, async (r) => { await pinsHeld; await r.continue().catch(() => {}) })
+          const machinesRead = held.waitForResponse((r) => r.url().includes(`/api/experience/machines?creator=${CREATOR2}`), { timeout: 20_000 }).catch(() => null)
+          await held.goto(`${origin}/profile/${CREATOR2}`, { waitUntil: 'domcontentloaded' })
+          const read = await machinesRead
+          await held.waitForTimeout(750)
+          const shownEarly = await cardOf(held, 'browser-machine').count()
+          releasePins()
+          await cardOf(held, 'browser-machine').waitFor({ timeout: 15_000 }).catch(() => {})
+          const settled = await widthOf(cardOf(held, 'browser-machine'))
+          check('and never shows them in a layout the view then changes: they wait for the view, as the sections above do',
+            !!read && shownEarly === 0 && settled > 140 && settled < 170, `${!!read} ${shownEarly} ${settled}`)
+          await held.context().close()
+          // One who chose the curated showcase gets its full-scale cards: three
+          // to a row on a wide screen, and on a phone a row to swipe.
+          const chose = await call(`/api/profile/${CREATOR2}/public-view`, { method: 'POST', user: USER_TOKEN, body: { mode: 'curated' } })
+          const wide = await open(`/profile/${CREATOR2}`)
+          await wide.getByText(`Machines (${c2Machines})`).waitFor()
+          await wide.waitForLoadState('networkidle').catch(() => {})
+          const wWidth = await widthOf(cardOf(wide, 'browser-machine'))
+          await wide.context().close()
+          const phone = await open(`/profile/${CREATOR2}`, { viewport: { width: 390, height: 844 } })
+          await phone.getByText(`Machines (${c2Machines})`).waitFor()
+          await phone.waitForLoadState('networkidle').catch(() => {})
+          const pCard = cardOf(phone, 'browser-machine')
+          const pWidth = await widthOf(pCard)
+          const swipes = await pCard.evaluate((el) => { const row = el.parentElement?.parentElement; return !!row && row.scrollWidth > row.clientWidth + 1 }).catch(() => false)
+          await phone.context().close()
+          check('and of a curated one, at the showcase\'s scale: three to a row on a wide screen, a row to swipe on a phone',
+            chose.status === 200 && wWidth > 280 && wWidth < 400 && Math.abs(pWidth - 288) < 2 && swipes, `${chose.status} ${wWidth} ${pWidth} ${swipes}`)
+          await call(`/api/profile/${CREATOR2}/public-view`, { method: 'POST', user: USER_TOKEN, body: { mode: 'full' } })
 
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()
@@ -4625,7 +4694,9 @@ try {
           await page.getByRole('button', { name: 'change cover' }).first().waitFor({ timeout: 15_000 }).catch(() => {})
           check('and can change each one\'s cover', (await page.getByRole('button', { name: 'change cover' }).count()) >= 1)
           check('and how to build another', (await page.getByRole('link', { name: 'build another gachapon →' }).getAttribute('href').catch(() => null)) === '/play/create')
-          const row = page.locator('div.border', { hasText: 'Browser Machine' }).last()
+          const row = cardOf(page, 'browser-machine')
+          const oWidth = await widthOf(row)
+          check('while their own list keeps the dashboard\'s dense grid, two to a row on a phone', oWidth > 150 && oWidth < 200, String(oWidth))
           await row.getByRole('button', { name: 'end season' }).click()
           await row.getByRole('button', { name: 'confirm end season' }).click()
           await page.getByText('Season ended').first().waitFor()
@@ -4633,7 +4704,33 @@ try {
           check('ending a season closes the capsule\'s sale on-chain', !!sale && sale.saleEnd <= BigInt(Math.floor(Date.now() / 1000)), String(sale?.saleEnd))
           check('in one signature from the creator\'s wallet', chain.walletTxs.at(-1)?.to?.toLowerCase() === CAPSULE_A)
           check('and then ends the machine', (await call('/api/experience/machines/browser-machine')).json?.machine?.state === 'ended')
+          await row.getByText('closed', { exact: true }).waitFor({ timeout: 10_000 }).catch(() => {})
+          check('and its card reads closed, as the play list\'s does', (await row.getByText('closed', { exact: true }).count()) === 1)
+          // A cover picked on a card shows there, where it will go, before it
+          // is saved — even on a card whose own image could not load, as none
+          // can here (this page is served no images).
+          await row.scrollIntoViewIfNeeded().catch(() => {})
+          await row.getByText('no preview').waitFor({ timeout: 15_000 }).catch(() => {})
+          const failedFirst = (await row.getByText('no preview').count()) === 1
+          await row.getByLabel('cover image').setInputFiles({ name: 'next-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await row.getByRole('button', { name: 'save cover' }).waitFor({ timeout: 15_000 }).catch(() => {})
+          await row.locator('img[src^="blob:"]').waitFor({ timeout: 10_000 }).catch(() => {})
+          const previewed = await row.locator('img[src^="blob:"]').count()
+          check('a cover picked on the profile shows on its card before it is saved, even where the card\'s own image could not load',
+            failedFirst && previewed === 1, `${failedFirst} ${previewed}`)
           await page.context().close()
+          // And where it did load, the picked cover takes its place.
+          const loaded = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, images: true })
+          const lRow = cardOf(loaded, 'browser-machine')
+          await lRow.scrollIntoViewIfNeeded().catch(() => {})
+          const coverLoaded = () => lRow.locator('img').first().evaluate((img) => img.complete && img.naturalWidth > 0 && !img.src.startsWith('blob:')).catch(() => false)
+          let coverFirst = false
+          for (let i = 0; i < 75 && !(coverFirst = await coverLoaded()); i++) await sleep(200)
+          await lRow.getByLabel('cover image').setInputFiles({ name: 'next-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await lRow.locator('img[src^="blob:"]').waitFor({ timeout: 10_000 }).catch(() => {})
+          const swapped = (await lRow.locator('img[src^="blob:"]').count()) === 1 && (await lRow.locator('img').count()) === 1
+          check('and where the card\'s image loaded, the picked cover takes its place', coverFirst && swapped, `${coverFirst} ${swapped}`)
+          await loaded.context().close()
         }
 
         // ── a creator ends their machine where they see it ──
