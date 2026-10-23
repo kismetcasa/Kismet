@@ -5,8 +5,8 @@
 //   3. a slow but moving upload has no time limit, and failures before finalize are
 //      retried within five signings;
 //   4. uploads running at once stay apart, and every error is one line.
-// It drives the real module and the real @ardrive/turbo-sdk web build against a mock of
-// Turbo and /api/sign on a scaled clock.
+// It drives the real modules (uploadToArweave, as every caller does, and uploadFile) and the
+// real @ardrive/turbo-sdk web build against a mock of Turbo and /api/sign on a scaled clock.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-upload-policy.ts
 
@@ -31,13 +31,24 @@ type Scenario = {
   sizeMiB?: number
   /** Seconds after the finalize request until /status says FINALIZED. Omit: never. */
   finalizeAfterS?: number
-  /** '504-then-201': the first answer is lost while Turbo stores the item. 'never': no answer completes. */
-  finalizeAnswer?: '504-then-201' | 'never'
+  /** '504-then-201': the first answer is lost while Turbo stores the item. '500': every answer is
+   *  a 500. 'never': no answer completes. */
+  finalizeAnswer?: '504-then-201' | '500' | 'never'
   /** A final /status verdict. */
   status?: 'UNDERFUNDED' | 'INVALID'
   /** outageS: chunks fail with a 503 for that long. secondsPerMiB: each chunk is answered that late. */
   chunk?: { outageS: number } | { secondsPerMiB: number }
   signRefusal?: string
+  /** These /api/sign requests (1-based) fail with a bare 503. */
+  signFailures?: number[]
+  /** NEXT_PUBLIC_ARWEAVE_PAID_BY for the run. */
+  paidBy?: string
+  /** The file has no MIME type. */
+  typeless?: boolean
+  /** Call this entry without onFinalizing. Otherwise uploadToArweave is called with one. */
+  without?: 'uploadToArweave' | 'uploadFile'
+  /** No NEXT_PUBLIC_ARWEAVE_N, so the signer can't be built. */
+  noKey?: boolean
   /** A 1 MiB upload runs at the same time; its first request fails once this one is finalizing. */
   alongside?: boolean
   /** Each entry is a problem, or false when that check passed. */
@@ -48,10 +59,15 @@ type Run = Outcome & {
   simMin: number
   /** Minutes from the first finalize request to the end. */
   finalizeMin?: number
+  /** /api/sign requests, and the ones that returned a signature. */
   signs: number
+  signed: number
   sessions: number
   finalizePosts: number
   finalizing: number
+  progress: number[]
+  /** x-paid-by on the finalize request. */
+  paidBy?: string
   alongside?: Outcome
 }
 
@@ -61,12 +77,14 @@ const outsideWindow = (r: Run) =>
 
 const SCENARIOS: Scenario[] = [
   {
-    name: 'a quick confirmation resolves with one data item',
+    name: 'a quick confirmation resolves with one data item, charged to paidBy',
     finalizeAfterS: 5,
+    paidBy: '0xKismetFunder',
     check: (r) => [
       !r.ok && `rejected: ${r.message}`,
       r.signs !== 1 && `${r.signs} signings`,
       r.finalizing !== 1 && `onFinalizing called ${r.finalizing} times`,
+      r.paidBy !== '0xKismetFunder' && `x-paid-by: ${r.paidBy}`,
     ],
   },
   {
@@ -82,7 +100,7 @@ const SCENARIOS: Scenario[] = [
     name: 'a confirmation that never comes ends at the window, one data item, one line',
     check: (r) => [
       r.ok && 'resolved',
-      !/hasn't confirmed/.test(r.message) && `message: ${r.message}`,
+      !/hasn't confirmed this upload after 15 minutes\..*\(ref up1\)$/.test(r.message) && `message: ${r.message}`,
       r.message.includes('\n') && 'multi-line message',
       r.signs !== 1 && `${r.signs} signings`,
       r.finalizePosts !== 1 && `${r.finalizePosts} finalize requests`,
@@ -98,6 +116,18 @@ const SCENARIOS: Scenario[] = [
       r.signs !== 1 && `${r.signs} signings`,
       r.finalizePosts !== 1 && `${r.finalizePosts} finalize requests`,
       outsideWindow(r),
+    ],
+  },
+  {
+    name: 'a finalize request that keeps failing makes no new data item',
+    finalizeAnswer: '500',
+    typeless: true,
+    without: 'uploadFile',
+    check: (r) => [
+      r.ok && 'resolved',
+      !/hasn't confirmed this upload after 1 minute\./.test(r.message) && `message: ${r.message}`,
+      r.signs !== 1 && `${r.signs} signings`,
+      r.sessions !== 1 && `${r.sessions} upload sessions`,
     ],
   },
   {
@@ -160,6 +190,29 @@ const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'a sign request that fails once is retried, and the upload completes',
+    signFailures: [1],
+    finalizeAfterS: 5,
+    without: 'uploadToArweave',
+    check: (r) => [
+      !r.ok && `rejected: ${r.message}`,
+      r.signs !== 2 && `${r.signs} sign requests`,
+      r.signed !== 1 && `${r.signed} signings`,
+      r.sessions !== 1 && `${r.sessions} upload sessions`,
+      !r.progress.some((p, i) => p === 0 && r.progress.slice(0, i).some((q) => q > 0)) && 'progress not reset before the retry',
+    ],
+  },
+  {
+    name: 'a sign request that fails between chunk outages still stops at five signings',
+    signFailures: [2],
+    chunk: { outageS: 3600 },
+    check: (r) => [
+      r.ok && 'resolved',
+      r.signed !== 5 && `${r.signed} signings`,
+      !/storage service unavailable/.test(r.message) && `message: ${r.message}`,
+    ],
+  },
+  {
     name: 'two uploads at once stay apart: one retrying while the other finalizes still signs',
     finalizeAfterS: 60,
     alongside: true,
@@ -167,6 +220,16 @@ const SCENARIOS: Scenario[] = [
       !r.ok && `chunked upload rejected: ${r.message}`,
       !r.alongside?.ok && `other upload rejected: ${r.alongside?.message}`,
       r.signs !== 3 && `${r.signs} signings (expected 1 + 2)`,
+    ],
+  },
+  {
+    // The signer is built before fetch is patched, so this failure can't leave it patched.
+    name: 'a missing signer key fails before any request',
+    noKey: true,
+    check: (r) => [
+      r.ok && 'resolved',
+      !/NEXT_PUBLIC_ARWEAVE_N not configured/.test(r.message) && `message: ${r.message}`,
+      r.signs + r.sessions !== 0 && 'requests were made',
     ],
   },
   {
@@ -190,12 +253,14 @@ function newState() {
   let finalizeSeen = () => {}
   return {
     signs: 0,
+    signed: 0,
     sessions: 0,
     finalizePosts: 0,
     singlePosts: 0,
     finalizedAt: new Map<string, number>(),
     firstChunkAt: undefined as number | undefined,
     firstFinalizeAt: undefined as number | undefined,
+    paidBy: undefined as string | undefined,
     finalizeSeen: new Promise<void>((resolve) => (finalizeSeen = resolve)),
     onFinalize: () => finalizeSeen(),
   }
@@ -215,6 +280,8 @@ const server = http.createServer((req, res) => {
     if (p === '/api/sign' && req.method === 'POST') {
       state.signs++
       if (sc.signRefusal) return send(res, 401, { error: sc.signRefusal })
+      if (sc.signFailures?.includes(state.signs)) return send(res, 503, {})
+      state.signed++
       const hash = Buffer.from((JSON.parse(body.toString()) as { hash: string }).hash, 'base64')
       const signature = crypto.sign('sha256', hash, {
         key: privateKey,
@@ -239,6 +306,7 @@ const server = http.createServer((req, res) => {
     if (m && req.method === 'POST') {
       state.finalizePosts++
       state.firstFinalizeAt ??= sim()
+      state.paidBy ??= req.headers['x-paid-by'] as string | undefined
       state.onFinalize()
       const first = !state.finalizedAt.has(m[1])
       if (first) state.finalizedAt.set(m[1], sim())
@@ -256,6 +324,7 @@ const server = http.createServer((req, res) => {
         return
       }
       if (sc.finalizeAnswer === '504-then-201') return send(res, first ? 504 : 201, {})
+      if (sc.finalizeAnswer === '500') return send(res, 500, { error: 'mock: finalize failed' })
       return send(res, 202, {})
     }
     m = /^\/v1\/chunks\/arweave\/([^/]+)\/status$/.exec(p)
@@ -297,9 +366,10 @@ const toMock = ((input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch
 globalThis.fetch = toMock
 
+const { default: uploadToArweave } = await import('@/lib/arweave/uploadToArweave')
 const { uploadFile } = await import('@/lib/arweave/uploadFile')
-const fileOf = (mib: number, name: string) =>
-  new File([new Uint8Array(mib * 2 ** 20)], name, { type: 'application/octet-stream' })
+const fileOf = (mib: number, name: string, type = 'application/octet-stream') =>
+  new File([new Uint8Array(mib * 2 ** 20)], name, { type })
 const settle = (p: Promise<string>): Promise<Outcome> =>
   p.then(
     () => ({ ok: true, message: '' }),
@@ -320,10 +390,22 @@ for (const scenario of SCENARIOS) {
   sc = scenario
   state = newState()
   let finalizing = 0
+  const progress: number[] = []
   const logs: unknown[][] = []
+  if (scenario.paidBy) process.env.NEXT_PUBLIC_ARWEAVE_PAID_BY = scenario.paidBy
+  const signerKey: string | undefined = process.env.NEXT_PUBLIC_ARWEAVE_N
+  if (scenario.noKey) delete process.env.NEXT_PUBLIC_ARWEAVE_N
   console.error = console.warn = (...args: unknown[]) => void logs.push(args)
   t0 = realNow()
-  const main = settle(uploadFile(fileOf(scenario.sizeMiB ?? 11, 'sample.bin'), () => {}, () => finalizing++))
+  const file = fileOf(scenario.sizeMiB ?? 11, 'sample.bin', scenario.typeless ? '' : undefined)
+  const onProgress = (pct: number) => void progress.push(pct)
+  const main = settle(
+    scenario.without === 'uploadFile'
+      ? uploadFile(file, onProgress)
+      : scenario.without === 'uploadToArweave'
+        ? uploadToArweave(file, onProgress)
+        : uploadToArweave(file, onProgress, () => finalizing++),
+  )
   const alongside = scenario.alongside ? settle(uploadFile(fileOf(1, 'poster.bin'))) : undefined
   // An upload with no bound would hang the run; fail it, and stop, since it is still
   // running and would disturb the scenarios after it.
@@ -344,13 +426,19 @@ for (const scenario of SCENARIOS) {
     simMin: simMs() / 60_000,
     finalizeMin: state.firstFinalizeAt === undefined ? undefined : (sim() - state.firstFinalizeAt) / 60,
     signs: state.signs,
+    signed: state.signed,
     sessions: state.sessions,
     finalizePosts: state.finalizePosts,
     finalizing,
+    progress,
+    paidBy: state.paidBy,
   }
+  delete process.env.NEXT_PUBLIC_ARWEAVE_PAID_BY
+  process.env.NEXT_PUBLIC_ARWEAVE_N = signerKey
   console.error = realError
   console.warn = realWarn
-  const failures = [run, run.alongside].filter((o) => o !== undefined && !o.ok).length
+  // An upload that never started (no signer) has nothing to log.
+  const failures = scenario.noKey ? 0 : [run, run.alongside].filter((o) => o !== undefined && !o.ok).length
   const diagnostics = logs.filter((args) => args[0] === '[uploadFile] upload failed').length
   const problems = [
     ...scenario.check(run),

@@ -32,12 +32,12 @@ export async function uploadFile(
   let signings = 0
 
   // How a confirmation that started has ended. One line: lib/toast.ts shows only the first.
-  const finalizeOutcome = () => {
-    const ref = `ref ${uploadId ?? 'unknown'}`
+  const finalizeOutcome = (startedAt: number) => {
+    const ref = `ref ${uploadId}`
     if (lastStatus !== undefined && (multipartFailedStatus as readonly string[]).includes(lastStatus)) {
       return new Error(`Arweave rejected this upload (${lastStatus}). Nothing was minted (${ref})`)
     }
-    const waited = Math.max(1, Math.round((Date.now() - (finalizeStartedAt ?? Date.now())) / 60_000))
+    const waited = Math.max(1, Math.round((Date.now() - startedAt) / 60_000))
     return new Error(
       `Arweave hasn't confirmed this upload after ${waited} minute${waited === 1 ? '' : 's'}. Nothing was minted; try again later (${ref})`,
     )
@@ -49,7 +49,7 @@ export async function uploadFile(
     async sign(hash: Uint8Array): Promise<Uint8Array> {
       // The SDK signs once per attempt; an attempt after finalize would be a second
       // billable data item for the same file.
-      if (finalizeStartedAt !== undefined) throw finalizeOutcome()
+      if (finalizeStartedAt !== undefined) throw finalizeOutcome(finalizeStartedAt)
       if (signings >= MAX_SIGNINGS) throw new Error(`No upload after ${MAX_SIGNINGS} signings`)
       const signature = await signer.sign(hash)
       signings++
@@ -109,7 +109,7 @@ export async function uploadFile(
     // A 4xx is Turbo's verdict and a retry can't change it. 402 (the credits behind
     // paidBy are spent) arrives only at finalize, after every byte has gone.
     const status = uploadErrorStatus(err)
-    if (!isNonRetryableUploadStatus(status) && finalizeStartedAt !== undefined) return finalizeOutcome()
+    if (!isNonRetryableUploadStatus(status) && finalizeStartedAt !== undefined) return finalizeOutcome(finalizeStartedAt)
     return Object.assign(new Error(describeUploadError(status)), { status, cause: err })
   }
 
