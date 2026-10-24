@@ -1,12 +1,14 @@
 'use client'
 
-import { useWriteContract } from 'wagmi'
+import { useAccount, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract } from '@/hooks/useWallet'
+import { watchAirdropLanded } from '@/lib/airdropLanded'
 
 export interface AirdropRequest {
   collectionAddress: `0x${string}`
@@ -43,22 +45,59 @@ export interface AirdropRequest {
  * failure, so callers should pre-validate recipients (the form's
  * isAddress check covers the common typo case).
  *
- * Returns the tx hash. The caller is responsible for waiting on the
- * receipt before considering the airdrop complete; the form already
- * surfaces a basescan link so manual verification is one click away.
+ * Returns the tx hash — from the wallet's reply, or from the chain when the
+ * mint shows up there first (lib/airdropLanded: an extension wallet can
+ * approve and broadcast yet never deliver its reply to this tab, which left
+ * the form on "Confirm airdrop in wallet…" after the airdrop had landed).
+ * The caller is responsible for waiting on the receipt before considering
+ * the airdrop complete; the form already surfaces a basescan link so manual
+ * verification is one click away.
  */
 export function useAirdrop() {
-  const { writeContractAsync } = useWriteContract()
+  const { writeContractAsync, abortPrompts } = useWriteContract()
+  const publicClient = usePublicClient({ chainId: base.id })
+  const { address } = useAccount()
   const ensureBase = useEnsureBase()
 
-  async function airdrop({
+  async function airdrop(request: AirdropRequest): Promise<`0x${string}`> {
+    if (request.recipients.length === 0) throw new Error('No recipients')
+    await ensureBase()
+
+    // The head is read BEFORE the wallet is asked, so the mint can only land
+    // after it. No head (RPC down) → the wallet's reply is the only signal,
+    // as before.
+    const fromBlock =
+      publicClient && address ? await publicClient.getBlockNumber().catch(() => null) : null
+    if (!publicClient || !address || fromBlock === null) return await send(request)
+
+    const stop = new AbortController()
+    const fromChain = watchAirdropLanded({
+      client: publicClient,
+      collection: request.collectionAddress,
+      operator: address,
+      tokenId: request.tokenId,
+      recipients: request.recipients,
+      fromBlock,
+      signal: stop.signal,
+    })
+    // Its abort rejection is expected once the race is decided.
+    fromChain.catch(() => {})
+    try {
+      const hash = await Promise.race([send(request), fromChain])
+      // Seen on-chain first: the wallet prompt is answered; take its stall
+      // notice off the clock (a no-op when the wallet answered).
+      abortPrompts()
+      return hash
+    } finally {
+      stop.abort()
+    }
+  }
+
+  async function send({
     collectionAddress,
     tokenId,
     recipients,
   }: AirdropRequest): Promise<`0x${string}`> {
-    if (recipients.length === 0) throw new Error('No recipients')
-    await ensureBase()
-
     if (recipients.length === 1) {
       return await writeContractAsync({
         chainId: base.id,

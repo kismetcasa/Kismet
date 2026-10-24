@@ -1,10 +1,11 @@
 'use client'
 
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { createSiweMessage } from 'viem/siwe'
 import { toastError } from '@/lib/toast'
+import { useSignMessage } from '@/hooks/useWallet'
 
 const SESSION_KEY = 'kismetart:admin-session'
 const SESSION_TTL_MS = 4 * 60 * 60 * 1000

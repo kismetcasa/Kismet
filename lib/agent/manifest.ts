@@ -196,7 +196,7 @@ export function getAgentManifest(origin: string): AgentManifest {
           collection: 'existing collection address (optional; omit to auto-create)',
           collectionName: 'optional name for the auto-created collection (default: the artwork title). Part of the signed intent.',
           payoutRecipient: 'optional address that receives sale proceeds (default: account; ignored when splits are given). Part of the signed intent.',
-          artistMint: 'boolean (optional, default true — keep a copy for the artist)',
+          artistMint: 'boolean (optional, default true — keep a copy for the artist; open editions only — with editions set no copy is minted, airdrop one to yourself after)',
           enableRaffle: 'boolean (optional, default false — opt the artwork into a Kismet raffle; the creator can toggle it later)',
           splits: 'optional payout splits array',
         },

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount, usePublicClient, useWaitForTransactionReceipt } from 'wagmi'
 import { base, mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'
@@ -35,6 +35,7 @@ import { shortAddress } from '@/lib/inprocess'
 import { useAdmin } from '@/contexts/AdminContext'
 import { usePlatformPaused } from '@/hooks/usePlatformPaused'
 import { usePassGate } from '@/hooks/usePassGate'
+import { useWriteContract } from '@/hooks/useWallet'
 
 interface CreateCollectionFormProps {
   onDeployed?: (address: string, name: string) => void

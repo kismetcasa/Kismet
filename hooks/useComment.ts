@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { useConfig, usePublicClient, useWriteContract } from 'wagmi'
+import { useConfig, usePublicClient } from 'wagmi'
 import { getAccount } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
@@ -11,6 +11,7 @@ import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { ZORA_COMMENTS, COMMENTS_ABI, buildCommentCall } from '@/lib/zoraComments'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract } from '@/hooks/useWallet'
 
 export type CommentStatus =
   | 'idle'

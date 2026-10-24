@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import { useConfig, usePublicClient, useWriteContract } from 'wagmi'
+import { useConfig, usePublicClient } from 'wagmi'
 import { getAccount } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'
@@ -24,6 +24,7 @@ import {
   verifyBasket,
   type SweepRow,
 } from '@/lib/sweepVerify'
+import { useWriteContract } from '@/hooks/useWallet'
 
 export type { SweepRow, SweepRowState } from '@/lib/sweepVerify'
 

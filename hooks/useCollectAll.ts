@@ -5,9 +5,7 @@ import {
   useAccount,
   useConfig,
   usePublicClient,
-  useSendCalls,
   useWalletClient,
-  useWriteContract,
 } from 'wagmi'
 import { getAccount, waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
@@ -31,6 +29,7 @@ import {
   buildUsdcMintCall,
   readMintFeeWithBound,
 } from '@/lib/zoraMint'
+import { useSendCalls, useSendTransaction, useWriteContract } from '@/hooks/useWallet'
 
 type Status =
   | 'idle'
@@ -129,6 +128,7 @@ export function useCollectAll(): UseCollectAllReturn {
   const { sendCallsAsync } = useSendCalls()
   const { data: walletClient } = useWalletClient({ chainId: base.id })
   const { writeContractAsync } = useWriteContract()
+  const { sendTransactionAsync } = useSendTransaction()
   const ensureBase = useEnsureBase()
   const { consumeRetryFlag, showError, ackSuccess } = useWalletRecovery(TOAST_ID, 'Collect all')
   const [status, setStatus] = useState<Status>('idle')
@@ -444,11 +444,11 @@ export function useCollectAll(): UseCollectAllReturn {
               continue
             }
             try {
-              const hash = await walletClient.sendTransaction({
+              const hash = await sendTransactionAsync({
                 to: call.to,
                 data: call.data,
                 value: call.value ?? 0n,
-                chain: base,
+                chainId: base.id,
                 dataSuffix: BUILDER_DATA_SUFFIX,
               })
               const r = await publicClient.waitForTransactionReceipt({
@@ -590,7 +590,7 @@ export function useCollectAll(): UseCollectAllReturn {
         inFlightRef.current = false
       }
     },
-    [address, config, publicClient, sendCallsAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
+    [address, config, publicClient, sendCallsAsync, sendTransactionAsync, walletClient, writeContractAsync, ensureBase, consumeRetryFlag, showError, ackSuccess],
   )
 
   collectAllRef.current = collectAll

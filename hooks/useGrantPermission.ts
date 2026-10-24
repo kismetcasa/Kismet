@@ -5,7 +5,6 @@ import {
   useAccount,
   usePublicClient,
   useWaitForTransactionReceipt,
-  useWriteContract,
 } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
@@ -18,6 +17,7 @@ import {
 import { ZORA_MULTICALL_ABI } from '@/lib/zoraMint'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract } from '@/hooks/useWallet'
 
 /** String alias over the bigint constants — call-sites use the bit
  *  name they're granting instead of importing raw bigints. */

@@ -58,6 +58,8 @@ import { useEthUsd } from '@/hooks/useEthUsd'
 import { formatUsdApprox } from '@/lib/usdApprox'
 import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
+import { useCreatorCopy } from '@/hooks/useCreatorCopy'
+import { creatorCopyFromWallet, ONE_OF_ONE_SALE } from '@/lib/creatorCopy'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { MAX_SPLITS } from '@/lib/splits'
@@ -66,7 +68,7 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
+import { toastError, toastChainStalled, humanError, isUserRejection, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import {
   CFILE_ACCEPT_ATTR,
   CFILE_KIND_LABEL,
@@ -170,6 +172,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
+  const creatorCopy = useCreatorCopy()
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
@@ -696,8 +699,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // the committed value can exceed the live cap. Surface it inline and block
   // the mint until resolved (we don't silently mutate their chosen number).
   const residenciesOverCap = residenciesEnabled && residenciesPercent > residenciesMax
-  // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
-  // the price input is hidden and the salesConfig price is forced to 0.
+  // 1/1 has no public sale: it is created with its sale closed
+  // (lib/creatorCopy ONE_OF_ONE_SALE) and its single edition is the artist's
+  // copy, sent from their wallet right after the mint (In Process drops the
+  // copy whenever a supply is set). So the price input is hidden.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
   // media session can't sneak through. Gated on artistMintEnabled: the
   // "1/1 exhausts supply" semantics only hold when the creator copy mints —
@@ -1002,6 +1007,23 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       toast.error(`Lower residencies to ${residenciesMax}% or free up room by lowering a recipient`)
       return
     }
+    // A limited edition's copy to the artist is sent from the artist's own
+    // wallet after the mint (lib/creatorCopy — In Process drops it). Check,
+    // before anything is uploaded, that the wallet may mint in the target
+    // collection; a collection Kismet deploys makes the artist its admin.
+    const copySupply = mintMode === 'media' && maxSupply.trim() ? parseInt(maxSupply.trim(), 10) : undefined
+    const copyFromWallet = creatorCopyFromWallet({ artistMint: artistMintEnabled, maxSupply: copySupply })
+    if (copyFromWallet && !isAutoDeploy && targetCollection && isAddress(targetCollection)) {
+      if ((await creatorCopy.canSend(targetCollection)) === false) {
+        toast.error('Your wallet can’t mint copies in this collection', {
+          id: 'mint',
+          duration: 10_000,
+          description:
+            'The copy of a limited edition is sent from your wallet, and this collection hasn’t given it ADMIN or MINTER. Turn off “Mint a copy to myself”, or leave the supply open.',
+        })
+        return
+      }
+    }
 
     const rawPrice = is11 ? '0' : price.trim()
     const normalizedPrice = !rawPrice || rawPrice === '.' ? '0' : rawPrice.startsWith('.') ? `0${rawPrice}` : rawPrice
@@ -1055,7 +1077,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       if (ts <= saleStartSec) { toast.error('Sale must close after it opens'); return }
       saleEndStr = String(ts)
     }
-    const salesConfig = priceCurrency === 'usdc'
+    // A 1/1 is created with its sale closed (lib/creatorCopy ONE_OF_ONE_SALE):
+    // its single edition is the artist's copy, sent right after the mint, and
+    // must not be up for grabs at price 0 in between.
+    const salesConfig = is11
+      ? ONE_OF_ONE_SALE
+      : priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
@@ -1796,6 +1823,27 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         mediaUploadRef.current = null
         trackFunnel('mint_success')
         setStep('done')
+        // The artist's copy of a limited edition (lib/creatorCopy): the
+        // artwork is minted whatever happens here, so a refusal or a revert is
+        // reported with the way to send it later, never as a failed mint.
+        if (copyFromWallet && data.contractAddress && isAddress(data.contractAddress)) {
+          toast.loading('Minted — confirm your copy in wallet…', {
+            id: 'mint',
+            description: 'Edition #1 is sent from your wallet (network fee only).',
+          })
+          try {
+            await creatorCopy.send({
+              collection: data.contractAddress,
+              tokenId: BigInt(data.tokenId),
+              createTx: typeof data.hash === 'string' && data.hash.startsWith('0x') ? (data.hash as `0x${string}`) : undefined,
+            })
+          } catch (err) {
+            toast.error('Minted — your copy wasn’t sent', {
+              duration: 15_000,
+              description: `${isUserRejection(err) ? 'You skipped it.' : humanError(err)} Send it any time from Mint → Airdrop, to your own address.`,
+            })
+          }
+        }
         // Updates the long-lived 'mint' loading toast — without an explicit
         // duration the success inherits its infinite lifetime and never
         // dismisses (see TERMINAL_TOAST_DURATION_MS).
@@ -2310,7 +2358,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </label>
           <p className="text-xs text-muted font-mono mt-1">
             {artistMintEnabled
-              ? 'edition #1 goes to your wallet — sale opens now'
+              ? is11
+                ? 'the 1/1 goes to your wallet, sent from it after the mint (network fee only) — no public sale'
+                : maxSupply.trim() && mintMode === 'media'
+                ? 'edition #1 goes to your wallet, sent from it after the mint (network fee only) — sale opens now'
+                : 'edition #1 goes to your wallet — sale opens now'
               : 'no copy minted — you can schedule when the sale opens'}
           </p>
         </div>

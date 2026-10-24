@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAccount, usePublicClient, useReadContracts, useSignMessage } from 'wagmi'
+import { useAccount, usePublicClient, useReadContracts } from 'wagmi'
 import { toast } from 'sonner'
 import {
   ERC20_ABI,
@@ -15,6 +15,7 @@ import { formatPrice } from '@/lib/inprocess'
 import { toastError } from '@/lib/toast'
 import type { SplitRecipient } from '@/lib/splits'
 import type { CollectCurrency } from '@/hooks/useDirectCollect'
+import { useSignMessage } from '@/hooks/useWallet'
 
 interface Options {
   address: string

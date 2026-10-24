@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
 import { Pencil, ChevronRight, Copy, Check, X, Search, ShieldAlert, Pin, BadgeCheck } from 'lucide-react'
@@ -39,6 +39,7 @@ import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { MaybeLazy } from './LazyMount'
 import { WalletsPanel } from './WalletsPanel'
+import { useSignMessage } from '@/hooks/useWallet'
 
 // Agent Collect setup — owner-only, smart-wallet-gated. Pulls in the Base
 // Account spend-permission utils, so it's code-split via next/dynamic (ssr:false)

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAccount, useSignTypedData } from 'wagmi'
+import { useAccount } from 'wagmi'
 import {
   buildMintIntent,
   KISMET_INTENT_DOMAIN,
@@ -10,6 +10,7 @@ import {
   type IntentEnvelope,
   type MintBody,
 } from '@/lib/intent'
+import { useSignTypedData } from '@/hooks/useWallet'
 
 /**
  * Client-side per-action intent signer using EIP-712 typed data. Pairs
