@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useReadContract, useWriteContract } from 'wagmi'
+import { useAccount, usePublicClient, useReadContract } from 'wagmi'
 import { mainnet } from 'wagmi/chains'
 import { toast } from 'sonner'
 import { ArrowLeft, Copy, Check, ChevronDown, ChevronUp, Star, X, Pencil, Eye, EyeOff, Send, Square, Clock, Paperclip } from 'lucide-react'
@@ -72,6 +72,7 @@ import { formatCfileSize, type CfilePublic } from '@/lib/collectorFileTypes'
 import { RaffleAdminPanel } from './RaffleAdminPanel'
 import { SaleWindow } from './SaleWindow'
 import { RaffleCallout } from './RaffleCallout'
+import { useWriteContract } from '@/hooks/useWallet'
 
 // The 3D pose-and-capture box is creator-only and needs a picked model before
 // it can render anything, so it is code-split (ssr:false) to keep

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount, useConfig, usePublicClient, useSendCalls, useWriteContract } from 'wagmi'
+import { useAccount, useConfig, usePublicClient } from 'wagmi'
 import { waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
@@ -14,6 +14,7 @@ import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError, isUserRejection, isUnsupportedMethodError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX, builderCodeCapabilities } from '@/lib/builderCode'
+import { useSendCalls, useWriteContract } from '@/hooks/useWallet'
 
 interface BuyButtonProps {
   listing: Listing

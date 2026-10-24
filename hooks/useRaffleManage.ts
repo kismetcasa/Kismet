@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'
@@ -9,6 +9,7 @@ import {
   buildRaffleManageMessage,
   type RaffleAction,
 } from '@/lib/raffleManageMessage'
+import { useSignMessage } from '@/hooks/useWallet'
 
 interface ManageParams {
   collection: string

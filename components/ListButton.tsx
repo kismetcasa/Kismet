@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAccount, useReadContract, useWriteContract, usePublicClient } from 'wagmi'
+import { useAccount, useReadContract, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
-import { useSignTypedData } from 'wagmi'
+import { useWriteContract, useSignTypedData } from '@/hooks/useWallet'
 import { parseEther, parseUnits } from 'viem'
 import type { Address } from 'viem'
 import { toast } from 'sonner'

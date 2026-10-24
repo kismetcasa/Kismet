@@ -1,6 +1,7 @@
 import { formatEther, formatUnits } from 'viem'
 import type { ZineHint } from './media/zineHint'
 import { USDC_BASE } from './zoraMint'
+import { SALE_CLOSED_AT_CREATE } from './creatorCopy'
 
 // ───────────────────────────────────────────────────────────────────────────
 // TERMINOLOGY: "moment" (In Process wire) ⇄ "artwork" (Kismet UI)
@@ -600,6 +601,10 @@ export function getSaleWindow(
   if (!saleConfig) return null
 
   const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
+
+  // Created closed (a 1/1 — lib/creatorCopy ONE_OF_ONE_SALE): never had a
+  // window, so there is no date to show.
+  if (saleConfig.saleEnd === SALE_CLOSED_AT_CREATE) return null
 
   // Resolve a real end (in seconds) or treat as open-ended.
   const realEnd = parseRealSaleEnd(saleConfig.saleEnd)

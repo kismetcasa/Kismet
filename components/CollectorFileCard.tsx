@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
 import { ArrowDownToLine, BookOpen, Eye, Link as LinkIcon } from 'lucide-react'
 import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'
@@ -15,6 +15,7 @@ import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
 const CollectorFileViewer = dynamic(() => import('./CollectorFileViewer').then((m) => m.CollectorFileViewer), { ssr: false })
 import { formatCfileSize, type CfilePublic, isViewableCfileKind } from '@/lib/collectorFileTypes'
 import { formatPrice } from '@/lib/inprocess'
+import { useSignMessage } from '@/hooks/useWallet'
 
 /**
  * The collector-download card on the artwork page

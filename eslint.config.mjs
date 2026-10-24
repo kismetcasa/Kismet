@@ -101,6 +101,27 @@ const config = [
     plugins: { local: { rules: { 'no-user-facing-moment': noUserFacingMoment } } },
     rules: { 'local/no-user-facing-moment': 'error' },
   },
+  {
+    // Every wallet prompt goes through hooks/useWallet (focus gate + stall
+    // notice — lib/walletPrompt has the Zen/Rainbow incident). wagmi's own
+    // prompt hooks are reachable only from that module.
+    files: ['**/*.{ts,tsx}'],
+    ignores: ['hooks/useWallet.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'wagmi',
+              importNames: ['useWriteContract', 'useSignTypedData', 'useSignMessage', 'useSendTransaction', 'useSendCalls'],
+              message: 'Import wallet-prompt hooks from @/hooks/useWallet — it guards each prompt (see lib/walletPrompt.ts).',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]
 
 export default config

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useAccount, useWriteContract, useSignMessage, usePublicClient } from 'wagmi'
+import { useAccount, usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { toast } from 'sonner'
@@ -18,6 +18,7 @@ import type { Listing } from '@/lib/listings'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { toastError } from '@/lib/toast'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract, useSignMessage } from '@/hooks/useWallet'
 
 interface MarketCardProps {
   listing: Listing

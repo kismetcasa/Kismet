@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { createSiweMessage } from 'viem/siwe'
 import { base } from 'wagmi/chains'
 import { useFarcaster } from '@/providers/FarcasterProvider'
+import { useSignMessage } from '@/hooks/useWallet'
 
 /**
  * Ensures the wallet has a valid Kismet session, prompting one wallet

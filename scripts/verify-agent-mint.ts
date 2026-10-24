@@ -127,6 +127,10 @@ console.log('\nbuildMintEnvelope — typedData ≡ server-rebuilt intent; correc
   ok(env.summary === `Mint “Art” (image) — 0.01 ETH, open edition, into new collection “Art”, payout to you (${me}), 1 copy minted to you.`, 'summary: new collection, default payout, artist copy', env.summary)
   const existing = buildMintEnvelope({ ...p, price: '5', currency: 'usdc', artistMint: false, editions: 10, collection: `0x${'cc'.repeat(20)}` }, nonce, expiresAt)
   ok(existing.summary === `Mint “Art” (image) — $5, 10 editions, into collection 0xcccc…cccc, payout to you (${me}).`, 'summary: existing collection, USDC, capped editions', existing.summary)
+  // In Process drops the copy of a limited edition (lib/creatorCopy) — the
+  // summary must not promise one.
+  const capped = buildMintEnvelope({ ...p, editions: 22 }, nonce, expiresAt)
+  ok(capped.summary.endsWith(', 22 editions, into new collection “Art”, payout to you (' + me + '), no copy minted to you (a limited edition’s copy: airdrop it to yourself after).'), 'summary: limited edition with artistMint says no copy', capped.summary)
   const paid = buildMintEnvelope({ ...p, payoutRecipient: `0x${'bb'.repeat(20)}` }, nonce, expiresAt, { payoutName: 'alice.base.eth' })
   ok(paid.summary.includes('payout to alice.base.eth (0xbbbb…bbbb)'), 'summary: explicit payoutRecipient as name + short address', paid.summary)
   const split = buildMintEnvelope({ ...p, splits: [{ address: ACCOUNT, percentAllocation: 60 }, { address: `0x${'bb'.repeat(20)}`, percentAllocation: 40 }] }, nonce, expiresAt)

@@ -1,12 +1,13 @@
 'use client'
 
-import { usePublicClient, useWriteContract } from 'wagmi'
+import { usePublicClient } from 'wagmi'
 import { base } from 'wagmi/chains'
 import type { Address, Hash } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { isMetadataUri } from '@/lib/momentUriEdit'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract } from '@/hooks/useWallet'
 
 export interface UpdateMomentUriRequest {
   collection: Address
