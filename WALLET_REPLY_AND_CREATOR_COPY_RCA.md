@@ -34,6 +34,22 @@ pending forever; focused window not an http tab → reply lost; two tabs both
 at id 0 → approving one resolves both with the same payload; Kismet's guard
 in front of case 2 → request held until the tab is focused, reply arrives.
 
+**What Frankie remembers (2026-10-24).** The failing Zen mint went
+"straight to the free signature", with no uploading or Arweave step: the
+resume path (a second attempt with the same file in the same browser reuses
+the upload, `lib/arweave/uploadPersistence`). That puts the signature at most
+~25 s (`MINT_MEDIA_VERIFY_BUDGET_MS`) after the click, so "another tab was
+active" is the less likely trigger for that attempt. The case that fits is
+the one where the focused window is not a web tab: `ensureSession` opens a
+Rainbow window for its sign-in signature first, and if that window still
+has focus — or Rainbow's background restarted and lost its cached tab —
+when the intent request arrives, the reply goes nowhere (harness case 3).
+The focus gate covers that case too: while Rainbow's window has focus,
+`document.hasFocus()` is false and the request waits for the page. Each
+stall is now reported (`[client-error] wallet_stall`: connector, whether the
+page waited for focus, focus at send and now), so the next occurrence names
+its trigger.
+
 **Fix.** Every wallet prompt goes through `hooks/useWallet.ts` (eslint
 `no-restricted-imports` bans wagmi's prompt hooks elsewhere):
 

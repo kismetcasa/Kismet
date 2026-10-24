@@ -23,20 +23,43 @@ import {
 import { toast } from 'sonner'
 import { guardWalletPrompt, needsFocusGate, type WalletPromptEnv, type WalletPromptKind } from '@/lib/walletPrompt'
 import { isCoinbaseWebView, isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
+import { reportClientError } from '@/lib/clientError'
 
 const STALL_TOAST_ID = 'wallet-stall'
 const FOCUS_TOAST_ID = 'wallet-focus'
 
-function walletPromptEnv(connectorType: string | undefined): WalletPromptEnv {
-  const gated = needsFocusGate(connectorType, {
+interface ConnectorInfo {
+  type?: string
+  id?: string
+  name?: string
+}
+
+function walletPromptEnv(connector: ConnectorInfo): WalletPromptEnv {
+  const gated = needsFocusGate(connector.type, {
     miniApp: isPotentialMiniAppEnv(),
     coinbaseWebView: isCoinbaseWebView(),
   })
+  // What the page looked like when the wallet was asked — reported with a
+  // stall, so the next lost reply says which wallet, and where focus was,
+  // instead of having to be reconstructed from a chat thread.
+  const startedAt = Date.now()
+  let waitedForFocus = false
+  let focusAtSend = typeof document !== 'undefined' && document.hasFocus()
   return {
     focus: gated ? { doc: document, win: window } : null,
     setTimeout: (fn, ms) => window.setTimeout(fn, ms),
     clearTimeout: (handle) => window.clearTimeout(handle as number),
     onStall: ({ kind, askAgain }) => {
+      reportClientError('wallet_stall', {
+        kind,
+        connector,
+        gated,
+        waitedForFocus,
+        focusAtSend,
+        focusNow: document.hasFocus(),
+        visibility: document.visibilityState,
+        waitedMs: Date.now() - startedAt,
+      })
       toast.warning('Your wallet hasn’t answered this page yet', {
         id: STALL_TOAST_ID,
         duration: Infinity,
@@ -56,10 +79,14 @@ function walletPromptEnv(connectorType: string | undefined): WalletPromptEnv {
     // this page, so say what moves it on. A hidden page shows nothing: the
     // request simply waits until the artist comes back.
     onWaitingForFocus: () => {
+      waitedForFocus = true
       if (document.visibilityState !== 'visible') return
       toast.info('Click this page to continue to your wallet', { id: FOCUS_TOAST_ID, duration: Infinity })
     },
-    onFocused: () => toast.dismiss(FOCUS_TOAST_ID),
+    onFocused: () => {
+      focusAtSend = true
+      toast.dismiss(FOCUS_TOAST_ID)
+    },
   }
 }
 
@@ -69,16 +96,19 @@ function walletPromptEnv(connectorType: string | undefined): WalletPromptEnv {
 function useGuard() {
   const { connector } = useAccount()
   const connectorType = connector?.type
+  const connectorId = connector?.id
+  const connectorName = connector?.name
   const inFlight = useRef(new Set<AbortController>())
   const guard = useCallback(
     <T>(kind: WalletPromptKind, request: () => Promise<T>) => {
       const controller = new AbortController()
       inFlight.current.add(controller)
-      return guardWalletPrompt(kind, request, walletPromptEnv(connectorType), controller.signal).finally(() =>
+      const env = walletPromptEnv({ type: connectorType, id: connectorId, name: connectorName })
+      return guardWalletPrompt(kind, request, env, controller.signal).finally(() =>
         inFlight.current.delete(controller),
       )
     },
-    [connectorType],
+    [connectorType, connectorId, connectorName],
   )
   const abortPrompts = useCallback(() => {
     for (const c of inFlight.current) c.abort(new DOMException('Answered elsewhere', 'AbortError'))
