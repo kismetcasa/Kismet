@@ -708,19 +708,26 @@ export function momentPosterUri(
   }
 }
 
+// The static card's counterpart to RECIPE_VERSION: Farcaster's immutable edge
+// cache keeps the card a URL first returned, so a fix to what the card draws
+// reaches cards already shared only under a new URL. Bump it on such a fix.
+// History: 2 = JPEG XL covers draw (each was a text card before).
+const STATIC_CARD_VERSION = 2
+
 /**
  * Pick the Farcaster embed imageUrl for a moment. The animated preview route
  * when a preview is cached — tagged ?v=<recipe> for the current generation so
  * Farcaster's immutable edge cache re-fetches fresh bytes after a recipe
  * change, untagged while only a legacy generation exists (identical URL to
  * what old casts already reference, so they keep animating) — else the static
- * Satori card. Every non-current state also kicks a background warm.
+ * Satori card, tagged ?v=<STATIC_CARD_VERSION> for the same reason. Every
+ * non-current state also kicks a background warm.
  */
 export async function resolveEmbedImageUrl(
   canonicalUrl: string,
   metadata: Parameters<typeof resolveMomentMedia>[0] | undefined,
 ): Promise<string> {
-  const staticUrl = `${canonicalUrl}/opengraph-image`
+  const staticUrl = `${canonicalUrl}/opengraph-image?v=${STATIC_CARD_VERSION}`
   const src = momentPreviewSource(metadata)
   if (!src) return staticUrl
   const version = await cachedPreviewVersion(src)

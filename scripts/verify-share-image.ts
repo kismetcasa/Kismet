@@ -9,20 +9,26 @@
 //      included, which the renderer then draws;
 //   4. and anything that cannot be — refused, unreachable, not an image, too
 //      slow, too big, redirected somewhere shareImageUrl would not go — is
-//      nothing, so the card falls back to its text layout.
+//      nothing, so the card falls back to its text layout;
+//   5. a JPEG XL cover, which sharp cannot read, is decoded by ffmpeg and
+//      inlined the same way — skipped, and said so, where no ffmpeg on PATH
+//      can decode one (the runtime image's can).
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-share-image.ts
 
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { brotliDecompressSync } from 'node:zlib'
 import { createElement } from 'react'
 import sharp from 'sharp'
 import { ImageResponse } from 'next/dist/compiled/@vercel/og/index.node.js'
 import { shareImageSource } from '../lib/media/shareImage.ts'
+import { jpegXlToPng } from '../lib/media/jpegXl.ts'
 import { bucketWidth, variantFileName } from '../lib/media/imgVariantCache.ts'
 
 let failures = 0
@@ -201,6 +207,74 @@ try {
     const src = await shareImageSource(COVER, undefined, cacheDir, wrapped).finally(() => clearTimeout(open))
     const ms = Date.now() - started
     check('and on a body that stalls part way', src === undefined && ms >= 3900 && ms < 5000, `${src?.slice(0, 30)} | ${ms} ms`)
+  }
+
+  console.log('\n5. a JPEG XL cover, which sharp cannot read')
+  {
+    // The pink above, 64×64 and lossless, as libjxl writes it: a bare
+    // codestream, and the same in the box container most exporters write.
+    const codestream = Buffer.from('/wpPQCQIAgEAZABLGIsVANQfYzB+LxABACCBfgEAgf/8fooM', 'base64')
+    const box = (type: string, body: Buffer) => {
+      const head = Buffer.alloc(8)
+      head.writeUInt32BE(8 + body.length)
+      head.write(type, 4, 'latin1')
+      return Buffer.concat([head, body])
+    }
+    const container = Buffer.concat([
+      box('JXL ', Buffer.from([0x0d, 0x0a, 0x87, 0x0a])),
+      box('ftyp', Buffer.from('jxl \0\0\0\0jxl ', 'latin1')),
+      box('jxlc', codestream),
+    ])
+    // Larger ones, brotli'd to stay short: the same pink 3000×1500, and
+    // 8000×6400 — 51 megapixels in 7KB.
+    const brotli = (b64: string) => brotliDecompressSync(Buffer.from(b64, 'base64'))
+    const wide = brotli('G5ECuD4ep1fmdT9AyCMjYyGQVTCZm3tv6FDe1hP+hHR4LQksygLDKLQ0DeML3EqZHrwEQKHuBDRCSDk6N50RS1wZ0dmdBgTQhfCThMLm1eBSiamt8PwdzgOu2sSKSFFiw4wTlcBDtr8gZ/LYkhi0dlghdvnFI+o1Y/IB+rZr1tAjCm/DwNsC')
+    const huge = brotli('G6EaED4ON65OPwyKF5wkuJzUyq1j8cXDcKKmqVHBD0QVx38C4fA1QIAm9l4CntfXAj5Akdpi5KlTZXB1AMhUvTRA6MlRyOOEQYPsHbHydKWQAxtwRJbiSLMPNvDgwwYcNg8yTqtt1zsyUYzqgCxTu9XppbD35BnJjo9musAwAGwB')
+    const card = async (body: Buffer) => {
+      const { fn } = fetcher({ [AT]: { body, headers: { 'content-type': 'image/jxl' } } })
+      return shareImageSource(COVER, undefined, cacheDir, fn)
+    }
+    const decoded = async (src: string | undefined) => {
+      if (!isJpegDataUri(src)) return null
+      const img = sharp(Buffer.from(src!.slice(23), 'base64'))
+      const [{ width, height }, { channels }] = await Promise.all([img.metadata(), img.stats()])
+      return { width, height, mean: channels.map((c) => Math.round(c.mean)) }
+    }
+
+    check('sharp cannot read one — why every such cover was a text card', await sharp(codestream).metadata().then(() => false, () => true))
+    let decoder = false
+    try {
+      decoder = execFileSync('ffmpeg', ['-hide_banner', '-decoders'], { encoding: 'utf8' }).includes('jpegxl')
+    } catch {
+      // No ffmpeg at all.
+    }
+    if (!decoder) {
+      console.log('  SKIP  decoding one — no ffmpeg with a JPEG XL decoder on PATH (the runtime image\'s has one)')
+    } else {
+      for (const [form, body] of [['a bare codestream', codestream], ['the box container', container]] as const) {
+        const src = await card(body)
+        check(`${form} comes back a jpeg`, isJpegDataUri(src), src?.slice(0, 40))
+        const meta = await decoded(src)
+        check('at its own size, not enlarged', meta?.width === 64 && meta?.height === 64, `${meta?.width}×${meta?.height}`)
+        check('in its own colours', !!meta && [255, 135, 206].every((v, k) => Math.abs(meta.mean[k] - v) <= 6), `${meta?.mean}`)
+        check('which the renderer draws', !!src && (await draws(src)))
+      }
+      {
+        const meta = await decoded(await card(wide))
+        check('a large one is scaled to fit the card (1200 across)', meta?.width === 1200 && meta?.height === 600, `${meta?.width}×${meta?.height}`)
+      }
+      check('one past 24 megapixels is nothing', (await card(huge)) === undefined)
+      const refusal = await jpegXlToPng(huge, 1200).then(() => '', (err: { stderr?: string }) => err.stderr ?? '')
+      check('refused from its header, before a frame is allocated', refusal.includes('max pixel count'), refusal.slice(0, 80))
+      check('a truncated one is nothing', (await card(codestream.subarray(0, 20))) === undefined)
+      {
+        const [a, b] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(codestream, 1200)])
+        check('the same cover asked for twice at once is decoded once, for both',
+          a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value)
+        const [c, d] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200)])
+        check('another cover while one decodes is refused, not queued', c.status === 'fulfilled' && d.status === 'rejected')
+      }
+    }
   }
 } finally {
   rmSync(cacheDir, { recursive: true, force: true })

@@ -108,7 +108,9 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 # the no-wasm-cap fallback for GIFs too large for the in-browser path, and
 # the flash screening of machines' stage frames (lib/experience/frameScreen),
 # without which no artist's frame is ever played. Static Alpine package, no
-# extra runtime deps; both shell out to the binary via child_process.
+# extra runtime deps; both shell out to the binary via child_process. Share
+# cards also use its JPEG XL decoder (lib/media/jpegXl) for .jxl covers, which
+# sharp cannot read: `ffmpeg -decoders | grep jpegxl` must list one.
 RUN apk add --no-cache ffmpeg
 
 # Non-root runtime user (security baseline; some host kernels' seccomp

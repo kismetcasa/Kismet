@@ -4,7 +4,7 @@ import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
 import { getMomentContent } from '@/lib/momentContent'
-import { shareImageSource } from '@/lib/media/shareImage'
+import { shareImageSource, shareImageUrl } from '@/lib/media/shareImage'
 import { readPreferredStill } from '@/lib/media/animatedPreview'
 import {
   shareCard,
@@ -48,6 +48,9 @@ export default async function Image({ params }: Props) {
   let label = 'ARTWORK'
   let imageUrl: string | undefined
   let excerpt: string | undefined
+  // The moment has a cover this render could not draw (a gateway still
+  // propagating or down, a decoder busy or missing) — see the response below.
+  let missedCover = false
 
   if (isAddress(address) && isValidTokenId(tokenId)) {
     // fetchMomentDetail stitches the creator field via the timeline
@@ -115,10 +118,16 @@ export default async function Image({ params }: Props) {
           excerpt = body
         }
       }
+      missedCover = !imageUrl && !!shareImageUrl(detail.metadata?.image, detail.metadata?.animation_url)
     }
   }
 
   return new ImageResponse(shareCard({ label, title, creator, imageUrl, excerpt }), {
     ...SHARE_CARD_SIZE,
+    // next/og sends every card with a one-year immutable cache, and
+    // Farcaster's image cache keeps whatever a URL first returned. A text card
+    // standing in for a cover it missed is a failure that can pass, so it is
+    // cached for a minute and the next fetch can draw the art.
+    ...(missedCover && { headers: { 'Cache-Control': 'public, max-age=60' } }),
   })
 }

@@ -1,6 +1,7 @@
 import sharp from 'sharp'
 import { resolveUri } from '@/lib/inprocess'
 import { isSafePublicHttpsUrl } from '@/lib/safeUrl'
+import { isJpegXl, jpegXlToPng } from '@/lib/media/jpegXl'
 import {
   bucketWidth,
   readVariant,
@@ -111,7 +112,10 @@ export async function shareImageSource(
 }
 
 async function jpegDataUri(bytes: Buffer): Promise<string> {
-  const jpeg = await sharp(bytes)
+  // sharp cannot read a JPEG XL cover at all — every one was a text card — so
+  // ffmpeg decodes it first (lib/media/jpegXl), already fit to the card.
+  const source = isJpegXl(bytes) ? await jpegXlToPng(bytes, SHARE_SOURCE_MAX_WIDTH) : bytes
+  const jpeg = await sharp(source)
     .resize({ width: SHARE_SOURCE_MAX_WIDTH, height: SHARE_SOURCE_MAX_WIDTH, fit: 'inside', withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer()
