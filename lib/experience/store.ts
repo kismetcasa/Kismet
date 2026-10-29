@@ -228,10 +228,19 @@ export async function releaseCapsule(
  *  one of them sees the other's result and refuses. */
 export const machineStateLockKey = (id: string): string => `${P}:lock:state:${id}`
 
-export async function setMachineState(id: string, state: MachineState): Promise<Machine | null> {
+/** A machine's new state. Delisting it keeps the curator's reason on it
+ *  (`delistReason`) for its creator to read; every other state drops any
+ *  reason it had, so a machine back on the shelves never shows an old one. */
+export async function setMachineState(id: string, state: MachineState, delistReason?: string): Promise<Machine | null> {
   const m = await getMachine(id)
   if (!m) return null
-  const next: Machine = { ...m, state, ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}) }
+  const { delistReason: _previous, ...rest } = m
+  const next: Machine = {
+    ...rest,
+    state,
+    ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}),
+    ...(state === 'delisted' && (delistReason ?? m.delistReason) ? { delistReason: delistReason ?? m.delistReason } : {}),
+  }
   await redis.set(kMachine(id), JSON.stringify(next))
   return next
 }

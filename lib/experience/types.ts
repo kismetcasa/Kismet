@@ -310,6 +310,10 @@ interface MachineCommon {
   cover?: MachineCover
   /** The artist's own frames for the play; absent, the platform's capsule. */
   frames?: MachineFrames
+  /** Why a curator delisted it, as its creator was told (lib/experience/decline
+   *  declineText). Kept while it stays delisted, so its creator can read it
+   *  where they manage it; any other state drops it (store.setMachineState). */
+  delistReason?: string
 }
 
 /** A machine that sells capsules: a player pays the capsule price once and a

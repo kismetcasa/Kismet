@@ -18,7 +18,8 @@ import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen } from './M
 import { MachineArtEditors } from './MachineArtEditors'
 import { GachaponShareButton } from './GachaponShareButton'
 import { RecentWins, type RecentWin } from './RecentWins'
-import type { MachineFrames } from '@/lib/experience/types'
+import type { MachineFrames, MachineState } from '@/lib/experience/types'
+import { revealSelling } from '@/lib/experience/selling'
 import type { FrameStatus } from '@/lib/experience/cover'
 
 /**
@@ -43,7 +44,7 @@ interface LineupRow {
 }
 
 interface Payload {
-  machine: { id: string; name: string; state: string; creator: string; cover: string | null; frames: MachineFrames | null; frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null }
+  machine: { id: string; name: string; state: MachineState; creator: string; cover: string | null; frames: MachineFrames | null; frameStatus: Partial<Record<keyof MachineFrames, FrameStatus>> | null }
   /** Who earns the mint referral on collects from this machine: its curator,
    *  or null when Kismet curates (Kismet's own referral then applies). */
   referral: string | null
@@ -122,6 +123,8 @@ export function RevealMachine({ id }: { id: string }) {
 
   const live = data.machine.state === 'live'
   const n = data.lineup.length
+  // The rule every card listing this machine runs too (lib/experience/selling).
+  const selling = revealSelling({ state: data.machine.state, onSale: n, waiting: data.waiting })
   // What the box says to a screen reader as it changes (WCAG 4.1.3).
   const announcement = !pick
     ? ''
@@ -136,6 +139,13 @@ export function RevealMachine({ id }: { id: string }) {
   return (
     <div className="max-w-3xl mx-auto">
       <header className="mb-6">
+        {/* Only its creator reaches a machine waiting for a curator (the route
+            and the page both check): a preview, which sells nothing. */}
+        {data.machine.state === 'review' && (
+          <p role="status" className="mb-4 border border-[#ffb375]/40 bg-[#ffb375]/5 px-3 py-2 text-[11px] font-mono text-[#ffb375] leading-relaxed">
+            Preview · only you can see this page until a curator approves the machine. Pulls open once it&apos;s live.
+          </p>
+        )}
         <h1 className="text-lg font-mono tracking-wider text-ink">{data.machine.name}</h1>
         <p className="text-[11px] font-mono text-muted mt-1">
           curated by {nameOf(data.machine.creator)} · pull for free, collect what you reveal at its price
@@ -231,16 +241,22 @@ export function RevealMachine({ id }: { id: string }) {
         ) : !opening && (
           <div>
             <p className="text-xs font-mono uppercase tracking-widest text-muted">
-              {!live ? 'this machine is closed' : n === 0 ? 'nothing on sale right now' : 'free to pull'}
+              {selling.open
+                ? 'free to pull'
+                : selling.reason === 'in review'
+                  ? 'a preview: pulls open once a curator approves it'
+                  : selling.reason === 'season closed'
+                    ? 'this machine is closed'
+                    : 'nothing on sale right now'}
             </p>
             <button
               onClick={pull}
-              disabled={!live || n === 0}
+              disabled={!selling.open}
               className="mt-5 px-6 py-3 text-xs font-mono tracking-widest uppercase btn-accent disabled:opacity-40"
             >
               pull
             </button>
-            {live && n === 0 && data.waiting > 0 && (
+            {!selling.open && selling.reason === 'nothing on sale right now' && data.waiting > 0 && (
               <p className="mt-2.5 text-[11px] font-mono text-muted">
                 {data.waiting} {data.waiting === 1 ? 'piece joins' : 'pieces join'} when {data.waiting === 1 ? 'its sale opens' : 'their sales open'}
               </p>

@@ -556,7 +556,8 @@ export function CapsuleStudio() {
 }
 
 /** Where a machine sent for review lands: it is not public yet, so the page
- *  says where it will be and where the creator can watch it meanwhile. */
+ *  says where it will be, and offers its creator their own preview of it and
+ *  the profile where they can watch it meanwhile. */
 export function StudioSubmitted({
   title,
   machine,
@@ -580,6 +581,9 @@ export function StudioSubmitted({
           way.
         </p>
         <div className="flex flex-wrap gap-4 mt-4">
+          <Link href={`/play/${machine.id}`} className="text-[11px] font-mono text-dim hover:text-ink underline">
+            preview it →
+          </Link>
           {address && (
             <Link href={`/profile/${address}`} className="text-[11px] font-mono text-dim hover:text-ink underline">
               see it on your profile →

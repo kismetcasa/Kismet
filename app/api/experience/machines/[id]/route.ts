@@ -46,24 +46,33 @@ import { ADMIN_ADDRESS } from '@/lib/config'
  * an ethic, and the client is built so the play control cannot render without
  * this payload.
  */
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params
   if (!/^[a-z0-9-]{3,64}$/.test(id)) return errorResponse(400, 'Invalid id')
 
   const machine = await getMachine(id)
   if (!machine) return errorResponse(404, 'Machine not found')
-  if (machine.state === 'draft' || machine.state === 'review') {
-    // Unlisted machines are not public. The creator sees their own on their
-    // profile (GET /api/experience/machines?creator=).
-    return errorResponse(404, 'Machine not found')
+  // Unlisted machines are not public. A draft is no one's to see; one waiting
+  // for a curator is its creator's alone, for the page's preview (play refuses
+  // it, and the page sells nothing while it waits). Never cached.
+  if (machine.state === 'draft') return errorResponse(404, 'Machine not found')
+  const preview = machine.state === 'review'
+  if (preview) {
+    const viewer = await getSessionAddress(req).catch(() => null)
+    if (!viewer || viewer.toLowerCase() !== machine.creator.toLowerCase()) return errorResponse(404, 'Machine not found')
   }
+  const privately = preview ? { headers: { 'Cache-Control': 'private, no-store' } } : undefined
   // A frame not yet screened — its gateway was not ready, or the box had no
   // ffmpeg — is tried again after a read, and is not played until it passes.
   if (screeningDue(machine.frames)) after(() => screenMachineFramesSoon(id).catch(() => {}))
 
   const gate = await getGateConfig()
   const passCollection = gate.passCollection?.toLowerCase() ?? null
-  if (isReveal(machine)) return revealPayload(machine, passCollection)
+  if (isReveal(machine)) {
+    const res = await revealPayload(machine, passCollection)
+    if (privately) res.headers.set('Cache-Control', 'private, no-store')
+    return res
+  }
 
   const poolRead = getPool(id)
   const [pool, remaining, supply, plays, sale] = await Promise.all([
@@ -185,7 +194,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     // asserted: anyone can record it now and hold us to it tomorrow.
     fairness,
     recentWins: plays,
-  })
+  }, privately)
 }
 
 /**

@@ -8,8 +8,9 @@ import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useEthUsd } from '@/hooks/useEthUsd'
 import { useProfileNames } from '@/hooks/useProfileNames'
 import { ethUsdApprox } from '@/lib/usdApprox'
-import { formatPrice, formatSaleWindowLabel, getSaleWindow } from '@/lib/inprocess'
+import { formatPrice, formatSaleWindowLabel } from '@/lib/inprocess'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
+import { capsuleSelling } from '@/lib/experience/selling'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
@@ -17,7 +18,7 @@ import { MachineArtEditors } from './MachineArtEditors'
 import { GachaponShareButton } from './GachaponShareButton'
 import { RecentWins, type RecentWin } from './RecentWins'
 import { rememberCommitments } from '@/lib/experience/seenCommitments'
-import type { MachineFrames } from '@/lib/experience/types'
+import type { MachineFrames, MachineState } from '@/lib/experience/types'
 import type { FrameStatus } from '@/lib/experience/cover'
 import {
   artworkTitle,
@@ -77,7 +78,7 @@ interface MachinePayload {
   machine: {
     id: string
     name: string
-    state: string
+    state: MachineState
     creator: string
     /** Its cover, an ar:// upload; null for a machine published before covers. */
     cover: string | null
@@ -137,8 +138,9 @@ interface Prize {
  *  about. */
 const PULL_SIZES = [1, 5, 10] as const
 
-/** The pull sizes a machine can honour: none larger than the artworks it has
- *  left. `left` null means unlimited. */
+/** The pull sizes a machine can honour: none larger than what it has left —
+ *  the artworks to give and the capsules to sell, whichever is fewer (a mint
+ *  past the capsule's supply reverts). `left` null means unlimited. */
 function pullSizes(left: number | null): number[] {
   return PULL_SIZES.filter((n) => left === null || n <= left)
 }
@@ -462,46 +464,40 @@ export function ExperienceMachine({ id }: { id: string }) {
     )
   }
 
-  // Two independent gates on SELLING a capsule, and they can disagree: the
-  // machine's state is our record, the sale window is the chain's. A machine
-  // left `live` after its capsule sale closed would previously have offered a
-  // play button whose mint reverts.
+  // Whether this page sells a play, and if not why, from the rule every card
+  // that lists this machine runs too (lib/experience/selling), so a card never
+  // offers a play this button refuses. The gates it holds, in order: our
+  // record (`live`) and the chain's sale can disagree — a machine left live
+  // after its sale closed once offered a button whose mint reverted; an
+  // unreadable sale is NOT an open one, since selling a randomized purchase
+  // with its cost undisclosed is what this surface's disclosure exists to
+  // prevent; a capsule sold out cannot be minted; and NOTHING IS SOLD THAT
+  // CANNOT BE DELIVERED — a capsule is a promise of an artwork, so the
+  // button needs something left to draw, on a table the chain has just
+  // confirmed, and a pull no larger than what is left. Neither gate touches
+  // opening a capsule already paid for: an ended season and a closed sale
+  // stop sales only, and the recovery panel below stays live.
   const sale = data.machine.sale
-  const saleWindow = getSaleWindow(
-    sale ? { saleStart: String(sale.saleStart), saleEnd: String(sale.saleEnd) } : null,
-  )
-  const windowOpen = !saleWindow || saleWindow.state === 'live' || saleWindow.state === 'closing'
-  // An unreadable sale is NOT an open one. `!saleWindow` short-circuiting to
-  // "open" meant a single RPC blip left the button live with no price shown —
-  // selling a randomized purchase with the cost undisclosed, which is the exact
-  // thing this surface's odds disclosure exists to prevent.
-  const priced = data.machine.saleReadable && !!sale && BigInt(sale.pricePerToken || '0') > 0n
-  const saleOpen = windowOpen && priced
-  // NOTHING IS SOLD THAT CANNOT BE DELIVERED. A capsule is a promise of an
-  // artwork, so the button needs more than an open sale: something left to
-  // draw, a table the chain has just confirmed, and — for a multi-pull — at
-  // least as many artworks left as capsules in the pull. Otherwise a player
-  // pays and waits on a draw with nothing behind it.
-  const sizes = pullSizes(data.coverage.prizesRemaining)
-  const drawable = data.odds.some((o) => o.probability > 0) && sizes.length > 0
-  const pullSize = effectivePull(data.coverage.prizesRemaining, pull)
-  const playable = data.machine.state === 'live' && saleOpen && data.standingReadable && drawable
-  // NEITHER gate touches opening a capsule already paid for: an ended season and
-  // a closed sale both stop sales only, and the recovery panel below stays live.
-  const closedLabel =
-    data.machine.state !== 'live'
-      ? 'season closed'
-      : !data.machine.saleReadable
-        ? 'price unavailable'
-        : !priced
-          ? 'not for sale'
-          : saleWindow?.state === 'scheduled'
-            ? 'not open yet'
-            : !windowOpen
-              ? 'sale ended'
-              : !data.standingReadable
-                ? 'checking what’s left'
-                : 'nothing left to win'
+  const selling = capsuleSelling({
+    state: data.machine.state,
+    sale,
+    saleReadable: data.machine.saleReadable,
+    capsulesOutstanding: data.coverage.capsulesOutstanding,
+    standingReadable: data.standingReadable,
+    drawable: data.odds.some((o) => o.probability > 0),
+    prizesRemaining: data.coverage.prizesRemaining,
+  })
+  const saleWindow = selling.window
+  const left =
+    data.coverage.prizesRemaining === null
+      ? data.coverage.capsulesOutstanding
+      : data.coverage.capsulesOutstanding === null
+        ? data.coverage.prizesRemaining
+        : Math.min(data.coverage.prizesRemaining, data.coverage.capsulesOutstanding)
+  const sizes = pullSizes(left)
+  const pullSize = effectivePull(left, pull)
+  const playable = selling.open
+  const closedLabel = selling.open ? 'play' : selling.reason
   const unitPrice = sale ? formatPrice(sale.pricePerToken, sale.currency) : null
   const totalPrice =
     sale && pullSize > 1
@@ -578,6 +574,13 @@ export function ExperienceMachine({ id }: { id: string }) {
   return (
     <div className="max-w-3xl mx-auto">
       <header className="mb-6">
+        {/* Only its creator reaches a machine waiting for a curator (the route
+            and the page both check): a preview, which sells nothing. */}
+        {data.machine.state === 'review' && (
+          <p role="status" className="mb-4 border border-[#ffb375]/40 bg-[#ffb375]/5 px-3 py-2 text-[11px] font-mono text-[#ffb375] leading-relaxed">
+            Preview · only you can see this page until a curator approves the machine. Plays open once it&apos;s live.
+          </p>
+        )}
         <h1 className="text-lg font-mono tracking-wider text-ink">{data.machine.name}</h1>
         <p className="text-[11px] font-mono text-muted mt-1">
           by {nameOf(data.machine.creator)} · every play returns an artwork
@@ -720,15 +723,21 @@ export function ExperienceMachine({ id }: { id: string }) {
               usdPrice={usdPrice}
               odds={oddsLine}
               note={
-                !playable && data.machine.state === 'live'
-                  ? !data.machine.saleReadable
+                selling.open
+                  ? null
+                  : selling.reason === 'price unavailable'
                     ? 'We could not read this capsule’s price just now — reload in a moment.'
-                    : saleOpen && !data.standingReadable
+                    : selling.reason === 'checking what’s left'
                       ? 'We couldn’t confirm which artworks are left just now — reload in a moment.'
-                      : saleOpen && !drawable
+                      : selling.reason === 'nothing left to win'
                         ? 'Every artwork in this machine has been given out, so capsules are not on sale here.'
-                        : (formatSaleWindowLabel(saleWindow) ?? null)
-                  : null
+                        : selling.reason === 'sold out'
+                          ? 'Every capsule has been sold, so there are none left to buy here.'
+                          : selling.reason === 'in review'
+                            ? 'A preview: plays open once a curator approves this machine.'
+                            : selling.reason === 'not for sale' || selling.reason === 'not open yet' || selling.reason === 'sale ended'
+                              ? (formatSaleWindowLabel(saleWindow) ?? null)
+                              : null
               }
             />
           </div>
@@ -893,35 +902,39 @@ export function ExperienceMachine({ id }: { id: string }) {
       {/* The floor under every recovery path. Discovery needs the RPC to answer
           and a connected wallet; this needs neither fact about us to be true —
           any capsule transaction hash, from any frontend, any device, opens
-          through the same verified play route. */}
-      <section className="mt-6">
-        <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">
-          minted a capsule elsewhere?
-        </h2>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            value={redeemHash}
-            onChange={(e) => setRedeemHash(e.target.value.trim())}
-            placeholder="paste its transaction hash (0x…)"
-            spellCheck={false}
-            aria-label="Capsule transaction hash to redeem"
-            className="flex-1 min-w-0 bg-transparent border border-line px-3 py-2 text-[11px] font-mono text-ink placeholder:text-subtle focus:outline-none focus:border-dim"
-          />
-          <button
-            onClick={() => {
-              if (/^0x[0-9a-fA-F]{64}$/.test(redeemHash)) resume(redeemHash, 'probe')
-            }}
-            disabled={!!resuming || !/^0x[0-9a-fA-F]{64}$/.test(redeemHash)}
-            className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
-          >
-            {resuming === `${redeemHash}:probe` ? 'opening…' : 'redeem'}
-          </button>
-        </div>
-        <p className="text-[10px] font-mono text-subtle mt-1.5">
-          Capsules minted on zora.co or anywhere else work here — the play is proved against the
-          transaction itself.
-        </p>
-      </section>
+          through the same verified play route. A machine waiting for a curator
+          has nothing to recover: no capsule was sold against it, and play
+          refuses it (app/api/experience/play). */}
+      {data.machine.state !== 'review' && (
+        <section className="mt-6">
+          <h2 className="text-[11px] font-mono uppercase tracking-widest text-muted mb-2">
+            minted a capsule elsewhere?
+          </h2>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              value={redeemHash}
+              onChange={(e) => setRedeemHash(e.target.value.trim())}
+              placeholder="paste its transaction hash (0x…)"
+              spellCheck={false}
+              aria-label="Capsule transaction hash to redeem"
+              className="flex-1 min-w-0 bg-transparent border border-line px-3 py-2 text-[11px] font-mono text-ink placeholder:text-subtle focus:outline-none focus:border-dim"
+            />
+            <button
+              onClick={() => {
+                if (/^0x[0-9a-fA-F]{64}$/.test(redeemHash)) resume(redeemHash, 'probe')
+              }}
+              disabled={!!resuming || !/^0x[0-9a-fA-F]{64}$/.test(redeemHash)}
+              className="px-4 py-2 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40 shrink-0"
+            >
+              {resuming === `${redeemHash}:probe` ? 'opening…' : 'redeem'}
+            </button>
+          </div>
+          <p className="text-[10px] font-mono text-subtle mt-1.5">
+            Capsules minted on zora.co or anywhere else work here — the play is proved against the
+            transaction itself.
+          </p>
+        </section>
+      )}
 
       <RecentWins machineId={id} wins={data.recentWins} account={account} nameOf={nameOf} />
     </div>

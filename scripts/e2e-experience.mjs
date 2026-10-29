@@ -849,6 +849,15 @@ const check = (name, cond, detail = '') => {
   else { console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); failures++ }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+/** The order an owner's list reads in (components/ProfileMachines): a draft,
+ *  a delisted machine, a live one that has stopped selling, one waiting for a
+ *  curator, what is on sale, what has closed — each group in the API's order. */
+const STUCK = ['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now']
+const ownerOrder = (machines) => {
+  const stuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason)
+  const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 2 : m.state === 'review' ? 3 : m.state === 'live' ? 4 : 5)
+  return [...machines].sort((a, b) => rank(a) - rank(b)).map((m) => m.name.toLowerCase())
+}
 let ipCounter = 0
 const USER_COOKIE = '__Host-kismet_session'
 const ADMIN_COOKIE = '__Host-kismetart-admin'
@@ -2525,6 +2534,13 @@ try {
       sets.get('kismetart:xp:dry-season:notices')?.has('empty') && ![...strings.keys()].some((k) => k.includes(':notice:')))
     v = await view()
     check('its page now shows nothing to win, on a table the chain confirmed', (v.odds ?? []).length === 0 && v.standingReadable === true && v.coverage?.prizesRemaining === 0, table(v))
+    {
+      const shelfDry = ((await call('/api/experience/machines')).json?.machines ?? []).find((m) => m.id === 'dry-season')
+      const profileDry = ((await call(`/api/experience/machines?creator=${ADMIN}`)).json?.machines ?? []).find((m) => m.id === 'dry-season')
+      check('and every list says so, as its page does: the play list and its creator\'s profile',
+        shelfDry?.selling?.open === false && shelfDry.selling.reason === 'nothing left to win' && profileDry?.selling?.reason === 'nothing left to win',
+        JSON.stringify([shelfDry?.selling, profileDry?.selling]))
+    }
 
     // Bought anyway, where Kismet cannot stop it: owed, not lost.
     addMint({ tx: TX_DRY_2, collection: CAPSULE_D, to: PLAYER, id: 1n, value: 1n, block: chain.head })
@@ -2636,7 +2652,18 @@ try {
     check('a live machine cannot be delisted without a reason for its creator', unexplained.status === 400 && /say why/i.test(unexplained.json?.error ?? '') &&
       (await call('/api/experience/machines/new-voices')).json?.machine?.state === 'live', `${unexplained.status} ${JSON.stringify(unexplained.json)}`)
     await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'delisted', reason: 'content', note: 'piece 3 shows a real person without consent' } })
+    {
+      const nvFor = async (user) => ((await call(`/api/experience/machines?creator=${CURATOR}`, { user })).json?.machines ?? []).find((m) => m.id === 'new-voices')
+      const own = await nvFor(CURATOR_TOKEN)
+      check('a delisted machine\'s creator reads why on their own list, in the words their notification used',
+        own?.state === 'delisted' && own.delistReason === 'it includes something Kismet doesn’t allow — piece 3 shows a real person without consent', JSON.stringify(own))
+      check('and no one else does', (await nvFor()) === undefined && (await nvFor(USER_TOKEN)) === undefined)
+    }
     await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'new-voices', state: 'live' } })
+    {
+      const back = ((await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.machines ?? []).find((m) => m.id === 'new-voices')
+      check('back on the shelves, the reason goes with the delisting', back?.state === 'live' && back.delistReason === undefined, JSON.stringify(back))
+    }
     check('taking a machine off the shelves and back tells nobody twice', featured(ARTIST_B, 'new-voices').length === 1 && featured(CREATOR2, 'new-voices').length === 1)
     const fi = featured(ARTIST_B, 'fresh-ink')
     check('a linked machine going live tells the artists of what it took in', fi.length === 1 && featured(CREATOR2, 'fresh-ink').length === 1)
@@ -3078,10 +3105,19 @@ try {
           const cards = page.locator('article', { has: page.locator('a[href^="/play/"]') })
           const shelved = (await call('/api/experience/machines')).json.machines
           check('every machine on the shelves is a card', (await cards.count()) === shelved.length, `${await cards.count()} vs ${shelved.length}`)
-          check('each names its kind and whether it is live', (await cards.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed)\b/i.test(t)))
+          check('each names its kind and what its page would do with a play', (await cards.allInnerTexts()).every((t) => /\b(capsule|reveal)\b/i.test(t) && /\b(live|closed|soon|sold out|unavailable)\b/i.test(t)))
           const [a, b] = [await cards.nth(0).boundingBox(), await cards.nth(1).boundingBox()]
           check('two to a row on a wide screen', !!a && !!b && Math.abs(a.y - b.y) < 1 && b.x > a.x, JSON.stringify([a, b]))
           const card = (id) => cards.filter({ has: page.locator(`a[href="/play/${id}"]`) })
+          // A card offers only the play its page sells (lib/experience/selling):
+          // dry-season has given out every artwork (6l), so its page reads
+          // "nothing left to win" and so does its card, after every one selling.
+          const dryCard = (await card('dry-season').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a machine with nothing left to win reads sold out there, with a way to look and none to play',
+            dryCard.includes('sold out') && dryCard.includes('nothing left to win') && (await card('dry-season').getByRole('link', { name: 'view', exact: true }).count()) === 1 &&
+              (await card('dry-season').getByRole('link', { name: 'play', exact: true }).count()) === 0, dryCard)
+          const labels = await cards.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim()))
+          check('and comes after every machine selling a play', labels.includes('live') && labels.lastIndexOf('live') < labels.indexOf('sold out'), labels.join(','))
           // Scrolled to first, as a visitor would: a card far down the list
           // renders its image only as it nears the viewport.
           const coverOf = async (id) => {
@@ -4212,6 +4248,71 @@ try {
           chain.tokens.set(key(POOL, 18), { maxSupply: 2n, totalMinted: 2n })
         }
 
+        // ── a capsule machine its page won't sell, read so wherever it is listed ──
+        // One rule decides for the page and every card (lib/experience/selling):
+        // a sale that has ended or not opened, an unreadable price and a capsule
+        // sold out each stop the button and read so on the play list and on its
+        // creator's profile — and a pull is never more than the capsules left.
+        {
+          const capsuleKey = key(CAPSULE_9, 1)
+          const savedSale = chain.sales.get(capsuleKey)
+          const savedSupply = chain.tokens.get(capsuleKey)
+          const verdicts = async () => {
+            const shelf = ((await call('/api/experience/machines')).json?.machines ?? []).find((m) => m.id === 'owned-floor')
+            const mine = ((await call(`/api/experience/machines?creator=${ADMIN}`)).json?.machines ?? []).find((m) => m.id === 'owned-floor')
+            return [shelf?.selling, mine?.selling]
+          }
+          const both = (vs, reason) => vs.every((v) => v?.open === false && v.reason === reason)
+          const button = async (label) => {
+            const pg = await open('/play/owned-floor')
+            await pg.getByText('Owned Floor').first().waitFor()
+            const b = pg.getByRole('button', { name: label, exact: true })
+            await b.waitFor({ timeout: 10_000 }).catch(() => {})
+            const shown = (await b.count()) === 1 && (await b.isDisabled())
+            const body = await text(pg)
+            await pg.context().close()
+            return { shown, body }
+          }
+          let vs = await verdicts()
+          check('a capsule machine on sale reads open on the play list and its creator\'s profile', vs.every((v) => v?.open === true), JSON.stringify(vs))
+
+          const nowSec = BigInt(Math.floor(Date.now() / 1000))
+          chain.sales.set(capsuleKey, { ...savedSale, saleEnd: nowSec - 60n })
+          vs = await verdicts()
+          let b = await button('sale ended')
+          check('a sale that has ended stops the button, and reads "sale ended" on every list', both(vs, 'sale ended') && b.shown, JSON.stringify(vs))
+
+          chain.sales.set(capsuleKey, { ...savedSale, saleStart: nowSec + 86_400n })
+          vs = await verdicts()
+          b = await button('not open yet')
+          check('one that opens tomorrow says not open yet, and when, on every list',
+            both(vs, 'not open yet') && vs.every((v) => v.at === Number(nowSec + 86_400n)) && b.shown, JSON.stringify(vs))
+
+          chain.sales.delete(capsuleKey)
+          vs = await verdicts()
+          check('an unreadable price reads "price unavailable" on every list, never on sale', both(vs, 'price unavailable'), JSON.stringify(vs))
+          chain.sales.set(capsuleKey, savedSale)
+
+          chain.tokens.set(capsuleKey, { maxSupply: 10n, totalMinted: 10n })
+          vs = await verdicts()
+          b = await button('sold out')
+          check('every capsule minted stops the button, saying so, and reads "sold out" on every list',
+            both(vs, 'sold out') && b.shown && b.body.includes('every capsule has been sold, so there are none left to buy here'), JSON.stringify(vs))
+
+          chain.tokens.set(capsuleKey, { maxSupply: 10n, totalMinted: 8n })
+          const pg = await open('/play/owned-floor')
+          await pg.getByText('Owned Floor').first().waitFor()
+          await pg.waitForTimeout(500)
+          const sizes = (await pg.getByRole('button', { name: /^×\d+$/ }).allInnerTexts()).join(',')
+          check('with two capsules left it offers a single pull — never more capsules than it can sell',
+            sizes === '×1' && (await pg.getByRole('button', { name: 'play', exact: true }).isEnabled()), sizes)
+          await pg.context().close()
+          if (savedSupply) chain.tokens.set(capsuleKey, savedSupply)
+          else chain.tokens.delete(capsuleKey)
+          vs = await verdicts()
+          check('and on sale again, it reads open again', vs.every((v) => v?.open === true), JSON.stringify(vs))
+        }
+
         // ── the reveal studio ──
         // The curator has published five machines in the last few minutes,
         // the per-wallet limit; the mock's window never expires on its own.
@@ -4269,6 +4370,14 @@ try {
             JSON.stringify(queuedFrames))
           check('as a reveal machine with the two pieces',
             (await call('/api/admin/experience?state=review', { admin: ADMIN_TOKEN })).json?.machines?.some((r) => r.machine.id === 'browser-picks' && r.machine.kind === 'reveal' && r.pool.length === 2))
+          // Its creator can see it before anyone else can: the screen leads to
+          // their preview, which opens for them inside the app.
+          const previewLink = page.getByRole('link', { name: 'preview it →', exact: true })
+          const previewHref = await previewLink.getAttribute('href').catch(() => null)
+          await previewLink.click().catch(() => {})
+          await page.getByText('only you can see this page').first().waitFor({ timeout: 15_000 }).catch(() => {})
+          check('and leads its creator to their preview of it, which opens for them',
+            previewHref === '/play/browser-picks' && (await text(page)).includes('preview · only you can see this page until a curator approves the machine'), previewHref ?? '')
           await call('/api/experience/piece', { method: 'POST', user: ARTIST_B_TOKEN, body: { collection: REVEAL, tokenId: '4', available: true } })
           await page.context().close()
         }
@@ -4359,9 +4468,8 @@ try {
         // won what is the machine page's.
         {
           const flat = (t) => t.replace(/\s+/g, ' ').toLowerCase()
-          const RANK = { draft: 0, delisted: 1, 'in review': 2, live: 3, closed: 4 }
-          const inOwnerOrder = (pills) => pills.length > 1 && pills.every((p, i) => p in RANK && (i === 0 || RANK[pills[i - 1]] <= RANK[p]))
-          const pillsOf = (rows) => rows.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim() ?? ''))
+          const CARD_ORDER = { live: 0, soon: 1, unavailable: 2, 'in review': 3, 'sold out': 4, closed: 5 }
+          const namesOf = (rows) => rows.evaluateAll((els) => els.map((el) => el.querySelector('span.truncate')?.textContent?.trim().toLowerCase() ?? ''))
 
           const visitor = await open(`/profile/${ADMIN}`)
           await visitor.getByText('Spring Season').first().waitFor()
@@ -4369,8 +4477,12 @@ try {
           await visitor.waitForLoadState('networkidle').catch(() => {})
           const shelf = await vCards.evaluateAll((els) => els.map((el) => ({ state: el.querySelector('span.uppercase')?.textContent?.trim(), quiet: !!el.querySelector('.grayscale') })))
           const states = shelf.map((c) => c.state)
-          check('a visitor sees what they can play first, and closed machines after, quieter', states.includes('live') && states.includes('closed') &&
-            states.lastIndexOf('live') < states.indexOf('closed') && shelf.every((c) => (c.state === 'closed') === c.quiet), JSON.stringify(shelf))
+          check('a visitor sees what they can play first, then what opens soon, and what can no longer be had last, quieter',
+            states.includes('live') && states.includes('closed') && states.every((st, i) => st in CARD_ORDER && (i === 0 || CARD_ORDER[states[i - 1]] <= CARD_ORDER[st])) &&
+              shelf.every((c) => (c.state === 'sold out' || c.state === 'closed') === c.quiet), JSON.stringify(shelf))
+          const dry = flat(await vCards.filter({ has: visitor.locator('a[href="/play/dry-season"]') }).innerText().catch(() => ''))
+          check('one with nothing left to win reads sold out, as its page says it, with no play to offer',
+            dry.includes('sold out') && dry.includes('nothing left to win') && !/\bplay\b/.test(dry), dry)
           const spring = flat(await vCards.filter({ has: visitor.locator('a[href="/play/spring-season"]') }).innerText().catch(() => ''))
           check('each says what a play costs, as the play list does, and what is left', spring.includes('0.01 eth per play') && /\d+ of \d+ left|sold out|\d+ sold/.test(spring), spring)
           check('and no one\'s winners or counts of plays', !(await text(visitor)).includes('won by') && !/\d+ plays?\b/.test(spring), spring)
@@ -4386,11 +4498,17 @@ try {
             /\b(\d+ of \d+|all \d+|\d+) sold\b/.test(box) && /eth taken in/.test(box), box)
           const solo = await rowText('solo-piece')
           check('a reveal machine shows what was collected through it, not money that pays its artists', /\d+ collected/.test(solo) && !solo.includes('taken in'), solo)
-          const pills = await pillsOf(rows)
-          check('in the order an owner reads them: what needs them first, then what is live, then what has closed', inOwnerOrder(pills) && pills.includes('closed'), pills.join(','))
+          const ownerApi = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines ?? []
+          const names = await namesOf(rows)
+          check('in the order an owner reads them: what needs them first, then what is live, then what has closed',
+            names.length > 1 && names.join('|') === ownerOrder(ownerApi).join('|'), `${names.join('|')} vs ${ownerOrder(ownerApi).join('|')}`)
+          const dryRow = await rowText('dry-season')
+          check('a live machine that has stopped selling comes first, saying why and what to do',
+            names[0] === 'dry season' && dryRow.includes('nothing left to win · end the season, or the capsule keeps selling on zora.co'), dryRow)
           const body = await text(page)
-          check('under a summary of every state and what the capsules took in', /\d+ live/.test(body) && /\d+ closed/.test(body) && /eth taken in by capsules/.test(body),
-            body.match(/\d+ (not submitted|delisted|waiting for a curator|live)[^·]*(·[^·]*){0,4}/)?.[0] ?? '')
+          check('under a summary of every state and what the capsules took in',
+            /\d+ not selling/.test(body) && /\d+ live/.test(body) && /\d+ closed/.test(body) && /eth taken in by capsules/.test(body),
+            body.match(/\d+ (not submitted|delisted|not selling|waiting for a curator|live)[^·]*(·[^·]*){0,5}/)?.[0] ?? '')
           check('who won what is the machine page\'s, not the profile\'s', !body.includes('won by'))
           check('labelled as capsule prizes, not airdrops', body.includes('capsule prizes are minted by kismet when a paid capsule is opened. they are not airdrops'))
           await page.context().close()
@@ -4411,15 +4529,33 @@ try {
           check('the curator sees that collects earn them the referral, paid automatically, and what has been paid',
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
           const ownRows = own.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
-          const ownPills = await ownRows.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim() ?? ''))
-          const firstRow = (await ownRows.first().innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
-          check('the curator\'s machine waiting for a curator comes first, saying so, with no page to open yet',
-            ownPills[0] === 'in review' && firstRow.includes('waiting for a curator') && (await ownRows.first().getByRole('link', { name: 'view' }).count()) === 0,
-            `${ownPills.join(',')} | ${firstRow}`)
+          const ownNames = await ownRows.evaluateAll((els) => els.map((el) => el.querySelector('span.truncate')?.textContent?.trim().toLowerCase() ?? ''))
+          const ownApi = (await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.machines ?? []
+          check('the curator\'s list reads in the order an owner needs it', ownNames.join('|') === ownerOrder(ownApi).join('|'), `${ownNames.join('|')} vs ${ownerOrder(ownApi).join('|')}`)
+          const picksRow = ownRows.filter({ hasText: 'Browser Picks' })
+          const picksText = (await picksRow.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('the machine waiting for a curator says so, and offers its creator a preview in place of a page',
+            picksText.includes('waiting for a curator · only you can preview it') && (await picksRow.getByRole('link', { name: 'view', exact: true }).count()) === 0 &&
+              (await picksRow.getByRole('link', { name: 'preview', exact: true }).getAttribute('href').catch(() => null)) === '/play/browser-picks', picksText)
           check('and the summary counts it', ownBody.includes('1 waiting for a curator'), ownBody.match(/\d+ waiting for a curator/)?.[0] ?? '')
           const usdcRow = (await ownRows.filter({ has: own.locator('a[href="/play/curator-usdc"]') }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
           check('a reveal machine\'s row counts collects, not the artists\' money', /\d+ collected/.test(usdcRow) && !usdcRow.includes('taken in'), usdcRow)
           await own.context().close()
+          // Delisted, a machine's row says why a curator took it down — the
+          // reason its notification carried, kept on the machine — and comes
+          // first; relisted, the reason goes with it.
+          await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'curator-solo', state: 'delisted', reason: 'art', note: 'the cover is blurry' } })
+          const dl = await open(`/profile/${CURATOR}`, { user: CURATOR_TOKEN, wallet: CURATOR })
+          const dlRows = dl.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          await dlRows.first().waitFor({ timeout: 15_000 }).catch(() => {})
+          const firstDl = (await dlRows.first().innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a delisted machine comes first in its creator\'s list, saying why a curator took it down',
+            firstDl.includes('curator solo') && firstDl.includes('delisted by a curator: its cover or frames need work — the cover is blurry'), firstDl)
+          await dl.context().close()
+          const relisted = await call('/api/admin/experience', { method: 'POST', admin: ADMIN_TOKEN, body: { id: 'curator-solo', state: 'live' } })
+          const soloNow = ((await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.machines ?? []).find((m) => m.id === 'curator-solo')
+          check('and relisted, it is back on sale with no reason left on it', relisted.status === 200 && soloNow?.state === 'live' && soloNow.delistReason === undefined,
+            `${relisted.status} ${JSON.stringify(soloNow)?.slice(0, 160)}`)
           // A curator nothing has been paid to yet — their wallet refuses ETH.
           const unpaid = await open(`/profile/${BUSY}`, { user: BUSY_TOKEN, wallet: BUSY })
           await unpaid.getByText('Paid so far').first().waitFor({ timeout: 10_000 }).catch(() => {})
@@ -4427,6 +4563,51 @@ try {
           check('a curator paid nothing yet reads 0 ETH, not "free"', unpaidBody.includes('paid so far: 0 eth') && !unpaidBody.includes('paid so far: free'),
             unpaidBody.match(/paid so far[^.]{0,30}/)?.[0] ?? '')
           await unpaid.context().close()
+        }
+
+        // ── a machine waiting for a curator, previewed by its creator ──
+        // Its page is its creator's alone: a preview that sells nothing, which
+        // no one else can open and nothing indexes, on data never cached.
+        {
+          const asCurator = await call('/api/experience/machines/browser-picks', { user: CURATOR_TOKEN })
+          const asOther = await call('/api/experience/machines/browser-picks', { user: USER_TOKEN })
+          const asNobody = await call('/api/experience/machines/browser-picks')
+          check('its data is its creator\'s alone, and never cached',
+            asCurator.status === 200 && asCurator.json?.machine?.state === 'review' && /no-store/.test(asCurator.headers.get('cache-control') ?? '') &&
+              asOther.status === 404 && asNobody.status === 404,
+            `${asCurator.status} ${asCurator.headers.get('cache-control')} ${asOther.status} ${asNobody.status}`)
+          const pages = await Promise.all([
+            call('/play/browser-picks', { user: CURATOR_TOKEN }),
+            call('/play/browser-picks', { user: USER_TOKEN }),
+            call('/play/browser-picks'),
+          ])
+          check('and so is its page: anyone else is told there is no such machine', pages.map((r) => r.status).join(',') === '200,404,404', pages.map((r) => r.status).join(','))
+          const pv = await open('/play/browser-picks', { user: CURATOR_TOKEN, wallet: CURATOR })
+          await pv.getByText('Browser Picks').first().waitFor({ timeout: 15_000 }).catch(() => {})
+          const pvBody = await text(pv)
+          const pullButton = pv.getByRole('button', { name: 'pull', exact: true })
+          const robots = await pv.locator('meta[name="robots"]').first().getAttribute('content').catch(() => null)
+          check('its creator opens it as a preview that cannot pull, which nothing indexes and whose name stays out of the page\'s head',
+            pvBody.includes('preview · only you can see this page until a curator approves the machine. pulls open once it\'s live') &&
+              pvBody.includes('a preview: pulls open once a curator approves it') && (await pullButton.count()) === 1 && (await pullButton.isDisabled()) &&
+              /noindex/.test(robots ?? '') && (await pv.title()) === 'Kismet',
+            `${robots} | ${await pv.title()} | ${pvBody.slice(0, 220)}`)
+          await pv.context().close()
+          // A capsule machine in review previews the same way: no play, and why.
+          const metaKey = 'kismetart:xp:owned-floor:meta'
+          const savedMeta = strings.get(metaKey)
+          strings.set(metaKey, JSON.stringify({ ...JSON.parse(savedMeta), state: 'review' }))
+          const cp = await open('/play/owned-floor', { user: ADMIN_USER_TOKEN, wallet: ADMIN })
+          await cp.getByText('Owned Floor').first().waitFor({ timeout: 15_000 }).catch(() => {})
+          const inReview = cp.getByRole('button', { name: 'in review', exact: true })
+          await inReview.waitFor({ timeout: 10_000 }).catch(() => {})
+          const cpBody = await text(cp)
+          check('a capsule machine in review is previewed the same way: its odds and price, and a button that says why it will not sell',
+            (await inReview.count()) === 1 && (await inReview.isDisabled()) && cpBody.includes('a preview: plays open once a curator approves this machine') &&
+              cpBody.includes('preview · only you can see this page'), cpBody.slice(0, 260))
+          check('with no way offered to redeem a capsule, which play refuses while it waits', !cpBody.includes('minted a capsule elsewhere'))
+          await cp.context().close()
+          strings.set(metaKey, savedMeta)
         }
 
         // ── the Discover "play" tab ──
@@ -4645,6 +4826,9 @@ try {
           const oBody = await text(own)
           check('the artist sees it as their work in other machines, with how to take a piece out',
             oBody.includes('your work in other machines') && oBody.includes('to take one out of every reveal machine, turn machines off from that piece\'s page'))
+          check('and, with no machine of their own, says so beside the count of those featuring them, with the way to build a first one',
+            oBody.includes('none of your own yet') && !oBody.includes('no machines yet') && (await own.getByRole('link', { name: 'build a gachapon →', exact: true }).getAttribute('href').catch(() => null)) === '/play/create',
+            oBody.match(/machines \(.{0,160}/)?.[0] ?? '')
           await own.context().close()
         }
 
@@ -4744,6 +4928,39 @@ try {
             chose.status === 200 && wWidth > 280 && wWidth < 400 && Math.abs(pWidth - 288) < 2 && swipes, `${chose.status} ${wWidth} ${pWidth} ${swipes}`)
           check('where a play\'s price comes with about what it is in dollars, as on the play list', /[\d.]+ eth per play ≈ \$[\d,.]+/.test(wCard), wCard)
           await call(`/api/profile/${CREATOR2}/public-view`, { method: 'POST', user: USER_TOKEN, body: { mode: 'full' } })
+
+          // When the owner's machines cannot be loaded, the section says so, with
+          // a way to try again — never a profile that has quietly lost it.
+          // While the load is out, the section is there and says it is loading,
+          // as the dashboard's other sections do, with no count yet.
+          const creatorRead = /\/api\/experience\/machines\?creator=/
+          const flaky = await open('/play', { user: USER_TOKEN, wallet: CREATOR2 })
+          let answer = () => {}
+          const answered = new Promise((resolve) => { answer = resolve })
+          await flaky.route(creatorRead, async (r) => {
+            await answered
+            await r.abort()
+          })
+          await flaky.goto(`${origin}/profile/${CREATOR2}`, { waitUntil: 'domcontentloaded' })
+          const machinesSection = flaky.locator('[data-section="machines"]')
+          await machinesSection.locator('.animate-pulse').first().waitFor({ timeout: 15_000 }).catch(() => {})
+          const heading = ((await machinesSection.locator('h2').innerText().catch(() => '')) ?? '').trim()
+          check('the owner\'s machines section shows it is loading, with no count until it knows one',
+            (await machinesSection.locator('.animate-pulse').count()) > 0 && /^machines$/i.test(heading), heading)
+          answer()
+          const failedLine = flaky.getByRole('alert').filter({ hasText: 'Couldn’t load your machines' })
+          await failedLine.waitFor({ timeout: 15_000 }).catch(() => {})
+          const sawFailure = (await failedLine.count()) === 1 && (await flaky.getByRole('list', { name: 'Your machines' }).count()) === 0 &&
+            (await flaky.getByText('sign in to see every machine').count()) === 0 && !(await text(flaky)).includes('machines (0)')
+          if (SHOTS) await flaky.screenshot({ path: shotName('profile-machines-failed'), fullPage: true }).catch(() => {})
+          await flaky.unroute(creatorRead)
+          await failedLine.getByRole('button', { name: 'try again', exact: true }).click().catch(() => {})
+          await flaky.getByRole('list', { name: 'Your machines' }).waitFor({ timeout: 15_000 }).catch(() => {})
+          const recovered = (await flaky.getByRole('list', { name: 'Your machines' }).getByRole('listitem').count()) === 2 &&
+            (await flaky.getByRole('alert').filter({ hasText: 'Couldn’t' }).count()) === 0
+          check('when the owner\'s machines cannot be loaded, the section says so with a retry — not a sign-in, nor a count of none — and the retry brings them back',
+            sawFailure && recovered, `${sawFailure} ${recovered}`)
+          await flaky.context().close()
 
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()

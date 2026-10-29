@@ -264,7 +264,7 @@ async function transition(
   //
   // Holding both over-reserves, which costs a machine headroom rather than an
   // artist a copy, and leaves this a single idempotent write.
-  const next = await setMachineState(id, state)
+  const next = await setMachineState(id, state, state === 'delisted' ? reasonText : undefined)
   // Tell the creator about the decisions that change what they can do: on
   // sale, season ended, or delisted. A curator acting on their own machine is
   // skipped by writeNotification itself.

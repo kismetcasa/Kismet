@@ -357,6 +357,89 @@ export async function readCapsuleSupply(
   }
 }
 
+/**
+ * Many capsules' supplies in one multicall, keyed `collection:tokenId`
+ * (lowercased collection): a list of machines costs one chain read, not one
+ * per capsule. A capsule whose read failed is absent, as readCapsuleSupply's
+ * null.
+ */
+export async function readCapsuleSupplies(
+  items: { collection: string; tokenId: string }[],
+): Promise<Map<string, { maxSupply: number | null; minted: number }>> {
+  const out = new Map<string, { maxSupply: number | null; minted: number }>()
+  if (items.length === 0) return out
+  let results
+  try {
+    results = await serverBaseClient().multicall({
+      contracts: items.map((it) => ({
+        address: it.collection as Address,
+        abi: ZORA_1155_TOKEN_INFO_ABI,
+        functionName: 'getTokenInfo' as const,
+        args: [BigInt(it.tokenId)] as const,
+      })),
+      allowFailure: true,
+    })
+  } catch {
+    return out
+  }
+  items.forEach((it, i) => {
+    const r = results[i]
+    if (r?.status !== 'success') return
+    const { maxSupply, totalMinted } = r.result as { maxSupply: bigint; totalMinted: bigint }
+    out.set(`${it.collection.toLowerCase()}:${it.tokenId}`, {
+      maxSupply: isOpenEdition(maxSupply) ? null : Number(maxSupply),
+      minted: Number(totalMinted),
+    })
+  })
+  return out
+}
+
+/**
+ * What the chain says of many pieces at once — how many are left, and whether
+ * the delivery account may mint each — in one multicall, whatever machines
+ * they come from. Each piece's reads are kept apart: a piece whose reads
+ * failed is absent, so a list of machines judges each on its own pieces
+ * (lib/experience/cards machineMarket) and one machine's page on all of its
+ * own (readLiveStanding, below). Null when nothing could be read: no delivery
+ * account, or the multicall itself failed.
+ */
+export async function readLiveStandings(
+  entries: { collection: string; tokenId: string }[],
+): Promise<Map<string, { left: number | null; granted: boolean }> | null> {
+  const out = new Map<string, { left: number | null; granted: boolean }>()
+  if (entries.length === 0) return out
+  const operator = await experienceOperator()
+  if (!operator) return null
+  let results
+  try {
+    results = await serverBaseClient().multicall({
+      contracts: entries.flatMap((e) => {
+        const collection = e.collection as Address
+        const tokenId = BigInt(e.tokenId)
+        return [
+          { address: collection, abi: ZORA_1155_TOKEN_INFO_ABI, functionName: 'getTokenInfo' as const, args: [tokenId] as const },
+          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [tokenId, operator as Address] as const },
+          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [0n, operator as Address] as const },
+        ]
+      }),
+      allowFailure: true,
+    })
+  } catch {
+    return null
+  }
+  const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
+  entries.forEach((e, i) => {
+    const [info, onToken, onCollection] = results.slice(3 * i, 3 * i + 3)
+    if (info?.status !== 'success' || onToken?.status !== 'success' || onCollection?.status !== 'success') return
+    const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
+    out.set(entryKey(e), {
+      left: isOpenEdition(maxSupply) ? null : Number(maxSupply > totalMinted ? maxSupply - totalMinted : 0n),
+      granted: grants(onToken.result as bigint) || grants(onCollection.result as bigint),
+    })
+  })
+  return out
+}
+
 /** Remaining mintable copies of an edition — the headroom a pool entry's pledge
  *  is validated against at publish. null = unlimited. */
 export async function readHeadroom(collection: string, tokenId: string): Promise<number | null | undefined> {
@@ -390,38 +473,9 @@ export async function readHeadroom(collection: string, tokenId: string): Promise
 export async function readLiveStanding(
   entries: { collection: string; tokenId: string }[],
 ): Promise<Record<string, { left: number | null; granted: boolean }> | null> {
-  if (entries.length === 0) return {}
-  const operator = await experienceOperator()
-  if (!operator) return null
-  let results
-  try {
-    results = await serverBaseClient().multicall({
-      contracts: entries.flatMap((e) => {
-        const collection = e.collection as Address
-        const tokenId = BigInt(e.tokenId)
-        return [
-          { address: collection, abi: ZORA_1155_TOKEN_INFO_ABI, functionName: 'getTokenInfo' as const, args: [tokenId] as const },
-          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [tokenId, operator as Address] as const },
-          { address: collection, abi: COLLECTION_PERMISSIONS_ABI, functionName: 'permissions' as const, args: [0n, operator as Address] as const },
-        ]
-      }),
-      allowFailure: true,
-    })
-  } catch {
-    return null
-  }
-  if (results.some((r) => r.status !== 'success')) return null
-  const out: Record<string, { left: number | null; granted: boolean }> = {}
-  entries.forEach((e, i) => {
-    const [info, onToken, onCollection] = results.slice(3 * i, 3 * i + 3)
-    const { maxSupply, totalMinted } = info.result as { maxSupply: bigint; totalMinted: bigint }
-    const grants = (p: bigint) => hasMinterBit(p) || hasAdminBit(p)
-    out[entryKey(e)] = {
-      left: isOpenEdition(maxSupply) ? null : Number(maxSupply > totalMinted ? maxSupply - totalMinted : 0n),
-      granted: grants(onToken.result as bigint) || grants(onCollection.result as bigint),
-    }
-  })
-  return out
+  const standings = await readLiveStandings(entries)
+  if (!standings || entries.some((e) => !standings.has(entryKey(e)))) return null
+  return Object.fromEntries(standings)
 }
 
 /**

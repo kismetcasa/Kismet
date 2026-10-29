@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { getMachine } from '@/lib/experience/store'
+import { getPageViewerAddress } from '@/lib/pageViewer'
 import { ExperienceMachine } from '@/components/ExperienceMachine'
 import { RevealMachine } from '@/components/RevealMachine'
 import { isReveal } from '@/lib/experience/types'
@@ -18,8 +19,13 @@ interface Props {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params
   const machine = await getMachine(id).catch(() => null)
-  const name = machine?.name ?? 'Capsule machine'
-  const reveal = machine ? isReveal(machine) : false
+  // One not yet on the shelves is not public: its name stays out of the
+  // page's head, and nothing indexes it — its creator's preview included.
+  if (!machine || machine.state === 'draft' || machine.state === 'review') {
+    return { title: 'Kismet', robots: { index: false, follow: false } }
+  }
+  const name = machine.name
+  const reveal = isReveal(machine)
   return {
     title: `${name} — Kismet`,
     description: reveal
@@ -41,9 +47,14 @@ export default async function MachinePage({ params }: Props) {
   const { id } = await params
   if (!/^[a-z0-9-]{3,64}$/.test(id)) notFound()
   const machine = await getMachine(id).catch(() => null)
-  // Drafts and review-queue machines are not public; the creator sees their own
-  // on their profile.
-  if (!machine || machine.state === 'draft' || machine.state === 'review') notFound()
+  // Drafts are not public. A machine waiting for a curator is its creator's
+  // alone, as a preview that cannot sell (the pages say so, and play refuses
+  // a queued machine); everyone else is told there is no such machine.
+  if (!machine || machine.state === 'draft') notFound()
+  if (machine.state === 'review') {
+    const viewer = await getPageViewerAddress().catch(() => null)
+    if (!viewer || viewer.toLowerCase() !== machine.creator.toLowerCase()) notFound()
+  }
 
   return (
     <div className="px-4 py-8">

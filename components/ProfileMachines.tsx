@@ -10,8 +10,10 @@ import { useUploadSession } from '@/hooks/useUploadSession'
 import { formatPrice } from '@/lib/inprocess'
 import { ethUsdApprox } from '@/lib/usdApprox'
 import type { MachineCardData } from '@/lib/experience/cards'
+import type { Selling } from '@/lib/experience/selling'
 import { CoverCard, CoverImage } from './CoverCard'
 import { MachineAction } from './MachineAction'
+import { CARD_ORDER, cardSelling, type CardSelling } from './machineSelling'
 import { GRID_CLASSES, SHOWCASE_ITEM_CLASSES, SHOWCASE_ROW_CLASSES } from './profileLayout'
 
 // Its owner's alone, with the upload stack behind it, so a visitor's profile
@@ -53,6 +55,12 @@ interface CreatorMachineCommon {
   art: MachineCardData['cover']
   /** Its creator's view only: what it has done since it was first counted. */
   stats?: { plays: number; collects: number; ethWei: string; usdcMicro: string } | null
+  /** Whether its page would sell a play right now, and if not why
+   *  (lib/experience/selling), read as the page reads it. */
+  selling: Selling
+  /** Its creator's view only, while it is delisted: why the curator took it
+   *  down, as the notification told them. */
+  delistReason?: string
 }
 
 export type CreatorMachine =
@@ -63,7 +71,7 @@ export type CreatorMachine =
        *  sold anywhere (zora.co too). Null when it could not be read. */
       capsules: { maxSupply: number | null; minted: number } | null
       /** The price of a play while it is on sale (lib/experience/cards
-       *  machinePrices); null otherwise. */
+       *  machineMarket); null otherwise. */
       price: MachineCardData['price']
     })
   | (CreatorMachineCommon & { kind: 'reveal'; pieces: number })
@@ -86,25 +94,45 @@ export function useCreatorMachines(address: string) {
   /** Wei of referral rewards confirmed paid to a curator; owner view only. */
   const [referralPaid, setReferralPaid] = useState<string | null>(null)
   const [featuredIn, setFeaturedIn] = useState<FeaturedIn[]>([])
+  /** The last load failed. What loaded before stays, so a reload that fails
+   *  after an action leaves the list as it was, saying it may be stale; an
+   *  owner is shown the failure with a retry, never an empty section. */
+  const [failed, setFailed] = useState(false)
+  /** The first load for this address is still out: the owner's section shows
+   *  that it is loading, as the dashboard's other sections do. */
+  const [loading, setLoading] = useState(true)
+  // Only the latest load speaks: one an earlier profile or retry started
+  // never overwrites what a newer one found.
+  const latest = useRef(0)
   const reload = useCallback(() => {
+    const load = ++latest.current
     fetch(`/api/experience/machines?creator=${address}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: { owner: boolean; machines: CreatorMachine[]; referralPaid?: string; featuredIn?: FeaturedIn[] } | null) => {
-        setMachines(d?.machines ?? [])
-        setOwner(d?.owner === true)
-        setReferralPaid(d?.referralPaid ?? null)
-        setFeaturedIn(d?.featuredIn ?? [])
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`machines ${r.status}`))))
+      .then((d: { owner: boolean; machines: CreatorMachine[]; referralPaid?: string; featuredIn?: FeaturedIn[] }) => {
+        if (load !== latest.current) return
+        setMachines(d.machines ?? [])
+        setOwner(d.owner === true)
+        setReferralPaid(d.referralPaid ?? null)
+        setFeaturedIn(d.featuredIn ?? [])
+        setFailed(false)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (load === latest.current) setFailed(true)
+      })
+      .finally(() => {
+        if (load === latest.current) setLoading(false)
+      })
   }, [address])
   useEffect(() => {
     setMachines([])
     setOwner(false)
     setReferralPaid(null)
     setFeaturedIn([])
+    setFailed(false)
+    setLoading(true)
     reload()
   }, [reload])
-  return { machines, owner, referralPaid, featuredIn, reload }
+  return { machines, owner, referralPaid, featuredIn, failed, loading, reload }
 }
 
 const isPublic = (m: CreatorMachine) => m.state === 'live' || m.state === 'ended'
@@ -160,9 +188,13 @@ export function ProfileMachines({
   referralPaid,
   featuredIn = [],
   layout = 'grid',
+  loadError = false,
   onChange,
 }: {
   machines: CreatorMachine[]
+  /** The owner's last load failed (useCreatorMachines): their list says so,
+   *  with a retry. */
+  loadError?: boolean
   /** The profile's layout for a visitor's view (./profileLayout): the dense
    *  grid of the full profile, or the curated showcase. The owner's own
    *  dashboard is always the list. */
@@ -180,16 +212,23 @@ export function ProfileMachines({
   return (
     <div className="flex flex-col gap-3">
       {manage ? (
-        <OwnerMachines machines={machines} signedIn={signedIn} referralPaid={referralPaid} onChange={onChange} />
+        <OwnerMachines machines={machines} signedIn={signedIn} referralPaid={referralPaid} loadError={loadError} onChange={onChange} />
       ) : layout === 'showcase' ? (
         <ShowcaseMachines machines={machines} />
       ) : (
         <GridMachines machines={machines} />
       )}
+      {/* An owner with none yet gets the dashboard's empty line, and the way
+          to build one — "of your own" where the section counts machines that
+          feature their work. Not before the server has confirmed who they
+          are: until then the list holds only what is public. */}
+      {manage && signedIn && !loadError && machines.length === 0 && (
+        <p className="text-muted font-mono text-xs">{featuredIn.length > 0 ? 'none of your own yet' : 'no machines yet'}</p>
+      )}
       {featuredIn.length > 0 && <FeaturedInList featuredIn={featuredIn} manage={manage} />}
       {manage && (
         <Link href="/play/create" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
-          build another gachapon →
+          {machines.length > 0 ? 'build another gachapon →' : 'build a gachapon →'}
         </Link>
       )}
     </div>
@@ -198,17 +237,20 @@ export function ProfileMachines({
 
 // ─── a visitor's cards ─────────────────────────────────────────────────────
 
-/** What a visitor can play comes first; closed machines follow, each group
- *  in the order given (newest first). */
+/** What a visitor can play comes first, then what opens soon, then what can
+ *  no longer be had (machineSelling CARD_ORDER) — each group in the order
+ *  given (newest first). */
 const liveFirst = (machines: Machine[]) =>
-  [...machines].sort((a, b) => Number(b.state === 'live') - Number(a.state === 'live'))
+  machines
+    .map((m) => ({ m, cs: cardSelling(m.selling, m.kind) }))
+    .sort((a, b) => CARD_ORDER[a.cs.label] - CARD_ORDER[b.cs.label])
 
 function GridMachines({ machines }: { machines: Machine[] }) {
   if (machines.length === 0) return null
   return (
     <div className={GRID_CLASSES}>
-      {liveFirst(machines).map((m) => (
-        <MachineCard key={m.id} machine={m} density="compact" ethUsd={null} />
+      {liveFirst(machines).map(({ m, cs }) => (
+        <MachineCard key={m.id} machine={m} cs={cs} density="compact" ethUsd={null} />
       ))}
     </div>
   )
@@ -221,9 +263,9 @@ function ShowcaseMachines({ machines }: { machines: Machine[] }) {
   if (machines.length === 0) return null
   return (
     <div className={SHOWCASE_ROW_CLASSES}>
-      {liveFirst(machines).map((m) => (
+      {liveFirst(machines).map(({ m, cs }) => (
         <div key={m.id} className={SHOWCASE_ITEM_CLASSES}>
-          <MachineCard machine={m} density="full" ethUsd={ethUsd} />
+          <MachineCard machine={m} cs={cs} density="full" ethUsd={ethUsd} />
         </div>
       ))}
     </div>
@@ -232,24 +274,25 @@ function ShowcaseMachines({ machines }: { machines: Machine[] }) {
 
 /**
  * One machine as a visitor reads it: what it costs and what is left, then one
- * way in. The play list's card (MachineCards) at the profile's density, with
- * a closed machine's cover quieter, since it can no longer be played.
+ * way in. The play list's card (MachineCards) at the profile's density, saying
+ * what its page would do right now (machineSelling): a play only where the
+ * page sells one, why not where it doesn't, and a quieter cover for what can
+ * no longer be had.
  */
-function MachineCard({ machine: m, density, ethUsd }: { machine: Machine; density: Density; ethUsd: number | null }) {
+function MachineCard({ machine: m, cs, density, ethUsd }: { machine: Machine; cs: CardSelling; density: Density; ethUsd: number | null }) {
   const t = DENSITY[density]
   const href = pageOf(m)
-  const live = m.state === 'live'
-  const supply = availability(m, density === 'full')
+  const supply = availability(m, cs, density === 'full')
   return (
-    <CoverCard href={href} image={m.art?.image} thumbhash={m.art?.thumbhash} alt={m.name} sizes={t.sizes} muted={!live}>
+    <CoverCard href={href} image={m.art?.image} thumbhash={m.art?.thumbhash} alt={m.name} sizes={t.sizes} muted={cs.quiet}>
       <div className="flex items-center gap-2">
         <h3 className={`flex-1 min-w-0 ${t.name} font-mono text-ink truncate`}>{m.name}</h3>
-        <span className={`${t.state} font-mono uppercase tracking-wider shrink-0 ${live ? 'text-accent' : 'text-muted'}`}>
-          {live ? 'live' : 'closed'}
+        <span className={`${t.state} font-mono uppercase tracking-wider shrink-0 ${cs.open ? 'text-accent' : 'text-muted'}`}>
+          {cs.label}
         </span>
       </div>
       <p className={`${t.line} font-mono text-muted truncate`}>
-        <CostLine machine={m} full={density === 'full'} ethUsd={ethUsd} />
+        <CostLine machine={m} cs={cs} full={density === 'full'} ethUsd={ethUsd} />
       </p>
       {supply && <p className={`${t.line} font-mono text-muted tabular-nums`}>{supply}</p>}
       {href && (
@@ -257,7 +300,7 @@ function MachineCard({ machine: m, density, ethUsd }: { machine: Machine; densit
           href={href}
           className={`mt-auto w-full px-3 ${t.button} text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors`}
         >
-          {!live ? 'view' : m.kind === 'reveal' ? 'pull' : 'play'}
+          {!cs.open ? 'view' : m.kind === 'reveal' ? 'pull' : 'play'}
         </Link>
       )}
     </CoverCard>
@@ -265,45 +308,62 @@ function MachineCard({ machine: m, density, ethUsd }: { machine: Machine; densit
 }
 
 /** What playing costs, in the play list's words: the price of a play, or a
- *  free pull whose piece is collected at its own price. */
-function CostLine({ machine: m, full, ethUsd }: { machine: Machine; full: boolean; ethUsd: number | null }) {
-  if (m.kind === 'reveal') return <>{m.state === 'live' ? 'free to pull' : 'reveal machine'}</>
-  if (m.state !== 'live') return <>capsule · season over</>
-  if (!m.price) return <>capsule machine</>
+ *  free pull whose piece is collected at its own price — and, where its page
+ *  would not sell one, why not. */
+function CostLine({ machine: m, cs, full, ethUsd }: { machine: Machine; cs: CardSelling; full: boolean; ethUsd: number | null }) {
+  const price = m.kind === 'capsule' && m.price ? (
+    <span className="text-dim">{formatPrice(m.price.pricePerToken, m.price.currency)}</span>
+  ) : null
+  if (!cs.open) {
+    return cs.label === 'soon' && price ? <>{price} per play · {cs.why}</> : <>{cs.why}</>
+  }
+  if (m.kind === 'reveal') return <>free to pull</>
+  if (!m.price || !price) return <>capsule machine</>
   const usd = full && m.price.currency === 'eth' ? ethUsdApprox(m.price.pricePerToken, ethUsd) : null
   return (
     <>
-      <span className="text-dim">{formatPrice(m.price.pricePerToken, m.price.currency)}</span> per play
+      {price} per play
       {usd && <span className="text-subtle"> {usd}</span>}
     </>
   )
 }
 
-/** What is left to have: capsules left to buy (sold out, or what sold, once
- *  it closes), or the artworks a reveal machine draws from. */
-function availability(m: Machine, full: boolean): string | null {
+/** What is left to have: capsules left to buy while it sells or is about to
+ *  (what sold, once it can no longer be had), or the artworks a reveal
+ *  machine draws from. */
+function availability(m: Machine, cs: CardSelling, full: boolean): string | null {
   if (m.kind === 'reveal') return full ? `${artworks(m.pieces)} · each at its own price` : artworks(m.pieces)
   const c = m.capsules
   if (!c) return null
   if (c.maxSupply === null) return c.minted > 0 ? `${c.minted} sold` : null
-  if (c.minted >= c.maxSupply) return 'sold out'
-  return m.state === 'live' ? `${c.maxSupply - c.minted} of ${c.maxSupply} left` : `${c.minted} of ${c.maxSupply} sold`
+  if (c.minted >= c.maxSupply) return cs.why === 'every capsule sold' ? null : 'sold out'
+  return cs.quiet ? `${c.minted} of ${c.maxSupply} sold` : `${c.maxSupply - c.minted} of ${c.maxSupply} left`
 }
 
 // ─── the owner's list ──────────────────────────────────────────────────────
 
-/** The order an owner reads them in: what needs them first, then what is on
- *  the shelves, then what has closed — each group in the order given. */
-const OWNER_ORDER: Record<Machine['state'], number> = { draft: 0, delisted: 1, review: 2, live: 3, ended: 4 }
-const needsYouFirst = (machines: Machine[]) => [...machines].sort((a, b) => OWNER_ORDER[a.state] - OWNER_ORDER[b.state])
+/** Why a machine on the shelves has stopped selling in a way only its owner
+ *  can put right — by ending it, or fixing its sale or its lineup. Not a
+ *  sale that opens later, nor a read that failed just now. */
+const STUCK = new Set(['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now'])
+const stuck = (m: Machine) => m.state === 'live' && !m.selling.open && STUCK.has(m.selling.reason)
 
-/** Each state in the owner's summary, in reading order. */
-const SUMMARY: [Machine['state'], (n: number) => string][] = [
-  ['draft', (n) => `${n} not submitted`],
-  ['delisted', (n) => `${n} delisted`],
-  ['review', (n) => `${n} waiting for a curator`],
-  ['live', (n) => `${n} live`],
-  ['ended', (n) => `${n} closed`],
+/** The order an owner reads them in: what needs them first (a draft, a
+ *  delisted machine, a live one that has stopped selling), then what waits on
+ *  a curator, what is on the shelves, and what has closed — each group in the
+ *  order given. */
+const ownerRank = (m: Machine) =>
+  m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 2 : m.state === 'review' ? 3 : m.state === 'live' ? 4 : 5
+const needsYouFirst = (machines: Machine[]) => [...machines].sort((a, b) => ownerRank(a) - ownerRank(b))
+
+/** Each group in the owner's summary, in reading order. */
+const SUMMARY: [string, (m: Machine) => boolean, (n: number) => string][] = [
+  ['draft', (m) => m.state === 'draft', (n) => `${n} not submitted`],
+  ['delisted', (m) => m.state === 'delisted', (n) => `${n} delisted`],
+  ['stuck', stuck, (n) => `${n} not selling`],
+  ['review', (m) => m.state === 'review', (n) => `${n} waiting for a curator`],
+  ['live', (m) => m.state === 'live' && !stuck(m), (n) => `${n} live`],
+  ['ended', (m) => m.state === 'ended', (n) => `${n} closed`],
 ]
 
 /** A state's pill: the play list's words for the shelves, and the states only
@@ -318,27 +378,61 @@ const PILL: Record<Machine['state'], { label: string; className: string }> = {
   draft: { label: 'draft', className: 'text-muted border border-line' },
 }
 
-/** What an owner is told about a machine that needs them, in plain words. */
-const ATTENTION: Partial<Record<Machine['state'], { text: string; className: string }>> = {
-  draft: { text: 'The publish didn’t finish · withdraw it to fix and publish again', className: 'text-dim' },
-  review: { text: 'Waiting for a curator', className: 'text-[#ffb375]' },
-  delisted: { text: 'Delisted by a curator', className: 'text-[#ff7c80]' },
+/** What an owner is told about a machine that needs them, in plain words:
+ *  its state when that is what needs them, or — on the shelves — why its page
+ *  is not selling (lib/experience/selling), with what to do about it. */
+function attentionOf(m: Machine): { text: string; className: string } | null {
+  if (m.state === 'draft') return { text: 'The publish didn’t finish · withdraw it to fix and publish again', className: 'text-dim' }
+  if (m.state === 'review') return { text: 'Waiting for a curator · only you can preview it', className: 'text-[#ffb375]' }
+  if (m.state === 'delisted') {
+    return { text: m.delistReason ? `Delisted by a curator: ${m.delistReason}` : 'Delisted by a curator', className: 'text-[#ff7c80]' }
+  }
+  if (m.state !== 'live' || m.selling.open) return null
+  const problem = 'text-[#ff7c80]'
+  const end = m.kind === 'reveal' ? 'close the machine' : 'end the season'
+  switch (m.selling.reason) {
+    case 'nothing left to win':
+      return { text: `Nothing left to win · ${end}, or the capsule keeps selling on zora.co with nothing behind it`, className: problem }
+    case 'sold out':
+      return { text: `Every capsule has sold · ${end} to close it`, className: problem }
+    case 'sale ended':
+      return { text: `The capsule’s sale has ended · ${end} to close it`, className: problem }
+    case 'not for sale':
+      return { text: 'The capsule’s sale has no price, so nothing can be bought', className: problem }
+    case 'not open yet': {
+      const cs = cardSelling(m.selling, m.kind)
+      return { text: `The sale ${cs.why ?? 'opens later'}`, className: 'text-dim' }
+    }
+    case 'nothing on sale right now':
+      return m.selling.waiting
+        ? {
+            text: `Nothing on sale right now · ${m.selling.waiting} ${m.selling.waiting === 1 ? 'piece joins when its sale opens' : 'pieces join when their sales open'}`,
+            className: 'text-dim',
+          }
+        : { text: `Nothing on sale right now · add pieces or ${end}`, className: problem }
+    case 'price unavailable':
+    case 'checking what’s left':
+      return { text: 'Couldn’t check its sale just now', className: 'text-muted' }
+    default:
+      return null
+  }
 }
 
 function OwnerMachines({
   machines,
   signedIn,
   referralPaid,
+  loadError,
   onChange,
 }: {
   machines: Machine[]
   signedIn: boolean
   referralPaid?: string | null
+  /** The last load failed: say so, with a retry, rather than show nothing. */
+  loadError?: boolean
   onChange: () => void
 }) {
   const { ensureSession } = useUploadSession()
-  const counts = new Map<Machine['state'], number>()
-  for (const m of machines) counts.set(m.state, (counts.get(m.state) ?? 0) + 1)
   // What the capsule machines took in, together; a reveal machine's collects
   // pay their artists, so they are not the owner's to count here.
   const wei = machines.reduce((n, m) => (m.kind === 'capsule' && m.stats ? n + BigInt(m.stats.ethWei) : n), 0n)
@@ -346,14 +440,26 @@ function OwnerMachines({
   const money = [wei > 0n ? formatPrice(wei.toString(), 'eth') : null, usdc > 0n ? formatPrice(usdc.toString(), 'usdc') : null]
     .filter(Boolean)
     .join(' + ')
-  const summary = SUMMARY.flatMap(([state, say]) => {
-    const n = counts.get(state)
+  const summary = SUMMARY.flatMap(([, is, say]) => {
+    const n = machines.filter(is).length
     return n ? [say(n)] : []
   })
   if (money) summary.push(`${money} taken in by capsules`)
   return (
     <>
-      {!signedIn && (
+      {loadError && (
+        <p role="alert" className="text-[11px] font-mono text-[#ff7c80] leading-relaxed">
+          {machines.length > 0
+            ? 'Couldn’t refresh your machines, so this list may be out of date.'
+            : 'Couldn’t load your machines.'}{' '}
+          <button onClick={onChange} className="text-dim hover:text-ink underline">
+            try again
+          </button>
+        </p>
+      )}
+      {/* Whether they are signed in is the load's to say: after one that
+          failed, the retry above, not a sign-in. */}
+      {!signedIn && !loadError && (
         <button
           onClick={() => void ensureSession({ revalidate: true }).then(onChange).catch(() => {})}
           className="self-start text-[11px] font-mono text-dim hover:text-ink underline"
@@ -394,26 +500,28 @@ function OwnerMachines({
 function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signedIn: boolean; onChange: () => void }) {
   const href = pageOf(m)
   // A cover picked but not yet saved shows in the row's thumbnail too.
-  const [preview, setPreview] = useState<string | null>(null)
+  const [picked, setPicked] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<'end' | 'withdraw' | null>(null)
   const openCover = useRef<(() => void) | null>(null)
   const menuButton = useRef<HTMLButtonElement>(null)
   const actions: MenuAction[] = []
   if (signedIn) {
-    // Any machine past a draft. For one waiting on a curator this is the only
-    // way, since its page does not exist yet.
+    // Any machine past a draft — one waiting on a curator too, whose only page
+    // is its creator's preview.
     if (m.state !== 'draft') actions.push({ label: 'Change cover', run: () => openCover.current?.() })
     if (m.state === 'live') {
       actions.push({ label: m.kind === 'reveal' ? 'Close machine' : 'End season', run: () => setConfirm('end'), danger: true })
     }
     if (m.withdrawable) actions.push({ label: 'Withdraw', run: () => setConfirm('withdraw'), danger: true })
   }
-  const attention = ATTENTION[m.state]
+  const attention = attentionOf(m)
+  // One waiting for a curator has no public page yet; its creator previews it.
+  const preview = m.state === 'review' ? `/play/${m.id}` : undefined
   const figures = ownerFigures(m)
   return (
     <li className="px-3 py-2.5">
       <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,18rem)_auto] items-center gap-x-3 gap-y-1">
-        <MachineThumb href={href} image={preview ?? m.art?.image} thumbhash={preview ? undefined : m.art?.thumbhash} />
+        <MachineThumb href={href ?? preview} image={picked ?? m.art?.image} thumbhash={picked ? undefined : m.art?.thumbhash} />
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="min-w-0 truncate text-xs font-mono text-ink">{m.name}</span>
@@ -430,12 +538,12 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
           </div>
         )}
         <div className="col-start-3 row-start-1 sm:col-start-4 flex items-center justify-end gap-2">
-          {href && (
+          {(href ?? preview) && (
             <Link
-              href={href}
+              href={(href ?? preview)!}
               className="px-2.5 py-1 text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
             >
-              view
+              {href ? 'view' : 'preview'}
             </Link>
           )}
           {actions.length > 0 && <ActionsMenu label={`More actions for ${m.name}`} actions={actions} buttonRef={menuButton} />}
@@ -448,7 +556,7 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
           machineId={m.id}
           current={m.cover}
           onDone={onChange}
-          onPick={setPreview}
+          onPick={setPicked}
           className="mt-2 flex flex-wrap items-center gap-3 border-t border-line pt-2"
         />
       )}

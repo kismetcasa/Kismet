@@ -41,7 +41,7 @@ import { isReveal } from '@/lib/experience/types'
 import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
 import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { screenMachineFrames } from '@/lib/experience/frameScreen'
-import { machineCards, machineCovers, machinePrices } from '@/lib/experience/cards'
+import { machineCards, machineCovers, machineMarket, poolReader } from '@/lib/experience/cards'
 import { MACHINE_ID_PATTERN, machineIdCandidates, PAGE_IDS } from '@/lib/experience/machineId'
 import { machineStats } from '@/lib/experience/kismet'
 
@@ -96,21 +96,19 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const owner = !!session && session.toLowerCase() === creator
   const all = await listMachinesByCreator(creator)
   const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
-  // A reveal machine's pool is read once per request, whoever asks: its
-  // lineup count below, and the art its card shows when it has no cover.
-  const pools = new Map<string, Promise<PoolEntry[]>>()
-  const poolOf = (id: string) => {
-    let pool = pools.get(id)
-    if (!pool) pools.set(id, (pool = getPool(id).catch(() => [] as PoolEntry[])))
-    return pool
-  }
-  const [art, prices, machines] = await Promise.all([
+  // A machine's pool is read once per request, whoever asks: a reveal
+  // machine's lineup count below, the art a card shows when it has no cover,
+  // and what the page would draw from (machineMarket).
+  const poolOf = poolReader()
+  const [art, market, machines] = await Promise.all([
     // What each one's card shows, as the play list's cards do: its cover, or
-    // art it already has for a machine published before covers, and the
-    // price of a play while a capsule machine is on sale (one multicall).
-    // Looked up alongside the figures below, not ahead of them.
+    // art it already has for a machine published before covers; the price of
+    // a play while a capsule machine is on sale; each capsule's supply; and
+    // whether its page would sell a play right now (lib/experience/cards
+    // machineMarket, a fixed number of reads for them all). Looked up
+    // alongside the figures below, not ahead of them.
     machineCovers(visible, poolOf),
-    machinePrices(visible),
+    machineMarket(visible, poolOf),
     Promise.all(
       visible.map(async (m) => {
         const common = {
@@ -120,6 +118,9 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
           createdAt: m.createdAt,
           cover: m.cover?.uri ?? null,
           ...(owner ? { withdrawable: !m.listedAt && (m.state === 'draft' || m.state === 'review') } : {}),
+          // Why a curator delisted it, for its creator alone: the reason the
+          // notification carried, kept on the machine while it stays delisted.
+          ...(owner && m.state === 'delisted' && m.delistReason ? { delistReason: m.delistReason } : {}),
           // Its figures, for its creator: plays or collects, and what they took
           // in (lib/experience/kismet — counted as they happen).
           ...(owner ? { stats: await machineStats(m.id).catch(() => null) } : {}),
@@ -127,10 +128,7 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         if (isReveal(m)) {
           return { ...common, kind: 'reveal' as const, pieces: (await poolOf(m.id)).length }
         }
-        // What is left to sell, and what has sold anywhere (zora.co too):
-        // the supply as the chain has it. Who won what is the machine page's.
-        const capsules = await readCapsuleSupply(m.capsule.collection, m.capsule.tokenId)
-        return { ...common, kind: 'capsule' as const, capsule: m.capsule, capsules }
+        return { ...common, kind: 'capsule' as const, capsule: m.capsule }
       }),
     ),
   ])
@@ -157,7 +155,10 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
     machines: machines.map((m) => ({
       ...m,
       art: art.get(m.id) ?? null,
-      ...(m.kind === 'capsule' ? { price: prices.get(m.id) ?? null } : {}),
+      selling: market.selling.get(m.id),
+      // What is left to sell, and what has sold anywhere (zora.co too): the
+      // supply as the chain has it. Who won what is the machine page's.
+      ...(m.kind === 'capsule' ? { price: market.prices.get(m.id) ?? null, capsules: market.supplies.get(m.id) ?? null } : {}),
     })),
     featuredIn,
     ...(referralPaid !== undefined ? { referralPaid } : {}),

@@ -1044,7 +1044,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: loadingListings ? null : displayListings.length,
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
-    machines: creatorMachines.machines.length + creatorMachines.featuredIn.length,
+    // Unknown, not none, until the machines have loaded.
+    machines: creatorMachines.loading || (creatorMachines.failed && creatorMachines.machines.length === 0)
+      ? null
+      : creatorMachines.machines.length + creatorMachines.featuredIn.length,
     kismet: kismet?.total ?? null,
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
@@ -1217,13 +1220,18 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         ))}
       </div>
     ),
-    machines: (
+    machines: isOwner && creatorMachines.loading ? (
+      <div className="flex flex-col gap-1">
+        {[0,1,2,3].map((i) => <div key={i} className="h-10 bg-surface animate-pulse border border-raised" />)}
+      </div>
+    ) : (
       <ProfileMachines
         machines={isOwner ? creatorMachines.machines : shelfMachines}
         manage={isOwner}
         signedIn={creatorMachines.owner}
         referralPaid={creatorMachines.referralPaid}
         featuredIn={creatorMachines.featuredIn}
+        loadError={isOwner && creatorMachines.failed}
         onChange={creatorMachines.reload}
       />
     ),
@@ -1849,7 +1857,10 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         ) : (
           ([
             ...sectionOrder,
-            ...((isOwner ? creatorMachines.machines : shelfMachines).length > 0 || creatorMachines.featuredIn.length > 0 ? ['machines' as const] : []),
+            // An owner always has the section, as they have the others: loading,
+            // their machines, how to build a first one, or a load that failed
+            // with a retry. A visitor sees it when there is something to show.
+            ...(isOwner || shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0 ? ['machines' as const] : []),
             ...(hasKismet ? ['kismet' as const] : []),
             ...(showCurate ? ['curate' as const] : []),
           ]).map((section) => {
