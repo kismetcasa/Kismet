@@ -26,9 +26,7 @@ import {
   machinesFeaturing,
   openEpochSeeds,
   optedOutPieces,
-  playCount,
   pledgeSupply,
-  prizesDelivered,
   linkCollections,
   putLineup,
   addCurator,
@@ -43,7 +41,7 @@ import { isReveal } from '@/lib/experience/types'
 import type { CapsuleMachine, Machine, MachineCover, MachineFrames, PoolEntry, Rarity, RevealMachine } from '@/lib/experience/types'
 import { parseCover, parseFrames } from '@/lib/experience/cover'
 import { screenMachineFrames } from '@/lib/experience/frameScreen'
-import { machineCards, machineCovers } from '@/lib/experience/cards'
+import { machineCards, machineCovers, machinePrices } from '@/lib/experience/cards'
 import { MACHINE_ID_PATTERN, machineIdCandidates, PAGE_IDS } from '@/lib/experience/machineId'
 import { machineStats } from '@/lib/experience/kismet'
 
@@ -106,11 +104,13 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
     if (!pool) pools.set(id, (pool = getPool(id).catch(() => [] as PoolEntry[])))
     return pool
   }
-  const [art, machines] = await Promise.all([
+  const [art, prices, machines] = await Promise.all([
     // What each one's card shows, as the play list's cards do: its cover, or
-    // art it already has for a machine published before covers. Looked up
-    // alongside the figures below, not ahead of them.
+    // art it already has for a machine published before covers, and the
+    // price of a play while a capsule machine is on sale (one multicall).
+    // Looked up alongside the figures below, not ahead of them.
     machineCovers(visible, poolOf),
+    machinePrices(visible),
     Promise.all(
       visible.map(async (m) => {
         const common = {
@@ -127,12 +127,10 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
         if (isReveal(m)) {
           return { ...common, kind: 'reveal' as const, pieces: (await poolOf(m.id)).length }
         }
-        const [capsules, plays, prizes] = await Promise.all([
-          readCapsuleSupply(m.capsule.collection, m.capsule.tokenId),
-          playCount(m.id).catch(() => 0),
-          prizesDelivered(m.id, 3).catch(() => ({ count: 0, recent: [] })),
-        ])
-        return { ...common, kind: 'capsule' as const, capsule: m.capsule, plays, capsules, prizes }
+        // What is left to sell, and what has sold anywhere (zora.co too):
+        // the supply as the chain has it. Who won what is the machine page's.
+        const capsules = await readCapsuleSupply(m.capsule.collection, m.capsule.tokenId)
+        return { ...common, kind: 'capsule' as const, capsule: m.capsule, capsules }
       }),
     ),
   ])
@@ -156,7 +154,11 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const referralPaid = curates ? (await paidTo(creator).catch(() => 0n)).toString() : undefined
   return NextResponse.json({
     owner,
-    machines: machines.map((m) => ({ ...m, art: art.get(m.id) ?? null })),
+    machines: machines.map((m) => ({
+      ...m,
+      art: art.get(m.id) ?? null,
+      ...(m.kind === 'capsule' ? { price: prices.get(m.id) ?? null } : {}),
+    })),
     featuredIn,
     ...(referralPaid !== undefined ? { referralPaid } : {}),
   })

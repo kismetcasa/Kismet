@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (644)
+## What it asserts (656)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -350,14 +350,21 @@ machine share card. About three minutes.
   little or nothing left, the Discover play tab, the nav, the bell, profiles,
   and ending a season on-chain; the seed and referral-payout jobs, each run
   recorded for the app's own schedule (lib/backgroundTasks) to wait on.
-- **Profiles** — a creator's machines as the play list's cards, in the layout
-  of the view around them: the dense grid on the creator's own dashboard and
-  on a full profile, the showcase's full-scale cards on a curated one (a row
-  to swipe on a phone), and never painted before the view is known; each
-  card's cover, or for one published before covers its capsule or first
-  piece, with each reveal machine's pool read once; "closed" as the play list
-  says it; a cover picked on a card shown there before it is saved, whether
-  or not the card's own image had loaded.
+- **Profiles** — a creator's machines in two forms. Visitors get the play
+  list's cards in the layout of the view around them: the dense grid on a full
+  profile, the showcase's full-scale cards on a curated one (a row to swipe on
+  a phone), never painted before the view is known. Each says what a play
+  costs, the play list's price with dollars in the showcase, and what is left,
+  live machines first and closed ones quieter. The owner gets a list under a
+  summary of every state, what needs them first and what has closed last: a
+  capsule machine's sales out of its supply and what it took in, a reveal
+  machine's collects without the money that pays its artists, and the actions
+  behind one menu a keyboard opens, walks and closes. A season ends from it
+  on-chain; "Change cover" opens the file picker in the same tap, and the pick
+  shows in the row before it is saved and goes on cancel, whether or not the
+  row's own image had loaded. Each card's cover, or for one published before
+  covers its capsule or first piece, with each reveal machine's pool read once;
+  who won what on the machine page, apart from airdrops.
 - **Art** — the required cover, changed live, and always a still: one that
   moves, or an SVG, is refused as it is picked, and a GIF becomes its first
   frame; the stage (idle, dispense, open), its timing, skip and reduced

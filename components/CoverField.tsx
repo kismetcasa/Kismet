@@ -123,6 +123,11 @@ export async function uploadCoverOrSay(upload: () => Promise<MachineCover | null
  * A creator changing their machine's cover after it is published — the card
  * shows the new one at once. Shown only to `creator`'s wallet when given; the
  * owner route checks the session (app/api/experience/machines/[id]).
+ *
+ * `variant="menu"` has no button of its own: the caller's menu opens the
+ * picker through `openRef`, inside the same tap, so the browser lets it. A
+ * picked cover then shows here, larger than the row it sits in, with save and
+ * cancel.
  */
 export function CoverEditor({
   machineId,
@@ -131,6 +136,8 @@ export function CoverEditor({
   onDone,
   onPick,
   className = 'mt-2 flex flex-wrap items-center gap-2',
+  variant = 'field',
+  openRef,
 }: {
   machineId: string
   current: string | null
@@ -141,6 +148,9 @@ export function CoverEditor({
    *  here. Null once the pick is saved or dropped. */
   onPick?: (preview: string | null) => void
   className?: string
+  variant?: 'field' | 'menu'
+  /** With `variant="menu"`: set to a function that opens the file picker. */
+  openRef?: { current: (() => void) | null }
 }) {
   const { address } = useAccount()
   const { ensureSession } = useUploadSession()
@@ -152,6 +162,14 @@ export function CoverEditor({
     onPick(preview)
     return () => onPick(null)
   }, [onPick, preview])
+  const input = pick.inputRef
+  useEffect(() => {
+    if (!openRef) return
+    openRef.current = () => input.current?.click()
+    return () => {
+      openRef.current = null
+    }
+  }, [openRef, input])
   if (creator !== undefined && address?.toLowerCase() !== creator.toLowerCase()) return null
 
   const save = async () => {
@@ -178,6 +196,37 @@ export function CoverEditor({
     } finally {
       setBusy(false)
     }
+  }
+
+  if (variant === 'menu') {
+    return (
+      <>
+        <input ref={pick.inputRef} type="file" accept="image/*" onChange={pick.onChange} className="hidden" aria-label="cover image" />
+        {pick.file && pick.preview && (
+          <div className={className} role="group" aria-label="New cover">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={pick.preview} alt="new cover" className="w-16 h-16 flex-shrink-0 object-cover border border-line bg-raised" />
+            <p className="text-[11px] font-mono text-muted">New cover, not saved yet.</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => void save()}
+                disabled={busy}
+                className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider btn-accent disabled:opacity-40"
+              >
+                {busy ? 'saving…' : 'save cover'}
+              </button>
+              <button
+                onClick={() => pick.clear()}
+                disabled={busy}
+                className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40"
+              >
+                cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </>
+    )
   }
 
   return (

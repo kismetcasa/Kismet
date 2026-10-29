@@ -2299,15 +2299,16 @@ try {
       weightsOf(claim2)['7'] === 3 && weightsOf(claim2)['14'] === 1,
       `${won} ${JSON.stringify(weightsOf(claim2))}`)
 
-    // A prize is an adminMint, like an airdrop — the artist sees them apart.
+    // A prize is an adminMint, like an airdrop — logged as the machine's and
+    // shown on its page with who won what, never among the artist's airdrops.
     // Logged after the response, so give the deferred write a moment.
-    const mine = async () => (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines ?? []
-    let boxRow
-    for (let i = 0; i < 30 && boxRow?.prizes?.count !== 2; i++) { boxRow = (await mine()).find((m) => m.id === 'box-season'); if (boxRow?.prizes?.count !== 2) await sleep(100) }
-    check('the artist\'s machines count the prizes each delivered', boxRow?.prizes?.count === 2, JSON.stringify(boxRow?.prizes))
-    check('and name who won what', boxRow?.prizes?.recent?.length === 2 && boxRow.prizes.recent.every((p) => p.player === PLAYER && ['7', '14'].includes(p.tokenId)))
-    const redrawRow = (await mine()).find((m) => m.id === 'redraw')
-    check('a prize a resume delivered is logged too', redrawRow?.prizes?.recent?.some((p) => p.txHash === TX_REDRAW_2 && p.tokenId === '15'), JSON.stringify(redrawRow?.prizes))
+    const winsOf = async (id) => (await call(`/api/experience/machines/${id}`)).json?.recentWins ?? []
+    let boxWins = []
+    for (let i = 0; i < 30 && boxWins.length !== 2; i++) { boxWins = await winsOf('box-season'); if (boxWins.length !== 2) await sleep(100) }
+    check('each prize a machine delivers is logged on it', boxWins.length === 2, JSON.stringify(boxWins))
+    check('and its page names who won what', boxWins.every((p) => p.player === PLAYER && ['7', '14'].includes(p.tokenId)), JSON.stringify(boxWins))
+    const redrawWins = await winsOf('redraw')
+    check('a prize a resume delivered is logged too', redrawWins.some((p) => p.txHash === TX_REDRAW_2 && p.tokenId === '15'), JSON.stringify(redrawWins))
     check('and none of them is among the artist\'s airdrops', ((await call(`/api/airdrops?artist_address=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.airdrops ?? []).length === 0)
   }
 
@@ -4349,15 +4350,48 @@ try {
           await atMachine.context().close()
         }
 
-        // ── an artist's capsule prizes, apart from their airdrops ──
+        // ── an artist's machines, as visitors and as their owner see them ──
+        // A visitor's cards say what a play costs and what is left, live
+        // machines first. The owner's list puts what needs them first and what
+        // has closed last: a capsule machine's sales out of its supply and what
+        // it took in, a reveal machine's collects without the money (that pays
+        // its artists), and the note that keeps prizes apart from airdrops. Who
+        // won what is the machine page's.
         {
+          const flat = (t) => t.replace(/\s+/g, ' ').toLowerCase()
+          const RANK = { draft: 0, delisted: 1, 'in review': 2, live: 3, closed: 4 }
+          const inOwnerOrder = (pills) => pills.length > 1 && pills.every((p, i) => p in RANK && (i === 0 || RANK[pills[i - 1]] <= RANK[p]))
+          const pillsOf = (rows) => rows.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim() ?? ''))
+
+          const visitor = await open(`/profile/${ADMIN}`)
+          await visitor.getByText('Spring Season').first().waitFor()
+          const vCards = visitor.locator('article').filter({ has: visitor.locator('a[href^="/play/"]') })
+          await visitor.waitForLoadState('networkidle').catch(() => {})
+          const shelf = await vCards.evaluateAll((els) => els.map((el) => ({ state: el.querySelector('span.uppercase')?.textContent?.trim(), quiet: !!el.querySelector('.grayscale') })))
+          const states = shelf.map((c) => c.state)
+          check('a visitor sees what they can play first, and closed machines after, quieter', states.includes('live') && states.includes('closed') &&
+            states.lastIndexOf('live') < states.indexOf('closed') && shelf.every((c) => (c.state === 'closed') === c.quiet), JSON.stringify(shelf))
+          const spring = flat(await vCards.filter({ has: visitor.locator('a[href="/play/spring-season"]') }).innerText().catch(() => ''))
+          check('each says what a play costs, as the play list does, and what is left', spring.includes('0.01 eth per play') && /\d+ of \d+ left|sold out|\d+ sold/.test(spring), spring)
+          check('and no one\'s winners or counts of plays', !(await text(visitor)).includes('won by') && !/\d+ plays?\b/.test(spring), spring)
+          await visitor.context().close()
+
           const page = await open(`/profile/${ADMIN}`, { user: ADMIN_USER_TOKEN, wallet: ADMIN })
           await page.getByText('Box Season').first().waitFor()
+          const rows = page.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          const rowText = async (id) => flat(await rows.filter({ has: page.locator(`a[href="/play/${id}"]`) }).innerText().catch(() => ''))
+          await rows.filter({ has: page.locator('a[href="/play/box-season"]') }).getByText(/taken in/).waitFor({ timeout: 10_000 }).catch(() => {})
+          const box = await rowText('box-season')
+          check('the artist sees what each capsule machine sold, out of its supply, and what it took in',
+            /\b(\d+ of \d+|all \d+|\d+) sold\b/.test(box) && /eth taken in/.test(box), box)
+          const solo = await rowText('solo-piece')
+          check('a reveal machine shows what was collected through it, not money that pays its artists', /\d+ collected/.test(solo) && !solo.includes('taken in'), solo)
+          const pills = await pillsOf(rows)
+          check('in the order an owner reads them: what needs them first, then what is live, then what has closed', inOwnerOrder(pills) && pills.includes('closed'), pills.join(','))
           const body = await text(page)
-          check('the artist sees how many prizes each capsule machine delivered', /box season .*2 prizes delivered/.test(body), body.match(/box season.{0,160}/)?.[0] ?? '')
-          await page.getByText('won by lucky').first().waitFor({ timeout: 10_000 }).catch(() => {})
-          const winners = await text(page)
-          check('and who won them, by name', /#(7|14) won by lucky/.test(winners), winners.match(/#\d+ won by \S+/)?.[0] ?? '')
+          check('under a summary of every state and what the capsules took in', /\d+ live/.test(body) && /\d+ closed/.test(body) && /eth taken in by capsules/.test(body),
+            body.match(/\d+ (not submitted|delisted|waiting for a curator|live)[^·]*(·[^·]*){0,4}/)?.[0] ?? '')
+          check('who won what is the machine page\'s, not the profile\'s', !body.includes('won by'))
           check('labelled as capsule prizes, not airdrops', body.includes('capsule prizes are minted by kismet when a paid capsule is opened. they are not airdrops'))
           await page.context().close()
         }
@@ -4367,7 +4401,8 @@ try {
           const page = await open(`/profile/${CURATOR}`)
           await page.getByText('New Voices').first().waitFor()
           const body = await text(page)
-          check('a visitor sees a curator\'s reveal machine with its lineup size', body.includes('reveal machine · 5 artworks'))
+          const nvCard = (await page.locator('article').filter({ has: page.locator('a[href="/play/new-voices"]') }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a visitor sees a curator\'s reveal machine with its lineup size, free to pull', nvCard.includes('free to pull') && nvCard.includes('5 artworks'), nvCard)
           check('but not what they have been paid', !body.includes('paid so far'))
           await page.context().close()
           const own = await open(`/profile/${CURATOR}`, { user: CURATOR_TOKEN, wallet: CURATOR })
@@ -4375,6 +4410,15 @@ try {
           const ownBody = await text(own)
           check('the curator sees that collects earn them the referral, paid automatically, and what has been paid',
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
+          const ownRows = own.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          const ownPills = await ownRows.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim() ?? ''))
+          const firstRow = (await ownRows.first().innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('the curator\'s machine waiting for a curator comes first, saying so, with no page to open yet',
+            ownPills[0] === 'in review' && firstRow.includes('waiting for a curator') && (await ownRows.first().getByRole('link', { name: 'view' }).count()) === 0,
+            `${ownPills.join(',')} | ${firstRow}`)
+          check('and the summary counts it', ownBody.includes('1 waiting for a curator'), ownBody.match(/\d+ waiting for a curator/)?.[0] ?? '')
+          const usdcRow = (await ownRows.filter({ has: own.locator('a[href="/play/curator-usdc"]') }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a reveal machine\'s row counts collects, not the artists\' money', /\d+ collected/.test(usdcRow) && !usdcRow.includes('taken in'), usdcRow)
           await own.context().close()
           // A curator nothing has been paid to yet — their wallet refuses ETH.
           const unpaid = await open(`/profile/${BUSY}`, { user: BUSY_TOKEN, wallet: BUSY })
@@ -4605,9 +4649,10 @@ try {
         }
 
         // ── a creator's machines on their profile ──
-        // Visitors see what is on sale; the creator sees every state in plain
-        // words and ends a season in one step that closes the capsule's sale
-        // on-chain, from their own wallet, before the listing changes.
+        // Visitors see what is on sale, at the scale of the view the creator
+        // chose; the creator sees a list, state first, and ends a season from a
+        // row's menu in one step that closes the capsule's sale on-chain, from
+        // their own wallet, before the listing changes.
         {
           // Their two machines on sale, and the machines featuring their work.
           const c2Machines = 2 + ((await call(`/api/experience/machines?creator=${CREATOR2}`)).json?.featuredIn?.length ?? 0)
@@ -4643,7 +4688,13 @@ try {
           const vBody = await text(visitor)
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
           check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0 &&
-            (await visitor.getByRole('button', { name: /cover/ }).count()) === 0)
+            (await visitor.getByRole('button', { name: /cover|more actions/i }).count()) === 0)
+          const vCard = (await cardOf(visitor, 'browser-machine').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          const listed = ((await call('/api/experience/machines')).json?.machines ?? []).find((m) => m.id === 'browser-machine')
+          const shownEth = Number(vCard.match(/([\d.]+) eth per play/)?.[1])
+          check('each card says what a play costs, the price the play list shows, and what is left',
+            !!listed?.price && Math.abs(shownEth - Number(listed.price.pricePerToken) / 1e18) < 1e-12 && /\d+ of \d+ left|sold out|\d+ sold/.test(vCard),
+            `${vCard} | ${JSON.stringify(listed?.price)}`)
           // A visitor sees the view the creator chose, and the machines take its
           // layout. One who never pinned or chose shows the full profile: its
           // dense grid, six to a row on a wide screen.
@@ -4671,10 +4722,16 @@ try {
           // One who chose the curated showcase gets its full-scale cards: three
           // to a row on a wide screen, and on a phone a row to swipe.
           const chose = await call(`/api/profile/${CREATOR2}/public-view`, { method: 'POST', user: USER_TOKEN, body: { mode: 'curated' } })
+          // The browser's pages share one address, and this mock's counters
+          // never expire, so the suite's earlier pages have spent /api/eth-usd's
+          // per-address minute (30): the test's doing, not a person's.
+          for (const k of [...strings.keys()]) if (k.startsWith('kismetart:rl:eth-usd:')) strings.delete(k)
           const wide = await open(`/profile/${CREATOR2}`)
           await wide.getByText(`Machines (${c2Machines})`).waitFor()
           await wide.waitForLoadState('networkidle').catch(() => {})
+          await cardOf(wide, 'browser-machine').getByText(/≈ \$/).waitFor({ timeout: 10_000 }).catch(() => {})
           const wWidth = await widthOf(cardOf(wide, 'browser-machine'))
+          const wCard = (await cardOf(wide, 'browser-machine').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
           await wide.context().close()
           const phone = await open(`/profile/${CREATOR2}`, { viewport: { width: 390, height: 844 } })
           await phone.getByText(`Machines (${c2Machines})`).waitFor()
@@ -4685,19 +4742,42 @@ try {
           await phone.context().close()
           check('and of a curated one, at the showcase\'s scale: three to a row on a wide screen, a row to swipe on a phone',
             chose.status === 200 && wWidth > 280 && wWidth < 400 && Math.abs(pWidth - 288) < 2 && swipes, `${chose.status} ${wWidth} ${pWidth} ${swipes}`)
+          check('where a play\'s price comes with about what it is in dollars, as on the play list', /[\d.]+ eth per play ≈ \$[\d,.]+/.test(wCard), wCard)
           await call(`/api/profile/${CREATOR2}/public-view`, { method: 'POST', user: USER_TOKEN, body: { mode: 'full' } })
 
           const page = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true })
           await page.getByText(`Machines (${c2Machines})`).waitFor()
-          check('the creator sees each machine in plain words', (await text(page)).includes('on sale'))
-          // Its editor loads for its owner only, after the page.
-          await page.getByRole('button', { name: 'change cover' }).first().waitFor({ timeout: 15_000 }).catch(() => {})
-          check('and can change each one\'s cover', (await page.getByRole('button', { name: 'change cover' }).count()) >= 1)
+          const rows = page.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          const row = rows.filter({ has: page.locator('a[href="/play/browser-machine"]') })
+          await row.waitFor()
+          const rowBox = await row.boundingBox()
+          check('the creator sees their machines as a list, one row each, state first', (await rows.count()) === 2 &&
+            (await row.innerText()).toLowerCase().includes('live') && !!rowBox && rowBox.height < 140 && rowBox.width > 300,
+            `${await rows.count()} ${JSON.stringify(rowBox)}`)
           check('and how to build another', (await page.getByRole('link', { name: 'build another gachapon →' }).getAttribute('href').catch(() => null)) === '/play/create')
-          const row = cardOf(page, 'browser-machine')
-          const oWidth = await widthOf(row)
-          check('while their own list keeps the dashboard\'s dense grid, two to a row on a phone', oWidth > 150 && oWidth < 200, String(oWidth))
-          await row.getByRole('button', { name: 'end season' }).click()
+          // The rare actions sit behind one menu, which a keyboard opens at its
+          // first item, walks, and closes, handing focus back to its button.
+          const more = row.getByRole('button', { name: 'More actions for Browser Machine' })
+          await more.focus()
+          await page.keyboard.press('Enter')
+          const menu = page.getByRole('menu', { name: 'More actions for Browser Machine' })
+          await menu.waitFor({ timeout: 10_000 }).catch(() => {})
+          const items = (await menu.getByRole('menuitem').allInnerTexts().catch(() => [])).map((t) => t.trim().toLowerCase())
+          const focusedRole = () => page.evaluate(() => document.activeElement?.getAttribute('role') ?? document.activeElement?.tagName)
+          let firstFocused = false
+          for (let i = 0; i < 20 && !(firstFocused = (await focusedRole()) === 'menuitem'); i++) await sleep(50)
+          await page.keyboard.press('ArrowDown')
+          const movedTo = await page.evaluate(() => document.activeElement?.textContent?.trim().toLowerCase())
+          await page.keyboard.press('Escape')
+          await sleep(100)
+          const menuClosed = (await menu.count()) === 0
+          const backOnButton = await more.evaluate((el) => el === document.activeElement).catch(() => false)
+          check('its actions are behind one menu: change the cover, end the season', items.join(',') === 'change cover,end season', items.join(','))
+          check('which a keyboard opens at its first item, walks, and closes, back on its button',
+            firstFocused && movedTo === 'end season' && menuClosed && backOnButton, `${firstFocused} ${movedTo} ${menuClosed} ${backOnButton}`)
+          // Ending a season: the menu, then the confirmation in the row.
+          await more.click()
+          await page.getByRole('menuitem', { name: 'End season' }).click()
           await row.getByRole('button', { name: 'confirm end season' }).click()
           await page.getByText('Season ended').first().waitFor()
           const sale = chain.sales.get(key(CAPSULE_A, 1))
@@ -4705,31 +4785,42 @@ try {
           check('in one signature from the creator\'s wallet', chain.walletTxs.at(-1)?.to?.toLowerCase() === CAPSULE_A)
           check('and then ends the machine', (await call('/api/experience/machines/browser-machine')).json?.machine?.state === 'ended')
           await row.getByText('closed', { exact: true }).waitFor({ timeout: 10_000 }).catch(() => {})
-          check('and its card reads closed, as the play list\'s does', (await row.getByText('closed', { exact: true }).count()) === 1)
-          // A cover picked on a card shows there, where it will go, before it
-          // is saved — even on a card whose own image could not load, as none
-          // can here (this page is served no images).
+          check('and its row reads closed, as the play list\'s card does, with what sold still honoured',
+            (await row.getByText('closed', { exact: true }).count()) === 1 && (await row.innerText()).toLowerCase().includes('capsules sold are still honoured'))
+          // "Change cover" opens the file picker inside the same tap, and the
+          // picked cover shows in the row and larger under it before it is
+          // saved — even where the row's own image could not load, as none can
+          // here (this page is served no images).
           await row.scrollIntoViewIfNeeded().catch(() => {})
-          await row.getByText('no preview').waitFor({ timeout: 15_000 }).catch(() => {})
-          const failedFirst = (await row.getByText('no preview').count()) === 1
-          await row.getByLabel('cover image').setInputFiles({ name: 'next-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          let failedFirst = false
+          for (let i = 0; i < 75 && !(failedFirst = (await row.locator('img').count()) === 0); i++) await sleep(200)
+          await more.click()
+          const [chooser] = await Promise.all([
+            page.waitForEvent('filechooser', { timeout: 10_000 }).catch(() => null),
+            page.getByRole('menuitem', { name: 'Change cover' }).click(),
+          ])
+          await chooser?.setFiles({ name: 'next-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
           await row.getByRole('button', { name: 'save cover' }).waitFor({ timeout: 15_000 }).catch(() => {})
-          await row.locator('img[src^="blob:"]').waitFor({ timeout: 10_000 }).catch(() => {})
+          await row.locator('img[src^="blob:"]').nth(1).waitFor({ timeout: 10_000 }).catch(() => {})
           const previewed = await row.locator('img[src^="blob:"]').count()
-          check('a cover picked on the profile shows on its card before it is saved, even where the card\'s own image could not load',
-            failedFirst && previewed === 1, `${failedFirst} ${previewed}`)
+          check('"Change cover" opens the file picker, and the pick shows in the row and larger under it before it is saved, even where the row\'s own image could not load',
+            !!chooser && failedFirst && previewed === 2, `${!!chooser} ${failedFirst} ${previewed}`)
+          await row.getByRole('button', { name: 'cancel' }).click()
+          await sleep(300)
+          check('and cancel drops it, leaving the cover as it was',
+            (await row.locator('img[src^="blob:"]').count()) === 0 && (await row.getByRole('button', { name: 'save cover' }).count()) === 0)
           await page.context().close()
-          // And where it did load, the picked cover takes its place.
+          // And where the row's image loaded, the picked cover takes its place.
           const loaded = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, images: true })
-          const lRow = cardOf(loaded, 'browser-machine')
+          const lRow = loaded.getByRole('list', { name: 'Your machines' }).getByRole('listitem').filter({ has: loaded.locator('a[href="/play/browser-machine"]') })
           await lRow.scrollIntoViewIfNeeded().catch(() => {})
           const coverLoaded = () => lRow.locator('img').first().evaluate((img) => img.complete && img.naturalWidth > 0 && !img.src.startsWith('blob:')).catch(() => false)
           let coverFirst = false
           for (let i = 0; i < 75 && !(coverFirst = await coverLoaded()); i++) await sleep(200)
           await lRow.getByLabel('cover image').setInputFiles({ name: 'next-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
-          await lRow.locator('img[src^="blob:"]').waitFor({ timeout: 10_000 }).catch(() => {})
-          const swapped = (await lRow.locator('img[src^="blob:"]').count()) === 1 && (await lRow.locator('img').count()) === 1
-          check('and where the card\'s image loaded, the picked cover takes its place', coverFirst && swapped, `${coverFirst} ${swapped}`)
+          await lRow.locator('img[src^="blob:"]').nth(1).waitFor({ timeout: 10_000 }).catch(() => {})
+          const swapped = (await lRow.locator('img[src^="blob:"]').count()) === 2 && (await lRow.locator('img').count()) === 2
+          check('and where the row\'s image loaded, the picked cover takes its place', coverFirst && swapped, `${coverFirst} ${swapped}`)
           await loaded.context().close()
         }
 

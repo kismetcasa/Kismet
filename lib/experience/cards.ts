@@ -56,32 +56,42 @@ export async function machineCovers(
 }
 
 /**
- * The play list's cards, in the order given: covers (above) and, for every
- * capsule machine on sale, its price — one multicall for all of them.
+ * The price of a play, by id, for every capsule machine on sale — one
+ * multicall for all of them. None for a reveal machine (each piece has its
+ * own), for a machine off the shelves, or for a sale that has ended or could
+ * not be read: a card shows no price rather than a wrong one.
+ */
+export async function machinePrices(machines: Machine[]): Promise<Map<string, NonNullable<MachineCardData['price']>>> {
+  const onSale = machines.flatMap((m) => (!isReveal(m) && m.state === 'live' ? [m] : []))
+  const sales = await resolveOnchainSalesBatch(
+    serverBaseClient(),
+    onSale.map((m) => ({ collection: m.capsule.collection as Address, tokenId: BigInt(m.capsule.tokenId) })),
+  )
+  const now = BigInt(Math.floor(Date.now() / 1000))
+  const prices = new Map<string, NonNullable<MachineCardData['price']>>()
+  for (const m of onSale) {
+    const sale = sales.get(`${m.capsule.collection.toLowerCase()}:${m.capsule.tokenId}`)
+    if (sale && BigInt(sale.saleEnd) > now) {
+      prices.set(m.id, { pricePerToken: sale.pricePerToken, currency: sale.type === 'erc20Mint' ? 'usdc' : 'eth' })
+    }
+  }
+  return prices
+}
+
+/**
+ * The play list's cards, in the order given: covers (above) and each capsule
+ * machine's price while it is on sale (machinePrices).
  */
 export async function machineCards(machines: Machine[]): Promise<MachineCardData[]> {
-  const onSale = machines.flatMap((m) => (!isReveal(m) && m.state === 'live' ? [m] : []))
-  const [covers, sales] = await Promise.all([
-    machineCovers(machines),
-    resolveOnchainSalesBatch(
-      serverBaseClient(),
-      onSale.map((m) => ({ collection: m.capsule.collection as Address, tokenId: BigInt(m.capsule.tokenId) })),
-    ),
-  ])
-  const now = BigInt(Math.floor(Date.now() / 1000))
-
+  const [covers, prices] = await Promise.all([machineCovers(machines), machinePrices(machines)])
   return machines.map((m) => {
-    const sale = isReveal(m) ? undefined : sales.get(`${m.capsule.collection.toLowerCase()}:${m.capsule.tokenId}`)
     const card = {
       id: m.id,
       name: m.name,
       state: m.state,
       creator: m.creator,
       cover: covers.get(m.id) ?? null,
-      price:
-        m.state === 'live' && sale && BigInt(sale.saleEnd) > now
-          ? { pricePerToken: sale.pricePerToken, currency: sale.type === 'erc20Mint' ? ('usdc' as const) : ('eth' as const) }
-          : null,
+      price: prices.get(m.id) ?? null,
     }
     return isReveal(m) ? { ...card, kind: 'reveal' as const } : { ...card, kind: 'capsule' as const, capsule: m.capsule }
   })

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import type { Address } from 'viem'
@@ -15,7 +15,9 @@ import { toastError } from '@/lib/toast'
  * the machine list, and the creator's profile. One tap opens the
  * confirmation, which says what the action does; a second carries it out.
  * The route checks the creator (app/api/experience/machines/[id]); `creator`
- * only decides who sees the control.
+ * only decides who sees the control. With `confirmOnly` a caller's own
+ * control stands in for the first tap (the profile's actions menu): it opens
+ * straight to the confirmation, which takes focus, and cancel calls back.
  */
 export function MachineAction({
   machine,
@@ -24,6 +26,8 @@ export function MachineAction({
   onDone,
   triggerClassName = 'mt-2 text-[11px] font-mono text-dim hover:text-ink underline',
   panelClassName = 'mt-2 border-t border-line pt-2',
+  confirmOnly = false,
+  onCancel,
 }: {
   machine: { id: string } & ({ kind: 'reveal' } | { kind: 'capsule'; capsule: { collection: string; tokenId: string } })
   action: 'end' | 'withdraw'
@@ -33,13 +37,23 @@ export function MachineAction({
   onDone?: (id: string) => void
   triggerClassName?: string
   panelClassName?: string
+  /** Open at the confirmation, with no trigger of its own. */
+  confirmOnly?: boolean
+  /** With `confirmOnly`: the confirmation was cancelled. */
+  onCancel?: () => void
 }) {
   const { address } = useAccount()
   const router = useRouter()
   const { ensureSession } = useUploadSession()
   const { endNow } = useUpdateMomentSale()
-  const [confirming, setConfirming] = useState(false)
+  const [confirming, setConfirming] = useState(confirmOnly)
   const [busy, setBusy] = useState(false)
+  const panel = useRef<HTMLDivElement>(null)
+  // Opened from someone else's control, the confirmation takes focus so a
+  // keyboard lands on what it says, not back at the top of the page.
+  useEffect(() => {
+    if (confirmOnly) panel.current?.focus()
+  }, [confirmOnly])
 
   if (creator !== undefined && address?.toLowerCase() !== creator.toLowerCase()) return null
 
@@ -76,7 +90,8 @@ export function MachineAction({
   }
 
   const reveal = machine.kind === 'reveal'
-  if (!confirming) {
+  const cancel = () => (confirmOnly ? onCancel?.() : setConfirming(false))
+  if (!confirming && !confirmOnly) {
     return (
       <button onClick={() => setConfirming(true)} className={triggerClassName}>
         {action === 'end' ? (reveal ? 'close machine' : 'end season') : 'withdraw'}
@@ -84,7 +99,7 @@ export function MachineAction({
     )
   }
   return (
-    <div className={panelClassName}>
+    <div ref={panel} tabIndex={-1} role="group" aria-label={action === 'end' ? (reveal ? 'Close machine' : 'End season') : 'Withdraw'} className={`${panelClassName} focus:outline-none`}>
       <p className="text-[11px] font-mono text-muted leading-relaxed">
         {action === 'end'
           ? reveal
@@ -103,7 +118,7 @@ export function MachineAction({
           {busy ? 'working…' : action === 'end' ? (reveal ? 'confirm close' : 'confirm end season') : 'confirm withdraw'}
         </button>
         <button
-          onClick={() => setConfirming(false)}
+          onClick={cancel}
           disabled={busy}
           className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider border border-line text-dim hover:text-ink disabled:opacity-40"
         >
