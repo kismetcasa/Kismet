@@ -4,7 +4,8 @@
 #
 # Layout:
 #   deps    → resolve node_modules + run postinstall (copies ffmpeg-core
-#             wasm into public/ffmpeg-core/)
+#             wasm into public/ffmpeg-core/ and pdf.js's worker and assets
+#             into public/pdfjs/)
 #   builder → run `next build` with output: 'standalone' (see next.config.mjs)
 #   runner  → minimal runtime: standalone server.js + static + public
 #
@@ -35,18 +36,21 @@ COPY scripts ./scripts
 RUN npm ci --no-audit --no-fund
 
 # ─── builder stage ───────────────────────────────────────────────────
-# Bring in deps, overlay source, re-run the postinstall (deps stage's
-# public/ffmpeg-core/ is dropped by the source COPY above), then build.
+# Bring in deps, overlay source, re-run the postinstall's copies (the deps
+# stage's public/ffmpeg-core/ and public/pdfjs/ are not carried over), then
+# build.
 FROM node:22.22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Re-populate public/ffmpeg-core/ — the deps stage created it before
-# source was overlaid, and `COPY . .` would have shadowed it with the
-# (intentionally-empty, gitignored) source-tree version. The script is
-# idempotent and copies two small files.
-RUN node scripts/copy-ffmpeg-core.mjs
+# Re-populate public/ffmpeg-core/ and public/pdfjs/ (the zine reader's
+# worker, wasm decoders, fonts and cmaps) — the deps stage created them
+# before source was overlaid, only its node_modules comes across, and the
+# source tree's copies are gitignored. Both scripts are idempotent and copy
+# from node_modules; `npm run build`'s prebuild check fails the build if the
+# pdf.js files are missing or of another version.
+RUN node scripts/copy-ffmpeg-core.mjs && node scripts/copy-pdfjs-assets.mjs
 
 ENV NEXT_TELEMETRY_DISABLED=1
 # Bound the V8 heap so `next build` stays under the Coolify host's

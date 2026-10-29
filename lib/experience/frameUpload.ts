@@ -1,5 +1,6 @@
 import uploadToArweave from '@/lib/arweave/uploadToArweave'
 import { checkMintMedia } from '@/lib/media/mintMedia'
+import { ZINE_COPY } from '@/lib/media/zineMedia'
 import { getFFmpeg, runWatched, transcodeGifToMp4 } from '@/lib/media/transcodeGif'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
@@ -50,8 +51,12 @@ export function prepareFrame(file: File, stage: keyof MachineFrames): Promise<Pr
 
 async function prepare(file: File, stage: keyof MachineFrames): Promise<PreparedFrame | string> {
   const verdict = await checkMintMedia(file)
-  if (!verdict.ok) return verdict.reason
-  if (verdict.kind === 'model') return 'Use an image, a gif or a video'
+  // A PDF is refused by the gate itself (no parser is passed), with copy
+  // about zines; a frame's own copy is what belongs here.
+  if (!verdict.ok) return verdict.reason === ZINE_COPY.notHere ? 'Use an image, a gif or a video' : verdict.reason
+  // Explicit, not a fall-through: any kind this gate does not name would
+  // otherwise land in the still-image `else` below as a broken frame.
+  if (verdict.kind === 'model' || verdict.kind === 'pdf') return 'Use an image, a gif or a video'
   let frame: PreparedFrame
   let seconds: number | null = null
   if (file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif')) {

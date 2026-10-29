@@ -1,4 +1,5 @@
 import { ImageResponse } from 'next/og'
+import { readZineHint } from '@/lib/media/zineHint'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { shortAddress } from '@/lib/inprocess'
 import { fetchMomentDetail } from '@/lib/momentDetail'
@@ -70,6 +71,11 @@ export default async function Image({ params }: Props) {
       // of it shadowed the text case and mislabeled every text mint "VIDEO".
       if (mime?.startsWith('text/')) {
         label = 'WRITING'
+      } else if (mime === 'application/pdf' || readZineHint(detail.metadata?.kismet_zine)?.access === 'collectors') {
+        // A zine carries its PDF in animation_url (the rule below would
+        // otherwise label it VIDEO on the text-only fallback card); a
+        // collectors-only one is an image moment that only its hint names.
+        label = 'ZINE'
       } else if (mime?.startsWith('video/') || detail.metadata?.animation_url) {
         label = 'VIDEO'
       }

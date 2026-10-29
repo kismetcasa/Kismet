@@ -1,16 +1,21 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
-import { ArrowDownToLine, Eye, Link as LinkIcon } from 'lucide-react'
+import { ArrowDownToLine, BookOpen, Eye, Link as LinkIcon } from 'lucide-react'
+import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { buildDownloadProofMessage } from '@/lib/collectorFileMessage'
-import { CollectorFileViewer } from './CollectorFileViewer'
+// Opened on a click only; keeps the viewer (and the PDF engine's loader)
+// off the artwork route's critical path.
+const CollectorFileViewer = dynamic(() => import('./CollectorFileViewer').then((m) => m.CollectorFileViewer), { ssr: false })
 import { formatCfileSize, type CfilePublic, isViewableCfileKind } from '@/lib/collectorFileTypes'
 import { formatPrice } from '@/lib/inprocess'
+import { useSignMessage } from '@/hooks/useWallet'
 
 /**
  * The collector-download card on the artwork page
@@ -49,11 +54,17 @@ interface Props {
    *  object = listed (price shown), null = none listed, undefined = unknown
    *  (overlay) → generic market pointer. */
   listing?: { price: string; currency: 'eth' | 'usdc' } | null
+  /** The artwork's cover: a collectors-only zine opens from it. */
+  cover?: { src: string; thumbhash?: string }
+  /** The artwork says its collectors-only zine is this file (its
+   *  `kismet_zine` hint, access "collectors"). Any PDF here is readable in
+   *  the browser; only that one is called a zine. */
+  zine?: boolean
 }
 
 const TOAST_ID = 'cfile-download'
 
-export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing }: Props) {
+export function CollectorFileCard({ collection, tokenId, initial, descriptorKnown, hasCollected, soldOut, justCollected, listing, cover, zine = false }: Props) {
   const { address: connectedAddress } = useAccount()
   const { signMessageAsync } = useSignMessage()
   const { isInMiniApp } = useFarcaster()
@@ -206,7 +217,13 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
 
   const updateAvailable = downloadedV !== null && file.v > downloadedV
   const updated = new Date(file.updatedAt)
-  const metaLine = `${file.name} · ${formatCfileSize(file.size)} · v${file.v}`
+  // Any PDF is read in the browser, with its page count (ZINE_READER_DESIGN
+  // .md §10). The artwork's collectors-only zine is also called one — "read
+  // it", "collect to read" — while a PDF that is not (a print-res export
+  // beside a public zine, a certificate) stays a collector download (§26).
+  const isPdf = file.kind === 'pdf'
+  const isZine = isPdf && zine
+  const metaLine = `${file.name} · ${formatCfileSize(file.size)}${isPdf && file.pages ? ` · ${formatZinePages(file.pages)}` : ''} · v${file.v}`
 
   return (
     <div className="px-5 pb-3">
@@ -214,12 +231,12 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
         <ArrowDownToLine size={14} className="text-accent flex-shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-[11px] font-mono text-ink truncate">
-            collector download · {metaLine}
+            {isZine ? 'collectors-only zine' : 'collector download'} · {metaLine}
           </p>
           <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
             {hasCollected ? (
               justCollected ? (
-                <span className="text-accent">your download is ready</span>
+                <span className="text-accent">{isZine ? ZINE_COPY.collectedReady : 'your download is ready'}</span>
               ) : updateAvailable ? (
                 <span className="text-accent">update available — v{file.v}</span>
               ) : (
@@ -244,6 +261,8 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
                   </Link>
                 </>
               )
+            ) : isZine ? (
+              ZINE_COPY.collectToRead
             ) : (
               'collect to download'
             )}
@@ -264,10 +283,10 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
             {isViewableCfileKind(file?.kind) && (
               <button
                 onClick={() => setViewing(true)}
-                title="View in the browser"
+                title={isPdf ? 'Read in the browser' : 'View in the browser'}
                 className="px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors flex items-center gap-1.5"
               >
-                <Eye size={12} /> view
+                {isPdf ? <BookOpen size={12} /> : <Eye size={12} />} {isPdf ? 'read' : 'view'}
               </button>
             )}
             <button
@@ -288,6 +307,8 @@ export function CollectorFileCard({ collection, tokenId, initial, descriptorKnow
           name={file.name}
           v={file.v}
           onClose={() => setViewing(false)}
+          miniApp={isInMiniApp}
+          cover={cover}
         />
       )}
     </div>

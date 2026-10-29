@@ -84,6 +84,8 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
       for (let i = 2; i < cmd.length; i++) if (sets.get(key)?.delete(String(cmd[i]))) n++
       return n
     }
+    if (op === 'SISMEMBER') return sets.get(key)?.has(String(cmd[2])) ? 1 : 0
+    if (op === 'PERSIST') return store.has(key) ? 1 : 0
     if (op === 'SMEMBERS') return modelSets(key) ? [...(sets.get(key) ?? [])] : []
     if (op === 'EVAL') {
       // ["EVAL", script, numkeys, ...keys, ...args]
@@ -95,6 +97,16 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
       // The pending-revoke queue's "un-index if empty" step.
       if (script.includes('HLEN')) {
         if ((hashes.get(keys[0])?.size ?? 0) === 0) return sets.get(keys[1])?.delete(args[0]) ? 1 : 0
+        return 0
+      }
+      // The lock release (lib/redisLock): delete the key only while it still
+      // holds our token.
+      if (script.includes("'DEL'")) {
+        const cur = store.get(keys[0])
+        if (cur && cur.v === args[0]) {
+          store.delete(keys[0])
+          return 1
+        }
         return 0
       }
       // The scout record's compare-and-set (store.ts saveScoutIfUnchanged).

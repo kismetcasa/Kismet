@@ -24,7 +24,7 @@ export function makeProxySigner() {
         body: JSON.stringify({ hash: Buffer.from(hash).toString('base64') }),
       })
       const data = (await res.json()) as { signature?: string; error?: string }
-      if (!res.ok) throw new Error(data.error ?? 'Signing failed')
+      if (!res.ok) throw Object.assign(new Error(data.error ?? 'Signing failed'), { status: res.status, signing: true })
       return Buffer.from(data.signature!, 'base64')
     },
   }

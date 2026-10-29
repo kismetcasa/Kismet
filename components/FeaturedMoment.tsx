@@ -12,6 +12,8 @@ import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { MomentImage } from './MomentImage'
 import { ModelBadge } from './ModelBadge'
+import { ZineBadge } from './ZineBadge'
+import { readZineHint } from '@/lib/media/zineMedia'
 import { MomentVideo } from './MomentVideo'
 import { MomentCard } from './MomentCard'
 import { FeatureStar } from './FeatureStar'
@@ -195,6 +197,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   // payload — the one every other feed card already uses.
   const meta = detail?.metadata ?? initialMoment?.metadata ?? {}
   const media = resolveMomentMedia(meta)
+  const zineHint = readZineHint(meta.kismet_zine)
   const isVideo = media.kind === 'video'
   const isTextMoment = media.kind === 'text'
   const blurPreview = useMemo(() => thumbhashToBlurDataURL(meta.kismet_thumbhash), [meta.kismet_thumbhash])
@@ -407,7 +410,9 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               priority={priority}
               onAllError={() => setMediaError(true)}
             />
-          ) : (media.kind === 'image' || media.kind === 'gif') && media.src && !mediaError ? (
+          ) : (media.kind === 'image' || media.kind === 'gif' || media.kind === 'model' || media.kind === 'pdf') && media.src && !mediaError ? (
+            // `model` and `pdf` carry their STILL in `src` (resolveMomentMedia)
+            // precisely so this surface renders it; a viewer never mounts here.
             <MomentImage
               src={media.src}
               alt={title}
@@ -450,6 +455,9 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               signal that there is a model to tap through to; top-right is the
               free corner here (the star owns top-left). */}
           {media.kind === 'model' && <ModelBadge className="absolute top-2 right-2" />}
+          {(media.kind === 'pdf' || (zineHint?.access === 'collectors' && media.kind !== 'model' && media.kind !== 'video')) && (
+            <ZineBadge pages={media.pages ?? zineHint?.pages} access={zineHint?.access} className="absolute top-2 right-2" />
+          )}
           {/* Admin control — tap to feature, hold to set this Mint Pass Display.
               Its own handlers stop the wrapping link from navigating. */}
           <FeatureStar address={address} tokenId={tokenId} className="absolute top-2 left-2" />

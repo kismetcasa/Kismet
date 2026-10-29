@@ -99,7 +99,7 @@ check('mint gate: a typeless .glb is admitted AS A MODEL (not as an image)',
 const zip = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'work.zip', { type: 'application/zip' })
 check('mint gate: a zip is REJECTED (drag-and-drop bypasses input accept)', !(await gate(zip)).ok)
 const pdf = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])], 'doc.pdf', { type: 'application/pdf' })
-check('mint gate: a pdf is REJECTED', !(await gate(pdf)).ok)
+check('mint gate: a pdf without a PDF parser is refused (a zine needs the mint form\'s parser — scripts/verify-zine-media)', !(await gate(pdf)).ok)
 check('mint gate: a typeless non-media file is REJECTED',
   !(await gate(new File([new Uint8Array([1, 2, 3, 4])], 'notes.bin'))).ok)
 

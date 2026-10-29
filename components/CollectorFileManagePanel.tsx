@@ -1,10 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import {
+  isViewableCfileKind,
   CFILE_ACCEPT_ATTR,
   CFILE_KIND_LABEL,
   CFILE_MAX_BYTES,
@@ -13,6 +15,13 @@ import {
   type CfileManageView,
   type CfilePublic,
 } from '@/lib/collectorFileTypes'
+import { ZINE_COPY, formatZinePages, sniffPdfFile } from '@/lib/media/zineMedia'
+import { inspectPdfFile } from '@/lib/pdfjs'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+
+// The same in-page viewer a collector gets, opened on a click: not on the
+// artwork route's critical path.
+const CollectorFileViewer = dynamic(() => import('./CollectorFileViewer').then((m) => m.CollectorFileViewer), { ssr: false })
 
 /**
  * Artist-side manage panel for an artwork's collector file — an inline panel
@@ -33,13 +42,22 @@ interface Props {
    *  the artwork, readable from the token metadata), so the panel says what a
    *  gated file can still add — GLB_3D_VIEWER_DESIGN.md §15. */
   primaryIsModel?: boolean
+  /** The artwork's cover: the artist's own read of a zine opens from it. */
+  cover?: { src: string; thumbhash?: string }
 }
 
-export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange, primaryIsModel }: Props) {
+export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileChange, primaryIsModel, cover }: Props) {
   const { ensureSession } = useUploadSession()
+  const { isInMiniApp } = useFarcaster()
   const [view, setView] = useState<CfileManageView | null>(null)
+  const [viewing, setViewing] = useState(false)
   const [loading, setLoading] = useState(true)
   const [picked, setPicked] = useState<File | null>(null)
+  const [pickedPages, setPickedPages] = useState<number | null>(null)
+  // A second pick while the first is still being counted: only the latest
+  // pick's count may land, and saving waits for it.
+  const pickSeqRef = useRef(0)
+  const [counting, setCounting] = useState(false)
   const [note, setNote] = useState('')
   const [notify, setNotify] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -72,7 +90,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function handlePick(f: File | null) {
+  async function handlePick(f: File | null) {
     if (!f) return
     if (f.size > CFILE_MAX_BYTES) {
       toast.error('File too large', { description: `The limit is ${formatCfileSize(CFILE_MAX_BYTES)} per version` })
@@ -83,15 +101,37 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
       return
     }
     setPicked(f)
+    setPickedPages(null)
+    // Every pick starts uncounted: a count still running for an earlier pick
+    // is superseded (its result is dropped below), and must not hold Save
+    // disabled for a file that is not a PDF.
+    setCounting(false)
+    const seq = ++pickSeqRef.current
+    // A PDF's page count rides the PUT for the card's "· 16 pages". Best
+    // effort: a file the parser cannot open (a password, a broken export)
+    // is still a legitimate download, just one with no count — and a
+    // password-protected one is said so, since the card will offer "read".
+    if (await sniffPdfFile(f)) {
+      setCounting(true)
+      try {
+        const inspection = await inspectPdfFile(f).catch(() => null)
+        if (seq !== pickSeqRef.current) return
+        if (inspection?.kind === 'ok') setPickedPages(inspection.pages)
+        if (inspection?.kind === 'password') toast.warning('Password-protected PDF', { description: ZINE_COPY.passwordCfile })
+      } finally {
+        if (seq === pickSeqRef.current) setCounting(false)
+      }
+    }
   }
 
   async function handleSave() {
-    if (!picked || saving) return
+    if (!picked || saving || counting) return
     setSaving(true)
     try {
       await ensureSession()
       const params = new URLSearchParams({ collection, tokenId })
       if (note.trim()) params.set('note', note.trim().slice(0, 140))
+      if (pickedPages) params.set('pages', String(pickedPages))
       // The EFFECTIVE notify mirrors exactly what the checkbox renders:
       // under cooldown or over the ceiling it shows disabled-unchecked, so
       // the request must not carry notify=1 (and the toast must not claim
@@ -127,6 +167,7 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
         })
       }
       setPicked(null)
+      setPickedPages(null)
       setNote('')
       if (inputRef.current) inputRef.current.value = ''
       await refresh()
@@ -182,7 +223,9 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
         toast.error('Could not remove the file', { description: body?.error })
         return
       }
-      toast.success('File removed', { description: 'Collectors can no longer download it.' })
+      toast.success('File removed', {
+        description: view?.file?.kind === 'pdf' ? 'Collectors can no longer read or download it.' : 'Collectors can no longer download it.',
+      })
       setDetachArmed(false)
       await refresh()
     } catch (err) {
@@ -213,13 +256,39 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
           {view?.file ? (
             <div className="text-[10px] font-mono text-muted flex flex-col gap-0.5">
               <p className="text-ink truncate">
-                {view.file.name} · {formatCfileSize(view.file.size)} · v{view.file.v}
+                {view.file.name} · {formatCfileSize(view.file.size)}
+                {view.file.kind === 'pdf' && view.file.pages ? ` · ${formatZinePages(view.file.pages)}` : ''} · v{view.file.v}
               </p>
               <p>
                 {view.downloaders} unique downloader{view.downloaders === 1 ? '' : 's'} ·{' '}
                 {view.audience} known collector{view.audience === 1 ? '' : 's'}
               </p>
               <p className="text-subtle break-all">sha256 {view.file.sha256.slice(0, 16)}…</p>
+              {/* The artist's own look at the gated file — the viewer a
+                  collector gets, through the view route, which admits the
+                  artwork's managers whether or not they hold an edition. */}
+              {isViewableCfileKind(view.file.kind) && (
+                <button
+                  type="button"
+                  onClick={() => setViewing(true)}
+                  title={view.file.kind === 'pdf' ? 'Read it as a collector would' : 'View it as a collector would'}
+                  className="self-start mt-1 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors"
+                >
+                  {view.file.kind === 'pdf' ? 'read' : 'view'}
+                </button>
+              )}
+              {viewing && view.file.kind && (
+                <CollectorFileViewer
+                  collection={collection}
+                  tokenId={tokenId}
+                  kind={view.file.kind}
+                  name={view.file.name}
+                  v={view.file.v}
+                  onClose={() => setViewing(false)}
+                  miniApp={isInMiniApp}
+                  cover={cover}
+                />
+              )}
             </div>
           ) : (
             <p className="text-[10px] font-mono text-muted">
@@ -242,14 +311,16 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
             type="file"
             accept={CFILE_ACCEPT_ATTR}
             className="hidden"
-            onChange={(e) => handlePick(e.target.files?.[0] ?? null)}
+            onChange={(e) => void handlePick(e.target.files?.[0] ?? null)}
           />
           <button
             onClick={() => inputRef.current?.click()}
             disabled={saving}
             className="py-2 text-[11px] font-mono uppercase tracking-wider border border-line text-muted hover:text-ink transition-colors disabled:opacity-50"
           >
-            {picked ? `${picked.name} · ${formatCfileSize(picked.size)}` : view?.file ? 'choose replacement file' : 'choose file'}
+            {picked
+              ? `${picked.name} · ${formatCfileSize(picked.size)}${pickedPages ? ` · ${formatZinePages(pickedPages)}` : ''}`
+              : view?.file ? 'choose replacement file' : 'choose file'}
           </button>
 
           {picked && (
@@ -278,11 +349,11 @@ export function CollectorFileManagePanel({ collection, tokenId, onClose, onFileC
               )}
               <button
                 onClick={() => void handleSave()}
-                disabled={saving}
+                disabled={saving || counting}
                 className="py-2 text-[11px] font-mono uppercase tracking-wider border border-line accent-grad-hover transition-colors disabled:opacity-50"
               >
                 <span className="accent-grad">
-                  {saving ? 'uploading…' : view?.file ? 'replace file' : 'attach file'}
+                  {saving ? 'uploading…' : counting ? 'counting pages…' : view?.file ? 'replace file' : 'attach file'}
                 </span>
               </button>
             </>

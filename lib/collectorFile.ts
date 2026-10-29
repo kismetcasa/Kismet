@@ -125,6 +125,8 @@ export function toPublicDescriptor(record: CfileRecord | null): CfilePublic | nu
     // Drives the client's view-vs-download affordance. Absent on
     // pre-multi-format records; the client treats that as 'zip'.
     ...(c.kind ? { kind: c.kind } : {}),
+    // A zine's page count for the card ("· 16 pages"); display only.
+    ...(c.pages ? { pages: c.pages } : {}),
   }
 }
 

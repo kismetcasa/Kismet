@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useAccount, useReadContract, useSignMessage } from 'wagmi'
+import { useAccount, useReadContract } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import type { Address } from 'viem'
 import { toast } from 'sonner'
@@ -10,6 +10,7 @@ import { toastError } from '@/lib/toast'
 import { buildRaffleEntryMessage } from '@/lib/raffleMessage'
 import { ListButton, type ListButtonProps } from './ListButton'
 import { RaffleEntryModal } from './RaffleEntryModal'
+import { useSignMessage } from '@/hooks/useWallet'
 
 interface RaffleButtonProps {
   collectionAddress: string

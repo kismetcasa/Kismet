@@ -1,10 +1,10 @@
 'use client'
 
-import { useWriteContract } from 'wagmi'
 import { base } from 'wagmi/chains'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { useEnsureBase } from '@/lib/useEnsureBase'
 import { BUILDER_DATA_SUFFIX } from '@/lib/builderCode'
+import { useWriteContract } from '@/hooks/useWallet'
 
 export interface UpdateCollectionMetadataRequest {
   collection: `0x${string}`

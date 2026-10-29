@@ -18,6 +18,10 @@ out
 # build context guarantees the builder stage uses the freshly-installed
 # version, not a stale local copy from a dev workstation.
 public/ffmpeg-core
+# Same for pdf.js's worker and assets (scripts/copy-pdfjs-assets.mjs): pdf.js
+# refuses a worker of any version but the installed API's, so a stale copy
+# from a workstation must never reach the image.
+public/pdfjs
 
 # Local + secret env files. Only the template (.env.example) ships.
 .env

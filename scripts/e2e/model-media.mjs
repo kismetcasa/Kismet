@@ -381,7 +381,7 @@ await page.waitForSelector('model-viewer', { state: 'detached', timeout: 10000 }
 check('clearing the preview removes the viewer', (await page.locator('model-viewer').count()) === 0)
 
 for (const [file, expect] of [
-  ['archive.zip', 'Use an image, video, gif, or a .glb 3D model'],
+  ['archive.zip', 'Use an image, video, gif, a .glb 3D model, or a PDF zine'],
   ['truncated.glb', 'looks incomplete or is an older glTF version'],
   ['v1.glb', 'looks incomplete or is an older glTF version'],
 ]) {

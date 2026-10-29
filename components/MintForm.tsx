@@ -19,7 +19,22 @@ import { serverTranscodeGif } from '@/lib/media/serverTranscodeGif'
 import { extractVideoPoster } from '@/lib/media/extractPoster'
 import { remuxToFaststartMp4 } from '@/lib/media/remuxFaststart'
 import { probeDurationSeconds } from '@/lib/media/probeDuration'
-import { checkMintMedia } from '@/lib/media/mintMedia'
+import { checkCoverImage, checkMintMedia } from '@/lib/media/mintMedia'
+import { ZINE_COPY, ZINE_OPTIMIZE_LONG_EDGE, ZINE_SOFT_WARN_BYTES, asPdfFile, type ZineAccess, zineMomentFields } from '@/lib/media/zineMedia'
+import { canResumeUpload, resumeNeedsPoster } from '@/lib/media/mintResume'
+import { PDF_EXT, PDF_MIME } from '@/lib/pdfFormat'
+import { inspectPdfFile } from '@/lib/pdfjs'
+import { ZinePreview } from './ZinePreview'
+import { OptimizeBar } from './OptimizeBar'
+import type { PdfOptimizeStep } from '@/lib/media/optimizePdf'
+
+/** The long edge the optimizer renders at, as copy ("2000 px"). */
+const ZINE_OPTIMIZE_LONG_EDGE_LABEL = `${ZINE_OPTIMIZE_LONG_EDGE} px`
+// The pass re-renders every page as a JPEG (lib/media/optimizePdf): right for
+// a scanned zine, which is images already, and a real trade for a born-digital
+// one, whose text stops being selectable — so the button says so, and the
+// result toast repeats it next to the undo.
+const ZINE_OPTIMIZE_HINT = `Re-renders every page as a ${ZINE_OPTIMIZE_LONG_EDGE_LABEL} image: a smaller file that opens faster on phones. Text is no longer selectable; undo restores your file.`
 import {
   DEFAULT_MODEL_BACKGROUND,
   MODEL_SOFT_WARN_BYTES,
@@ -29,7 +44,6 @@ import {
 } from '@/lib/media/modelMedia'
 import { GLB_EXT, GLB_MIME } from '@/lib/glbFormat'
 import { ModelPreview } from './ModelPreview'
-import { ModelOptimizeBar } from './ModelOptimizeBar'
 import type { OptimizeStep } from '@/lib/media/optimizeModel'
 import { ModelPoseBar } from './ModelPoseBar'
 import { uploadJson } from '@/lib/arweave/uploadJson'
@@ -44,6 +58,8 @@ import { useEthUsd } from '@/hooks/useEthUsd'
 import { formatUsdApprox } from '@/lib/usdApprox'
 import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning'
 import { useIntentAuth } from '@/hooks/useIntentAuth'
+import { useCreatorCopy } from '@/hooks/useCreatorCopy'
+import { creatorCopyFromWallet, ONE_OF_ONE_SALE } from '@/lib/creatorCopy'
 import { PLATFORM_COLLECTION, CREATE_REFERRAL, RESIDENCIES_ADDRESS, DEFAULT_RESIDENCIES_PERCENT } from '@/lib/config'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { MAX_SPLITS } from '@/lib/splits'
@@ -52,7 +68,7 @@ import { generateTextCollectionCoverDataUri } from '@/lib/generateTextCover'
 import { hasAdminBit } from '@/lib/permissions'
 import { registerCollectionWithBackoff } from '@/lib/registerCollection'
 import { USDC_BASE } from '@/lib/zoraMint'
-import { toastError, toastChainStalled, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
+import { toastError, toastChainStalled, humanError, isUserRejection, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import {
   CFILE_ACCEPT_ATTR,
   CFILE_KIND_LABEL,
@@ -106,6 +122,9 @@ interface UploadedMediaSession {
   source: File
   mediaFile: File
   posterFile: File | null
+  /** A zine's cover as picked at the banked attempt (the upload, or the
+   *  page captured by the preview), so a cover changed since is a miss. */
+  coverSource: File | null
   needsServerTranscode: boolean
   serverTranscode: { animationUri: string; posterUri: string; thumbhash: string | null } | null
   mediaUri: string
@@ -153,6 +172,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   const { openConnectModal } = useConnectModal()
   const { ensureSession } = useUploadSession()
   const { signMintIntent } = useIntentAuth()
+  const creatorCopy = useCreatorCopy()
   const { isInMiniApp, maybePromptCollectNotifs } = useFarcaster()
   // null = auto-deploy a fresh collection on submit. Initialized from the
   // URL/prop hint when present; cleared back to null via the × button.
@@ -303,6 +323,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // verdict is the only authority — and identity comparison makes a stale
   // verdict from a superseded pick harmless instead of sticky.
   const modelPickRef = useRef<File | null>(null)
+  // Same identity rule for a ZINE (a PDF), plus the page count the gate's
+  // parser produced — the only source of the count every later step uses
+  // (the preview's own count exists only while it is mounted).
+  const zinePickRef = useRef<{ file: File; pages: number } | null>(null)
   const {
     file,
     preview,
@@ -319,9 +343,13 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
     // the form, render as a broken <img>, and mint with the model's URI in
     // `metadata.image`.
     accept: async (f) => {
-      const verdict = await checkMintMedia(f)
+      // The PDF parser rides along so a zine's page cap and password check
+      // happen here, at pick time, before any credit is spent (lib/pdfjs is
+      // a lazy chunk; it loads on the first PDF pick only).
+      const verdict = await checkMintMedia(f, { inspectPdf: inspectPdfFile })
       if (!verdict.ok) return verdict.reason
       if (verdict.kind === 'model') modelPickRef.current = f
+      if (verdict.kind === 'pdf') zinePickRef.current = { file: f, pages: verdict.pages }
       return null
     },
     onRejected: (_f, reason) => toast.error('Unsupported file', { description: reason }),
@@ -350,8 +378,58 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // viewer — otherwise tapping "view in 3D" would swap the artist's chosen
   // backdrop for the page's own.
   const [modelBg, setModelBg] = useState<ModelBackgroundId>(DEFAULT_MODEL_BACKGROUND)
+  // A zine's cover: captured from the page the artist lands on in the
+  // preview (ZinePreview, page 1 by default), or an uploaded image, which
+  // wins. Both belong to exactly one pick and drop with it, for the same
+  // reason the model poster does.
+  const [zinePoster, setZinePoster] = useState<File | null>(null)
+  const [zineCover, setZineCover] = useState<File | null>(null)
+  const zineCoverInputRef = useRef<HTMLInputElement>(null)
+  // Who can read a zine (ZINE_READER_DESIGN.md §3). Public: the PDF rides
+  // Arweave as the media. Collectors-only: the COVER is the media (an image
+  // moment to every resolver) and the PDF goes to the private collector-file
+  // store right after the mint — the same file, two homes, chosen here.
+  const [zineAccess, setZineAccess] = useState<ZineAccess>('public')
+  const zineAccessRef = useRef(zineAccess)
+  zineAccessRef.current = zineAccess
+  const zineCoverRef = useRef(zineCover)
+  zineCoverRef.current = zineCover
+  // The page the preview captures as the cover (ZinePreview reports it).
+  const zineCoverPageRef = useRef(1)
+  // What a re-pick through the gate must not lose. `replaceFile` (optimize,
+  // undo) installs a new File object through the same async gate as a drop,
+  // and the `[file]` effect resets a new pick's choices — so the choices that
+  // belong to the zine rather than to the File object (who can read it, the
+  // uploaded cover, the page chosen as the cover) ride across, keyed on the
+  // object about to be installed. A timer could not do this: the gate parses
+  // the PDF first, and the reset ran after any timer had fired.
+  const zineCarryRef = useRef<{ file: File; access: ZineAccess; cover: File | null; coverPage: number } | null>(null)
+  // The optimize pass in flight: aborted by a new pick or by leaving the
+  // form, so 400 pages are never rendered for a file nobody will mint.
+  const zineOptimizeAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => zineOptimizeAbortRef.current?.abort(), [])
+  // "Optimize for phones" (lib/media/optimizePdf): every page re-rendered at
+  // a phone-sized long edge into a new PDF, offered on the preview. The
+  // result goes back through the same pick gate as any drop (page count and
+  // caps re-checked, the cover re-captured from what will actually ship);
+  // the original is kept for a one-tap undo.
+  const [zineOptimizing, setZineOptimizing] = useState<PdfOptimizeStep | null>(null)
+  const [zineOptimized, setZineOptimized] = useState<{ file: File; original: File; before: number; after: number } | null>(null)
+  const zineOptimizeRunningRef = useRef(false)
   useEffect(() => {
+    zineOptimizeAbortRef.current?.abort()
+    const carry = zineCarryRef.current
+    zineCarryRef.current = null
+    const carried = carry && carry.file === file ? carry : null
+    zineCoverPageRef.current = carried?.coverPage ?? 1
     setModelPoster(null)
+    setZinePoster(null)
+    setZineCover(carried?.cover ?? null)
+    setZineAccess(carried?.access ?? 'public')
+    setZineOptimized((o) => (o && o.file !== file ? null : o))
+    if (file && zinePickRef.current?.file === file && file.size > ZINE_SOFT_WARN_BYTES) {
+      toast.warning('Large zine', { description: ZINE_COPY.largeWarning(file.size) })
+    }
     // Warn HERE rather than inside the gate: the gate can run for a pick that
     // a faster second drop supersedes, and warning about a file that never
     // became the media would be a lie. By this point `file` is installed.
@@ -372,6 +450,44 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // self-cleaning property is the reason the verdict is compared by identity
   // rather than stored as a boolean.
   const isModelPick = !!file && modelPickRef.current === file
+  const isZinePick = !!file && zinePickRef.current?.file === file
+  const zinePages = isZinePick ? zinePickRef.current!.pages : 0
+  const isCollectorsZine = isZinePick && zineAccess === 'collectors'
+  async function optimizeZinePick() {
+    const source = file
+    if (!source || !isZinePick || zineOptimizeRunningRef.current) return
+    zineOptimizeRunningRef.current = true
+    const controller = new AbortController()
+    zineOptimizeAbortRef.current = controller
+    setZineOptimizing({ kind: 'opening' })
+    try {
+      const { optimizeZinePdf } = await import('@/lib/media/optimizePdf')
+      const result = await optimizeZinePdf(source, { onStep: setZineOptimizing, signal: controller.signal })
+      // The artist picked something else while this ran: discard, never install.
+      if (fileRef.current !== source) return
+      if (result.unchanged) {
+        toast('Already compact', { description: 'No smaller version could be produced.' })
+        return
+      }
+      // The zine's choices ride across the re-pick (zineCarryRef).
+      zineCarryRef.current = { file: result.file, access: zineAccessRef.current, cover: zineCoverRef.current, coverPage: zineCoverPageRef.current }
+      replaceFile(result.file)
+      setZineOptimized({ file: result.file, original: source, before: result.before, after: result.after })
+      toast.success('Optimized for phones', {
+        description: `${formatCfileSize(result.before)} → ${formatCfileSize(result.after)} · ${result.pages} pages re-rendered as ${ZINE_OPTIMIZE_LONG_EDGE_LABEL} images (text is no longer selectable) · undo in the preview`,
+      })
+    } catch (err) {
+      // A new pick or leaving the form: nothing to say.
+      if (controller.signal.aborted) return
+      toast.error('Could not optimize', {
+        description: err instanceof Error ? err.message : 'Try re-exporting the PDF',
+      })
+    } finally {
+      zineOptimizeRunningRef.current = false
+      if (zineOptimizeAbortRef.current === controller) zineOptimizeAbortRef.current = null
+      setZineOptimizing(null)
+    }
+  }
   async function optimizeModelPick() {
     const source = file
     if (!source || !isModelPick || optimizeRunningRef.current) return
@@ -468,43 +584,68 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // on an attach failure the artwork page's `file` panel is the recovery path.
   const [cfileFile, setCfileFile] = useState<File | null>(null)
   const cfileInputRef = useRef<HTMLInputElement>(null)
+  // A collectors-only zine IS the collector file; one slot per artwork, so
+  // anything staged there before the switch is let go (the slot says why).
+  useEffect(() => {
+    if (isCollectorsZine && cfileFile) {
+      setCfileFile(null)
+      if (cfileInputRef.current) cfileInputRef.current.value = ''
+    }
+  }, [isCollectorsZine, cfileFile])
 
   // Post-mint attach of the staged zip. Best-effort by design: the mint has
   // already succeeded, so a failure here must never look like a mint failure —
   // it toasts the artwork-page fallback instead. ensureSession is idempotent
   // (and a no-op in a Mini App), covering the text-mode path where no upload
   // session was needed for the mint itself.
-  async function attachStagedCfile(collection?: string, tokenId?: string | number) {
-    const file = cfileFile
-    if (!file || !collection || tokenId === undefined || tokenId === null) return
+  async function attachStagedCfile(
+    collection?: string,
+    tokenId?: string | number,
+    // The staged file: the collector-download slot's pick by default, or a
+    // collectors-only zine's PDF (with its page count for the card). `quiet`
+    // leaves the toasts to the caller, which owns the mint's own toast.
+    staged: { file: File; pages?: number } | null = cfileFile ? { file: cfileFile } : null,
+    opts: { quiet?: boolean } = {},
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!staged || !collection || tokenId === undefined || tokenId === null) return { ok: false, error: 'nothing staged' }
     try {
       await ensureSession()
       const params = new URLSearchParams({ collection: String(collection), tokenId: String(tokenId) })
+      if (staged.pages) params.set('pages', String(staged.pages))
       const res = await fetch(`/api/collector-file?${params.toString()}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/octet-stream',
-          'x-file-name': encodeURIComponent(file.name),
+          'x-file-name': encodeURIComponent(staged.file.name),
         },
-        body: file,
+        body: staged.file,
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null
         throw new Error(body?.error ?? `HTTP ${res.status}`)
       }
-      setCfileFile(null)
-      if (cfileInputRef.current) cfileInputRef.current.value = ''
-      toast.success('Download attached', {
-        description: 'Collectors can download it from the artwork page.',
-      })
+      if (staged.file === cfileFile) {
+        setCfileFile(null)
+        if (cfileInputRef.current) cfileInputRef.current.value = ''
+      }
+      if (!opts.quiet) {
+        toast.success('Download attached', {
+          description: 'Collectors can download it from the artwork page.',
+        })
+      }
+      return { ok: true }
     } catch (err) {
-      toast.error('Minted, but the download didn\u2019t attach', {
-        description: `${err instanceof Error ? err.message : 'Upload failed'} \u2014 add it from the artwork page (file button).`,
-        duration: TERMINAL_TOAST_DURATION_MS,
-      })
+      const error = err instanceof Error ? err.message : 'Upload failed'
+      if (!opts.quiet) {
+        toast.error('Minted, but the download didn\u2019t attach', {
+          description: `${error} \u2014 add it from the artwork page (file button).`,
+          duration: TERMINAL_TOAST_DURATION_MS,
+        })
+      }
+      return { ok: false, error }
     }
   }
-  const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
+  const [step, setStep] = useState<'idle' | 'preparing-media' | 'uploading-media' | 'finalizing-media' | 'uploading-metadata' | 'verifying-upload' | 'minting' | 'done'>('idle')
   const [uploadProgress, setUploadProgress] = useState(0)
   const [result, setResult] = useState<{ hash: string; contractAddress: string; tokenId: string } | null>(null)
   // Latest committed step, readable from the mint catch where the `step`
@@ -558,8 +699,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
   // the committed value can exceed the live cap. Surface it inline and block
   // the mint until resolved (we don't silently mutate their chosen number).
   const residenciesOverCap = residenciesEnabled && residenciesPercent > residenciesMax
-  // 1/1 has no public sale (the creator's auto-mint exhausts supply), so
-  // the price input is hidden and the salesConfig price is forced to 0.
+  // 1/1 has no public sale: it is created with its sale closed
+  // (lib/creatorCopy ONE_OF_ONE_SALE) and its single edition is the artist's
+  // copy, sent from their wallet right after the mint (In Process drops the
+  // copy whenever a supply is set). So the price input is hidden.
   // Media-only — text mode hides Supply, so a stale `1` from a prior
   // media session can't sneak through. Gated on artistMintEnabled: the
   // "1/1 exhausts supply" semantics only hold when the creator copy mints —
@@ -864,6 +1007,23 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       toast.error(`Lower residencies to ${residenciesMax}% or free up room by lowering a recipient`)
       return
     }
+    // A limited edition's copy to the artist is sent from the artist's own
+    // wallet after the mint (lib/creatorCopy — In Process drops it). Check,
+    // before anything is uploaded, that the wallet may mint in the target
+    // collection; a collection Kismet deploys makes the artist its admin.
+    const copySupply = mintMode === 'media' && maxSupply.trim() ? parseInt(maxSupply.trim(), 10) : undefined
+    const copyFromWallet = creatorCopyFromWallet({ artistMint: artistMintEnabled, maxSupply: copySupply })
+    if (copyFromWallet && !isAutoDeploy && targetCollection && isAddress(targetCollection)) {
+      if ((await creatorCopy.canSend(targetCollection)) === false) {
+        toast.error('Your wallet can’t mint copies in this collection', {
+          id: 'mint',
+          duration: 10_000,
+          description:
+            'The copy of a limited edition is sent from your wallet, and this collection hasn’t given it ADMIN or MINTER. Turn off “Mint a copy to myself”, or leave the supply open.',
+        })
+        return
+      }
+    }
 
     const rawPrice = is11 ? '0' : price.trim()
     const normalizedPrice = !rawPrice || rawPrice === '.' ? '0' : rawPrice.startsWith('.') ? `0${rawPrice}` : rawPrice
@@ -917,7 +1077,12 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
       if (ts <= saleStartSec) { toast.error('Sale must close after it opens'); return }
       saleEndStr = String(ts)
     }
-    const salesConfig = priceCurrency === 'usdc'
+    // A 1/1 is created with its sale closed (lib/creatorCopy ONE_OF_ONE_SALE):
+    // its single edition is the artist's copy, sent right after the mint, and
+    // must not be up for grabs at price 0 in between.
+    const salesConfig = is11
+      ? ONE_OF_ONE_SALE
+      : priceCurrency === 'usdc'
       ? {
           type: 'erc20Mint' as const,
           pricePerToken: priceInBaseUnits,
@@ -1128,6 +1293,9 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               // bytes are irrelevant — we persisted the effective type.
               mediaFile: new File([], file.name, { type: persisted.mediaType }),
               posterFile: null,
+              // No File survives a reload: the cover is unknown, not
+              // different (the resume check treats null as a match).
+              coverSource: null,
               needsServerTranscode: persisted.needsServerTranscode,
               serverTranscode: persisted.serverTranscode,
               mediaUri: persisted.mediaUri,
@@ -1144,12 +1312,17 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // prepare + upload work entirely and goes straight to verifying
         // txids whose propagation clocks have been running since that
         // attempt.
-        const cachedUpload =
-          mediaUploadRef.current &&
-          mediaUploadRef.current.source === file &&
-          mediaUploadRef.current.verifyFailures < MAX_REUSE_FAILURES
-            ? mediaUploadRef.current
-            : null
+        // The decision is pure (lib/media/mintResume, oracle-pinned): the same
+        // file, not given up on, and for a zine the same choice of who can
+        // read it and the same cover.
+        const cachedUpload = canResumeUpload(
+          mediaUploadRef.current,
+          file,
+          { isZine: isZinePick, access: zineAccess, cover: zineCover ?? zinePoster },
+          MAX_REUSE_FAILURES,
+        )
+          ? mediaUploadRef.current
+          : null
 
         let mediaFile: File
         let posterFile: File | null
@@ -1173,7 +1346,16 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
 
         if (cachedUpload) {
           mediaFile = cachedUpload.mediaFile
-          posterFile = cachedUpload.posterFile
+          // The banked poster, else the one the form holds now (a reload's
+          // resume record keeps no File) — so a poster whose UPLOAD failed
+          // last time gets another attempt below instead of a resumed
+          // session minting a model or a zine with no `image`.
+          // Only when the banked media NEEDS a poster (a PDF, a model —
+          // lib/media/mintResume): a collectors-only zine banks the cover as
+          // its media and would otherwise upload it a second time as a poster.
+          posterFile =
+            cachedUpload.posterFile ??
+            (resumeNeedsPoster(cachedUpload) ? (isZinePick ? (zineCover ?? zinePoster) : isModelPick ? modelPoster : null) : null)
           mediaUri = cachedUpload.mediaUri
           posterUri = cachedUpload.posterUri
           thumbhash = cachedUpload.thumbhash
@@ -1183,6 +1365,14 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           setStep('verifying-upload')
           toast.loading('Resuming previous upload — verifying propagation…', { id: 'mint' })
           mediaVerify = verifyArweaveAvailable(mediaUri, MINT_MEDIA_VERIFY_BUDGET_MS)
+          if (!posterUri && posterFile) {
+            toast.loading('Uploading preview image…', { id: 'mint' })
+            posterUri = await uploadToArweave(posterFile).catch((err) => {
+              console.warn('[MintForm] poster re-upload failed', err)
+              return null
+            })
+            if (posterUri) mediaUploadRef.current = { ...cachedUpload, posterFile, posterUri }
+          }
         } else {
           // GIFs get transcoded to MP4 + JPEG poster (10-50× smaller; plays
           // through the existing <video> branch). Best-effort: any failure
@@ -1214,6 +1404,25 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               throw new Error(
                 'Could not capture a preview image of this model — scroll it into view, rotate it once, and try again',
               )
+            }
+          } else if (isZinePick) {
+            // A zine. The cover is the uploaded image if there is one, else
+            // the page captured in the preview. Not optional, for the reason
+            // the 3D poster is not: `image` is what every static surface
+            // renders.
+            const cover = zineCover ?? zinePoster
+            if (!cover) throw new Error(ZINE_COPY.noCover)
+            if (zineAccess === 'collectors') {
+              // Collectors only: the cover IS the media (an image moment),
+              // and the PDF never touches Arweave — it is attached to the
+              // collector-file store after the mint (see the success path).
+              mediaFile = cover
+              posterFile = null
+            } else {
+              // Public: the PDF ships as authored (re-wrapped with its MIME
+              // so the Arweave tag, the binding and the resume path agree).
+              mediaFile = asPdfFile(file!)
+              posterFile = cover
             }
           } else if (canTranscode(file!)) {
             setStep('preparing-media')
@@ -1273,13 +1482,20 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           // preload at element-create time. Returns null for non-video or
           // probe failure; payload omits durationSec in those cases.
           const durationPromise =
-            mediaFile.type === GLB_MIME
-              ? Promise.resolve(null) // a model has no timeline to probe
+            mediaFile.type === GLB_MIME || mediaFile.type === PDF_MIME
+              ? Promise.resolve(null) // a model or a zine has no timeline to probe
               : probeDurationSeconds(mediaFile).catch(() => null)
-          mediaUri = await uploadToArweave(mediaFile, (pct) => {
-            setUploadProgress(pct)
-            toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
-          })
+          mediaUri = await uploadToArweave(
+            mediaFile,
+            (pct) => {
+              setUploadProgress(pct)
+              toast.loading(`Uploading media… ${pct}%`, { id: 'mint' })
+            },
+            () => {
+              setStep('finalizing-media')
+              toast.loading('Finalizing media on Arweave…', { id: 'mint' })
+            },
+          )
           const posterUriPromise: Promise<string | null> = posterFile
             ? uploadToArweave(posterFile).catch((err) => {
                 console.warn('[MintForm] poster upload failed', err)
@@ -1306,6 +1522,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             source: file!,
             mediaFile,
             posterFile,
+            coverSource: isZinePick ? (zineCover ?? zinePoster) : null,
             needsServerTranscode,
             serverTranscode: null,
             mediaUri,
@@ -1352,9 +1569,26 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         // marketplaces (OpenSea/Zora both render GLB from animation_url).
         // Keyed off `mediaFile.type`, not the picked file, so the resume path
         // (which rehydrates only the persisted mediaType) binds identically.
+        //
+        // A ZINE takes the same binding again — animation_url = the PDF,
+        // image = the cover, content.mime = application/pdf — plus the
+        // `kismet_zine` hint (ZINE_READER_DESIGN.md §8).
         const isModelMedia = mediaFile.type === GLB_MIME
+        const isZineMedia = mediaFile.type === PDF_MIME
+        // A model or a zine with no `image` is invisible on every static
+        // surface. The pick-time guards above refuse to START without a
+        // poster; this one refuses to MINT without one, which is the case
+        // the poster UPLOAD failed (caught to null so a video can still
+        // ship) — a permanent artwork is not worth saving a retry.
+        if ((isModelMedia || isZineMedia) && !posterUri) {
+          throw new Error(
+            isZineMedia
+              ? 'Could not upload the cover image — check your connection and try again'
+              : 'Could not upload the preview image of this model — check your connection and try again',
+          )
+        }
         let animationUri: string | undefined =
-          mediaFile.type.startsWith('video/') || isModelMedia ? mediaUri : undefined
+          mediaFile.type.startsWith('video/') || isModelMedia || isZineMedia ? mediaUri : undefined
         // Mime for the metadata `content` field below — tracks animationUri
         // through the server-transcode swaps (whose output is always mp4).
         let animationMime: string | undefined = animationUri ? mediaFile.type : undefined
@@ -1404,7 +1638,25 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           }
         }
         const imageUri = finalImageUri
-        const metadata = {
+        // A zine's fields come from their one definition (lib/media/zineMedia
+        // zineMomentFields — the shape the resolver and the oracle pin):
+        // the cover in `image`, the PDF in `animation_url` + `content` when
+        // public, the hint in both modes.
+        const zineFields =
+          isZinePick && zinePages > 0 && imageUri
+            ? zineMomentFields(
+                zineAccess === 'collectors'
+                  ? { access: 'collectors', coverUri: imageUri, pages: zinePages, thumbhash: finalThumbhash }
+                  : { access: 'public', pdfUri: animationUri ?? mediaUri, coverUri: imageUri, pages: zinePages, thumbhash: finalThumbhash },
+              )
+            : null
+        const metadata = zineFields
+          ? {
+              name: name.trim(),
+              description: description.trim(),
+              ...zineFields,
+            }
+          : {
           name: name.trim(),
           description: description.trim(),
           ...(imageUri ? { image: imageUri } : {}),
@@ -1571,20 +1823,70 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
         mediaUploadRef.current = null
         trackFunnel('mint_success')
         setStep('done')
+        // The artist's copy of a limited edition (lib/creatorCopy): the
+        // artwork is minted whatever happens here, so a refusal or a revert is
+        // reported with the way to send it later, never as a failed mint.
+        if (copyFromWallet && data.contractAddress && isAddress(data.contractAddress)) {
+          toast.loading('Minted — confirm your copy in wallet…', {
+            id: 'mint',
+            description: 'Edition #1 is sent from your wallet (network fee only).',
+          })
+          try {
+            await creatorCopy.send({
+              collection: data.contractAddress,
+              tokenId: BigInt(data.tokenId),
+              createTx: typeof data.hash === 'string' && data.hash.startsWith('0x') ? (data.hash as `0x${string}`) : undefined,
+            })
+          } catch (err) {
+            toast.error('Minted — your copy wasn’t sent', {
+              duration: 15_000,
+              description: `${isUserRejection(err) ? 'You skipped it.' : humanError(err)} Send it any time from Mint → Airdrop, to your own address.`,
+            })
+          }
+        }
         // Updates the long-lived 'mint' loading toast — without an explicit
         // duration the success inherits its infinite lifetime and never
         // dismisses (see TERMINAL_TOAST_DURATION_MS).
-        toast.success('Minted!', {
-          id: 'mint',
-          description: `Token #${data.tokenId}`,
-          duration: TERMINAL_TOAST_DURATION_MS,
-        })
+        if (isCollectorsZine) {
+          // The pages are not in the metadata: until the PDF lands in the
+          // collector-file store this artwork is a cover with no zine. So
+          // this attach is awaited (with one retry) under the mint toast,
+          // and a persistent failure names the artwork page's file panel as
+          // the recovery path — the mint itself is already done.
+          toast.loading(ZINE_COPY.collectorsAttaching, { id: 'mint' })
+          const staged = { file: asPdfFile(file!), pages: zinePages }
+          let attached = await attachStagedCfile(data.contractAddress, data.tokenId, staged, { quiet: true })
+          if (!attached.ok) {
+            // The route's transient answers are 503s (its single PUT slot, a
+            // permissions read that timed out): a back-to-back retry meets
+            // the same state, a short pause usually does not.
+            await new Promise((r) => setTimeout(r, 2500))
+            attached = await attachStagedCfile(data.contractAddress, data.tokenId, staged, { quiet: true })
+          }
+          toast.success('Minted!', {
+            id: 'mint',
+            description: attached.ok ? `Token #${data.tokenId} · ${ZINE_COPY.collectorsAttached}` : `Token #${data.tokenId}`,
+            duration: TERMINAL_TOAST_DURATION_MS,
+          })
+          if (!attached.ok) {
+            toast.error('Minted, but the zine didn’t attach', {
+              description: ZINE_COPY.collectorsAttachFailed(attached.error),
+              duration: TERMINAL_TOAST_DURATION_MS,
+            })
+          }
+        } else {
+          toast.success('Minted!', {
+            id: 'mint',
+            description: `Token #${data.tokenId}`,
+            duration: TERMINAL_TOAST_DURATION_MS,
+          })
+        }
         if (isInMiniApp) {
           hapticNotifySuccess()
           maybePromptCollectNotifs()
         }
         // Staged collector file rides the fresh (collection, tokenId).
-        void attachStagedCfile(data.contractAddress, data.tokenId)
+        if (!isCollectorsZine) void attachStagedCfile(data.contractAddress, data.tokenId)
       }
     } catch (err) {
       // Capture WHERE the mint died before resetting the step. With no
@@ -1793,7 +2095,49 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               // the artist dropped. 16:9 stays 16:9, 9:16 stays 9:16, 1:1
               // stays 1:1. No letterbox, no crop, no surprise.
               <div className="relative bg-surface border border-line overflow-hidden">
-                {isModelPick ? (
+                {isZinePick ? (
+                  // A zine: the preview pages through the PDF so the artist
+                  // can check the reading order, and captures the page they
+                  // land on as the cover (page 1 by default) — which is what
+                  // every feed card, OG card and embed renders. An uploaded
+                  // cover (the row below the preview) wins over the capture.
+                  <>
+                    <ZinePreview
+                      key={preview}
+                      file={file!}
+                      onPoster={setZinePoster}
+                      onError={(msg) => toast.error('PDF zine', { description: msg })}
+                      initialCoverPage={zineCoverPageRef.current}
+                      onCoverPage={(p) => { zineCoverPageRef.current = p }}
+                    />
+                    <OptimizeBar
+                      label="optimize for phones"
+                      hint={ZINE_OPTIMIZE_HINT}
+                      size={file!.size}
+                      busy={
+                        zineOptimizing
+                          ? {
+                              phase: 'optimizing…',
+                              detail:
+                                zineOptimizing.kind === 'page'
+                                  ? `page ${zineOptimizing.page} / ${zineOptimizing.pages}`
+                                  : zineOptimizing.kind === 'writing'
+                                    ? 'writing'
+                                    : undefined,
+                            }
+                          : null
+                      }
+                      optimized={zineOptimized && zineOptimized.file === file ? { before: zineOptimized.before } : null}
+                      onOptimize={() => { void optimizeZinePick() }}
+                      onUndo={() => {
+                        if (!zineOptimized) return
+                        zineCarryRef.current = { file: zineOptimized.original, access: zineAccess, cover: zineCover, coverPage: zineCoverPageRef.current }
+                        replaceFile(zineOptimized.original)
+                        setZineOptimized(null)
+                      }}
+                    />
+                  </>
+                ) : isModelPick ? (
                   // 3D: the preview doubles as the poster source — whatever
                   // framing the artist lands on is captured and becomes
                   // `metadata.image`, which is what every feed card, OG card
@@ -1811,9 +2155,10 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                       onError={(msg) => toast.error('3D model', { description: msg })}
                     />
                     <ModelPoseBar value={modelBg} onChange={setModelBg} />
-                    <ModelOptimizeBar
+                    <OptimizeBar
+                      label="optimize for web"
                       size={file!.size}
-                      busy={optimizing}
+                      busy={optimizing ? { phase: 'optimizing…', detail: optimizing } : null}
                       optimized={optimized && optimized.file === file ? { before: optimized.before } : null}
                       onOptimize={() => { void optimizeModelPick() }}
                       onUndo={() => {
@@ -1836,6 +2181,74 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 >
                   <X size={14} className="text-dim" />
                 </button>
+                {isZinePick && (
+                  // Optional cover image. Without one the page chosen in the
+                  // preview is the cover; with one, this image is what every
+                  // card and share surface shows while the pages stay the PDF.
+                  <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-line bg-[#0d0d0d]">
+                    <p className="min-w-0 text-[10px] font-mono text-muted truncate">
+                      {zineCover
+                        ? `cover image · ${zineCover.name} · ${formatCfileSize(zineCover.size)}`
+                        : 'cover: the page marked above — or upload a cover image (optional)'}
+                    </p>
+                    <input
+                      ref={zineCoverInputRef}
+                      type="file"
+                      accept="image/*,.gif"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0] ?? null
+                        e.target.value = ''
+                        if (!f) return
+                        const verdict = await checkCoverImage(f)
+                        if (!verdict.ok) {
+                          toast.error('Unsupported cover', { description: verdict.reason })
+                          return
+                        }
+                        setZineCover(f)
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (zineCover) setZineCover(null)
+                        else zineCoverInputRef.current?.click()
+                      }}
+                      className="flex-shrink-0 px-2.5 py-1 text-[10px] font-mono uppercase tracking-widest border border-line text-muted hover:text-ink transition-colors"
+                    >
+                      {zineCover ? 'remove' : 'upload cover'}
+                    </button>
+                  </div>
+                )}
+                {isZinePick && (
+                  // Who can read it. Public is the default, like every other
+                  // media; collectors-only is an explicit choice worded for
+                  // its consequence (ZINE_READER_DESIGN.md §19).
+                  <div className="px-3 py-2 border-t border-line bg-[#0d0d0d]">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] font-mono text-dim uppercase tracking-wider">{ZINE_COPY.accessLabel}</span>
+                      <div className="flex items-center gap-1" role="radiogroup" aria-label={ZINE_COPY.accessLabel}>
+                        {(['public', 'collectors'] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            role="radio"
+                            aria-checked={zineAccess === mode}
+                            onClick={() => setZineAccess(mode)}
+                            className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-widest border transition-colors ${
+                              zineAccess === mode ? 'border-dim text-ink' : 'border-line text-muted hover:text-ink'
+                            }`}
+                          >
+                            {mode === 'public' ? ZINE_COPY.accessPublic : ZINE_COPY.accessCollectors}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-[10px] font-mono text-muted mt-1.5">
+                      {zineAccess === 'public' ? ZINE_COPY.accessPublicHint : ZINE_COPY.accessCollectorsHint}
+                    </p>
+                  </div>
+                )}
               </div>
             ) : (
               <div
@@ -1853,7 +2266,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                 <div className="text-center">
                   <p className="text-xs font-mono text-muted">drop file or click to upload</p>
                   <p className="text-xs font-mono text-subtle mt-1">
-                    image, video, gif, 3D,{' '}
+                    image, video, gif, 3D, PDF zine,{' '}
                     {/* "text" is a shortcut into the writing-moment mode.
                         stopPropagation so we don't also trigger the parent
                         drop zone's file-picker click handler. */}
@@ -1876,7 +2289,7 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
               type="file"
               // Picker-dialog filter only — drag-and-drop bypasses it entirely,
               // so the real gate is `accept` on useFileUpload above.
-              accept={`image/*,video/*,.gif,${GLB_EXT},${GLB_MIME}`}
+              accept={`image/*,video/*,.gif,${GLB_EXT},${GLB_MIME},${PDF_EXT},${PDF_MIME}`}
               onChange={handleFileChange}
               className="hidden"
             />
@@ -1945,7 +2358,11 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
           </label>
           <p className="text-xs text-muted font-mono mt-1">
             {artistMintEnabled
-              ? 'edition #1 goes to your wallet — sale opens now'
+              ? is11
+                ? 'the 1/1 goes to your wallet, sent from it after the mint (network fee only) — no public sale'
+                : maxSupply.trim() && mintMode === 'media'
+                ? 'edition #1 goes to your wallet, sent from it after the mint (network fee only) — sale opens now'
+                : 'edition #1 goes to your wallet — sale opens now'
               : 'no copy minted — you can schedule when the sale opens'}
           </p>
         </div>
@@ -2432,14 +2849,19 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             Collector download
           </label>
           <p className="text-xs text-muted font-mono mt-1 truncate">
-            {cfileFile
+            {isCollectorsZine
+              ? ZINE_COPY.collectorsSlot(zinePages)
+              : cfileFile
               ? `${cfileFile.name} \u00b7 ${formatCfileSize(cfileFile.size)}`
               : isModelPick
                 // The model IS the artwork and sits world-readable on Arweave,
                 // so gating the same file adds nothing (GLB_3D_VIEWER_DESIGN.md
                 // §15) — say what a collector file can still be.
                 ? 'the 3D model itself is public \u2014 gate something it doesn\u2019t give away: source files, a ROM, a print-res export'
-                : 'optional zip, pdf, glb or Game Boy ROM \u2014 only collectors can download it'}
+                : isZinePick
+                  // Same for a public zine: the PDF is on Arweave for anyone.
+                  ? 'the zine itself is public \u2014 gate something it doesn\u2019t give away: a print-res export, the source scans'
+                  : 'optional zip, pdf, glb, svg or Game Boy ROM \u2014 only collectors can download it'}
           </p>
         </div>
         <input
@@ -2461,20 +2883,22 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
             setCfileFile(f)
           }}
         />
-        <button
-          type="button"
-          onClick={() => {
-            if (cfileFile) {
-              setCfileFile(null)
-              if (cfileInputRef.current) cfileInputRef.current.value = ''
-            } else {
-              cfileInputRef.current?.click()
-            }
-          }}
-          className="flex-shrink-0 mt-0.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-line text-muted hover:text-ink transition-colors"
-        >
-          {cfileFile ? 'clear' : 'choose file'}
-        </button>
+        {!isCollectorsZine && (
+          <button
+            type="button"
+            onClick={() => {
+              if (cfileFile) {
+                setCfileFile(null)
+                if (cfileInputRef.current) cfileInputRef.current.value = ''
+              } else {
+                cfileInputRef.current?.click()
+              }
+            }}
+            className="flex-shrink-0 mt-0.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-line text-muted hover:text-ink transition-colors"
+          >
+            {cfileFile ? 'clear' : 'choose file'}
+          </button>
+        )}
       </div>
     </form>
   )
@@ -2488,6 +2912,7 @@ function stepLabel(step: string, progress: number): string {
   switch (step) {
     case 'preparing-media': return progress > 0 ? `optimizing animation… ${progress}%` : 'optimizing animation…'
     case 'uploading-media': return progress > 0 ? `uploading media… ${progress}%` : 'uploading media…'
+    case 'finalizing-media': return 'finalizing on Arweave…'
     case 'uploading-metadata': return 'uploading metadata…'
     case 'verifying-upload': return 'verifying Arweave propagation…'
     case 'minting': return 'minting…'

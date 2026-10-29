@@ -135,7 +135,7 @@ is trivially true when `x` is absent.
   mint form's — `ModelPreview`, `ModelPoseBar`, `asGlbFile`, the shared
   `modelMomentFields` builder — each of which this file or `verify:model-media`
   covers; the wiring itself is unverified in a browser. The "optimize for web"
-  pass is mint-only (`ModelOptimizeBar` is mounted by `MintForm` alone).
+  pass is mint-only (`OptimizeBar` is mounted by `MintForm` alone).
 - The collector-file 3D viewer (`components/CollectorFileViewer`) needs a
   holder session, so it is not driven here either. It calls the same
   `configureModelViewerDecoders()` the mint preview proves at the network level
@@ -403,3 +403,63 @@ machine share card. About three minutes.
   picked and unpicked; each piece shown by its title, pasted or picked; a link
   to mint the capsule.
 
+
+## Zines — `zine.mjs`
+
+The same harness for the PDF zine feature (ZINE_READER_DESIGN.md §15). It
+writes its own fixtures (`make-pdf.mjs`: hand-built, spec-valid PDFs with an
+unembedded standard font and a DCT-encoded image page, plus a 421-page one
+over the cap and a renamed non-PDF), serves them wherever the app resolves
+`ar://`, and asserts what only a browser can show:
+
+- **Mint** — the media input advertises `.pdf`; no pdf.js asset is fetched
+  before a pick; a real PDF previews page 1 by its pixels and fetches the
+  worker from our origin exactly once; paging the preview reaches the image
+  page; "use as cover" moves the cover mark; the optional cover-image row is
+  offered.
+- **Gate** — a renamed non-PDF and a 421-page PDF are rejected with the right
+  copy and leave no preview; a one-page PDF is accepted.
+- **Reader (desktop)** — the cover paints and offers `read · 6 pages`; nothing
+  pdf.js is fetched before the tap; the reader is a labelled dialog whose page
+  1 renders the fixture's pixels; no `<canvas>` is left in the DOM; the cover
+  opens alone and ArrowRight turns to the 2–3 spread; `?page=` follows the
+  reader and clears on the cover; End/Home; the spread toggle; double-click
+  zooms and un-zooms; the scrubber jumps; "Download PDF" points at the gateway;
+  Escape closes and restores the affordance.
+- **Reader (phone)** — single pages only, fitted to the viewport; a swipe and
+  the edge tap zones turn pages; the chrome hides itself and a centre tap
+  brings it back.
+- **Feed** — the profile grid card wears the `zine, 6 pages` badge, renders the
+  cover, and fetches nothing from pdf.js.
+
+```sh
+# with the server from the recipe above running on :3100
+node scripts/e2e/zine.mjs          # fixtures land in .e2e/, screenshots in .e2e/shots/z*.png
+```
+
+The zine check also covers the collectors-only mode as a non-holder sees it
+(the card's page count and "collect to read", the hint-driven badge; the
+record is seeded into the Redis stub, which keeps a plain `SET`, so the
+server-rendered page carries it as production would), the reader's rotation,
+history-backed close, resume and worker reuse on reopen, and the mint form's
+access control and "optimize for phones" pass — on a tiny fixture ("already
+compact") and on `heavy.pdf`, a 6 MB noise scan the optimizer shrinks, where
+"collectors only" and the chosen cover page must survive the optimized
+re-pick and its undo, and clearing the pick mid-pass aborts it. Three more
+reader sections use their own fixtures: C1 (`long.pdf`, 60 slow pages with
+one landscape: a scrubber drag starts only a handful of renders, counted at
+the worker, and a landscape page is rendered for its real slot), C2
+(`odd.pdf`, 5 pages: no turn past the last spread) and C3 (the zine URL
+answering 500: a failed open leaves no dead history entry). The server half
+of a collectors-only zine — the attach with its page count and the view
+route's gate for holders, the artwork's managers and nobody else — is
+`npm run verify:cfile-view`, which boots the built app with Redis and the
+chain mocked (part of `npm run check`). The holder path (the card's `read`
+and the collector-file view route feeding the reader) needs a holder session
+and is covered by the oracle plus a manual check.
+
+`zine-showcase.mjs` drives the same build with a REAL zine PDF and
+photographs it (no assertions): `E2E_ZINE_PDF=… E2E_ZINE_COVER=…
+E2E_ZINE_TITLE=… E2E_ZINE_PAGES=… node scripts/e2e/zine-showcase.mjs`.
+It also runs the optimizer on the file and reports the before/after timings
+on a phone-sized viewport.

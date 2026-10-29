@@ -1,4 +1,5 @@
 import { GLB_HEADER_BYTES, GLB_MIME, hasGlbMagic } from '../glbFormat.ts'
+import { PDF_MAGIC, PDF_MIME, hasPdfMagic } from '../pdfFormat.ts'
 import { formatCfileSize } from '../collectorFileTypes.ts'
 
 /**
@@ -54,12 +55,48 @@ export interface ModelFetchProgress {
   total: number | null
 }
 
+/**
+ * What a download is expected to be, decided on its first bytes. The walk
+ * was written for GLBs; a zine's PDF takes the identical path (one large
+ * binary, same stall profile, same gateway pool), differing only in the
+ * magic it must open with, the MIME its blob carries and the word its copy
+ * uses. `'not-glb'` keeps its name as the "magic mismatch" failure for both
+ * expectations — it is a stable field the oracle and the copy pin.
+ */
+export interface MediaExpectation {
+  magic: readonly number[]
+  /** Bytes to collect before deciding (at least the magic's length). */
+  headBytes: number
+  mime: string
+  /** Noun for the copy: "3D model", "zine". */
+  label: string
+  test: (head: Uint8Array) => boolean
+}
+
+export const GLB_EXPECTATION: MediaExpectation = {
+  magic: [0x67, 0x6c, 0x54, 0x46],
+  headBytes: GLB_HEADER_BYTES,
+  mime: GLB_MIME,
+  label: '3D model',
+  test: hasGlbMagic,
+}
+
+export const PDF_EXPECTATION: MediaExpectation = {
+  magic: PDF_MAGIC,
+  headBytes: PDF_MAGIC.length,
+  mime: PDF_MIME,
+  label: 'zine',
+  test: hasPdfMagic,
+}
+
 export type ModelFetchFailure =
   | { kind: 'http'; status: number }
   | { kind: 'stall' }
   | { kind: 'timeout' }
   | { kind: 'network'; message: string }
   | { kind: 'too-large'; bytes: number }
+  /** The first bytes are not the expected format (a gateway's HTML landing
+   *  page, a wrong file). Named for the first format the walk served. */
   | { kind: 'not-glb' }
 
 export interface ModelFetchAttempt {
@@ -70,27 +107,31 @@ export interface ModelFetchAttempt {
 /** Every URL failed. `attempts` records each URL's reason, in order. */
 export class ModelFetchError extends Error {
   readonly attempts: ModelFetchAttempt[]
-  constructor(attempts: ModelFetchAttempt[]) {
-    super(describeModelFetchFailure(attempts))
+  constructor(attempts: ModelFetchAttempt[], label = GLB_EXPECTATION.label) {
+    super(describeModelFetchFailure(attempts, label))
     this.name = 'ModelFetchError'
     this.attempts = attempts
   }
 }
 
+/** The same error under the name the non-GLB callers read. */
+export const MediaFetchError = ModelFetchError
+export type MediaFetchError = ModelFetchError
+
 /**
  * The copy for an exhausted walk. Actionable where the cause is: a stall or
  * timeout anywhere in the walk is a connection/gateway problem worth a retry;
- * an oversized file is not; everything else is the model itself.
+ * an oversized file is not; everything else is the file itself.
  */
-export function describeModelFetchFailure(attempts: ModelFetchAttempt[]): string {
+export function describeModelFetchFailure(attempts: ModelFetchAttempt[], label = GLB_EXPECTATION.label): string {
   const tooLarge = attempts.find((a) => a.failure.kind === 'too-large')
   if (tooLarge && tooLarge.failure.kind === 'too-large') {
-    return `This 3D model is too large to load in the browser (${formatCfileSize(tooLarge.failure.bytes)}).`
+    return `This ${label} is too large to load in the browser (${formatCfileSize(tooLarge.failure.bytes)}).`
   }
   if (attempts.some((a) => a.failure.kind === 'stall' || a.failure.kind === 'timeout')) {
-    return 'The 3D model is taking too long to load — check your connection and retry.'
+    return `The ${label} is taking too long to load — check your connection and retry.`
   }
-  return 'This 3D model could not be loaded.'
+  return `This ${label} could not be loaded.`
 }
 
 export function isAbortError(err: unknown): boolean {
@@ -107,6 +148,10 @@ export interface FetchModelOptions {
   maxBytes?: number
   /** Injectable for the verify script; production callers omit it. */
   fetchImpl?: typeof fetch
+}
+
+export interface FetchMediaOptions extends FetchModelOptions {
+  expect: MediaExpectation
 }
 
 function abortError(): DOMException {
@@ -126,7 +171,19 @@ export async function fetchModelBlob(
   urls: readonly string[],
   opts: FetchModelOptions = {},
 ): Promise<Blob> {
+  return fetchMediaBlob(urls, { ...opts, expect: GLB_EXPECTATION })
+}
+
+/**
+ * The walk itself, for any expectation: a GLB for the 3D viewer, a PDF for
+ * the zine reader. See fetchModelBlob for the contract.
+ */
+export async function fetchMediaBlob(
+  urls: readonly string[],
+  opts: FetchMediaOptions,
+): Promise<Blob> {
   const {
+    expect,
     onProgress,
     signal,
     stallMs = MODEL_FETCH_STALL_MS,
@@ -183,7 +240,7 @@ export async function fetchModelBlob(
 
       const reader = res.body.getReader()
       const chunks: Uint8Array[] = []
-      const head = new Uint8Array(GLB_HEADER_BYTES)
+      const head = new Uint8Array(expect.headBytes)
       let headLen = 0
       let magicOk = false
       let loaded = 0
@@ -197,16 +254,16 @@ export async function fetchModelBlob(
           void reader.cancel().catch(() => {})
           break
         }
-        if (headLen < GLB_HEADER_BYTES) {
-          const n = Math.min(GLB_HEADER_BYTES - headLen, value.byteLength)
+        if (headLen < expect.headBytes) {
+          const n = Math.min(expect.headBytes - headLen, value.byteLength)
           head.set(value.subarray(0, n), headLen)
           headLen += n
         }
         // Decide on the very first bytes rather than after the whole body:
         // an HTML fallback page or a wrong file should cost a few KB, not
         // a full download, before the walk moves on.
-        if (!magicOk && headLen >= 4) {
-          if (!hasGlbMagic(head.subarray(0, headLen))) {
+        if (!magicOk && headLen >= expect.magic.length) {
+          if (!expect.test(head.subarray(0, headLen))) {
             fail({ kind: 'not-glb' })
             void reader.cancel().catch(() => {})
             break
@@ -218,11 +275,11 @@ export async function fetchModelBlob(
       }
       if (failure) continue
       if (!magicOk) {
-        // Fewer than four bytes in total: empty or truncated beyond use.
+        // Fewer bytes than the magic in total: empty or truncated beyond use.
         failure = { kind: 'not-glb' }
         continue
       }
-      return new Blob(chunks, { type: GLB_MIME })
+      return new Blob(chunks, { type: expect.mime })
     } catch (err) {
       // The caller cancelled: propagate, and do not try another URL.
       if (signal?.aborted) throw signal.reason ?? abortError()
@@ -241,7 +298,7 @@ export async function fetchModelBlob(
     }
   }
 
-  throw new ModelFetchError(attempts)
+  throw new ModelFetchError(attempts, expect.label)
 }
 
 /**

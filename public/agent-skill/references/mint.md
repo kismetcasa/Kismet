@@ -39,7 +39,7 @@ POST BASE/api/agent/prepare-mint
   "collection": "0x…",              // optional; omit to auto-create a new collection
   "collectionName": "…",            // optional; name for the auto-created collection (default: the title). Signed.
   "payoutRecipient": "0x…",         // optional; receives sale proceeds (default: account; ignored with splits). Signed.
-  "artistMint": true,               // optional; keep a copy for the artist (default true)
+  "artistMint": true,               // optional; keep a copy for the artist (default true; open editions only — with editions set, airdrop yourself a copy after)
   "enableRaffle": false             // optional; opt the artwork into a Kismet raffle (default false)
 }
 ```

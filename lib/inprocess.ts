@@ -1,5 +1,7 @@
 import { formatEther, formatUnits } from 'viem'
+import type { ZineHint } from './media/zineHint'
 import { USDC_BASE } from './zoraMint'
+import { SALE_CLOSED_AT_CREATE } from './creatorCopy'
 
 // ───────────────────────────────────────────────────────────────────────────
 // TERMINOLOGY: "moment" (In Process wire) ⇄ "artwork" (Kismet UI)
@@ -155,6 +157,9 @@ interface MomentMetadataInline {
   /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
    *  the poster, replayed by the artwork page's viewer. */
   kismet_bg?: string
+  /** A zine's hint: page count and where the pages live (lib/media/zineHint).
+   *  A badge signal only — rendering keys on `content.mime`. */
+  kismet_zine?: ZineHint
 }
 
 // Moment object as returned by GET /api/timeline (metadata inlined)
@@ -416,6 +421,9 @@ export interface MomentDetail {
   /** A 3D moment's authored backdrop id (lib/media/modelMedia). Baked into
    *  the poster, replayed by the artwork page's viewer. */
   kismet_bg?: string
+  /** A zine's hint: page count and where the pages live (lib/media/zineHint).
+   *  A badge signal only — rendering keys on `content.mime`. */
+  kismet_zine?: ZineHint
   }
   // Set by /api/moment from the kismetart:hidden-moments KV. True when the
   // creator has hidden the moment from public feeds. Detail page renders
@@ -593,6 +601,10 @@ export function getSaleWindow(
   if (!saleConfig) return null
 
   const startNum = saleConfig.saleStart ? Number(saleConfig.saleStart) : 0
+
+  // Created closed (a 1/1 — lib/creatorCopy ONE_OF_ONE_SALE): never had a
+  // window, so there is no date to show.
+  if (saleConfig.saleEnd === SALE_CLOSED_AT_CREATE) return null
 
   // Resolve a real end (in seconds) or treat as open-ended.
   const realEnd = parseRealSaleEnd(saleConfig.saleEnd)

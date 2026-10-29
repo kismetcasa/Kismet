@@ -1,5 +1,6 @@
 import { formatPrice, shortAddress } from '@/lib/inprocess'
 import { PLATFORM_FEE_BPS } from '@/lib/platformFee'
+import { creatorCopyFromWallet } from '@/lib/creatorCopy'
 import { priceToBaseUnits } from './list'
 import type { MintParams } from './mint'
 
@@ -175,6 +176,14 @@ export function mintSummary(
     : p.payoutRecipient
       ? `payout to ${nameLabel(p.payoutRecipient, payoutName)}`
       : `payout to you (${shortAddress(p.account)})`
-  const extras = [p.artistMint ? '1 copy minted to you' : null, p.enableRaffle ? 'raffle on' : null].filter(Boolean)
+  // A limited edition's copy is dropped by the In Process relay (lib/creatorCopy);
+  // the app sends it from the artist's wallet after the mint, an agent can't —
+  // so the summary says so rather than promising a copy that won't arrive.
+  const copy = p.artistMint
+    ? creatorCopyFromWallet({ artistMint: true, maxSupply: p.editions && p.editions > 0 ? p.editions : undefined })
+      ? 'no copy minted to you (a limited edition’s copy: airdrop it to yourself after)'
+      : '1 copy minted to you'
+    : null
+  const extras = [copy, p.enableRaffle ? 'raffle on' : null].filter(Boolean)
   return `Mint “${safeTitle(p.name) ?? 'untitled'}” (${KIND_LABEL[p.kind]}) — ${price}, ${editions}, ${into}, ${payout}${extras.length ? `, ${extras.join(', ')}` : ''}.`
 }
