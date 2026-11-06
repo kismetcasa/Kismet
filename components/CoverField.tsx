@@ -46,7 +46,9 @@ export function useCoverPick() {
     uploaded.current = { file: pick.file, cover }
     return cover
   }
-  return { ...pick, upload }
+  /** The still the picked file became, which is what uploads. */
+  const still = (): File | null => (pick.file ? (prepared.current.get(pick.file) ?? null) : null)
+  return { ...pick, upload, still }
 }
 
 /** The picker: a thumbnail of the cover (the picked file, or the one the
@@ -54,18 +56,22 @@ export function useCoverPick() {
 export function CoverField({
   pick,
   current,
+  saved,
   disabled,
   thumbnail = true,
 }: {
   pick: ReturnType<typeof useCoverPick>
   /** The machine's cover now, when it has one. */
   current?: string | null
+  /** The cover just saved, from this browser (CoverEditor): shown in place of
+   *  `current`, whose upload a gateway may not serve yet. */
+  saved?: string | null
   disabled?: boolean
   /** Off where the caller shows the cover itself (a machine's card), leaving
    *  the button alone here. */
   thumbnail?: boolean
 }) {
-  const src = pick.preview ?? (current ? proxyUrl(current, 256) : null)
+  const src = pick.preview ?? saved ?? (current ? proxyUrl(current, 256) : null)
   return (
     <div className="flex items-center gap-3">
       {thumbnail && (
@@ -145,7 +151,7 @@ export function CoverEditor({
   onDone?: () => void
   /** Given, the picked file previews through the caller — a machine's card
    *  shows it as its cover, where it will go — instead of in a thumbnail
-   *  here. Null once the pick is saved or dropped. */
+   *  here; once saved, the image saved, as below; null once dropped. */
   onPick?: (preview: string | null) => void
   className?: string
   variant?: 'field' | 'menu'
@@ -156,7 +162,15 @@ export function CoverEditor({
   const { ensureSession } = useUploadSession()
   const pick = useCoverPick()
   const [busy, setBusy] = useState(false)
-  const preview = pick.preview
+  // The cover just saved, as this browser has it. Its upload is on Arweave at
+  // once but a gateway can take a while to serve it, and until one does the
+  // new cover would show blank where it is shown; it is the same image, so
+  // it is shown from here for as long as this stays mounted.
+  const [saved, setSaved] = useState<string | null>(null)
+  useEffect(() => () => {
+    if (saved) URL.revokeObjectURL(saved)
+  }, [saved])
+  const preview = pick.preview ?? saved
   useEffect(() => {
     if (!onPick) return
     onPick(preview)
@@ -189,6 +203,8 @@ export function CoverEditor({
         return
       }
       toast.success('Cover updated')
+      const still = pick.still()
+      if (still) setSaved(URL.createObjectURL(still))
       pick.clear()
       onDone?.()
     } catch (err) {
@@ -231,7 +247,7 @@ export function CoverEditor({
 
   return (
     <div className={className}>
-      <CoverField pick={pick} current={current} disabled={busy} thumbnail={!onPick} />
+      <CoverField pick={pick} current={current} saved={saved} disabled={busy} thumbnail={!onPick} />
       {pick.file && (
         <button
           onClick={() => void save()}

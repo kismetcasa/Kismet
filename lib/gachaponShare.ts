@@ -29,6 +29,16 @@ export function gachaponShareEmbeds(s: GachaponShare): [string, string] {
   return [`${SITE_URL}/artwork/${s.collection.toLowerCase()}/${s.tokenId}`, `${SITE_URL}/play/${s.machineId}`]
 }
 
+/** A machine shared by its creator (their profile's list): its page as the
+ *  embed, which Farcaster draws as the machine's own card. */
+export function machineCastText(name: string, kind: 'capsule' | 'reveal'): string {
+  return `${kind === 'reveal' ? 'pull from' : 'play'} "${name.trim()}" on the Kismet Gachapon`
+}
+
+export function machineShareUrl(machineId: string): string {
+  return `${SITE_URL}/play/${machineId}`
+}
+
 /** Farcaster's web composer, for a share made outside a Mini App, posting to /kismet. */
 export function gachaponComposeUrl(text: string, embeds: readonly string[]): string {
   const params = [`text=${encodeURIComponent(text)}`, ...embeds.map((e) => `embeds[]=${encodeURIComponent(e)}`), `channelKey=${KISMET_CHANNEL_KEY}`]

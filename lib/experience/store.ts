@@ -228,17 +228,20 @@ export async function releaseCapsule(
  *  one of them sees the other's result and refuses. */
 export const machineStateLockKey = (id: string): string => `${P}:lock:state:${id}`
 
-/** A machine's new state. Delisting it keeps the curator's reason on it
- *  (`delistReason`) for its creator to read; every other state drops any
- *  reason it had, so a machine back on the shelves never shows an old one. */
+/** A machine's new state, and when it took it (`stateAt`). Delisting it
+ *  keeps the curator's reason on it (`delistReason`) for its creator to read;
+ *  every other state drops any reason it had, so a machine back on the
+ *  shelves never shows an old one. */
 export async function setMachineState(id: string, state: MachineState, delistReason?: string): Promise<Machine | null> {
   const m = await getMachine(id)
   if (!m) return null
   const { delistReason: _previous, ...rest } = m
+  const now = Date.now()
   const next: Machine = {
     ...rest,
     state,
-    ...(state === 'live' && !m.listedAt ? { listedAt: Date.now() } : {}),
+    stateAt: state === m.state && m.stateAt ? m.stateAt : now,
+    ...(state === 'live' && !m.listedAt ? { listedAt: now } : {}),
     ...(state === 'delisted' && (delistReason ?? m.delistReason) ? { delistReason: delistReason ?? m.delistReason } : {}),
   }
   await redis.set(kMachine(id), JSON.stringify(next))
@@ -356,6 +359,58 @@ export async function withdrawMachine(id: string): Promise<'withdrawn' | 'refuse
   await releaseCapsule(m.capsule.collection, m.capsule.tokenId, id)
   await Promise.all(pool.map((e) => redis.hdel(kCommit(e.collection, e.tokenId), id).catch(() => 0)))
   return 'withdrawn'
+}
+
+// ─── turned down ─────────────────────────────────────────────────────────────
+
+/** A machine a curator turned down, kept for its creator. Turned down, a
+ *  machine is withdrawn and gone (withdrawMachine), so without this the
+ *  reason would live only in their bell. */
+export interface TurnedDown {
+  id: string
+  name: string
+  kind: 'capsule' | 'reveal'
+  cover: string | null
+  /** The curator's reason, in the words their notification used. */
+  reason: string
+  at: number
+}
+
+const kTurnedDown = (creator: string) => `${P}:turned-down:${creator.toLowerCase()}`
+/** Kept a month, the last ten. */
+const TURNED_DOWN_MS = 30 * 86_400_000
+const TURNED_DOWN_MAX = 10
+
+async function readTurnedDown(creator: string): Promise<TurnedDown[]> {
+  const raw = (await redis.hgetall<Record<string, TurnedDown | string>>(kTurnedDown(creator))) ?? {}
+  const out: TurnedDown[] = []
+  for (const v of Object.values(raw)) {
+    try {
+      out.push(typeof v === 'string' ? (JSON.parse(v) as TurnedDown) : v)
+    } catch {
+      continue
+    }
+  }
+  return out.sort((a, b) => b.at - a.at)
+}
+
+export async function recordTurnedDown(creator: string, note: TurnedDown): Promise<void> {
+  const key = kTurnedDown(creator)
+  await redis.multi().hset(key, { [note.id]: JSON.stringify(note) }).expire(key, TURNED_DOWN_MS / 1000).exec()
+  const stale = (await readTurnedDown(creator)).filter((n, i) => i >= TURNED_DOWN_MAX || n.at < Date.now() - TURNED_DOWN_MS)
+  if (stale.length) await redis.hdel(key, ...stale.map((n) => n.id))
+}
+
+/** A creator's turned-down machines from the last month, newest first. */
+export async function listTurnedDown(creator: string): Promise<TurnedDown[]> {
+  const since = Date.now() - TURNED_DOWN_MS
+  return (await readTurnedDown(creator)).filter((n) => n.at >= since).slice(0, TURNED_DOWN_MAX)
+}
+
+/** Drops the note for a machine id: its creator dismissed it, or published
+ *  a machine under the id the decline freed — the fixed one. */
+export async function dismissTurnedDown(creator: string, id: string): Promise<void> {
+  await redis.hdel(kTurnedDown(creator), id)
 }
 
 /** Machines newest-first, optionally filtered by state. Bounded read. */

@@ -850,13 +850,16 @@ const check = (name, cond, detail = '') => {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 /** The order an owner's list reads in (components/ProfileMachines): a draft,
- *  a delisted machine, a live one that has stopped selling, one waiting for a
- *  curator, what is on sale, what has closed — each group in the API's order. */
+ *  a delisted machine, one a curator turned down, a live one that has
+ *  stopped selling, one waiting for a curator, what is on sale, what has
+ *  closed — each group in the API's order. */
 const STUCK = ['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now']
-const ownerOrder = (machines) => {
+const ownerOrder = (machines, turnedDown = []) => {
   const stuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason)
-  const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 2 : m.state === 'review' ? 3 : m.state === 'live' ? 4 : 5)
-  return [...machines].sort((a, b) => rank(a) - rank(b)).map((m) => m.name.toLowerCase())
+  const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 3 : m.state === 'review' ? 4 : m.state === 'live' ? 5 : 6)
+  return [...machines.map((m) => [rank(m), m.name]), ...turnedDown.map((t) => [2, t.name])]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, name]) => name.toLowerCase())
 }
 let ipCounter = 0
 const USER_COOKIE = '__Host-kismet_session'
@@ -2762,6 +2765,28 @@ try {
     const resubmit = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: tdBody(true) })
     check('so they can fix it and submit again: the same capsule and the same link',
       resubmit.status === 200 && resubmit.json?.problems?.length === 0 && resubmit.json.id === 'turned-down', JSON.stringify(resubmit.json).slice(0, 240))
+    // Withdrawn, it is gone from its creator's list, which keeps a note of it
+    // in its place, for them alone, until the fixed machine is published
+    // under the same link.
+    const notesOf = async (user) => (await call(`/api/experience/machines?creator=${CREATOR2}`, { user })).json?.turnedDown
+    const tdNote = (await notesOf(USER_TOKEN))?.find((n) => n.id === 'turned-down')
+    check('its creator\'s own list keeps a note of it — what it was and why — sent to no one else',
+      tdNote?.name === 'Turned Down' && tdNote.kind === 'capsule' && tdNote.reason === 'its cover or frames need work — the cover is a placeholder' &&
+        (await notesOf()) === undefined && (await notesOf(CURATOR_TOKEN)) === undefined,
+      JSON.stringify(tdNote))
+    const anonymous = await call('/api/experience/machines?turnedDown=turned-down', { method: 'DELETE' })
+    const badId = await call('/api/experience/machines?turnedDown=Not%20An%20Id', { method: 'DELETE', user: USER_TOKEN })
+    check('a note is dismissed only by its creator, signed in', anonymous.status === 401 && badId.status === 400 &&
+      ((await notesOf(USER_TOKEN)) ?? []).some((n) => n.id === 'turned-down'), `${anonymous.status} ${badId.status}`)
+    const fixed = await call('/api/experience/machines', { method: 'POST', user: USER_TOKEN, body: tdBody(false) })
+    check('and the fixed machine, published under the same link, takes the note away',
+      fixed.status === 200 && fixed.json.machine?.id === 'turned-down' && !((await notesOf(USER_TOKEN)) ?? []).some((n) => n.id === 'turned-down'),
+      `${fixed.status} ${JSON.stringify(fixed.json).slice(0, 160)}`)
+    // Its creator withdraws it again, as they may, which leaves no note — and
+    // their machines as the rest of the run expects them.
+    const withdrawnAgain = await call('/api/experience/machines/turned-down', { method: 'POST', user: USER_TOKEN, body: { action: 'withdraw' } })
+    check('withdrawn by its own creator, a machine leaves no note', withdrawnAgain.status === 200 && ((await notesOf(USER_TOKEN)) ?? []).length === 0, String(withdrawnAgain.status))
+    strings.delete(`kismetart:rl:xp-publish:${CREATOR2.toLowerCase()}`)
     // A payout that lands is told to its curator once, as a money notice.
     const paidNotes = (addr) => notesFor(addr).filter((n) => n.type === 'payout' && n.note === 'referral')
     check('a curator is told their referral rewards were paid, with the amount', paidNotes(CURATOR).length === 1 && paidNotes(CURATOR)[0].price === '200000000000000' && paidNotes(CURATOR)[0].priority === true, JSON.stringify(paidNotes(CURATOR)))
@@ -3198,6 +3223,10 @@ try {
           const now = await coverNow(`ar://${arweaveUploads.at(-1)?.id}`)
           check('its creator changes it from the live machine\'s page, and the machine carries the new one',
             now === `ar://${arweaveUploads.at(-1)?.id}` && now !== SPRING_COVER.uri, now)
+          // No gateway serves the upload here, as none may yet just after a save:
+          // the field shows the image just saved, from this browser.
+          const savedThumb = await page.locator('img[alt="cover"]').first().evaluate((img) => img.src.startsWith('blob:') && img.complete && img.naturalWidth > 0).catch(() => false)
+          check('and its field keeps showing the image just saved while no gateway serves the upload yet', savedThumb)
           await page.context().close()
           // The browser signs every upload from one address, and this mock's
           // counters never expire, so the extra covers above would put the
@@ -4451,6 +4480,9 @@ try {
               body.includes('spring season') && body.includes('what the machines gave') && body.includes('opened from spring season'),
             body.match(/kismet \(.{0,240}/)?.[0] ?? '')
           check('each play in it can be verified', (await page.locator('a[href^="/play/spring-season/verify?txHash="]').count()) > 0)
+          const kismetSection = page.locator('div.border-t').filter({ has: page.locator('h2', { hasText: /^Kismet \(/ }) })
+          const tileWidth = await kismetSection.locator('a.group').first().evaluate((el) => el.getBoundingClientRect().width).catch(() => 0)
+          check('at the scale of the profile\'s other sections: its dense grid, six to a row on a wide screen', tileWidth > 140 && tileWidth < 170, String(tileWidth))
           await page.context().close()
           const atMachine = await open('/play/spring-season', { wallet: PLAYER })
           await atMachine.getByText(/kismet earned here/).waitFor({ timeout: 15_000 }).catch(() => {})
@@ -4487,6 +4519,27 @@ try {
           check('each says what a play costs, as the play list does, and what is left', spring.includes('0.01 eth per play') && /\d+ of \d+ left|sold out|\d+ sold/.test(spring), spring)
           check('and no one\'s winners or counts of plays', !(await text(visitor)).includes('won by') && !/\d+ plays?\b/.test(spring), spring)
           await visitor.context().close()
+          // A curated showcase holds six, as its other rows do — what can be
+          // played first — and the rest in place on a tap, focus moving to the
+          // first of them.
+          const shelfIds = ((await call(`/api/experience/machines?creator=${ADMIN}`)).json?.machines ?? []).map((m) => m.id)
+          const toCurated = await call(`/api/profile/${ADMIN}/public-view`, { method: 'POST', user: ADMIN_USER_TOKEN, body: { mode: 'curated' } })
+          const curated = await open(`/profile/${ADMIN}`)
+          const ownHrefs = () => curated.locator('article a[href^="/play/"]').evaluateAll((els, ids) =>
+            [...new Set(els.map((el) => el.getAttribute('href')).filter((h) => ids.includes(h.slice('/play/'.length))))], shelfIds)
+          const showAll = curated.getByRole('button', { name: `show all ${shelfIds.length} machines` })
+          await showAll.waitFor({ timeout: 15_000 }).catch(() => {})
+          const firstSix = await ownHrefs()
+          await showAll.click().catch(() => {})
+          await sleep(300)
+          const focused = await curated.evaluate(() => document.activeElement?.getAttribute('href'))
+          const everyOne = await ownHrefs()
+          check('a curated showcase shows six of them, what can be played first, and the rest in place on a tap, focus on the first of those',
+            toCurated.status === 200 && shelfIds.length > 6 && firstSix.length === 6 && everyOne.length === shelfIds.length &&
+              (await showAll.count()) === 0 && !!focused && !firstSix.includes(focused) && everyOne.includes(focused),
+            `${toCurated.status} ${shelfIds.length} ${firstSix.length} ${everyOne.length} ${focused}`)
+          await curated.context().close()
+          await call(`/api/profile/${ADMIN}/public-view`, { method: 'POST', user: ADMIN_USER_TOKEN, body: { mode: 'full' } })
 
           const page = await open(`/profile/${ADMIN}`, { user: ADMIN_USER_TOKEN, wallet: ADMIN })
           await page.getByText('Box Season').first().waitFor()
@@ -4498,10 +4551,18 @@ try {
             /\b(\d+ of \d+|all \d+|\d+) sold\b/.test(box) && /eth taken in/.test(box), box)
           const solo = await rowText('solo-piece')
           check('a reveal machine shows what was collected through it, not money that pays its artists', /\d+ collected/.test(solo) && !solo.includes('taken in'), solo)
-          const ownerApi = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json?.machines ?? []
+          const ownerJson = (await call(`/api/experience/machines?creator=${ADMIN}`, { user: ADMIN_USER_TOKEN })).json ?? {}
+          const ownerApi = ownerJson.machines ?? []
           const names = await namesOf(rows)
           check('in the order an owner reads them: what needs them first, then what is live, then what has closed',
-            names.length > 1 && names.join('|') === ownerOrder(ownerApi).join('|'), `${names.join('|')} vs ${ownerOrder(ownerApi).join('|')}`)
+            names.length > 1 && names.join('|') === ownerOrder(ownerApi, ownerJson.turnedDown).join('|'),
+            `${names.join('|')} vs ${ownerOrder(ownerApi, ownerJson.turnedDown).join('|')}`)
+          // Each row says since when: on sale since it went live, closed since
+          // it was closed (kismet-picks, by its curator, above).
+          const springRow = await rowText('spring-season')
+          const picksRow = await rowText('kismet-picks')
+          check('each row says since when: live since the day it went on sale, closed since the day it closed',
+            /live since [a-z]{3} \d{1,2}\b/.test(springRow) && /closed [a-z]{3} \d{1,2}\b/.test(picksRow), `${springRow} | ${picksRow}`)
           const dryRow = await rowText('dry-season')
           check('a live machine that has stopped selling comes first, saying why and what to do',
             names[0] === 'dry season' && dryRow.includes('nothing left to win · end the season, or the capsule keeps selling on zora.co'), dryRow)
@@ -4511,6 +4572,8 @@ try {
             body.match(/\d+ (not submitted|delisted|not selling|waiting for a curator|live)[^·]*(·[^·]*){0,5}/)?.[0] ?? '')
           check('who won what is the machine page\'s, not the profile\'s', !body.includes('won by'))
           check('labelled as capsule prizes, not airdrops', body.includes('capsule prizes are minted by kismet when a paid capsule is opened. they are not airdrops'))
+          check('and what taken in counts: each purchase when its first capsule is opened here, one bought on zora.co too, once opened',
+            body.includes('taken in is what each purchase paid, counted when its first capsule is opened here. a capsule bought on zora.co counts once it is opened.'))
           await page.context().close()
         }
 
@@ -4530,14 +4593,24 @@ try {
             ownBody.includes('paid to your wallet automatically each day') && ownBody.includes('paid so far: 0.0002 eth'), ownBody.match(/collects through.{0,200}/)?.[0] ?? '')
           const ownRows = own.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
           const ownNames = await ownRows.evaluateAll((els) => els.map((el) => el.querySelector('span.truncate')?.textContent?.trim().toLowerCase() ?? ''))
-          const ownApi = (await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.machines ?? []
-          check('the curator\'s list reads in the order an owner needs it', ownNames.join('|') === ownerOrder(ownApi).join('|'), `${ownNames.join('|')} vs ${ownerOrder(ownApi).join('|')}`)
+          const ownJson = (await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json ?? {}
+          const ownApi = ownJson.machines ?? []
+          check('the curator\'s list reads in the order an owner needs it', ownNames.join('|') === ownerOrder(ownApi, ownJson.turnedDown).join('|'),
+            `${ownNames.join('|')} vs ${ownerOrder(ownApi, ownJson.turnedDown).join('|')}`)
           const picksRow = ownRows.filter({ hasText: 'Browser Picks' })
           const picksText = (await picksRow.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
           check('the machine waiting for a curator says so, and offers its creator a preview in place of a page',
             picksText.includes('waiting for a curator · only you can preview it') && (await picksRow.getByRole('link', { name: 'view', exact: true }).count()) === 0 &&
               (await picksRow.getByRole('link', { name: 'preview', exact: true }).getAttribute('href').catch(() => null)) === '/play/browser-picks', picksText)
           check('and the summary counts it', ownBody.includes('1 waiting for a curator'), ownBody.match(/\d+ waiting for a curator/)?.[0] ?? '')
+          // The machine the queue turned down (the reveal studio, above) is gone,
+          // and a row of their list says so: why, and the studio to fix it in.
+          const tdRow = ownRows.filter({ hasText: 'Browser Linked' })
+          const tdText = (await tdRow.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a machine a curator turned down keeps a row in its creator\'s list, saying why, with the studio to fix it in',
+            tdText.includes('turned down by a curator: its cover or frames need work — the cover is a blank square · fix it and submit again') &&
+              (await tdRow.getByRole('link', { name: 'fix', exact: true }).getAttribute('href').catch(() => null)) === '/play/create-reveal' &&
+              ownBody.includes('1 turned down'), `${tdText} | ${ownBody.match(/\d+ (delisted|turned down)[^·]*/)?.[0] ?? ''}`)
           const usdcRow = (await ownRows.filter({ has: own.locator('a[href="/play/curator-usdc"]') }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
           check('a reveal machine\'s row counts collects, not the artists\' money', /\d+ collected/.test(usdcRow) && !usdcRow.includes('taken in'), usdcRow)
           await own.context().close()
@@ -4556,6 +4629,17 @@ try {
           const soloNow = ((await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.machines ?? []).find((m) => m.id === 'curator-solo')
           check('and relisted, it is back on sale with no reason left on it', relisted.status === 200 && soloNow?.state === 'live' && soloNow.delistReason === undefined,
             `${relisted.status} ${JSON.stringify(soloNow)?.slice(0, 160)}`)
+          // Dismissed, the turned-down row goes, from the list and from what the
+          // list is sent.
+          const dm = await open(`/profile/${CURATOR}`, { user: CURATOR_TOKEN, wallet: CURATOR })
+          const dmRow = dm.getByRole('list', { name: 'Your machines' }).getByRole('listitem').filter({ hasText: 'Browser Linked' })
+          await dmRow.waitFor({ timeout: 15_000 }).catch(() => {})
+          await dmRow.getByRole('button', { name: 'Dismiss Browser Linked' }).click().catch(() => {})
+          await dmRow.waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+          const notesLeft = (await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json?.turnedDown ?? []
+          check('and dismissed, it goes from the list and from what the list is sent',
+            (await dmRow.count()) === 0 && !notesLeft.some((n) => n.id === 'browser-linked'), JSON.stringify(notesLeft))
+          await dm.context().close()
           // A curator nothing has been paid to yet — their wallet refuses ETH.
           const unpaid = await open(`/profile/${BUSY}`, { user: BUSY_TOKEN, wallet: BUSY })
           await unpaid.getByText('Paid so far').first().waitFor({ timeout: 10_000 }).catch(() => {})
@@ -4814,20 +4898,33 @@ try {
 
         // ── where an artist's work is featured, on their profile ──
         {
+          const featured = (await call(`/api/experience/machines?creator=${ARTIST_B}`)).json?.featuredIn ?? []
           const visitor = await open(`/profile/${ARTIST_B}`)
-          await visitor.getByText('featured in').first().waitFor({ timeout: 10_000 }).catch(() => {})
+          const fCards = visitor.locator('article').filter({ has: visitor.locator('a[href^="/play/"]') })
+          await fCards.first().waitFor({ timeout: 15_000 }).catch(() => {})
           const vBody = await text(visitor)
-          check('a visitor sees the machines an artist is featured in, and by whom',
-            vBody.includes('featured in') && vBody.includes('new voices · curated by 0x7777…7777') && vBody.includes('fresh ink'), vBody.match(/featured in.{0,300}/)?.[0] ?? '')
-          check('a closed one says so', /kismet picks · curated by .{0,20} · closed/.test(vBody))
+          const fCard = (id) => fCards.filter({ has: visitor.locator(`a[href="/play/${id}"]`) })
+          const nvCard = (await fCard('new-voices').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          const kpCard = (await fCard('kismet-picks').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('a visitor sees the machines an artist is featured in as the play list\'s cards, each saying who curated it — the section named for them, the artist having none of their own',
+            featured.length === 5 && vBody.includes(`featured in (${featured.length})`) && !vBody.includes('machines (') && (await fCards.count()) === featured.length &&
+              nvCard.includes('new voices') && nvCard.includes('curated by 0x7777…7777') && nvCard.includes('free to pull') && /\d+ artworks/.test(nvCard),
+            `${featured.length} ${await fCards.count()} | ${nvCard}`)
+          check('a closed one says so, quieter', kpCard.includes('closed') && (await fCard('kismet-picks').locator('.grayscale').count()) === 1, kpCard)
           await visitor.context().close()
           const own = await open(`/profile/${ARTIST_B}`, { user: ARTIST_B_TOKEN, wallet: ARTIST_B })
           await own.getByText('your work in other machines').first().waitFor({ timeout: 10_000 }).catch(() => {})
           const oBody = await text(own)
-          check('the artist sees it as their work in other machines, with how to take a piece out',
-            oBody.includes('your work in other machines') && oBody.includes('to take one out of every reveal machine, turn machines off from that piece\'s page'))
-          check('and, with no machine of their own, says so beside the count of those featuring them, with the way to build a first one',
-            oBody.includes('none of your own yet') && !oBody.includes('no machines yet') && (await own.getByRole('link', { name: 'build a gachapon →', exact: true }).getAttribute('href').catch(() => null)) === '/play/create',
+          const fRows = own.getByRole('list', { name: 'Your work in other machines' }).getByRole('listitem')
+          const nvRow = (await fRows.filter({ hasText: 'New Voices' }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          check('the artist sees them as a list of their work in other machines: who curated each, which of their pieces it holds, how to take one out',
+            oBody.includes(`your work in other machines (${featured.length})`) && (await fRows.count()) === featured.length &&
+              /your pieces #\d+(, #\d+)+/.test(nvRow) && nvRow.includes('curated by 0x7777…7777') &&
+              (await fRows.filter({ hasText: 'New Voices' }).locator('a[href^="/artwork/"]').count()) > 1 &&
+              oBody.includes('to take one out of every reveal machine, turn machines off from that piece\'s page'), nvRow)
+          check('and, with no machine of their own, a count of none, the dashboard\'s empty line, and the way to build a first one',
+            oBody.includes('machines (0)') && oBody.includes('no machines yet') &&
+              (await own.getByRole('link', { name: 'build a gachapon →', exact: true }).getAttribute('href').catch(() => null)) === '/play/create',
             oBody.match(/machines \(.{0,160}/)?.[0] ?? '')
           await own.context().close()
         }
@@ -4838,9 +4935,11 @@ try {
         // row's menu in one step that closes the capsule's sale on-chain, from
         // their own wallet, before the listing changes.
         {
-          // Their two machines on sale, and the machines featuring their work.
-          const c2Machines = 2 + ((await call(`/api/experience/machines?creator=${CREATOR2}`)).json?.featuredIn?.length ?? 0)
-          check('their profile counts their own machines and those featuring them', c2Machines === 6, String(c2Machines))
+          // Their two machines on sale, counted as theirs; the machines featuring
+          // their work are counted under a heading of their own.
+          const c2Machines = 2
+          const c2Featured = (await call(`/api/experience/machines?creator=${CREATOR2}`)).json?.featuredIn?.length ?? 0
+          check('there are machines featuring their work, to be counted apart from their own', c2Featured === 4, String(c2Featured))
 
           // Each card shows what the machine's card in the play list shows: its
           // cover, or for one published before covers (dry-season and
@@ -4871,6 +4970,10 @@ try {
           await visitor.waitForLoadState('networkidle').catch(() => {})
           const vBody = await text(visitor)
           check('a visitor sees the creator\'s machines on sale', vBody.includes('field recordings') && vBody.includes('browser machine'))
+          check('counted as theirs, with those featuring their work under a heading and a count of their own, as cards too',
+            vBody.includes(`machines (${c2Machines})`) && vBody.includes(`featured in (${c2Featured})`) &&
+              (await visitor.locator('article').filter({ has: visitor.locator('a[href^="/play/"]') }).count()) === c2Machines + c2Featured,
+            vBody.match(/machines \(.{0,200}/)?.[0] ?? '')
           check('with no controls', (await visitor.getByRole('button', { name: 'end season' }).count()) === 0 && (await visitor.getByRole('link', { name: /build another gachapon/ }).count()) === 0 &&
             (await visitor.getByRole('button', { name: /cover|more actions/i }).count()) === 0)
           const vCard = (await cardOf(visitor, 'browser-machine').innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
@@ -4989,9 +5092,23 @@ try {
           await sleep(100)
           const menuClosed = (await menu.count()) === 0
           const backOnButton = await more.evaluate((el) => el === document.activeElement).catch(() => false)
-          check('its actions are behind one menu: change the cover, end the season', items.join(',') === 'change cover,end season', items.join(','))
+          check('its actions are behind one menu: change the cover, copy its link, share it, end the season',
+            items.join(',') === 'change cover,copy link,share to farcaster,end season', items.join(','))
           check('which a keyboard opens at its first item, walks, and closes, back on its button',
-            firstFocused && movedTo === 'end season' && menuClosed && backOnButton, `${firstFocused} ${movedTo} ${menuClosed} ${backOnButton}`)
+            firstFocused && movedTo === 'copy link' && menuClosed && backOnButton, `${firstFocused} ${movedTo} ${menuClosed} ${backOnButton}`)
+          // Its link, to pass on: copied, or shared to Farcaster with its page as
+          // the embed — which Farcaster draws as the machine's own card.
+          await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
+          await more.click()
+          await page.getByRole('menuitem', { name: 'Copy link' }).click()
+          await page.getByText('Link copied').first().waitFor({ timeout: 5000 }).catch(() => {})
+          const copied = await page.evaluate(() => navigator.clipboard.readText()).catch(() => null)
+          check('its link copies from the menu', copied === `${origin}/play/browser-machine`, String(copied))
+          await more.click()
+          const shared = await castOf(page, page.getByRole('menuitem', { name: 'Share to Farcaster' }))
+          check('and shares to Farcaster, with the machine\'s page as the embed',
+            shared?.host === 'farcaster.xyz/~/compose' && shared.text === 'play "Browser Machine" on the Kismet Gachapon' &&
+              shared.embeds.join() === 'https://kismet.art/play/browser-machine' && shared.channel === 'kismet', JSON.stringify(shared))
           // Ending a season: the menu, then the confirmation in the row.
           await more.click()
           await page.getByRole('menuitem', { name: 'End season' }).click()
@@ -5039,6 +5156,23 @@ try {
           const swapped = (await lRow.locator('img[src^="blob:"]').count()) === 2 && (await lRow.locator('img').count()) === 2
           check('and where the row\'s image loaded, the picked cover takes its place', coverFirst && swapped, `${coverFirst} ${swapped}`)
           await loaded.context().close()
+          // Saved, the new cover stays in its row from this browser while no
+          // gateway serves the upload yet — as none here ever does — rather
+          // than going blank until the page is reloaded.
+          const saver = await open(`/profile/${CREATOR2}`, { user: USER_TOKEN, wallet: CREATOR2, uploads: true })
+          const sRow = saver.getByRole('list', { name: 'Your machines' }).getByRole('listitem').filter({ has: saver.locator('a[href="/play/browser-machine"]') })
+          await sRow.waitFor({ timeout: 15_000 }).catch(() => {})
+          const coverBefore = (await call('/api/experience/machines/browser-machine')).json?.machine?.cover
+          await sRow.getByLabel('cover image').setInputFiles({ name: 'saved-cover.png', mimeType: 'image/png', buffer: ONE_PIXEL_PNG })
+          await sRow.getByRole('button', { name: 'save cover' }).click({ timeout: 15_000 }).catch(() => {})
+          await saver.getByText('Cover updated').first().waitFor({ timeout: 30_000 }).catch(() => {})
+          await sleep(1500)
+          const coverAfter = (await call('/api/experience/machines/browser-machine')).json?.machine?.cover
+          const keptSaved = await sRow.locator('img').first().evaluate((img) => img.src.startsWith('blob:') && img.complete && img.naturalWidth > 0).catch(() => false)
+          check('a saved cover stays in its row from this browser while no gateway serves the upload yet',
+            !!coverAfter && coverAfter !== coverBefore && keptSaved && (await sRow.getByRole('button', { name: 'save cover' }).count()) === 0,
+            `${coverBefore} → ${coverAfter} ${keptSaved}`)
+          await saver.context().close()
         }
 
         // ── a creator ends their machine where they see it ──
@@ -5113,6 +5247,10 @@ try {
       } finally {
         await browser.close()
       }
+      // Every page hydrates as its server rendered it — opened in a wallet's own
+      // browser too, whose wallet connects as the page mounts (hooks/useAccount).
+      const mismatched = pageErrors.filter((e) => /Minified React error #(418|423|425)\b|Hydration failed|did not match/.test(e))
+      check('every page hydrates as its server rendered it, in a wallet\'s own browser too', mismatched.length === 0, mismatched.slice(0, 3).join(' || ').slice(0, 600))
       if (pageErrors.length) console.log(`  (page errors: ${pageErrors.slice(0, 5).join(' || ').slice(0, 600)})`)
     }
     }

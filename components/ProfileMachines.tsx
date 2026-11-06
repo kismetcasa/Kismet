@@ -4,10 +4,16 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type R
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { Ellipsis } from 'lucide-react'
+import { toast } from 'sonner'
 import { useEthUsd } from '@/hooks/useEthUsd'
 import { useProfileNames } from '@/hooks/useProfileNames'
 import { useUploadSession } from '@/hooks/useUploadSession'
+import { useFarcaster } from '@/providers/FarcasterProvider'
+import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
+import { gachaponComposeUrl, machineCastText, machineShareUrl } from '@/lib/gachaponShare'
 import { formatPrice } from '@/lib/inprocess'
+import { MAX_PINS_PER_CATEGORY } from '@/lib/showcaseOrder'
+import { toastError } from '@/lib/toast'
 import { ethUsdApprox } from '@/lib/usdApprox'
 import type { MachineCardData } from '@/lib/experience/cards'
 import type { Selling } from '@/lib/experience/selling'
@@ -61,6 +67,10 @@ interface CreatorMachineCommon {
   /** Its creator's view only, while it is delisted: why the curator took it
    *  down, as the notification told them. */
   delistReason?: string
+  /** Its creator's view only: when it first went on the shelves, and when it
+   *  took its state now (null where that is not recorded). */
+  listedAt?: number | null
+  stateAt?: number | null
 }
 
 export type CreatorMachine =
@@ -76,13 +86,31 @@ export type CreatorMachine =
     })
   | (CreatorMachineCommon & { kind: 'reveal'; pieces: number })
 
-/** A reveal machine curated by someone else that features this person's work. */
+/** A reveal machine curated by someone else that features this person's
+ *  work, with what its card shows (lib/experience/cards). */
 export interface FeaturedIn {
   id: string
   name: string
-  state: string
+  state: 'live' | 'ended'
   curator: string
+  /** This person's pieces in it, for the artist to reach each one's switch. */
   pieces: { collection: string; tokenId: string }[]
+  kind: 'reveal'
+  /** The artworks it draws from, everyone's. */
+  size: number
+  art: MachineCardData['cover']
+  selling: Selling
+}
+
+/** A machine of theirs a curator turned down, which withdrawing took off the
+ *  list (lib/experience/store TurnedDown); its creator's view only. */
+export interface TurnedDown {
+  id: string
+  name: string
+  kind: 'capsule' | 'reveal'
+  cover: string | null
+  reason: string
+  at: number
 }
 
 /** Loaded once by the profile, which shows the section only when there is
@@ -94,6 +122,7 @@ export function useCreatorMachines(address: string) {
   /** Wei of referral rewards confirmed paid to a curator; owner view only. */
   const [referralPaid, setReferralPaid] = useState<string | null>(null)
   const [featuredIn, setFeaturedIn] = useState<FeaturedIn[]>([])
+  const [turnedDown, setTurnedDown] = useState<TurnedDown[]>([])
   /** The last load failed. What loaded before stays, so a reload that fails
    *  after an action leaves the list as it was, saying it may be stale; an
    *  owner is shown the failure with a retry, never an empty section. */
@@ -108,12 +137,13 @@ export function useCreatorMachines(address: string) {
     const load = ++latest.current
     fetch(`/api/experience/machines?creator=${address}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`machines ${r.status}`))))
-      .then((d: { owner: boolean; machines: CreatorMachine[]; referralPaid?: string; featuredIn?: FeaturedIn[] }) => {
+      .then((d: { owner: boolean; machines: CreatorMachine[]; referralPaid?: string; featuredIn?: FeaturedIn[]; turnedDown?: TurnedDown[] }) => {
         if (load !== latest.current) return
         setMachines(d.machines ?? [])
         setOwner(d.owner === true)
         setReferralPaid(d.referralPaid ?? null)
         setFeaturedIn(d.featuredIn ?? [])
+        setTurnedDown(d.turnedDown ?? [])
         setFailed(false)
       })
       .catch(() => {
@@ -128,11 +158,12 @@ export function useCreatorMachines(address: string) {
     setOwner(false)
     setReferralPaid(null)
     setFeaturedIn([])
+    setTurnedDown([])
     setFailed(false)
     setLoading(true)
     reload()
   }, [reload])
-  return { machines, owner, referralPaid, featuredIn, failed, loading, reload }
+  return { machines, owner, referralPaid, featuredIn, turnedDown, failed, loading, reload }
 }
 
 const isPublic = (m: CreatorMachine) => m.state === 'live' || m.state === 'ended'
@@ -187,8 +218,10 @@ export function ProfileMachines({
   signedIn,
   referralPaid,
   featuredIn = [],
+  turnedDown = [],
   layout = 'grid',
   loadError = false,
+  featuredHeading = true,
   onChange,
 }: {
   machines: CreatorMachine[]
@@ -201,6 +234,12 @@ export function ProfileMachines({
   layout?: 'grid' | 'showcase'
   /** Other people's reveal machines featuring this person's work. */
   featuredIn?: FeaturedIn[]
+  /** The owner's own view: machines of theirs a curator turned down. */
+  turnedDown?: TurnedDown[]
+  /** Whether those featuring their work carry a heading of their own: not
+   *  where the section itself is named for them (a visitor's view of someone
+   *  with no machine of their own). */
+  featuredHeading?: boolean
   /** Owner view of a curator: referral rewards confirmed paid, in wei. */
   referralPaid?: string | null
   /** The profile belongs to the connected wallet. */
@@ -212,20 +251,31 @@ export function ProfileMachines({
   return (
     <div className="flex flex-col gap-3">
       {manage ? (
-        <OwnerMachines machines={machines} signedIn={signedIn} referralPaid={referralPaid} loadError={loadError} onChange={onChange} />
+        <OwnerMachines
+          machines={machines}
+          turnedDown={turnedDown}
+          signedIn={signedIn}
+          referralPaid={referralPaid}
+          loadError={loadError}
+          onChange={onChange}
+        />
       ) : layout === 'showcase' ? (
         <ShowcaseMachines machines={machines} />
       ) : (
         <GridMachines machines={machines} />
       )}
       {/* An owner with none yet gets the dashboard's empty line, and the way
-          to build one — "of your own" where the section counts machines that
-          feature their work. Not before the server has confirmed who they
-          are: until then the list holds only what is public. */}
-      {manage && signedIn && !loadError && machines.length === 0 && (
-        <p className="text-muted font-mono text-xs">{featuredIn.length > 0 ? 'none of your own yet' : 'no machines yet'}</p>
+          to build one. Not before the server has confirmed who they are:
+          until then the list holds only what is public. */}
+      {manage && signedIn && !loadError && machines.length === 0 && turnedDown.length === 0 && (
+        <p className="text-muted font-mono text-xs">no machines yet</p>
       )}
-      {featuredIn.length > 0 && <FeaturedInList featuredIn={featuredIn} manage={manage} />}
+      {featuredIn.length > 0 &&
+        (manage ? (
+          <FeaturedRows featuredIn={featuredIn} />
+        ) : (
+          <FeaturedCards featuredIn={featuredIn} layout={layout} heading={featuredHeading} />
+        ))}
       {manage && (
         <Link href="/play/create" className="self-start text-[11px] font-mono text-dim hover:text-ink underline mt-1">
           {machines.length > 0 ? 'build another gachapon →' : 'build a gachapon →'}
@@ -245,30 +295,50 @@ const liveFirst = (machines: Machine[]) =>
     .map((m) => ({ m, cs: cardSelling(m.selling, m.kind) }))
     .sort((a, b) => CARD_ORDER[a.cs.label] - CARD_ORDER[b.cs.label])
 
-function GridMachines({ machines }: { machines: Machine[] }) {
+/** A line under a card's name: who curated a machine featuring this
+ *  person's work. */
+type Byline = (m: Machine) => ReactNode
+
+function GridMachines({ machines, byline }: { machines: Machine[]; byline?: Byline }) {
   if (machines.length === 0) return null
   return (
     <div className={GRID_CLASSES}>
       {liveFirst(machines).map(({ m, cs }) => (
-        <MachineCard key={m.id} machine={m} cs={cs} density="compact" ethUsd={null} />
+        <MachineCard key={m.id} machine={m} cs={cs} density="compact" ethUsd={null} byline={byline?.(m)} />
       ))}
     </div>
   )
 }
 
 /** The curated showcase: full-scale cards, with what a play costs in dollars
- *  beside its ETH, as the play list shows it. */
-function ShowcaseMachines({ machines }: { machines: Machine[] }) {
+ *  beside its ETH, as the play list shows it. Six of them, as the
+ *  showcase's other rows hold six — what can be played first — and the rest
+ *  in place on a tap, focus moving to the first of them. */
+function ShowcaseMachines({ machines, byline }: { machines: Machine[]; byline?: Byline }) {
   const ethUsd = useEthUsd()
+  const [all, setAll] = useState(false)
+  const row = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (all) row.current?.children[MAX_PINS_PER_CATEGORY]?.querySelector('a')?.focus()
+  }, [all])
   if (machines.length === 0) return null
+  const cards = liveFirst(machines)
+  const shown = all ? cards : cards.slice(0, MAX_PINS_PER_CATEGORY)
   return (
-    <div className={SHOWCASE_ROW_CLASSES}>
-      {liveFirst(machines).map(({ m, cs }) => (
-        <div key={m.id} className={SHOWCASE_ITEM_CLASSES}>
-          <MachineCard machine={m} cs={cs} density="full" ethUsd={ethUsd} />
-        </div>
-      ))}
-    </div>
+    <>
+      <div ref={row} className={SHOWCASE_ROW_CLASSES}>
+        {shown.map(({ m, cs }) => (
+          <div key={m.id} className={SHOWCASE_ITEM_CLASSES}>
+            <MachineCard machine={m} cs={cs} density="full" ethUsd={ethUsd} byline={byline?.(m)} />
+          </div>
+        ))}
+      </div>
+      {shown.length < cards.length && (
+        <button type="button" onClick={() => setAll(true)} className="self-start text-[11px] font-mono text-dim hover:text-ink underline">
+          show all {cards.length} machines
+        </button>
+      )}
+    </>
   )
 }
 
@@ -279,7 +349,19 @@ function ShowcaseMachines({ machines }: { machines: Machine[] }) {
  * page sells one, why not where it doesn't, and a quieter cover for what can
  * no longer be had.
  */
-function MachineCard({ machine: m, cs, density, ethUsd }: { machine: Machine; cs: CardSelling; density: Density; ethUsd: number | null }) {
+function MachineCard({
+  machine: m,
+  cs,
+  density,
+  ethUsd,
+  byline,
+}: {
+  machine: Machine
+  cs: CardSelling
+  density: Density
+  ethUsd: number | null
+  byline?: ReactNode
+}) {
   const t = DENSITY[density]
   const href = pageOf(m)
   const supply = availability(m, cs, density === 'full')
@@ -291,6 +373,7 @@ function MachineCard({ machine: m, cs, density, ethUsd }: { machine: Machine; cs
           {cs.label}
         </span>
       </div>
+      {byline && <p className={`${t.line} font-mono text-muted truncate`}>{byline}</p>}
       <p className={`${t.line} font-mono text-muted truncate`}>
         <CostLine machine={m} cs={cs} full={density === 'full'} ethUsd={ethUsd} />
       </p>
@@ -349,14 +432,15 @@ const STUCK = new Set(['nothing left to win', 'sold out', 'sale ended', 'not for
 const stuck = (m: Machine) => m.state === 'live' && !m.selling.open && STUCK.has(m.selling.reason)
 
 /** The order an owner reads them in: what needs them first (a draft, a
- *  delisted machine, a live one that has stopped selling), then what waits on
- *  a curator, what is on the shelves, and what has closed — each group in the
- *  order given. */
+ *  delisted machine, one a curator turned down, a live one that has stopped
+ *  selling), then what waits on a curator, what is on the shelves, and what
+ *  has closed — each group in the order given. */
 const ownerRank = (m: Machine) =>
-  m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 2 : m.state === 'review' ? 3 : m.state === 'live' ? 4 : 5
-const needsYouFirst = (machines: Machine[]) => [...machines].sort((a, b) => ownerRank(a) - ownerRank(b))
+  m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 3 : m.state === 'review' ? 4 : m.state === 'live' ? 5 : 6
+const TURNED_DOWN_RANK = 2
 
-/** Each group in the owner's summary, in reading order. */
+/** Each group in the owner's summary, in reading order — the machines a
+ *  curator turned down after those delisted. */
 const SUMMARY: [string, (m: Machine) => boolean, (n: number) => string][] = [
   ['draft', (m) => m.state === 'draft', (n) => `${n} not submitted`],
   ['delisted', (m) => m.state === 'delisted', (n) => `${n} delisted`],
@@ -420,12 +504,14 @@ function attentionOf(m: Machine): { text: string; className: string } | null {
 
 function OwnerMachines({
   machines,
+  turnedDown,
   signedIn,
   referralPaid,
   loadError,
   onChange,
 }: {
   machines: Machine[]
+  turnedDown: TurnedDown[]
   signedIn: boolean
   referralPaid?: string | null
   /** The last load failed: say so, with a retry, rather than show nothing. */
@@ -440,11 +526,18 @@ function OwnerMachines({
   const money = [wei > 0n ? formatPrice(wei.toString(), 'eth') : null, usdc > 0n ? formatPrice(usdc.toString(), 'usdc') : null]
     .filter(Boolean)
     .join(' + ')
-  const summary = SUMMARY.flatMap(([, is, say]) => {
+  const summary = SUMMARY.flatMap(([group, is, say]) => {
     const n = machines.filter(is).length
-    return n ? [say(n)] : []
+    const said = n ? [say(n)] : []
+    return group === 'delisted' && turnedDown.length > 0 ? [...said, `${turnedDown.length} turned down`] : said
   })
   if (money) summary.push(`${money} taken in by capsules`)
+  // Every row, what needs them first; a turned-down machine is a note of one
+  // that is gone, ranked with the curators' other decisions.
+  const rows = [
+    ...machines.map((m) => ({ rank: ownerRank(m), row: <OwnerRow key={m.id} machine={m} signedIn={signedIn} onChange={onChange} /> })),
+    ...turnedDown.map((t) => ({ rank: TURNED_DOWN_RANK, row: <TurnedDownRow key={`turned-down:${t.id}`} note={t} onChange={onChange} /> })),
+  ].sort((a, b) => a.rank - b.rank)
   return (
     <>
       {loadError && (
@@ -475,17 +568,24 @@ function OwnerMachines({
         </p>
       )}
       {summary.length > 0 && <p className="text-[11px] font-mono text-dim tabular-nums">{summary.join(' · ')}</p>}
-      {machines.length > 0 && (
+      {rows.length > 0 && (
         <ul className="border border-line divide-y divide-line" aria-label="Your machines">
-          {needsYouFirst(machines).map((m) => (
-            <OwnerRow key={m.id} machine={m} signedIn={signedIn} onChange={onChange} />
-          ))}
+          {rows.map((r) => r.row)}
         </ul>
       )}
       {signedIn && machines.some((m) => m.kind === 'capsule' && (m.stats?.plays ?? 0) > 0) && (
         <p className="text-[10px] font-mono text-subtle leading-relaxed">
           Capsule prizes are minted by Kismet when a paid capsule is opened. They are not airdrops: they
           don&apos;t appear in your airdrops or count toward your airdrop allowance.
+        </p>
+      )}
+      {/* What came through Kismet is counted as each purchase is opened here
+          (lib/experience/kismet recordCapsuleSale), so a capsule bought on
+          zora.co joins it when it is. */}
+      {money && (
+        <p className="text-[10px] font-mono text-subtle leading-relaxed">
+          Taken in is what each purchase paid, counted when its first capsule is opened here. A capsule bought
+          on zora.co counts once it is opened.
         </p>
       )}
     </>
@@ -498,6 +598,7 @@ function OwnerMachines({
  * withdraw) and a picked cover each open in the row, under it.
  */
 function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signedIn: boolean; onChange: () => void }) {
+  const { isInMiniApp } = useFarcaster()
   const href = pageOf(m)
   // A cover picked but not yet saved shows in the row's thumbnail too.
   const [picked, setPicked] = useState<string | null>(null)
@@ -509,6 +610,14 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
     // Any machine past a draft — one waiting on a curator too, whose only page
     // is its creator's preview.
     if (m.state !== 'draft') actions.push({ label: 'Change cover', run: () => openCover.current?.() })
+  }
+  // A machine on the shelves, or closed with its page still up, is theirs to
+  // pass around; they need no session for that.
+  if (m.state === 'live' || m.state === 'ended') {
+    actions.push({ label: 'Copy link', run: () => void copyLink(m) })
+    actions.push({ label: 'Share to Farcaster', run: () => void shareMachine(m, isInMiniApp) })
+  }
+  if (signedIn) {
     if (m.state === 'live') {
       actions.push({ label: m.kind === 'reveal' ? 'Close machine' : 'End season', run: () => setConfirm('end'), danger: true })
     }
@@ -518,6 +627,7 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
   // One waiting for a curator has no public page yet; its creator previews it.
   const preview = m.state === 'review' ? `/play/${m.id}` : undefined
   const figures = ownerFigures(m)
+  const since = sinceLine(m)
   return (
     <li className="px-3 py-2.5">
       <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,18rem)_auto] items-center gap-x-3 gap-y-1">
@@ -531,10 +641,11 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
           </div>
           <p className="text-[10px] font-mono text-muted truncate">{kindLine(m)}</p>
         </div>
-        {(attention || figures.length > 0) && (
+        {(attention || figures.length > 0 || since) && (
           <div className="col-span-2 col-start-2 row-start-2 sm:col-span-1 sm:col-start-auto sm:row-start-auto min-w-0 text-[11px] font-mono text-dim tabular-nums leading-relaxed sm:text-right">
             {attention && <p className={attention.className}>{attention.text}</p>}
             {figures}
+            {since && <p className="text-muted">{since}</p>}
           </div>
         )}
         <div className="col-start-3 row-start-1 sm:col-start-4 flex items-center justify-end gap-2">
@@ -576,6 +687,125 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
           panelClassName="mt-2 border-t border-line pt-2"
         />
       )}
+    </li>
+  )
+}
+
+/** A date as the rows show it: the day, and the year when it is not this one. */
+function day(at: number): string {
+  const d = new Date(at)
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }),
+  })
+}
+
+/** When a machine took the state it is in, in its owner's words; null where
+ *  that was not recorded (a machine closed before it was). */
+function sinceLine(m: Machine): string | null {
+  switch (m.state) {
+    case 'live': {
+      const at = m.stateAt ?? m.listedAt
+      return at ? `live since ${day(at)}` : null
+    }
+    case 'ended':
+      return m.stateAt ? `closed ${day(m.stateAt)}` : null
+    case 'delisted':
+      return m.stateAt ? `delisted ${day(m.stateAt)}` : null
+    case 'review':
+      return `submitted ${day(m.stateAt ?? m.createdAt)}`
+    case 'draft':
+      return `started ${day(m.createdAt)}`
+  }
+}
+
+/** A machine's page, copied for its owner to pass on. */
+async function copyLink(m: Machine): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(`${window.location.origin}/play/${m.id}`)
+    toast.success('Link copied', { id: 'machine-link' })
+  } catch {
+    toast.error('Couldn’t copy the link', { id: 'machine-link' })
+  }
+}
+
+/**
+ * A machine shared to Farcaster by its owner, its page as the embed (its own
+ * card, led by its cover): inside a Mini App the host's composer, on the web
+ * Farcaster's composer in a tab opened within the tap, as a win is shared
+ * (GachaponShareButton).
+ */
+async function shareMachine(m: Machine, isInMiniApp: boolean): Promise<void> {
+  const text = machineCastText(m.name, m.kind)
+  const url = machineShareUrl(m.id)
+  if (!isInMiniApp) {
+    window.open(gachaponComposeUrl(text, [url]), '_blank', 'noopener,noreferrer')
+    return
+  }
+  try {
+    const { sdk } = await import('@farcaster/miniapp-sdk')
+    const composed = await sdk.actions.composeCast({ text, embeds: [url], channelKey: KISMET_CHANNEL_KEY })
+    if (composed?.cast) toast.success('Cast shared to /kismet!', { id: 'machine-share' })
+  } catch (err) {
+    toastError('Share', err, { id: 'machine-share' })
+  }
+}
+
+/**
+ * A machine a curator turned down, as a row of the owner's list: what it was
+ * and why, until they resubmit it under the same link (which drops the note)
+ * or dismiss it. Withdrawn, it has no page and nothing to manage — only the
+ * studio to fix it in.
+ */
+function TurnedDownRow({ note, onChange }: { note: TurnedDown; onChange: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const studio = note.kind === 'reveal' ? '/play/create-reveal' : '/play/create-capsule'
+  const dismiss = async () => {
+    setBusy(true)
+    try {
+      const r = await fetch(`/api/experience/machines?turnedDown=${encodeURIComponent(note.id)}`, { method: 'DELETE' })
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? 'Could not dismiss it')
+      onChange()
+    } catch (err) {
+      toastError('Dismiss', err)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <li className="px-3 py-2.5">
+      <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,18rem)_auto] items-center gap-x-3 gap-y-1">
+        <MachineThumb image={note.cover} />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="min-w-0 truncate text-xs font-mono text-ink">{note.name}</span>
+            <span className="shrink-0 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider text-[#ff7c80] bg-[#ff7c80]/10">turned down</span>
+          </div>
+          <p className="text-[10px] font-mono text-muted truncate">{note.kind}</p>
+        </div>
+        <div className="col-span-2 col-start-2 row-start-2 sm:col-span-1 sm:col-start-auto sm:row-start-auto min-w-0 text-[11px] font-mono leading-relaxed sm:text-right">
+          <p className="text-[#ff7c80]">Turned down by a curator: {note.reason} · fix it and submit again</p>
+          <p className="text-muted tabular-nums">turned down {day(note.at)}</p>
+        </div>
+        <div className="col-start-3 row-start-1 sm:col-start-4 flex items-center justify-end gap-2">
+          <Link
+            href={studio}
+            className="px-2.5 py-1 text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+          >
+            fix
+          </Link>
+          <button
+            type="button"
+            onClick={() => void dismiss()}
+            disabled={busy}
+            aria-label={`Dismiss ${note.name}`}
+            className="px-2.5 py-1 text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors disabled:opacity-40"
+          >
+            dismiss
+          </button>
+        </div>
+      </div>
     </li>
   )
 }
@@ -756,43 +986,106 @@ function ActionsMenu({ label, actions, buttonRef }: { label: string; actions: Me
 
 // ─── featured in ───────────────────────────────────────────────────────────
 
-/** Other curators' reveal machines with this person's work in them. */
-function FeaturedInList({ featuredIn, manage }: { featuredIn: FeaturedIn[]; manage: boolean }) {
+/** A machine featuring this person's work, as its card reads it. */
+const featuredCard = (f: FeaturedIn): Machine => ({
+  id: f.id,
+  name: f.name,
+  state: f.state,
+  createdAt: 0,
+  cover: null,
+  art: f.art,
+  selling: f.selling,
+  kind: 'reveal',
+  pieces: f.size,
+})
+
+/**
+ * Other curators' reveal machines with this person's work in them, as a
+ * visitor reads them: the play list's cards in the view's layout, each with
+ * who curated it — machines to play, like their own.
+ */
+function FeaturedCards({ featuredIn, layout, heading }: { featuredIn: FeaturedIn[]; layout: 'grid' | 'showcase'; heading: boolean }) {
+  const nameOf = useProfileNames(featuredIn.map((f) => f.curator))
+  const curatorOf = new Map(featuredIn.map((f) => [f.id, f.curator]))
+  const machines = featuredIn.map(featuredCard)
+  const byline: Byline = (m) => {
+    const curator = curatorOf.get(m.id) ?? ''
+    return (
+      <>
+        curated by{' '}
+        <Link href={`/profile/${curator}`} className="hover:text-dim">
+          {nameOf(curator)}
+        </Link>
+      </>
+    )
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-3">
+      {heading && (
+        <p className="text-[10px] font-mono uppercase tracking-widest text-muted">featured in ({featuredIn.length})</p>
+      )}
+      {layout === 'showcase' ? <ShowcaseMachines machines={machines} byline={byline} /> : <GridMachines machines={machines} byline={byline} />}
+    </div>
+  )
+}
+
+/**
+ * The same machines as their artist manages them: a row each, as their own
+ * are listed, with which of their pieces it holds — the way to each piece's
+ * page, where its switch is.
+ */
+function FeaturedRows({ featuredIn }: { featuredIn: FeaturedIn[] }) {
   const nameOf = useProfileNames(featuredIn.map((f) => f.curator))
   return (
-    <div className="mt-2">
-      <p className="text-[10px] font-mono uppercase tracking-widest text-muted mb-1.5">
-        {manage ? 'your work in other machines' : 'featured in'}
-      </p>
-      <ul className="flex flex-col gap-1">
-        {featuredIn.map((f) => (
-          <li key={f.id} className="text-[11px] font-mono text-subtle">
-            <Link href={`/play/${f.id}`} className="text-dim hover:text-ink underline">
-              {f.name}
-            </Link>{' '}
-            · curated by{' '}
-            <Link href={`/profile/${f.curator}`} className="hover:text-dim">
-              {nameOf(f.curator)}
-            </Link>
-            {f.state !== 'live' && ' · closed'}
-            {' · '}
-            {f.pieces.map((p, i) => (
-              <span key={`${p.collection}:${p.tokenId}`}>
-                {i > 0 && ', '}
-                <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="hover:text-dim">
-                  #{p.tokenId}
+    <div className="mt-2 flex flex-col gap-1.5">
+      <p className="text-[10px] font-mono uppercase tracking-widest text-muted">your work in other machines ({featuredIn.length})</p>
+      <ul className="border border-line divide-y divide-line" aria-label="Your work in other machines">
+        {featuredIn.map((f) => {
+          const cs = cardSelling(f.selling, 'reveal')
+          return (
+            <li key={f.id} className="px-3 py-2.5">
+              <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-x-3">
+                <MachineThumb href={`/play/${f.id}`} image={f.art?.image} thumbhash={f.art?.thumbhash} />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="min-w-0 truncate text-xs font-mono text-ink">{f.name}</span>
+                    <span
+                      className={`shrink-0 px-1.5 py-px text-[9px] font-mono uppercase tracking-wider ${cs.open ? PILL.live.className : PILL.ended.className}`}
+                    >
+                      {cs.label}
+                    </span>
+                  </div>
+                  <p className="text-[10px] font-mono text-muted truncate">
+                    curated by{' '}
+                    <Link href={`/profile/${f.curator}`} className="hover:text-dim">
+                      {nameOf(f.curator)}
+                    </Link>
+                    {` · your ${f.pieces.length === 1 ? 'piece' : 'pieces'} `}
+                    {f.pieces.map((p, i) => (
+                      <span key={`${p.collection}:${p.tokenId}`}>
+                        {i > 0 && ', '}
+                        <Link href={`/artwork/${p.collection}/${p.tokenId}`} className="text-dim hover:text-ink underline">
+                          #{p.tokenId}
+                        </Link>
+                      </span>
+                    ))}
+                  </p>
+                </div>
+                <Link
+                  href={`/play/${f.id}`}
+                  className="px-2.5 py-1 text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
+                >
+                  view
                 </Link>
-              </span>
-            ))}
-          </li>
-        ))}
+              </div>
+            </li>
+          )
+        })}
       </ul>
-      {manage && (
-        <p className="text-[10px] font-mono text-subtle mt-1 leading-relaxed">
-          Curators can feature any of your pieces. To take one out of every reveal machine, turn machines off
-          from that piece&apos;s page.
-        </p>
-      )}
+      <p className="text-[10px] font-mono text-subtle leading-relaxed">
+        Curators can feature any of your pieces. To take one out of every reveal machine, turn machines off from that
+        piece&apos;s page.
+      </p>
     </div>
   )
 }

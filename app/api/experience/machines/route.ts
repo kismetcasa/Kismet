@@ -19,9 +19,10 @@ import { getMomentMetaBatch } from '@/lib/notifications'
 import { paidTo } from '@/lib/referralPayouts'
 import {
   createMachine,
+  dismissTurnedDown,
   getMachine,
-  getPool,
   listMachines,
+  listTurnedDown,
   listMachinesByCreator,
   machinesFeaturing,
   openEpochSeeds,
@@ -94,21 +95,24 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
   const creator = raw.toLowerCase()
   const session = await getSessionAddress(req).catch(() => null)
   const owner = !!session && session.toLowerCase() === creator
-  const all = await listMachinesByCreator(creator)
-  const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
   // A machine's pool is read once per request, whoever asks: a reveal
   // machine's lineup count below, the art a card shows when it has no cover,
-  // and what the page would draw from (machineMarket).
+  // what the page would draw from (machineMarket), and which of this
+  // person's pieces another curator's machine holds.
   const poolOf = poolReader()
+  const [all, featuring] = await Promise.all([listMachinesByCreator(creator), machinesFeaturingWork(creator, poolOf)])
+  const visible = owner ? all : all.filter((m) => m.state === 'live' || m.state === 'ended')
+  const carded = [...visible, ...featuring.map((f) => f.machine)]
   const [art, market, machines] = await Promise.all([
-    // What each one's card shows, as the play list's cards do: its cover, or
-    // art it already has for a machine published before covers; the price of
-    // a play while a capsule machine is on sale; each capsule's supply; and
-    // whether its page would sell a play right now (lib/experience/cards
-    // machineMarket, a fixed number of reads for them all). Looked up
-    // alongside the figures below, not ahead of them.
-    machineCovers(visible, poolOf),
-    machineMarket(visible, poolOf),
+    // What each one's card shows, as the play list's cards do — theirs and
+    // the machines featuring their work: its cover, or art it already has
+    // for a machine published before covers; the price of a play while a
+    // capsule machine is on sale; each capsule's supply; and whether its
+    // page would sell a play right now (lib/experience/cards machineMarket,
+    // a fixed number of reads for them all). Looked up alongside the figures
+    // below, not ahead of them.
+    machineCovers(carded, poolOf),
+    machineMarket(carded, poolOf),
     Promise.all(
       visible.map(async (m) => {
         const common = {
@@ -121,6 +125,9 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
           // Why a curator delisted it, for its creator alone: the reason the
           // notification carried, kept on the machine while it stays delisted.
           ...(owner && m.state === 'delisted' && m.delistReason ? { delistReason: m.delistReason } : {}),
+          // When it went on the shelves and when it took its state now, for
+          // the dates on its creator's row.
+          ...(owner ? { listedAt: m.listedAt ?? null, stateAt: m.stateAt ?? null } : {}),
           // Its figures, for its creator: plays or collects, and what they took
           // in (lib/experience/kismet — counted as they happen).
           ...(owner ? { stats: await machineStats(m.id).catch(() => null) } : {}),
@@ -132,24 +139,31 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
       }),
     ),
   ])
+  // Where this address's own work appears in OTHER people's reveal machines,
+  // on the shelves — "featured in", public like a Spotify "appears on" — as
+  // cards, as the play list shows them. The pieces are listed so the artist
+  // can reach each one's switch.
+  const featuredIn = featuring.map(({ machine: m, pieces, size }) => ({
+    id: m.id,
+    name: m.name,
+    state: m.state,
+    curator: m.creator,
+    pieces,
+    kind: 'reveal' as const,
+    size,
+    art: art.get(m.id) ?? null,
+    selling: market.selling.get(m.id),
+  }))
   // A curator's own view also says what their reveal machines have earned
   // them: the mint referral on every collect, paid out to their wallet by
   // the daily run (lib/referralPayouts), counted once the chain confirms it.
-  // Where this address's own work appears in OTHER people's reveal machines,
-  // on the shelves — "featured in", public like a Spotify "appears on". The
-  // pieces are listed so the artist can reach each one's switch.
-  const featuredIn = (
-    await Promise.all(
-      (await machinesFeaturing(creator).catch(() => [] as string[])).slice(0, 50).map(async (mid) => {
-        const m = await getMachine(mid).catch(() => null)
-        if (!m || !isReveal(m) || m.creator === creator || (m.state !== 'live' && m.state !== 'ended')) return null
-        const pieces = (await getPool(mid).catch(() => [])).filter((e) => e.artist === creator).map((e) => ({ collection: e.collection, tokenId: e.tokenId }))
-        return pieces.length ? { id: m.id, name: m.name, state: m.state, curator: m.creator, pieces } : null
-      }),
-    )
-  ).filter((f) => f !== null)
   const curates = owner && all.some(isReveal)
-  const referralPaid = curates ? (await paidTo(creator).catch(() => 0n)).toString() : undefined
+  const [referralPaid, turnedDown] = await Promise.all([
+    curates ? paidTo(creator).catch(() => 0n).then(String) : undefined,
+    // The machines a curator turned down, which withdrawing took off this
+    // list: for their creator, what each was and why.
+    owner ? listTurnedDown(creator).catch(() => []) : undefined,
+  ])
   return NextResponse.json({
     owner,
     machines: machines.map((m) => ({
@@ -162,7 +176,47 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
     })),
     featuredIn,
     ...(referralPaid !== undefined ? { referralPaid } : {}),
+    ...(turnedDown !== undefined ? { turnedDown } : {}),
   })
+}
+
+/**
+ * Dismisses the note of a machine a curator turned down from its creator's
+ * own list (store.dismissTurnedDown): theirs alone, so the session names
+ * whose list it is.
+ */
+export async function DELETE(req: NextRequest) {
+  if (!(await checkRateLimit(`xp-dismiss:${getClientIp(req)}`, 30, 60))) {
+    return errorResponse(429, 'Too many requests')
+  }
+  const session = await getSessionAddress(req).catch(() => null)
+  if (!session || !isAddress(session)) return errorResponse(401, 'Sign in to change your machines')
+  const id = new URL(req.url).searchParams.get('turnedDown') ?? ''
+  if (!MACHINE_ID_PATTERN.test(id)) return errorResponse(400, 'Invalid id')
+  await dismissTurnedDown(session, id)
+  return NextResponse.json({ ok: true })
+}
+
+/**
+ * Other people's reveal machines on the shelves that hold this person's work
+ * (the first 50), with which of their pieces each holds and how many pieces
+ * it has in all.
+ */
+async function machinesFeaturingWork(
+  artist: string,
+  poolOf: (id: string) => Promise<PoolEntry[]>,
+): Promise<{ machine: RevealMachine; pieces: { collection: string; tokenId: string }[]; size: number }[]> {
+  const ids = (await machinesFeaturing(artist).catch(() => [] as string[])).slice(0, 50)
+  const found = await Promise.all(
+    ids.map(async (mid) => {
+      const m = await getMachine(mid).catch(() => null)
+      if (!m || !isReveal(m) || m.creator === artist || (m.state !== 'live' && m.state !== 'ended')) return null
+      const pool = await poolOf(mid)
+      const pieces = pool.filter((e) => e.artist === artist).map((e) => ({ collection: e.collection, tokenId: e.tokenId }))
+      return pieces.length ? { machine: m, pieces, size: pool.length } : null
+    }),
+  )
+  return found.filter((f) => f !== null)
 }
 
 /** The pages beside the machines under /play (app/play/*): a machine with one
@@ -542,6 +596,9 @@ export async function POST(req: NextRequest) {
   await openEpochSeeds(id, epochFor(Date.now())).catch(() => null)
 
   const published = await setMachineState(id, finalState)
+  // Published under the id a curator's decline freed, it is the fixed machine:
+  // the note of that decline goes from its creator's list.
+  if (published) await dismissTurnedDown(published.creator, id).catch(() => {})
   if (published?.state === 'review') await noticeReview(published)
   // Its frames are played only once the server has screened them.
   if (frames) after(() => screenMachineFrames(id).catch(() => {}))
@@ -647,6 +704,7 @@ async function publishReveal(input: {
   // (Kismet's own machines name Kismet), so the payout run must know them.
   if (!input.isAdmin) await addCurator(input.creator)
   const published = await setMachineState(input.id, input.isAdmin ? 'live' : 'review')
+  if (published) await dismissTurnedDown(published.creator, input.id).catch(() => {})
   if (published?.state === 'live') await noticeFeaturedArtists(input.id).catch(() => {})
   if (published?.state === 'review') await noticeReview(published)
   if (input.frames) after(() => screenMachineFrames(input.id).catch(() => {}))

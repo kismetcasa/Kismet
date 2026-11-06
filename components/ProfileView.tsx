@@ -1044,10 +1044,11 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
     listings: loadingListings ? null : displayListings.length,
     payments: loadingPayments ? null : payments.length,
     airdrops: loadingAirdrops ? null : airdrops.length,
-    // Unknown, not none, until the machines have loaded.
+    // Their own machines — those featuring their work are counted under their
+    // own heading — and unknown, not none, until the machines have loaded.
     machines: creatorMachines.loading || (creatorMachines.failed && creatorMachines.machines.length === 0)
       ? null
-      : creatorMachines.machines.length + creatorMachines.featuredIn.length,
+      : creatorMachines.machines.length,
     kismet: kismet?.total ?? null,
     // Curate count rendered by the panel itself (it knows the live featured set).
     curate: null,
@@ -1231,11 +1232,12 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
         signedIn={creatorMachines.owner}
         referralPaid={creatorMachines.referralPaid}
         featuredIn={creatorMachines.featuredIn}
+        turnedDown={creatorMachines.turnedDown}
         loadError={isOwner && creatorMachines.failed}
         onChange={creatorMachines.reload}
       />
     ),
-    kismet: kismet ? <ProfileKismet data={kismet} /> : null,
+    kismet: kismet ? <ProfileKismet data={kismet} layout="grid" /> : null,
     curate: <CuratePanel />,
   }
 
@@ -1829,14 +1831,25 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
               // shown only once the view is known (pinsLoaded): painted in the
               // initial 'curated' guess, it would jump to the full profile's
               // grid for a profile that never pinned.
+              // Named for their own machines, with those featuring their work
+              // under a heading of their own — or for those alone, for someone
+              // with none of their own.
               pinsLoaded && (shelfMachines.length > 0 || creatorMachines.featuredIn.length > 0)
                 ? [
                     <div key="machines" className="border-t border-line">
                       <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">
-                        Machines ({shelfMachines.length + creatorMachines.featuredIn.length})
+                        {shelfMachines.length > 0 ? `Machines (${shelfMachines.length})` : `Featured in (${creatorMachines.featuredIn.length})`}
                       </h2>
                       <div className="pb-8">
-                        <ProfileMachines machines={shelfMachines} featuredIn={creatorMachines.featuredIn} manage={false} signedIn={false} onChange={creatorMachines.reload} layout={showcaseView ? 'showcase' : 'grid'} />
+                        <ProfileMachines
+                          machines={shelfMachines}
+                          featuredIn={creatorMachines.featuredIn}
+                          featuredHeading={shelfMachines.length > 0}
+                          manage={false}
+                          signedIn={false}
+                          onChange={creatorMachines.reload}
+                          layout={showcaseView ? 'showcase' : 'grid'}
+                        />
                       </div>
                     </div>,
                   ]
@@ -1848,7 +1861,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
                     <div key="kismet" className="border-t border-line">
                       <h2 className="py-4 text-xs font-mono text-dim uppercase tracking-wider">Kismet ({kismet.total})</h2>
                       <div className="pb-8">
-                        <ProfileKismet data={kismet} />
+                        <ProfileKismet data={kismet} layout={showcaseView ? 'showcase' : 'grid'} />
                       </div>
                     </div>,
                   ]
@@ -1865,7 +1878,7 @@ export function ProfileView({ address, isMobile = false, theme: initialTheme }: 
             ...(showCurate ? ['curate' as const] : []),
           ]).map((section) => {
           const isCollapsed = sectionCollapsed[section] ?? false
-          const count = section === 'machines' && !isOwner ? shelfMachines.length + creatorMachines.featuredIn.length : sectionCount[section]
+          const count = section === 'machines' && !isOwner ? shelfMachines.length : sectionCount[section]
           const isReorderable = section !== 'curate' && section !== 'machines' && section !== 'kismet'
           const isDragging = draggingSection === section
           return (

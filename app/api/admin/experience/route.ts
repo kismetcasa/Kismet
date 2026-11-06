@@ -23,6 +23,7 @@ import {
   machineStateLockKey,
   setMachineState,
   withdrawMachine,
+  recordTurnedDown,
 } from '@/lib/experience/store'
 import { isReveal } from '@/lib/experience/types'
 import type { MachineState } from '@/lib/experience/types'
@@ -177,6 +178,16 @@ async function transition(
   // A machine the store will not withdraw (a play on record) is delisted as
   // before, and its capsules stay honoured.
   if (declining && (await withdrawMachine(id)) === 'withdrawn') {
+    // Withdrawn, it is gone from its creator's list, so the list keeps a
+    // note of it instead: what it was and why, until they resubmit it.
+    await recordTurnedDown(machine.creator, {
+      id,
+      name: machine.name,
+      kind: isReveal(machine) ? 'reveal' : 'capsule',
+      cover: machine.cover?.uri ?? null,
+      reason: reasonText ?? '',
+      at: Date.now(),
+    }).catch(bestEffort('xp.turnedDown', { id }))
     await writeNotification({
       type: 'experience_status',
       recipient: machine.creator,
