@@ -47,5 +47,5 @@ On a free edition, Zora's protocol fee is the collector's entire price.
 | Collector pays | 0.000111 ETH per edition (≈ $0.30 at the $2,688 ETH of 6 Nov 2026) + Base gas, and needs ETH on Base | **Nothing** — one signature, no ETH needed |
 | Collector receives | An ERC-1155 on Base | The same ERC-1155 on Base, by airdrop |
 | Artist pays | Nothing (Kismet sponsors the mint) | Nothing to open; the airdrop's Base gas at settlement (≈ $0.001–0.01 per recipient, [`hooks/useAirdrop.ts`](../hooks/useAirdrop.ts)) |
-| Kismet pays | Arweave storage (~$32.56/GiB) for every artwork, sold or not | A share of one Swarm batch while the drop is open; Arweave only for drops that got claimed; Arkiv gas (free on testnet) |
+| Kismet pays | Arweave storage (~$32.56/GiB) for every artwork, sold or not | A share of one Swarm batch while the drop is open; Arweave only for drops that got claimed; Arkiv writes (faucet tGLM on testnet; on mainnet GLM, and "a shorter lifetime costs less") |
 | Gives up | — | Zora's free-mint rewards (the artist's creator reward and Kismet's referral) on these editions — the artist chooses per drop |

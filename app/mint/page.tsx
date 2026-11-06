@@ -25,7 +25,7 @@ interface Props {
 async function dropRecipients(drop: string | undefined): Promise<string[] | undefined> {
   if (!drop || !isEntityKey(drop)) return undefined
   try {
-    if (!(await isDropsEnabled())) return undefined
+    if (!isDropsEnabled()) return undefined
     return settlementRecipients(await listClaims(normalizeEntityKey(drop)))
   } catch (err) {
     console.error('[mint] could not read drop claims', err)
@@ -35,10 +35,7 @@ async function dropRecipients(drop: string | undefined): Promise<string[] | unde
 
 export default async function MintPage({ searchParams }: Props) {
   const { collection, name, tab, drop } = await searchParams
-  const [initialRecipients, dropsEnabled] = await Promise.all([
-    dropRecipients(drop),
-    isDropsEnabled().catch(() => false),
-  ])
+  const initialRecipients = await dropRecipients(drop)
   return (
     <div className="max-w-lg mx-auto px-4 py-12">
       <MintTabs
@@ -46,7 +43,7 @@ export default async function MintPage({ searchParams }: Props) {
         initialCollectionName={name}
         initialTab={initialRecipients ? 'airdrop' : tab}
         initialRecipients={initialRecipients}
-        dropsEnabled={dropsEnabled}
+        dropsEnabled={isDropsEnabled()}
       />
     </div>
   )

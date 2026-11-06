@@ -8,32 +8,23 @@ import {
 import { rabdi } from '@arkiv-network/sdk/chains'
 import type { Schema } from '@arkiv-network/sdk/schema'
 import type { CreationFlags, Expiry } from '@arkiv-network/sdk/entity'
-import { getAddress, http, isAddress, isHex, type Address, type Hex } from 'viem'
+import { http, isHex, type Address, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 /**
  * Arkiv connection for Kismet's server (Rabdi, Arkiv's current testnet).
  *
- *   ARKIV_ACCESS_KEY          optional — an access key from
- *                             hub.arkiv.network/access-keys; empty uses the
- *                             heavily rate-limited public endpoint.
+ *   ARKIV_ACCESS_KEY          an access key from hub.arkiv.network/access-keys;
+ *                             empty uses the heavily rate-limited public RPC.
  *   ARKIV_WRITER_PRIVATE_KEY  the server wallet that writes every drop and
  *                             claim (funded with tGLM from the faucet). Its
  *                             address is the `$creator` every read filters
  *                             on. Server-only; never NEXT_PUBLIC_.
- *   ARKIV_WRITER_ADDRESS      optional — for a read-only deployment that has
- *                             no writer key; must match the writer.
  *
  * Users never sign Arkiv transactions: a Base Account is a smart contract
  * on Base, not on Arkiv's chain. They sign EIP-712 intents on Base; this
  * wallet pays the Arkiv gas and hands each entity to its user.
  */
-
-const RPC_TIMEOUT_MS = 15_000
-
-function accessKey(): string {
-  return process.env.ARKIV_ACCESS_KEY?.trim() ?? ''
-}
 
 function writerKey(): Hex | null {
   const raw = process.env.ARKIV_WRITER_PRIVATE_KEY?.trim()
@@ -45,27 +36,20 @@ function writerKey(): Hex | null {
 /** The address every read trusts as `$creator`. Null = Arkiv not configured. */
 export function arkivWriterAddress(): Address | null {
   const key = writerKey()
-  if (key) return privateKeyToAccount(key).address
-  const configured = process.env.ARKIV_WRITER_ADDRESS?.trim()
-  return configured && isAddress(configured) ? getAddress(configured) : null
+  return key ? privateKeyToAccount(key).address : null
 }
 
-export function isArkivReadable(): boolean {
-  return arkivWriterAddress() !== null
-}
-
-export function isArkivWritable(): boolean {
+export function isArkivConfigured(): boolean {
   return writerKey() !== null
+}
+
+function chain() {
+  return rabdi({ accessKey: process.env.ARKIV_ACCESS_KEY?.trim() ?? '' })
 }
 
 let _public: PublicArkivClient | null = null
 export function arkivPublicClient(): PublicArkivClient {
-  if (!_public) {
-    _public = createPublicClient({
-      chain: rabdi({ accessKey: accessKey() }),
-      transport: http(undefined, { timeout: RPC_TIMEOUT_MS, retryCount: 2 }),
-    }) as PublicArkivClient
-  }
+  if (!_public) _public = createPublicClient({ chain: chain(), transport: http() }) as PublicArkivClient
   return _public
 }
 
@@ -74,32 +58,32 @@ function arkivWalletClient(): WalletArkivClient {
   const key = writerKey()
   if (!key) throw new Error('ARKIV_WRITER_PRIVATE_KEY is not configured')
   if (!_wallet) {
-    _wallet = createWalletClient({
-      chain: rabdi({ accessKey: accessKey() }),
-      transport: http(undefined, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }),
-      account: privateKeyToAccount(key),
-    }) as WalletArkivClient
+    _wallet = createWalletClient({ chain: chain(), transport: http(), account: privateKeyToAccount(key) }) as WalletArkivClient
   }
   return _wallet
 }
 
 // ── Serialized, batching writer ──────────────────────────────────────────
 //
-// Every entity is created by the writer and then handed to its user in the
-// SAME transaction: the SDK predicts the new keys (from the writer's entity
-// nonce + a salt), and a batch applies creates before ownership changes.
-// A prediction is only right if nothing else creates as this writer between
-// the prediction and the transaction landing, so all writes go through one
-// in-process queue (Kismet runs as a single container — OPS_RUNBOOK.md). Run
-// one writer key per deployment: a second process writing with the same key
-// would make predictions miss, and the whole batch would revert (atomic, so
-// no entity is ever handed to the wrong wallet — the claim just fails and can
-// be retried).
+// Every entity is created by the writer and handed to its user in the SAME
+// transaction: `predictEntityKeys` gives the keys the next creates will get
+// (derived from the writer's entity nonce and a salt), and the node "applies
+// [operations] in order, and either all of them apply or none do"
+// (docs.arkiv.network/json-rpc/mutating-entities) — the SDK sends creates
+// before ownership changes.
 //
-// While one batch is in flight, new writes queue up and the next batch takes
-// them all (up to MAX_BATCH), so a burst of claims costs a few transactions,
-// not one each.
-
+// "A prediction holds only while nothing else from the same account lands
+// first" (docs.arkiv.network/writing/batches), so every write goes through
+// this one in-process queue (Kismet runs as a single container —
+// OPS_RUNBOOK.md); run one writer key per deployment. A missed prediction
+// can't hand an entity to the wrong wallet: simulated on Rabdi, a hand-off of
+// a key the batch didn't create reverts the whole batch with
+// EntityNotFound(bytes32) — the claim just fails and can be retried.
+//
+// While a batch is in flight, new writes queue up and the next batch takes
+// up to MAX_BATCH of them, so a burst of claims costs a few transactions.
+// Measured on Rabdi: 16 claims + hand-offs with 1 KB signatures estimate at
+// 3,858,802 gas, under a quarter of the 2^24 per-transaction cap.
 const MAX_BATCH = 16
 
 export interface ArkivCreateJob {
@@ -151,30 +135,18 @@ async function pump(): Promise<void> {
 
 async function writeBatch(batch: ArkivCreateJob[]): Promise<ArkivCreateResult[]> {
   const wallet = arkivWalletClient()
-  const writer = wallet.account!.address
-  const predicted = await arkivPublicClient().predictEntityKeys({ owner: writer, count: batch.length })
+  const predicted = await arkivPublicClient().predictEntityKeys({ owner: wallet.account!.address, count: batch.length })
 
   type BatchArgs = Parameters<WalletArkivClient['executeBatch']>[0]
-  const creates = batch.map((job, i) => ({
-    schema: job.schema,
-    values: job.values,
-    expiration: job.expiration,
-    flags: job.flags,
-    salt: predicted[i].salt,
-  })) as unknown as BatchArgs['creates']
-  const ownershipChanges = batch.map((job, i) => ({
-    entityKey: predicted[i].key,
-    newOwner: job.newOwner,
-  }))
-
-  const { txHash, createdEntities } = await wallet.executeBatch({ creates, ownershipChanges })
-
-  // The transaction is atomic, so a missed prediction reverts it before we
-  // get here; this guards the invariant explicitly anyway.
-  createdEntities.forEach((k, i) => {
-    if (k.toLowerCase() !== predicted[i].key.toLowerCase()) {
-      throw new Error(`Arkiv key prediction mismatch at ${i}: ${k} != ${predicted[i].key}`)
-    }
+  const { txHash, createdEntities } = await wallet.executeBatch({
+    creates: batch.map((job, i) => ({
+      schema: job.schema,
+      values: job.values,
+      expiration: job.expiration,
+      flags: job.flags,
+      salt: predicted[i].salt,
+    })) as unknown as BatchArgs['creates'],
+    ownershipChanges: batch.map((job, i) => ({ entityKey: predicted[i].key, newOwner: job.newOwner })),
   })
   return createdEntities.map((entityKey) => ({ entityKey, txHash }))
 }

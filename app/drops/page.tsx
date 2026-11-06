@@ -3,6 +3,8 @@ import { DropsFeed } from '@/components/DropsFeed'
 import { isDropsEnabled } from '@/lib/dropsStore'
 import { SITE_URL } from '@/lib/siteUrl'
 
+// DROPS_ENABLED is read per request: a page prerendered at build time would
+// freeze whatever the build environment said.
 export const dynamic = 'force-dynamic'
 
 export const metadata = {
@@ -11,8 +13,8 @@ export const metadata = {
   alternates: { canonical: `${SITE_URL}/drops` },
 }
 
-export default async function DropsPage() {
-  if (!(await isDropsEnabled())) notFound()
+export default function DropsPage() {
+  if (!isDropsEnabled()) notFound()
   return (
     <div className="max-w-3xl mx-auto px-4 py-12">
       <DropsFeed />

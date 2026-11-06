@@ -30,12 +30,14 @@ Added at ETHGlobal Mumbai (judge only this):
 - `lib/drops.ts` — rules, EIP-712 `OpenDrop` / `ClaimDrop` intents, settlement list
 - `lib/arkiv/` — schemas, the serialized batch writer, every query
 - `lib/swarm.ts` — Bee upload / read / batch status
-- `lib/dropsStore.ts` — flag, claim cap, upload records (Redis)
-- `app/api/drops/**`, `app/api/admin/drops` — open, claim, list, media
+- `lib/dropsStore.ts` — claim cap and upload marker (Redis), short caches of Arkiv reads
+- `app/api/drops/**` — open, claim, list, media
 - `app/drops/**`, `components/Drop*.tsx`, `hooks/useDropIntents.ts` — the pages
-- Small hooks into existing code: `verifyTypedIntent` in `lib/intentAuth.ts`,
+- Small hooks into existing code: `verifyTypedIntent` in `lib/intentAuth.ts`
+  (the existing `verifyIntent` now delegates to it, unchanged in behavior),
   quota kinds in `lib/userQuota.ts`, the airdrop prefill in `app/mint/page.tsx`,
-  `components/MintTabs.tsx`, `components/AirdropForm.tsx`
+  `components/MintTabs.tsx`, `components/AirdropForm.tsx`, and the
+  build-secret and route-SEO guards in `scripts/`
 - `scripts/verify-drops.ts` (in `npm run check`), `scripts/drops-smoke.ts`, `arkiv/*.md`
 
 ### Wallets that wrote our entities
@@ -80,7 +82,8 @@ npm run dev
 ```
 
 Opening a drop requires a Kismet Pass when the Pass gate is on. Production
-enables the feature with `POST /api/admin/drops {"enabled": true}`.
+turns the feature on with the same `DROPS_ENABLED=1` (runtime environment);
+Kismet's existing platform pause stops uploads, opens and claims at once.
 
 ### How we used AI
 

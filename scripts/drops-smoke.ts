@@ -22,8 +22,8 @@ import { readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { formatEther } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
-import { arkivPublicClient, arkivWriterAddress, isArkivWritable } from '@/lib/arkiv/client'
-import { getDrop, listClaims, listClaimsOwnedBy, listOpenDrops, writeClaim, writeDrop } from '@/lib/arkiv/drops'
+import { arkivPublicClient, arkivWriterAddress, isArkivConfigured } from '@/lib/arkiv/client'
+import { getDrop, listClaims, listOpenDrops, writeClaim, writeDrop } from '@/lib/arkiv/drops'
 import { fetchFromSwarm, getStampStatus, isSwarmUploadConfigured, swarmPublicInfo, uploadToSwarm } from '@/lib/swarm'
 import {
   arkivEntityUrl,
@@ -58,7 +58,7 @@ const nonce = () => randomBytes(16).toString('hex')
 
 async function main(): Promise<void> {
   // ── configuration ──
-  if (!isArkivWritable()) {
+  if (!isArkivConfigured()) {
     console.error('Set ARKIV_WRITER_PRIVATE_KEY (a testnet key funded at hub.arkiv.network/faucet).')
     process.exit(2)
   }
@@ -153,13 +153,12 @@ async function main(): Promise<void> {
   check('getDrop finds the drop', drop !== null)
   check('the drop is owned by the artist (hand-off worked)', drop?.owner === artist.address.toLowerCase())
   check('the drop records the Swarm reference', drop?.swarmRef === reference)
-  check('the claim count is 1', drop?.claimCount === 1)
-  const open = await listOpenDrops({ nowSec: Math.floor(Date.now() / 1000), limit: 100 })
-  check('the drop is in the open-drops query', open.some((d) => d.key === opened.entityKey.toLowerCase()))
+  const open = await listOpenDrops(Math.floor(Date.now() / 1000))
+  const listed = open.find((d) => d.key === opened.entityKey.toLowerCase())
+  check('the drop is in the open-drops query with 1 claim counted', listed?.claimCount === 1)
   const claims = await listClaims(opened.entityKey)
-  check('listClaims returns the claim, owned by the collector', claims.length === 1 && claims[0].owner === collector.address.toLowerCase())
-  const owned = await listClaimsOwnedBy(collector.address)
-  check('the collector\'s ownedBy query finds the claim', owned.some((c) => c.key === claimed.entityKey.toLowerCase()))
+  check('listClaims returns the claim, owned by the collector (hand-off worked)',
+    claims.length === 1 && claims[0].key === claimed.entityKey.toLowerCase() && claims[0].owner === collector.address.toLowerCase())
   check('the airdrop list is the collector', settlementRecipients(claims).join() === collector.address.toLowerCase())
 
   console.log(`\nFor arkiv/swarm.md: drop entity ${opened.entityKey} → Swarm reference ${reference}`)

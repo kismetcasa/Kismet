@@ -38,8 +38,10 @@ claimed, instead of for every mint.
 - **Today:** the code is in this repo behind a flag. Run it locally (README →
   "Claim drops") with `DROPS_ENABLED=1`, a funded Arkiv writer and a Bee
   node.
-- **After Mumbai:** it ships to production behind `kismetart:drops-enabled`
-  (`POST /api/admin/drops`), the same flag pattern Kismet used to ship sweep.
+- **After Mumbai:** it ships to production switched off, and turns on with
+  `DROPS_ENABLED=1` (a runtime environment variable). The platform pause
+  Kismet already has stops uploads, opens and claims at once if anything
+  goes wrong.
   What production needs:
   1. a Bee container next to the app, with its own postage batch (the
      event's gift batch lives on a laptop node);

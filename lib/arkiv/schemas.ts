@@ -10,19 +10,24 @@ import { addr, bytes, defineSchema, key, str, u64 } from '@arkiv-network/sdk/sch
  * then handed to their user (`$owner`). Both are created `readonly`, so no
  * one — Kismet included — can change their terms afterwards.
  *
- * Arkiv's `str` holds at most 128 bytes, which is why free text and
- * signatures are `bytes` columns.
+ * Only what a query filters on is indexed: an attribute is "either indexed,
+ * so queries can filter on it, or stored only, which costs less"
+ * (docs.arkiv.network/start-here/introduction). The app filters drops by
+ * `closesAt` and claims by `drop`; `artist` and `collector` are read, never
+ * filtered, so they are stored only. An Arkiv `str` holds 128 bytes, which is
+ * why free text and signatures are `bytes` columns.
  */
 
 /** Named schemas tag every entity with `arkiv.schema = <name>` and a query
- *  through the schema only matches that tag. Versioned so a future shape
- *  change can't be mistaken for this one. */
+ *  through the schema only matches that tag. Prefixed with the project, as
+ *  the docs advise (Arkiv is public), and versioned so a future shape change
+ *  can't be mistaken for this one. */
 export const DROP_SCHEMA_NAME = 'kismet.drop.v1'
 export const CLAIM_SCHEMA_NAME = 'kismet.claim.v1'
 
 export const DropSchema = defineSchema(DROP_SCHEMA_NAME, {
   /** The artist who opened the drop (also its owner after the hand-off). */
-  artist: addr().indexed(),
+  artist: addr(),
   /** Unix seconds — open drops are `closesAt > now`, "ending soon" sorts on it. */
   closesAt: u64().indexed(),
   maxClaims: u64(),
@@ -39,11 +44,12 @@ export const DropSchema = defineSchema(DROP_SCHEMA_NAME, {
 })
 
 export const ClaimSchema = defineSchema(CLAIM_SCHEMA_NAME, {
-  /** The drop entity this claim is for. */
+  /** The drop entity this claim is for — every claim query filters on it. */
   drop: key().indexed(),
-  /** The wallet that signed the claim. The airdrop goes to the claim's
-   *  current `$owner`, which starts as this wallet. */
-  collector: addr().indexed(),
+  /** The wallet that signed the claim (needed to re-verify the signature).
+   *  The airdrop goes to the claim's current `$owner`, which starts as this
+   *  wallet. */
+  collector: addr(),
   /** Unix seconds. */
   claimedAt: u64(),
   intentNonce: str(),

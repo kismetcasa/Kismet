@@ -11,6 +11,7 @@ import {
   DROP_TITLE_MAX_CHARS,
   DROP_WINDOW_PRESETS,
   isDropMediaType,
+  validateDropTerms,
   validateOpenDrop,
 } from '@/lib/drops'
 import { useDropIntents } from '@/hooks/useDropIntents'
@@ -83,19 +84,10 @@ export function DropForm() {
       return
     }
 
-    // Check every term before any upload or wallet prompt. The Swarm
-    // reference isn't known yet, so a placeholder stands in for it here.
-    const precheck = validateOpenDrop(
-      {
-        title,
-        description,
-        swarmRef: uploaded.current?.reference ?? '0'.repeat(64),
-        mime: file.type,
-        closesAt: Math.floor(Date.now() / 1000) + windowSeconds,
-        maxClaims,
-      },
-      Math.floor(Date.now() / 1000),
-    )
+    // Check the terms before any upload or wallet prompt, so a missing title
+    // never costs an upload. The artwork itself is checked in pickFile.
+    const nowSec = Math.floor(Date.now() / 1000)
+    const precheck = validateDropTerms({ title, description, closesAt: nowSec + windowSeconds, maxClaims }, nowSec)
     if (!precheck.ok) {
       toast.error(precheck.error)
       return
@@ -120,11 +112,12 @@ export function DropForm() {
         uploaded.current = ref
       }
 
-      // Fix the close time at signing, so the window is the one chosen.
-      const nowSec = Math.floor(Date.now() / 1000)
+      // Fix the close time at signing (the upload may have taken a while), so
+      // the window is the one chosen.
+      const signedAt = Math.floor(Date.now() / 1000)
       const validated = validateOpenDrop(
-        { title, description, swarmRef: ref.reference, mime: ref.mime, closesAt: nowSec + windowSeconds, maxClaims },
-        nowSec,
+        { title, description, swarmRef: ref.reference, mime: ref.mime, closesAt: signedAt + windowSeconds, maxClaims },
+        signedAt,
       )
       if (!validated.ok) throw new Error(validated.error)
 

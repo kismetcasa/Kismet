@@ -6,9 +6,10 @@ import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
 import {
   arkivEntityUrl,
-  dropPhase,
+  isDropOpen,
   recordExpiresAt,
   settlementRecipients,
+  swarmGatewayUrl,
   type ClaimView,
   type DropView as DropData,
 } from '@/lib/drops'
@@ -23,8 +24,6 @@ interface DropResponse {
   claims: ClaimView[]
   viewerClaimed: boolean
 }
-
-const SWARM_GATEWAY = 'https://api.gateway.ethswarm.org'
 
 function short(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
@@ -68,7 +67,7 @@ export function DropView({ dropKey }: { dropKey: string }) {
   }, [load])
 
   // Keep the count fresh while the drop is open.
-  const open = data ? dropPhase(data.drop.closesAt, now) === 'open' : false
+  const open = data ? isDropOpen(data.drop.closesAt, now) : false
   useEffect(() => {
     if (!open) return
     const id = setInterval(() => {
@@ -93,7 +92,7 @@ export function DropView({ dropKey }: { dropKey: string }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ account, intent }),
       })
-      const json = (await res.json().catch(() => ({}))) as { claimKey?: string; already?: boolean; error?: string }
+      const json = (await res.json().catch(() => ({}))) as { already?: boolean; error?: string }
       if (!res.ok) throw new Error(json.error ?? 'Claim failed')
       toast.success(json.already ? 'You already claimed this drop' : 'Claimed — your copy arrives when the drop settles')
       await load()
@@ -221,7 +220,7 @@ export function DropView({ dropKey }: { dropKey: string }) {
           <p>
             Artwork on Swarm:{' '}
             <a
-              href={`${SWARM_GATEWAY}/bzz/${drop.swarmRef}/`}
+              href={swarmGatewayUrl(drop.swarmRef)}
               target="_blank"
               rel="noopener noreferrer"
               className="underline"

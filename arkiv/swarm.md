@@ -46,8 +46,10 @@ drop in the app) and paste its output here:
 | [`components/DropView.tsx`](../components/DropView.tsx), [`components/DropsFeed.tsx`](../components/DropsFeed.tsx) | Where users see the artwork |
 | [`scripts/drops-smoke.ts`](../scripts/drops-smoke.ts) | End-to-end: upload, read back, write the drop and a claim, query them |
 
-We call the Bee HTTP API directly: two endpoints didn't justify adding
-bee-js.
+We call the Bee HTTP API directly, checked against Bee's OpenAPI spec
+(`openapi/Swarm.yaml`): two endpoints didn't justify adding bee-js. The read
+path `/bzz/<ref>/` is the one bee-js and Swarm's docs use. We checked it live
+against the public gateway on 2026-11-06: 200, no redirect.
 
 ## Run one upload and one read yourself
 
@@ -91,19 +93,23 @@ drop page loads it back from Swarm".
 
 ## What got in our way
 
-- **Browser uploads are blocked by default.** Since Bee 2.8.3 a node rejects
-  cross-origin `POST`s unless the app's origin is in `cors-allowed-origins`.
-  We upload server-side anyway, so the node's API and the batch are never
-  exposed, but it is the first wall a web app hits.
-- **Deferred uploads by default.** A default upload can sit on the uploading
-  node before reaching the network, which matters when that node is a
-  laptop. We send `swarm-deferred-upload: false` so the file is on the
-  network when the upload returns.
-- **A batch belongs to one node.** The gift batch bought from Nook can't be
-  used by a production Bee node, so production needs its own.
-- **Sizing a batch.** Cost is charged on theoretical capacity
-  (2^depth × 4 KB), but only part of it is usable: depth 20 gives ~688 MB,
-  depth 22 ~7.7 GB (from `@ethersphere/core-sdk`). The price per chunk per
-  block floats, so the cost of a month has to be read live.
-- **Docs reachability:** our build sandbox couldn't reach docs.ethswarm.org;
-  we worked from bee-js and core-sdk sources on npm.
+- **Browser uploads are blocked by default.** The bee-js README notes that
+  "from Bee 2.8.3, a node rejects `POST` … requests from a browser page on
+  another origin with `403 Forbidden`" unless the origin is in
+  `cors-allowed-origins` (default `[]`). We upload server-side anyway, so the
+  node's API and the batch are never exposed, but it is the first wall a web
+  app hits.
+- **Uploads are deferred by default.** Bee's OpenAPI spec:
+  `swarm-deferred-upload` — "Default: deferred (true)". A deferred upload can
+  sit on the uploading node, which matters when that node is a laptop. We send
+  `false`, so the chunks are on the network when the upload returns.
+- **A batch lives with its node.** "The `stamperstore` contains postage stamp
+  data. If lost, previously purchased postage stamps will become unusable."
+  To use the gift batch in production you'd have to move Nook's keys and
+  stamperstore to the server, so production buys its own.
+- **Sizing a batch.** You pay for the theoretical capacity (2^depth × 4 KB),
+  but batches fill before reaching it. Swarm's effective-capacity table gives
+  687.62 MB at depth 20 and 7.73 GB at depth 22 (unencrypted, no erasure
+  coding). The price "is dynamically determined according to a network
+  utilisation signal" (Swarmscan shows it live), so the cost of a month has
+  to be read live.

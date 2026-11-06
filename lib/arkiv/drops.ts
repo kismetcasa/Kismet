@@ -1,5 +1,5 @@
 import 'server-only'
-import { ExpirationTime, NoEntityFoundError } from '@arkiv-network/sdk'
+import { ExpirationTime, NoEntityFoundError, SchemaMismatchError } from '@arkiv-network/sdk'
 import { and, asc, desc, eq, gt, lte } from '@arkiv-network/sdk/query'
 import { addr, key as keyValue, u64 } from '@arkiv-network/sdk/schema'
 import { hexToBytes, hexToString, stringToBytes, type Address, type Hex } from 'viem'
@@ -8,6 +8,7 @@ import {
   normalizeEntityKey,
   recordExpiresAt,
   type ClaimView,
+  type DropRecord,
   type DropView,
   type OpenDropFields,
 } from '../drops'
@@ -17,9 +18,11 @@ import { ClaimSchema, DropSchema } from './schemas'
 /**
  * Every Kismet read of drops and claims goes through here, and every read is
  * pinned to `createdBy(writer)`: anyone can write an entity tagged
- * `kismet.drop.v1`, but only the ones Kismet's writer created passed the
- * Pass gate, the signature check and the claim cap. A look-alike written by
- * someone else never shows up in a feed, a count or an airdrop list.
+ * `kismet.drop.v1`, and "filtering by owner or creator is the only way to be
+ * sure an entity came from an account you trust" (docs.arkiv.network/
+ * querying/filter). Only what Kismet's writer created passed the Pass gate,
+ * the signature check and the claim cap. Every query below was run against
+ * Rabdi on 2026-11-06.
  */
 
 export interface SignedIntent {
@@ -34,24 +37,11 @@ function writer(): Address {
   return w
 }
 
-function sec(v: bigint | number): number {
-  return Number(v)
-}
-
-function decodeText(hex: Hex | undefined): string {
-  if (!hex || hex === '0x') return ''
-  try {
-    return hexToString(hex)
-  } catch {
-    return ''
-  }
-}
-
 // ── Writes ───────────────────────────────────────────────────────────────
 
 /** Expiry for a drop and all its claims: the window plus the settle grace.
  *  `override` (unix seconds) is for scripts/drops-smoke.ts, whose throwaway
- *  entities clean themselves up minutes after the test. */
+ *  entities would otherwise sit in the live feed for a week. */
 function recordExpiry(closesAt: number, override?: number) {
   return ExpirationTime.atDate(new Date((override ?? recordExpiresAt(closesAt)) * 1000))
 }
@@ -79,8 +69,9 @@ export async function writeDrop(input: {
     },
     expiration: recordExpiry(fields.closesAt, recordExpiresAtOverride),
     // readonly: the terms collectors claimed under can never change.
-    // permissionlessExtension: anyone (a collector, Kismet's keeper) may keep
-    // a drop alive longer without being able to edit it.
+    // permissionlessExtension: "anyone can extend the entity, not only its
+    // owner" — after the hand-off Kismet no longer owns the drop, and this is
+    // what still lets anyone keep it alive through a slow settlement.
     flags: { readonly: true, permissionlessExtension: true },
     newOwner: artist,
   })
@@ -125,22 +116,36 @@ type DropRow = {
   mime: { value: string }
 }
 
-function toDropView(row: DropRow, claimCount: number): DropView {
+function toDropRecord(row: DropRow): DropRecord {
   return {
     key: normalizeEntityKey(row.$key),
     artist: row.artist.value.toLowerCase(),
     owner: row.$owner.toLowerCase(),
     title: row.title.value,
-    description: decodeText(row.description?.value),
+    description: row.description ? hexToString(row.description.value) : '',
     swarmRef: row.swarmRef.value,
     mime: row.mime.value,
-    closesAt: sec(row.closesAt.value),
-    maxClaims: sec(row.maxClaims.value),
-    claimCount,
+    closesAt: Number(row.closesAt.value),
+    maxClaims: Number(row.maxClaims.value),
   }
 }
 
-export async function countClaims(dropKey: Hex): Promise<number> {
+/** One drop by key — null when it never existed, has expired (both are
+ *  NoEntityFoundError), isn't a kismet.drop.v1 (SchemaMismatchError), or was
+ *  not written by Kismet's writer. */
+export async function getDrop(dropKey: Hex): Promise<DropRecord | null> {
+  let row: DropRow & { $creator: Address }
+  try {
+    row = (await arkivPublicClient().getEntity(dropKey, DropSchema)) as unknown as DropRow & { $creator: Address }
+  } catch (err) {
+    if (err instanceof NoEntityFoundError || err instanceof SchemaMismatchError) return null
+    throw err
+  }
+  if (row.$creator.toLowerCase() !== writer().toLowerCase()) return null
+  return toDropRecord(row)
+}
+
+async function countClaims(dropKey: Hex): Promise<number> {
   const n = await arkivPublicClient()
     .count()
     .from(ClaimSchema)
@@ -150,55 +155,40 @@ export async function countClaims(dropKey: Hex): Promise<number> {
   return Number(n)
 }
 
-/** One drop by key — null when it never existed, has expired, or was not
- *  written by Kismet's writer. */
-export async function getDrop(dropKey: Hex): Promise<DropView | null> {
-  let row: DropRow & { $creator: Address }
-  try {
-    row = (await arkivPublicClient().getEntity(dropKey, DropSchema)) as unknown as DropRow & { $creator: Address }
-  } catch (err) {
-    if (err instanceof NoEntityFoundError) return null
-    // An entity under this key that is not a kismet.drop.v1 is "not a drop".
-    if (err instanceof Error && err.name === 'SchemaMismatchError') return null
-    throw err
-  }
-  if (row.$creator.toLowerCase() !== writer().toLowerCase()) return null
-  return toDropView(row, await countClaims(dropKey))
+/** A page of drops with their claim counts. Arkiv has no grouped count, so
+ *  each card costs one count query (arkiv/friction.md). The two queries below
+ *  stay written out, not shared through a helper, so the SDK keeps checking
+ *  each filter and sort against the schema at compile time. */
+async function withClaimCounts(rows: DropRow[]): Promise<DropView[]> {
+  const counts = await Promise.all(rows.map((r) => countClaims(r.$key)))
+  return rows.map((r, i) => ({ ...toDropRecord(r), claimCount: counts[i] }))
 }
 
 /** Drops still taking claims, soonest-closing first. */
-export async function listOpenDrops(opts: { nowSec: number; artist?: Address; limit?: number }): Promise<DropView[]> {
-  const open = gt('closesAt', u64(BigInt(opts.nowSec)))
-  const where = opts.artist ? and(open, eq('artist', addr(opts.artist))) : open
+export async function listOpenDrops(nowSec: number): Promise<DropView[]> {
   const page = await arkivPublicClient()
     .select()
     .from(DropSchema)
-    .where(where)
+    .where(gt('closesAt', u64(BigInt(nowSec))))
     .createdBy(writer())
     .orderBy(asc('closesAt'))
-    .limit(opts.limit ?? 24)
+    .limit(24)
     .fetch()
-  const rows = page.entities as unknown as DropRow[]
-  const counts = await Promise.all(rows.map((r) => countClaims(r.$key)))
-  return rows.map((r, i) => toDropView(r, counts[i]))
+  return withClaimCounts(page.entities as unknown as DropRow[])
 }
 
 /** Drops whose window has closed but whose records have not expired yet —
- *  the ones waiting for their artist to mint and airdrop. Newest first. */
-export async function listSettlingDrops(opts: { nowSec: number; artist?: Address; limit?: number }): Promise<DropView[]> {
-  const closed = lte('closesAt', u64(BigInt(opts.nowSec)))
-  const where = opts.artist ? and(closed, eq('artist', addr(opts.artist))) : closed
+ *  waiting for their artist to mint and airdrop. Newest first. */
+export async function listSettlingDrops(nowSec: number): Promise<DropView[]> {
   const page = await arkivPublicClient()
     .select()
     .from(DropSchema)
-    .where(where)
+    .where(lte('closesAt', u64(BigInt(nowSec))))
     .createdBy(writer())
     .orderBy(desc('closesAt'))
-    .limit(opts.limit ?? 24)
+    .limit(24)
     .fetch()
-  const rows = page.entities as unknown as DropRow[]
-  const counts = await Promise.all(rows.map((r) => countClaims(r.$key)))
-  return rows.map((r, i) => toDropView(r, counts[i]))
+  return withClaimCounts(page.entities as unknown as DropRow[])
 }
 
 type ClaimRow = {
@@ -208,64 +198,37 @@ type ClaimRow = {
   claimedAt: { value: bigint }
 }
 
-function toClaimView(row: ClaimRow): ClaimView {
-  return {
-    key: normalizeEntityKey(row.$key),
-    collector: row.collector.value.toLowerCase(),
-    owner: row.$owner.toLowerCase(),
-    claimedAt: sec(row.claimedAt.value),
-  }
-}
-
 /**
- * Every Kismet-written claim on a drop. Pages by `$key` (a keyset, not an
- * offset) so a claim landing mid-read can't shift a page and drop or repeat
- * a row; a drop never holds more than DROP_MAX_CLAIMS claims, so this ends
- * after a few pages.
+ * Every Kismet-written claim on a drop, paged by `$key` as the docs advise for
+ * reading "every match exactly once" (docs.arkiv.network/querying/paginate).
+ * `onMismatch: "throw"` is part of that advice: a row that doesn't fit the
+ * schema would otherwise be skipped, shortening the page and ending the walk
+ * early. A drop holds at most DROP_MAX_CLAIMS claims, so this is a few pages.
  */
 export async function listClaims(dropKey: Hex): Promise<ClaimView[]> {
   const out: ClaimView[] = []
   let last: Hex | null = null
-  for (let pageNo = 0; pageNo < Math.ceil(DROP_MAX_CLAIMS / 100) + 1; pageNo++) {
+  for (let pageNo = 0; pageNo <= DROP_MAX_CLAIMS / 100; pageNo++) {
     const forDrop = eq('drop', keyValue(dropKey))
     const page = await arkivPublicClient()
       .select({ $key: true, $owner: true, collector: true, claimedAt: true })
-      .from(ClaimSchema)
+      .from(ClaimSchema, { onMismatch: 'throw' })
       .where(last ? and(forDrop, gt('$key', keyValue(last))) : forDrop)
       .createdBy(writer())
       .orderBy(asc('$key'))
       .limit(100)
       .fetch()
     const rows = page.entities as unknown as ClaimRow[]
-    out.push(...rows.map(toClaimView))
+    out.push(
+      ...rows.map((r) => ({
+        key: normalizeEntityKey(r.$key),
+        collector: r.collector.value.toLowerCase(),
+        owner: r.$owner.toLowerCase(),
+        claimedAt: Number(r.claimedAt.value),
+      })),
+    )
     if (rows.length < 100) break
     last = rows[rows.length - 1].$key
   }
   return out
-}
-
-/** Has this wallet claimed this drop (Kismet-written claims only)? */
-export async function hasClaimed(dropKey: Hex, collector: Address): Promise<boolean> {
-  const n = await arkivPublicClient()
-    .count()
-    .from(ClaimSchema)
-    .where(and(eq('drop', keyValue(dropKey)), eq('collector', addr(collector))))
-    .createdBy(writer())
-    .fetch()
-  return n > 0n
-}
-
-/** Claims a wallet currently OWNS — an `ownedBy` query, so a claim handed to
- *  this wallet shows up and one handed away does not. */
-export async function listClaimsOwnedBy(owner: Address, limit = 50): Promise<(ClaimView & { drop: Hex })[]> {
-  const page = await arkivPublicClient()
-    .select({ $key: true, $owner: true, drop: true, collector: true, claimedAt: true })
-    .from(ClaimSchema)
-    .ownedBy(owner)
-    .createdBy(writer())
-    .orderBy(desc('claimedAt'))
-    .limit(limit)
-    .fetch()
-  const rows = page.entities as unknown as (ClaimRow & { drop: { value: Hex } })[]
-  return rows.map((r) => ({ ...toClaimView(r), drop: normalizeEntityKey(r.drop.value) }))
 }

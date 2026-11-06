@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { DROP_MEDIA_MAX_BYTES, isEntityKey, normalizeEntityKey } from '@/lib/drops'
-import { getDropTerms, isDropsEnabled } from '@/lib/dropsStore'
+import { getDropRecord, isDropsEnabled } from '@/lib/dropsStore'
 import { fetchFromSwarm } from '@/lib/swarm'
 
 export const runtime = 'nodejs'
@@ -19,20 +19,20 @@ export const runtime = 'nodejs'
 export async function GET(req: NextRequest, { params }: { params: Promise<{ key: string }> }) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`drops-art:${ip}`, 240, 60))) return errorResponse(429, 'Too many requests')
-  if (!(await isDropsEnabled())) return errorResponse(404, 'Not found')
+  if (!isDropsEnabled()) return errorResponse(404, 'Not found')
 
   const { key: raw } = await params
   if (!isEntityKey(raw)) return errorResponse(400, 'Invalid drop key')
 
-  let terms
+  let drop
   try {
-    terms = await getDropTerms(normalizeEntityKey(raw))
+    drop = await getDropRecord(normalizeEntityKey(raw))
   } catch (err) {
     return upstreamError(503, 'Arkiv is unavailable — try again shortly', err, 'drops-art')
   }
-  if (!terms) return errorResponse(404, 'Drop not found — it may have expired')
+  if (!drop) return errorResponse(404, 'Drop not found — it may have expired')
 
-  const upstream = await fetchFromSwarm(terms.swarmRef)
+  const upstream = await fetchFromSwarm(drop.swarmRef)
   if (!upstream?.body) return errorResponse(502, 'Swarm did not return the artwork — try again')
 
   const declared = Number(upstream.headers.get('content-length') ?? 0)
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ key:
   )
 
   const headers = new Headers({
-    'Content-Type': terms.mime,
+    'Content-Type': drop.mime,
     'X-Content-Type-Options': 'nosniff',
     'Content-Disposition': 'inline',
     'Cache-Control': 'public, max-age=31536000, immutable',

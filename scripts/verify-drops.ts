@@ -24,7 +24,11 @@
 //      the claim at settlement.
 //   6. Encrypted Swarm references (64 bytes) are refused: they embed their
 //      decryption key, and Arkiv entities are public.
-//   7. The schemas index exactly the columns the docs say are filterable.
+//   7. The schemas index exactly what a query filters on (drops by closesAt,
+//      claims by drop) — an index costs more than a stored-only attribute,
+//      and arkiv/schema.md documents exactly these.
+//   8. The public links keep the formats checked live: the explorer's
+//      /entity/<key> route and the gateway's /bzz/<ref>/ read path.
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/verify-drops.ts
 
@@ -35,15 +39,16 @@ import { MAX_AIRDROP_RECIPIENTS } from '../lib/config.ts'
 import { KISMET_INTENT_DOMAIN } from '../lib/intent.ts'
 import {
   ARKIV_STR_MAX_BYTES,
+  arkivEntityUrl,
   buildClaimDropMessage,
   buildOpenDropMessage,
   CLAIM_DROP_TYPES,
   DROP_MAX_CLAIMS,
   DROP_MAX_WINDOW_SECONDS,
   DROP_MIN_WINDOW_SECONDS,
-  dropPhase,
-  formatRemaining,
+  formatTimeLeft,
   hashDescription,
+  isDropOpen,
   isEntityKey,
   isSwarmRef,
   OPEN_DROP_TYPES,
@@ -51,6 +56,8 @@ import {
   SETTLE_GRACE_SECONDS,
   settlementRecipients,
   sniffImageType,
+  swarmGatewayUrl,
+  validateDropTerms,
   validateOpenDrop,
   type ClaimView,
   type OpenDropFields,
@@ -106,6 +113,8 @@ check('0 claims are refused', !validateOpenDrop({ ...base, maxClaims: 0 }, NOW).
 check(`${DROP_MAX_CLAIMS + 1} claims are refused`, !validateOpenDrop({ ...base, maxClaims: DROP_MAX_CLAIMS + 1 }, NOW).ok)
 check('fractional claims are refused', !validateOpenDrop({ ...base, maxClaims: 10.5 }, NOW).ok)
 check('unsupported mime is refused', !validateOpenDrop({ ...base, mime: 'image/svg+xml' }, NOW).ok)
+check('the form\'s precheck validates terms without an artwork', validateDropTerms({ title: 'Dawn', closesAt: NOW + 3600, maxClaims: 5 }, NOW).ok)
+check('the open route still requires the artwork', !validateOpenDrop({ ...base, swarmRef: undefined }, NOW).ok)
 
 // ── 6. Swarm references and entity keys ──────────────────────────────────
 console.log('identifiers')
@@ -135,13 +144,13 @@ const BLOCK_SECONDS = 2
 check('longest window + settle grace fits inside Arkiv MAX_LIFETIME',
   BigInt(Math.ceil((DROP_MAX_WINDOW_SECONDS + SETTLE_GRACE_SECONDS) / BLOCK_SECONDS)) < MAX_LIFETIME)
 check('records expire SETTLE_GRACE_SECONDS after close', recordExpiresAt(NOW) === NOW + SETTLE_GRACE_SECONDS)
-check('open before closesAt', dropPhase(NOW + 1, NOW) === 'open')
-check('settling at closesAt', dropPhase(NOW, NOW) === 'settling')
-check('countdown formats days', formatRemaining(2 * 86400 + 4 * 3600 + 5) === '2d 4h')
-check('countdown formats hours', formatRemaining(3 * 3600 + 12 * 60) === '3h 12m')
-check('countdown formats minutes', formatRemaining(45 * 60 + 7) === '45m 7s')
-check('countdown formats seconds', formatRemaining(9) === '9s')
-check('countdown at zero says closed', formatRemaining(0) === 'closed')
+check('open one second before closesAt', isDropOpen(NOW + 1, NOW))
+check('closed at closesAt (the open-drops query is closesAt > now)', !isDropOpen(NOW, NOW))
+check('countdown formats days', formatTimeLeft(2 * 86400 + 4 * 3600 + 5) === '2d 4h')
+check('countdown formats hours', formatTimeLeft(3 * 3600 + 12 * 60) === '3h 12m')
+check('countdown formats minutes', formatTimeLeft(45 * 60 + 7) === '45m 7s')
+check('countdown formats seconds', formatTimeLeft(9) === '9s')
+check('countdown at zero says closed', formatTimeLeft(0) === 'closed')
 
 // ── 2. intents: client and server build the same message ─────────────────
 console.log('intents')
@@ -240,11 +249,16 @@ check(`the list is capped at ${DROP_MAX_CLAIMS}`, settlementRecipients(many).len
 console.log('schemas')
 const indexed = (cols: Record<string, { isIndexed: boolean }>) =>
   Object.entries(cols).filter(([, c]) => c.isIndexed).map(([n]) => n).sort().join(',')
-check('drop schema indexes exactly artist, closesAt', indexed(DropSchema.columns as Record<string, { isIndexed: boolean }>) === 'artist,closesAt')
-check('claim schema indexes exactly collector, drop', indexed(ClaimSchema.columns as Record<string, { isIndexed: boolean }>) === 'collector,drop')
+check('drop schema indexes exactly closesAt', indexed(DropSchema.columns as Record<string, { isIndexed: boolean }>) === 'closesAt')
+check('claim schema indexes exactly drop', indexed(ClaimSchema.columns as Record<string, { isIndexed: boolean }>) === 'drop')
 check('schema names are versioned', DROP_SCHEMA_NAME === 'kismet.drop.v1' && CLAIM_SCHEMA_NAME === 'kismet.claim.v1')
 check('description is a bytes column (a str would cap at 128 bytes)',
   (DropSchema.columns as Record<string, { type: string }>).description.type === 'bytes')
+
+// ── 8. public links ──────────────────────────────────────────────────────
+console.log('links')
+check('explorer entity link uses the /entity/<key> route', arkivEntityUrl(DROP_KEY) === `https://rabdi.explorer.arkiv.network/entity/${DROP_KEY}`)
+check('gateway link uses the /bzz/<ref>/ read path', swarmGatewayUrl(REF) === `https://api.gateway.ethswarm.org/bzz/${REF}/`)
 
 console.log(failures === 0 ? '\nverify-drops: OK' : `\nverify-drops: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

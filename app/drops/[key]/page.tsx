@@ -5,6 +5,8 @@ import { isEntityKey, normalizeEntityKey } from '@/lib/drops'
 import { isDropsEnabled } from '@/lib/dropsStore'
 import { SITE_URL } from '@/lib/siteUrl'
 
+// DROPS_ENABLED is read per request: a page prerendered at build time would
+// freeze whatever the build environment said.
 export const dynamic = 'force-dynamic'
 
 interface Props {
@@ -27,7 +29,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function DropPage({ params }: Props) {
   const { key } = await params
-  if (!isEntityKey(key) || !(await isDropsEnabled())) notFound()
+  if (!isEntityKey(key) || !isDropsEnabled()) notFound()
   return (
     <div className="max-w-lg mx-auto px-4 py-12">
       <DropView dropKey={normalizeEntityKey(key)} />

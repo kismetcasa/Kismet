@@ -6,7 +6,7 @@ import { consumeUserQuota } from '@/lib/userQuota'
 import { isBlacklisted } from '@/lib/blacklist'
 import { holdsValidPass, isPlatformPausedFor } from '@/lib/gate'
 import { DROP_MEDIA_MAX_BYTES, extensionForMediaType, isDropMediaType, sniffImageType } from '@/lib/drops'
-import { isDropsEnabled, recordMediaUploader } from '@/lib/dropsStore'
+import { isDropsEnabled, markUploaded } from '@/lib/dropsStore'
 import { isSwarmUploadConfigured, uploadToSwarm } from '@/lib/swarm'
 
 export const runtime = 'nodejs'
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   const ip = getClientIp(req)
   if (!(await checkRateLimit(`drops-media:${ip}`, 10, 60))) return errorResponse(429, 'Too many requests')
 
-  if (!(await isDropsEnabled())) return errorResponse(404, 'Not found')
+  if (!isDropsEnabled()) return errorResponse(404, 'Not found')
   if (!isSwarmUploadConfigured()) return errorResponse(503, 'Drops are not accepting uploads right now')
 
   const address = await getSessionAddress(req)
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await recordMediaUploader(reference, address)
+    await markUploaded(reference)
   } catch (err) {
     return upstreamError(503, 'Temporarily unavailable — please retry', err, 'drops-media')
   }

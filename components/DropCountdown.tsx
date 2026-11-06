@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { formatRemaining } from '@/lib/drops'
+import { formatTimeLeft } from '@/lib/drops'
 
 /** Live "closes in …" text for a claim drop; ticks once a second. */
 export function DropCountdown({ closesAt, className }: { closesAt: number; className?: string }) {
@@ -11,5 +11,5 @@ export function DropCountdown({ closesAt, className }: { closesAt: number; class
     return () => clearInterval(id)
   }, [])
   const left = closesAt - now
-  return <span className={className}>{left > 0 ? `closes in ${formatRemaining(left)}` : 'claims closed'}</span>
+  return <span className={className}>{left > 0 ? `closes in ${formatTimeLeft(left)}` : 'claims closed'}</span>
 }

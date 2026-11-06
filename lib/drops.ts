@@ -13,20 +13,21 @@ import { keccak256, toBytes } from 'viem'
  *      ownership to the collector.
  *   3. When the window closes the artist mints the artwork once (the normal
  *      sponsored mint) and airdrops a copy to every claim (Zora `adminMint`,
- *      which carries no protocol mint fee).
+ *      which carries no protocol mint fee — hooks/useAirdrop.ts).
  *
  * Arkiv holds only the state that is temporary by nature — the open drop and
  * the pending claims — and both expire SETTLE_GRACE_SECONDS after the window
- * closes. The finished NFT lives on Base. See arkiv/how-you-use-arkiv.md.
+ * closes ("A shorter lifetime costs less", docs.arkiv.network/writing/
+ * expiration). The finished NFT lives on Base. See arkiv/how-you-use-arkiv.md.
  */
 
 // ── Limits ───────────────────────────────────────────────────────────────
 
-/** Title length shown in the UI. Arkiv `str` attributes cap at 128 BYTES
- *  (MAX_STRING_BYTES), so validateOpenDrop also checks the UTF-8 length. */
+/** Title length shown in the UI. An Arkiv `str` holds "128 bytes of UTF-8"
+ *  (docs.arkiv.network/reference/limits), so the byte length is checked too. */
 export const DROP_TITLE_MAX_CHARS = 100
 export const ARKIV_STR_MAX_BYTES = 128
-/** Stored as an Arkiv `bytes` column (a `str` would cap at 128 bytes). */
+/** Stored as an Arkiv `bytes` column, since a `str` would cap at 128 bytes. */
 export const DROP_DESCRIPTION_MAX_CHARS = 1000
 
 /**
@@ -39,7 +40,7 @@ export const DROP_MAX_CLAIMS = 200
 
 /** Shortest and longest claim window. Ten minutes keeps a live demo short;
  *  thirty days keeps the whole record (window + grace) far inside Arkiv's
- *  ~182-day maximum entity lifetime. */
+ *  7,884,000-block (~182.5-day) maximum lifetime. */
 export const DROP_MIN_WINDOW_SECONDS = 10 * 60
 export const DROP_MAX_WINDOW_SECONDS = 30 * 24 * 60 * 60
 
@@ -57,9 +58,10 @@ export const DROP_WINDOW_PRESETS: { label: string; seconds: number }[] = [
   { label: '7 days', seconds: 7 * 24 * 60 * 60 },
 ]
 
-/** Images only for v1: Swarm previews are served through /api/drops/media,
- *  and video would need the byte-range handling /api/img does for Arweave. */
-export const DROP_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+/** Images only for v1: Swarm previews are served through
+ *  /api/drops/{key}/media, and video would need the byte-range handling
+ *  /api/img does for Arweave. */
+const DROP_MEDIA_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
 export type DropMediaType = (typeof DROP_MEDIA_TYPES)[number]
 export const DROP_MEDIA_MAX_BYTES = 15 * 1024 * 1024
 
@@ -86,6 +88,8 @@ export function sniffImageType(b: Uint8Array): DropMediaType | null {
   return null
 }
 
+/** The file name the upload gives Bee (`POST /bzz?name=`, "Filename when
+ *  uploading single file" — Bee OpenAPI). */
 export function extensionForMediaType(mime: DropMediaType): string {
   return mime === 'image/jpeg' ? 'jpg' : mime.slice('image/'.length)
 }
@@ -110,11 +114,10 @@ export function normalizeEntityKey(v: string): `0x${string}` {
 
 // ── Time ─────────────────────────────────────────────────────────────────
 
-export type DropPhase = 'open' | 'settling'
-
-/** `open` until closesAt; then `settling` until the records expire. */
-export function dropPhase(closesAt: number, nowSec: number): DropPhase {
-  return nowSec < closesAt ? 'open' : 'settling'
+/** THE open rule: claims are taken while `now < closesAt`. The open-drops
+ *  query (`closesAt > now`), the claim route and the drop page all agree. */
+export function isDropOpen(closesAt: number, nowSec: number): boolean {
+  return nowSec < closesAt
 }
 
 /** When the drop and its claims leave Arkiv (unix seconds). */
@@ -123,7 +126,7 @@ export function recordExpiresAt(closesAt: number): number {
 }
 
 /** Countdown text: two units, largest first ("2d 4h", "3h 12m", "45s"). */
-export function formatRemaining(seconds: number): string {
+export function formatTimeLeft(seconds: number): string {
   if (seconds <= 0) return 'closed'
   const d = Math.floor(seconds / 86_400)
   const h = Math.floor((seconds % 86_400) / 3_600)
@@ -137,31 +140,30 @@ export function formatRemaining(seconds: number): string {
 
 // ── Validation ───────────────────────────────────────────────────────────
 
-export interface OpenDropFields {
+export interface DropTerms {
   title: string
   description: string
-  swarmRef: string
-  mime: DropMediaType
   /** Unix seconds. */
   closesAt: number
   maxClaims: number
 }
 
-type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
-
-function utf8Length(s: string): number {
-  return new TextEncoder().encode(s).length
+export interface OpenDropFields extends DropTerms {
+  swarmRef: string
+  mime: DropMediaType
 }
 
+type Validated<T> = { ok: true; value: T } | { ok: false; error: string }
+
 /**
- * The one set of rules for a drop's terms — the form checks them before the
- * wallet prompt, the open route checks them again after (never trust the
- * client). `nowSec` is injected so the oracle can pin the window bounds.
+ * The terms an artist chooses. The form checks them BEFORE uploading (so a
+ * missing title never costs an upload); validateOpenDrop adds the artwork.
+ * `nowSec` is injected so the oracle can pin the window bounds.
  */
-export function validateOpenDrop(raw: Record<string, unknown>, nowSec: number): Validated<OpenDropFields> {
+export function validateDropTerms(raw: Record<string, unknown>, nowSec: number): Validated<DropTerms> {
   const title = typeof raw.title === 'string' ? raw.title.trim() : ''
   if (!title) return { ok: false, error: 'Give the drop a title' }
-  if (title.length > DROP_TITLE_MAX_CHARS || utf8Length(title) > ARKIV_STR_MAX_BYTES) {
+  if (title.length > DROP_TITLE_MAX_CHARS || new TextEncoder().encode(title).length > ARKIV_STR_MAX_BYTES) {
     return { ok: false, error: `Title is too long (max ${DROP_TITLE_MAX_CHARS} characters)` }
   }
 
@@ -169,9 +171,6 @@ export function validateOpenDrop(raw: Record<string, unknown>, nowSec: number): 
   if (description.length > DROP_DESCRIPTION_MAX_CHARS) {
     return { ok: false, error: `Description is too long (max ${DROP_DESCRIPTION_MAX_CHARS} characters)` }
   }
-
-  if (!isSwarmRef(raw.swarmRef)) return { ok: false, error: 'Upload an image first' }
-  if (!isDropMediaType(raw.mime)) return { ok: false, error: 'Unsupported image type' }
 
   const closesAt = Number(raw.closesAt)
   if (!Number.isInteger(closesAt)) return { ok: false, error: 'Invalid close time' }
@@ -184,10 +183,17 @@ export function validateOpenDrop(raw: Record<string, unknown>, nowSec: number): 
     return { ok: false, error: `Claims must be between 1 and ${DROP_MAX_CLAIMS}` }
   }
 
-  return {
-    ok: true,
-    value: { title, description, swarmRef: raw.swarmRef, mime: raw.mime, closesAt, maxClaims },
-  }
+  return { ok: true, value: { title, description, closesAt, maxClaims } }
+}
+
+/** The full set of rules for opening a drop — the open route runs it after
+ *  the form did (never trust the client). */
+export function validateOpenDrop(raw: Record<string, unknown>, nowSec: number): Validated<OpenDropFields> {
+  const terms = validateDropTerms(raw, nowSec)
+  if (!terms.ok) return terms
+  if (!isSwarmRef(raw.swarmRef)) return { ok: false, error: 'Upload an image first' }
+  if (!isDropMediaType(raw.mime)) return { ok: false, error: 'Unsupported image type' }
+  return { ok: true, value: { ...terms.value, swarmRef: raw.swarmRef, mime: raw.mime } }
 }
 
 // ── EIP-712 intents ──────────────────────────────────────────────────────
@@ -225,7 +231,7 @@ export const CLAIM_DROP_TYPES = {
   ],
 } as const
 
-export interface OpenDropMessage {
+interface OpenDropMessage {
   action: 'open-drop'
   account: `0x${string}`
   title: string
@@ -238,7 +244,7 @@ export interface OpenDropMessage {
   expiresAt: bigint
 }
 
-export interface ClaimDropMessage {
+interface ClaimDropMessage {
   action: 'claim-drop'
   account: `0x${string}`
   drop: `0x${string}`
@@ -289,7 +295,8 @@ export function buildClaimDropMessage(
 
 // ── Wire shapes (API → UI) ───────────────────────────────────────────────
 
-export interface DropView {
+/** A drop as read from Arkiv. */
+export interface DropRecord {
   key: `0x${string}`
   artist: string
   owner: string
@@ -299,9 +306,11 @@ export interface DropView {
   mime: string
   closesAt: number
   maxClaims: number
+}
+
+/** A drop with its live claim count, as pages show it. */
+export interface DropView extends DropRecord {
   claimCount: number
-  /** Arkiv transaction that created the entity, when known. */
-  txHash?: string
 }
 
 export interface ClaimView {
@@ -313,9 +322,10 @@ export interface ClaimView {
 
 /**
  * The airdrop list for settlement: each claim's CURRENT owner (a claim is an
- * Arkiv entity its collector owns, so a collector with an EOA can hand it to
- * another wallet before the drop settles), deduplicated, capped at
- * DROP_MAX_CLAIMS, in claim order.
+ * Arkiv entity its collector owns, and "only the owner can change, hand over
+ * or delete it" — so a collector with an EOA can hand it to another wallet
+ * before the drop settles), deduplicated, capped at DROP_MAX_CLAIMS, in
+ * claim order.
  */
 export function settlementRecipients(claims: ClaimView[]): string[] {
   const seen = new Set<string>()
@@ -331,11 +341,22 @@ export function settlementRecipients(claims: ClaimView[]): string[] {
   return out
 }
 
-/** Arkiv explorer links, so anyone can check a drop or claim on-chain. */
-export const ARKIV_EXPLORER_URL = 'https://rabdi.explorer.arkiv.network'
+// ── Public links ─────────────────────────────────────────────────────────
+
+/** The Rabdi explorer routes `/entity/<key>` and `/tx/<hash>` (its router,
+ *  checked 2026-11-06). */
+const ARKIV_EXPLORER_URL = 'https://rabdi.explorer.arkiv.network'
 export function arkivEntityUrl(key: string): string {
   return `${ARKIV_EXPLORER_URL}/entity/${key}`
 }
 export function arkivTxUrl(txHash: string): string {
   return `${ARKIV_EXPLORER_URL}/tx/${txHash}`
+}
+
+/** The Swarm Foundation's public gateway, with the read path Swarm's docs and
+ *  bee-js use (`/bzz/<ref>/`). lib/swarm.ts falls back to it; the drop page
+ *  links to it so anyone can fetch the artwork from Swarm directly. */
+export const SWARM_PUBLIC_GATEWAY = 'https://api.gateway.ethswarm.org'
+export function swarmGatewayUrl(reference: string): string {
+  return `${SWARM_PUBLIC_GATEWAY}/bzz/${reference}/`
 }

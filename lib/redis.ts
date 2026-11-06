@@ -112,11 +112,6 @@ export const SWEEP_INDEX_KEY = 'kismetart:sweep-index'
 // on GET. Toggled by /api/admin/sweep; the index still rebuilds while off so
 // enabling is instant and inspectable from /api/admin/stats-health.
 export const SWEEP_ENABLED_KEY = 'kismetart:sweep-enabled'
-// Claim drops feature flag (Arkiv + Swarm, lib/drops.ts): '1' = enabled,
-// absent = off. Same string-flag shape as SWEEP_ENABLED_KEY — read through
-// lib/gateFlags.isFlagSet. Toggled by /api/admin/drops; DROPS_ENABLED=1 in
-// the environment also turns it on (local development, the event demo).
-export const DROPS_ENABLED_KEY = 'kismetart:drops-enabled'
 
 /**
  * Build a member → score Map from a `zrange(..., { withScores: true })` reply

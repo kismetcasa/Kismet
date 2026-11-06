@@ -7,10 +7,9 @@ import { isBlacklisted } from '@/lib/blacklist'
 import { isPlatformPausedFor } from '@/lib/gate'
 import { verifyTypedIntent } from '@/lib/intentAuth'
 import type { IntentEnvelope } from '@/lib/intent'
-import { buildClaimDropMessage, CLAIM_DROP_TYPES, isEntityKey, normalizeEntityKey, recordExpiresAt } from '@/lib/drops'
-import { isArkivWritable } from '@/lib/arkiv/client'
+import { buildClaimDropMessage, CLAIM_DROP_TYPES, isDropOpen, isEntityKey, normalizeEntityKey } from '@/lib/drops'
 import { writeClaim } from '@/lib/arkiv/drops'
-import { getDropTerms, isDropsEnabled, releaseClaim, reserveClaim } from '@/lib/dropsStore'
+import { getDropRecord, invalidateDropReads, isDropsEnabled, releaseClaim, reserveClaim } from '@/lib/dropsStore'
 
 export const runtime = 'nodejs'
 
@@ -26,10 +25,8 @@ export const runtime = 'nodejs'
  * the reservation gives the slot back, so the wallet can simply retry.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ key: string }> }) {
-  const ip = getClientIp(req)
-  if (!(await checkRateLimit(`drops-claim:${ip}`, 20, 60))) return errorResponse(429, 'Too many requests')
-  if (!(await isDropsEnabled())) return errorResponse(404, 'Not found')
-  if (!isArkivWritable()) return errorResponse(503, 'Drops are read-only right now')
+  if (!(await checkRateLimit(`drops-claim:${getClientIp(req)}`, 20, 60))) return errorResponse(429, 'Too many requests')
+  if (!isDropsEnabled()) return errorResponse(404, 'Not found')
 
   const { key: raw } = await params
   if (!isEntityKey(raw)) return errorResponse(400, 'Invalid drop key')
@@ -61,22 +58,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ key
   if (blocked) return errorResponse(403, 'Address is blocked')
   if (paused) return errorResponse(503, 'Platform is temporarily paused')
 
-  let terms
+  let drop
   try {
-    terms = await getDropTerms(dropKey)
+    drop = await getDropRecord(dropKey)
   } catch (err) {
     return upstreamError(503, 'Arkiv is unavailable — try again shortly', err, 'drops-claim')
   }
-  if (!terms) return errorResponse(404, 'Drop not found — it may have expired')
+  if (!drop) return errorResponse(404, 'Drop not found — it may have expired')
 
   const nowSec = Math.floor(Date.now() / 1000)
-  if (nowSec >= terms.closesAt) return errorResponse(409, 'This drop has closed')
-  if (terms.artist === account) return errorResponse(400, 'You opened this drop — your copy comes with the mint')
+  if (!isDropOpen(drop.closesAt, nowSec)) return errorResponse(409, 'This drop has closed')
+  if (drop.artist === account) return errorResponse(400, 'You opened this drop — your copy comes with the mint')
 
   const collector = getAddress(account)
   let reserved
   try {
-    reserved = await reserveClaim(dropKey, collector, terms.maxClaims, recordExpiresAt(terms.closesAt))
+    reserved = await reserveClaim(dropKey, collector, drop.maxClaims, drop.closesAt)
   } catch (err) {
     return upstreamError(503, 'Temporarily unavailable — please retry', err, 'drops-claim')
   }
@@ -91,15 +88,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ key
   try {
     const { entityKey, txHash } = await writeClaim({
       dropKey,
-      dropClosesAt: terms.closesAt,
+      dropClosesAt: drop.closesAt,
       collector,
       claimedAt: nowSec,
-      intent: {
-        signature: envelope!.signature as `0x${string}`,
-        nonce: envelope!.nonce,
-        expiresAt: envelope!.expiresAt,
-      },
+      intent: { signature: envelope!.signature as `0x${string}`, nonce: envelope!.nonce, expiresAt: envelope!.expiresAt },
     })
+    invalidateDropReads(dropKey)
     return NextResponse.json({ claimKey: entityKey.toLowerCase(), txHash })
   } catch (err) {
     await releaseClaim(dropKey, collector).catch(() => {})
