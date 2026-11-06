@@ -18,6 +18,21 @@ function isGifMime(mime?: string): boolean {
   return mime === 'image/gif'
 }
 
+// Neither next/image's optimizer nor Chrome and Firefox can decode JPEG XL;
+// /api/img's resize path converts it to WebP (lib/media/jpegXl).
+function isJxlMime(mime?: string): boolean {
+  return mime === 'image/jxl'
+}
+
+// Before /api/img converted JPEG XL, it answered the same resize URL with the
+// raw file, cached for a year, so a browser holding that copy would never show
+// the image. A parameter of its own (which the proxy ignores) keeps that copy
+// from being reused.
+const JXL_PROXY_PARAM = '&jxl=1'
+// The largest ?w= the proxy serves (app/api/img MAX_RESIZE_WIDTH): what the
+// lightbox asks for when the full-size original is a JPEG XL.
+const JXL_FULL_WIDTH = 4096
+
 // ar:// content is hash-addressed and has no extension at the URL level, so
 // this only fires for the rare `https://.../foo.gif` — the mime hint is the
 // reliable signal.
@@ -86,7 +101,8 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   const proxiable = isProxiable(src)
   // Reads `src` (not `url`) so the decision is stable across gateway walks.
   const isGif = isGifMime(mime) || isGifUri(src)
-  const skipOptimizer = preferProxy || isGif
+  const isJxl = isJxlMime(mime)
+  const skipOptimizer = preferProxy || isGif || isJxl
   // Memoized once at mount — sniffing UA on every error would be wasteful.
   // Skip the direct-gateway-walk fallback on:
   //   - WebKit (Safari + iOS Mini App webview): stalls Safari's connection
@@ -116,7 +132,9 @@ export function MomentImage({ src, onAllError, mime, preferProxy, thumbhash, pri
   // we never ship the full-res original; only GIFs pass through untouched
   // (animation preserved).
   const renderUrl =
-    mode === 'proxy' ? proxyUrl(src, isGif ? undefined : PROXY_DISPLAY_MAX_WIDTH) : url
+    mode === 'proxy'
+      ? proxyUrl(src, isGif ? undefined : PROXY_DISPLAY_MAX_WIDTH) + (isJxl ? JXL_PROXY_PARAM : '')
+      : url
   const unoptimized = mode !== 'optimized'
 
   const [loaded, setLoaded] = useState(false)
@@ -220,6 +238,9 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
    *  image as soon as it mounts (lightbox, modals) need to pass true
    *  explicitly. */
   priority?: boolean
+  /** Content-type hint (`content.mime`). A JPEG XL is asked of the proxy as
+   *  its largest WebP, since most browsers cannot show the raw file. */
+  mime?: string
 }
 
 /**
@@ -234,7 +255,7 @@ type ImgProps = CommonProps & Omit<React.ImgHTMLAttributes<HTMLImageElement>, 's
  * own server (CPU + egress on every fetch) outweighs the proxy's
  * resilience benefit.
  */
-export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: ImgProps) {
+export function MomentImg({ src, onAllError, skipProxy, priority, mime, ...rest }: ImgProps) {
   // skipProxy paths get ONE last-resort proxy attempt after the direct walk
   // exhausts, instead of failing outright. The skipProxy economics hold in
   // the healthy case (posters stream from the gateway, zero proxy egress);
@@ -258,7 +279,8 @@ export function MomentImg({ src, onAllError, skipProxy, priority, ...rest }: Img
   const skipDirectWalk = useMemo(() => isWebKitOnly() || isInIframe() || isReactNativeWebView(), [])
 
   const useProxy = proxiable && !proxyFailed
-  const renderUrl = directExhausted ? proxyUrl(src) : useProxy ? proxyUrl(src) : walkedUrl
+  const proxied = isJxlMime(mime) ? proxyUrl(src, JXL_FULL_WIDTH) : proxyUrl(src)
+  const renderUrl = directExhausted ? proxied : useProxy ? proxied : walkedUrl
   if (!renderUrl) return null
 
   const handleError = directExhausted

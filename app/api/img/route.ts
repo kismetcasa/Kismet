@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import { gatewayUrls } from '@/lib/arweave/gateways'
 import { readBodyBounded } from '@/lib/boundedBody'
 import { fetchGatewayResolved } from '@/lib/media/gatewayFetch'
+import { isJpegXl, jpegXlToPng } from '@/lib/media/jpegXl'
 import {
   bucketWidth,
   readVariant,
@@ -254,8 +255,9 @@ type ResizeOutcome =
   | { kind: 'webp'; buffer: Buffer }
   // sharp refused the buffered bytes (mislabeled gif/svg, undecodable) —
   // serve them unchanged. Never disk-cached: only verified webp output
-  // earns a cache slot.
-  | { kind: 'original'; buffer: Buffer; contentType: string }
+  // earns a cache slot. `retry`: a JPEG XL this compute could not convert,
+  // served raw only for want of better (see JXL_RAW_CACHE_CONTROL).
+  | { kind: 'original'; buffer: Buffer; contentType: string; retry: boolean }
   | { kind: 'too-large' }
   | { kind: 'unavailable' }
   // Source belongs to the streaming path (video/gif/svg content-type,
@@ -350,7 +352,14 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
   // rangeless 200 read IS the whole file — teach the range-synthesis cache.
   if (upstream.status === 200) learnTotal(u, original.length)
   try {
-    const resized = await sharp(original, { failOn: 'none' })
+    // sharp cannot read JPEG XL (lib/media/jpegXl), and Chrome and Firefox
+    // cannot show one either, so ffmpeg decodes it first, already fit to the
+    // variant. It waits out the rest of the budget for its turn: the result
+    // is cached forever, so finishing late beats failing.
+    const source = isJpegXl(original)
+      ? await jpegXlToPng(original, width, { waitMs: RESIZE_COMPUTE_BUDGET_MS - (Date.now() - started) })
+      : original
+    const resized = await sharp(source, { failOn: 'none' })
       .rotate() // honour EXIF orientation (phone/scanner captures)
       .resize({ width, height: width, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 80 })
@@ -374,9 +383,17 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
       kind: 'original',
       buffer: original,
       contentType: upstream.headers.get('content-type') ?? 'application/octet-stream',
+      retry: isJpegXl(original),
     }
   }
 }
+
+// Content-addressed bytes are cached for a year — except a JPEG XL that was
+// asked for as a resize but goes out raw (its conversion failed, or the
+// resizers were all busy). Most browsers cannot show those bytes, so a copy
+// pinned for a year would leave the image blank there long after the proxy
+// could have sent the WebP; a minute lets the next request get it.
+const JXL_RAW_CACHE_CONTROL = 'public, max-age=60'
 
 function webpResponse(buf: Buffer): Response {
   return new Response(new Uint8Array(buf), {
@@ -494,7 +511,7 @@ export async function GET(req: NextRequest) {
         headers: {
           'Content-Type': outcome.contentType,
           'Content-Length': String(outcome.buffer.length),
-          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cache-Control': outcome.retry ? JXL_RAW_CACHE_CONTROL : 'public, max-age=31536000, immutable',
         },
       })
     }
@@ -529,10 +546,16 @@ export async function GET(req: NextRequest) {
     return new Response('too large', { status: 413, headers: { 'Cache-Control': 'no-store' } })
   }
 
+  const contentType = upstream.headers.get('content-type') ?? 'application/octet-stream'
   const headers = new Headers({
-    'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+    'Content-Type': contentType,
     // ar://<txid> / ipfs://<cid> are content-addressed — bytes never change.
-    'Cache-Control': 'public, max-age=31536000, immutable',
+    // A JPEG XL that wanted a resize lands here only when the resizers were
+    // all busy (see JXL_RAW_CACHE_CONTROL).
+    'Cache-Control':
+      wantsResize && contentType.toLowerCase().startsWith('image/jxl')
+        ? JXL_RAW_CACHE_CONTROL
+        : 'public, max-age=31536000, immutable',
   })
   // A PDF is never rendered inline on our origin — the stance the
   // collector-file routes already take. The zine reader reads the bytes with

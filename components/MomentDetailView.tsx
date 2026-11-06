@@ -2606,6 +2606,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
               // MomentImg defaults to loading="lazy"; the lightbox
               // mounts already-visible so we need eager.
               priority
+              mime={meta.content?.mime}
             />
           )}
         </div>

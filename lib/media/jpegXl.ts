@@ -31,26 +31,61 @@ const MAX_PIXELS = 24_000_000
 // the shared box; the caller treats it as a normal failure.
 const FFMPEG_TIMEOUT_MS = 5_000
 // Each decode is its own process, outside the libuv pool that bounds how many
-// sharp jobs run at once. The same cover asked for at once (each crawler of a
-// fresh share) joins the decode already running; a different one fails fast
-// (the caller's fallback) rather than stack a second process on the box.
+// sharp jobs run at once, so one runs at a time. The same image asked for at
+// once (each crawler of a fresh share) joins the decode already running. A
+// different one waits its turn for up to the caller's `waitMs` — the image
+// proxy waits, since its output is cached forever — or, by default, fails
+// fast: a share card, which a crawler gives up on within seconds, falls back
+// to its text layout instead.
 const MAX_CONCURRENT_DECODES = 1
 const decodes = new SingleFlight<Buffer>()
+let running = 0
+const queued: Array<() => void> = []
+
+function acquire(waitMs: number): Promise<boolean> {
+  if (running < MAX_CONCURRENT_DECODES) {
+    running++
+    return Promise.resolve(true)
+  }
+  if (waitMs <= 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const turn = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    const timer = setTimeout(() => {
+      queued.splice(queued.indexOf(turn), 1)
+      resolve(false)
+    }, waitMs)
+    queued.push(turn)
+  })
+}
+
+function release(): void {
+  const next = queued.shift()
+  // Hand the slot straight to the next in line; `running` stays as it is.
+  if (next) next()
+  else running--
+}
 
 /**
  * Decode a JPEG XL image into a PNG no larger than `maxEdge` on either side,
  * with the `ffmpeg` on PATH (the runtime image's is built with libjxl).
  * sharp's prebuilt libvips has no JPEG XL decoder (sharp.format.jxl.input is
- * all false), so without this a .jxl cover never becomes pixels server-side.
+ * all false), so without this a .jxl image never becomes pixels server-side.
  * Rejects on any failure: no decoder, too many pixels, corrupt, too slow, or
- * busy with another image.
+ * busy with another image past `waitMs`.
  */
-export function jpegXlToPng(bytes: Buffer, maxEdge: number): Promise<Buffer> {
+export function jpegXlToPng(bytes: Buffer, maxEdge: number, { waitMs = 0 } = {}): Promise<Buffer> {
   const key = `${createHash('sha256').update(bytes).digest('hex')}:${maxEdge}`
-  if (!decodes.has(key) && decodes.size >= MAX_CONCURRENT_DECODES) {
-    return Promise.reject(new Error('jpeg xl decode busy'))
-  }
-  return decodes.run(key, () => decode(bytes, maxEdge))
+  return decodes.run(key, async () => {
+    if (!(await acquire(waitMs))) throw new Error('jpeg xl decode busy')
+    try {
+      return await decode(bytes, maxEdge)
+    } finally {
+      release()
+    }
+  })
 }
 
 async function decode(bytes: Buffer, maxEdge: number): Promise<Buffer> {

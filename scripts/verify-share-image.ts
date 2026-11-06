@@ -273,6 +273,12 @@ try {
           a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value)
         const [c, d] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200)])
         check('another cover while one decodes is refused, not queued', c.status === 'fulfilled' && d.status === 'rejected')
+        const [e, f] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200, { waitMs: 10_000 })])
+        check('or, given a wait (the image proxy), decoded once the first is done', e.status === 'fulfilled' && f.status === 'fulfilled')
+        const [g, h] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200, { waitMs: 1 })])
+        check('and refused once its wait runs out', g.status === 'fulfilled' && h.status === 'rejected')
+        const after = await jpegXlToPng(container, 1200).then(() => true, () => false)
+        check('the slot is free again after all of that', after)
       }
     }
   }
