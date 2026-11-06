@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { MintForm } from '@/components/MintForm'
 import { CreateCollectionForm } from '@/components/CreateCollectionForm'
@@ -16,13 +17,18 @@ interface MintTabsProps {
    *  chips to land on the surface the granted bit unlocks (creator-
    *  tier → 'mint', minter-tier → 'airdrop'). Falls back to 'mint'. */
   initialTab?: string
+  /** Prefilled airdrop recipients — a claim drop's claim list, read from
+   *  Arkiv by app/mint/page.tsx when it is opened with ?drop=<key>. */
+  initialRecipients?: string[]
+  /** Shows the "Drop" link when claim drops are enabled. */
+  dropsEnabled?: boolean
 }
 
 function isValidTab(t: string | undefined): t is Tab {
   return t === 'mint' || t === 'create' || t === 'airdrop'
 }
 
-export function MintTabs({ initialCollection, initialCollectionName, initialTab }: MintTabsProps = {}) {
+export function MintTabs({ initialCollection, initialCollectionName, initialTab, initialRecipients, dropsEnabled }: MintTabsProps = {}) {
   const { address } = useAccount()
   const [tab, setTab] = useState<Tab>(isValidTab(initialTab) ? initialTab : 'mint')
   const [deployedCollection, setDeployedCollection] = useState<{ address: string; name: string } | null>(
@@ -119,6 +125,14 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
             {t.label}
           </button>
         ))}
+        {dropsEnabled && (
+          <Link
+            href="/drops/new"
+            className="px-4 py-2 text-xs font-mono tracking-wider uppercase transition-colors border-b-2 -mb-px border-transparent text-dim hover:text-ink"
+          >
+            Drop
+          </Link>
+        )}
       </div>
 
       {/* All three panels stay MOUNTED across tab switches; `hidden` (UA
@@ -153,7 +167,7 @@ export function MintTabs({ initialCollection, initialCollectionName, initialTab 
       </div>
 
       <div hidden={tab !== 'airdrop'}>
-        <AirdropForm moments={moments} loadingMoments={loadingMoments} />
+        <AirdropForm moments={moments} loadingMoments={loadingMoments} initialRecipients={initialRecipients} />
       </div>
     </div>
   )

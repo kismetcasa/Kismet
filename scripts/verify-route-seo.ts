@@ -53,6 +53,12 @@ const EXCLUDED = new Map<string, string>([
   ['/admin/broadcast', 'operator-only'],
   ['/admin/play', 'operator-only; machine review queue'],
   ['/permissions', 'per-wallet dashboard; noindex (empty without a wallet)'],
+  // Claim drops ship behind kismetart:drops-enabled and 404 while it is off,
+  // so they stay out of the sitemap and llms.txt until the feature launches —
+  // a sitemap entry would advertise a 404. Move /drops into STATIC_ROUTES and
+  // llms.txt (and drop this row) when it does.
+  ['/drops', 'flag-gated beta (kismetart:drops-enabled); 404 while off'],
+  ['/drops/new', 'artist-only form behind the drops flag; noindex'],
 ])
 
 // Walk app/ for page.tsx files → route paths. Skips route groups "(x)",

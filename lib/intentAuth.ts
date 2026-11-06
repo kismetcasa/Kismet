@@ -105,3 +105,69 @@ export async function verifyIntent(
 
   return { ok: true }
 }
+
+/**
+ * The same envelope checks, signature verification and single-use nonce as
+ * verifyIntent, for an intent whose typed data is not a MintIntent (claim
+ * drops' OpenDrop / ClaimDrop, lib/drops.ts). Same domain, same nonce
+ * namespace — a nonce is consumed once whichever intent spends it — and the
+ * distinct primaryType + `action` slot keep one kind of signature from ever
+ * verifying as another. verifyIntent above is deliberately left as it was.
+ */
+export async function verifyTypedIntent(params: {
+  envelope: IntentEnvelope | undefined
+  account: string
+  types: Record<string, readonly { name: string; type: string }[]>
+  primaryType: string
+  buildMessage: (nonce: string, expiresAt: number) => Record<string, unknown>
+}): Promise<IntentVerifyResult> {
+  const { envelope, account, types, primaryType, buildMessage } = params
+  if (
+    !envelope ||
+    typeof envelope.signature !== 'string' ||
+    typeof envelope.nonce !== 'string' ||
+    typeof envelope.expiresAt !== 'number'
+  ) {
+    return { ok: false, error: 'Missing or malformed intent envelope', status: 401 }
+  }
+  if (!/^0x[0-9a-fA-F]+$/.test(envelope.signature)) {
+    return { ok: false, error: 'Invalid signature shape', status: 401 }
+  }
+  if (!/^[0-9a-f]{32}$/.test(envelope.nonce)) {
+    return { ok: false, error: 'Invalid nonce shape', status: 401 }
+  }
+
+  const now = Math.floor(Date.now() / 1000)
+  if (envelope.expiresAt <= now || envelope.expiresAt > now + MAX_EXPIRY_WINDOW) {
+    return { ok: false, error: 'Intent expired or expiry out of range', status: 401 }
+  }
+
+  // The typed-data shape is generic here (the caller's types table), which
+  // viem's compile-time inference can't follow — viem still validates the
+  // message against `types` at runtime when it hashes it.
+  const client = serverBaseClient()
+  const args = {
+    address: account as `0x${string}`,
+    domain: KISMET_INTENT_DOMAIN,
+    types,
+    primaryType,
+    message: buildMessage(envelope.nonce, envelope.expiresAt),
+    signature: envelope.signature as `0x${string}`,
+  } as unknown as Parameters<typeof client.verifyTypedData>[0]
+
+  let valid = false
+  try {
+    valid = await client.verifyTypedData(args)
+  } catch {
+    return { ok: false, error: 'Signature verification failed', status: 401 }
+  }
+  if (!valid) {
+    return { ok: false, error: 'Signature does not match account', status: 401 }
+  }
+
+  const consumed = await redis.del(intentNonceKey(envelope.nonce)).catch(() => 0)
+  if (consumed !== 1) {
+    return { ok: false, error: 'Nonce already used or expired', status: 401 }
+  }
+  return { ok: true }
+}
