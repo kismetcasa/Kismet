@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useAccount, useReadContract } from 'wagmi'
+import { useReadContract } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import type { Address } from 'viem'
 import { toast } from 'sonner'

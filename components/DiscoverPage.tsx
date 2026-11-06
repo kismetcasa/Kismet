@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback, startTransition } from 'react'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useQueryClient } from '@tanstack/react-query'
 import { feedPageLimit, prefetchPaginatedFirstPage } from '@/lib/paginatedGridQuery'
 import { MomentCard } from '@/components/MomentCard'

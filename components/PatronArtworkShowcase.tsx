@@ -2,7 +2,8 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useAccount, useReadContract } from 'wagmi'
+import { useReadContract } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { DEFAULT_COLLECT_COMMENT, type Moment } from '@/lib/inprocess'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'

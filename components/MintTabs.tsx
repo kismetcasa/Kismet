@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { MintForm } from '@/components/MintForm'
 import { CreateCollectionForm } from '@/components/CreateCollectionForm'
 import { AirdropForm } from '@/components/AirdropForm'

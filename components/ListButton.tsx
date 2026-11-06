@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAccount, useReadContract, usePublicClient } from 'wagmi'
+import { useReadContract, usePublicClient } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { useWriteContract, useSignTypedData } from '@/hooks/useWallet'

@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 import { createSiweMessage } from 'viem/siwe'
 import { toastError } from '@/lib/toast'

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { useSignMessage } from '@/hooks/useWallet'

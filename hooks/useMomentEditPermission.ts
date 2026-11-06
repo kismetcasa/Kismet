@@ -1,6 +1,7 @@
 'use client'
 
-import { useAccount, useReadContracts } from 'wagmi'
+import { useReadContracts } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { type Address, isAddress } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { canEditMomentMetadata, canEditMomentSale, hasAdminBit } from '@/lib/permissions'

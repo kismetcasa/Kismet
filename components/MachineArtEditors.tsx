@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import type { MachineFrames } from '@/lib/experience/types'
 import type { FrameStatus } from '@/lib/experience/cover'
 

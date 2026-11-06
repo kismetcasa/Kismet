@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { ArrowLeft, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react'
 import { shortAddress } from '@/lib/inprocess'

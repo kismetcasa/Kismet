@@ -2,10 +2,10 @@
 
 import { useState } from 'react'
 import {
-  useAccount,
   usePublicClient,
   useWaitForTransactionReceipt,
 } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError } from '@/lib/toast'

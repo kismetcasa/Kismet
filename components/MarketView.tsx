@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { MarketCard } from '@/components/MarketCard'
 import { PaginatedGrid } from '@/components/PaginatedGrid'
 import { feedPageLimit } from '@/lib/paginatedGridQuery'

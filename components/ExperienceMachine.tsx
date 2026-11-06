@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useDirectCollect } from '@/hooks/useDirectCollect'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useEthUsd } from '@/hooks/useEthUsd'

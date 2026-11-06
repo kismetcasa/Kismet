@@ -1,7 +1,8 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useAccount, useConnect } from 'wagmi'
+import { useConnect } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import { isPotentialMiniAppEnv } from '@/lib/miniAppEnv'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'

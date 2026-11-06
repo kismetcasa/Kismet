@@ -104,9 +104,11 @@ const config = [
   {
     // Every wallet prompt goes through hooks/useWallet (focus gate + stall
     // notice — lib/walletPrompt has the Zen/Rainbow incident). wagmi's own
-    // prompt hooks are reachable only from that module.
+    // prompt hooks are reachable only from that module. And every read of
+    // the connected account goes through hooks/useAccount, which hydrates a
+    // page as its server rendered it (React #418 in a wallet's own browser).
     files: ['**/*.{ts,tsx}'],
-    ignores: ['hooks/useWallet.ts'],
+    ignores: ['hooks/useWallet.ts', 'hooks/useAccount.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -116,6 +118,11 @@ const config = [
               name: 'wagmi',
               importNames: ['useWriteContract', 'useSignTypedData', 'useSignMessage', 'useSendTransaction', 'useSendCalls'],
               message: 'Import wallet-prompt hooks from @/hooks/useWallet — it guards each prompt (see lib/walletPrompt.ts).',
+            },
+            {
+              name: 'wagmi',
+              importNames: ['useAccount'],
+              message: 'Import useAccount from @/hooks/useAccount — it reports the server\'s account while a component hydrates (React #418).',
             },
           ],
         },

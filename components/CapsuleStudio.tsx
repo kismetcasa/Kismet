@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'

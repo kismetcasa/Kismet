@@ -2,11 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react'
 import {
-  useAccount,
   useConfig,
   usePublicClient,
   useWalletClient,
 } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { getAccount, waitForCallsStatus } from '@wagmi/core'
 import { base } from 'wagmi/chains'
 import { toast } from 'sonner'

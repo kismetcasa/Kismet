@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAccount, usePublicClient, useWaitForTransactionReceipt } from 'wagmi'
+import { usePublicClient, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base, mainnet } from 'wagmi/chains'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { parseEventLogs, isAddress, parseEther, type Address } from 'viem'

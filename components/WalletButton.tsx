@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useAccountModal, useConnectModal } from '@rainbow-me/rainbowkit'
 import { shortAddress } from '@/lib/inprocess'
 import { useFarcaster } from '@/providers/FarcasterProvider'

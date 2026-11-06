@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useRef } from 'react'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useAccountEffect } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 
 // How long an armed action stays valid. Long enough to pick a wallet and

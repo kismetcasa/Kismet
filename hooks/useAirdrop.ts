@@ -1,6 +1,7 @@
 'use client'
 
-import { useAccount, usePublicClient } from 'wagmi'
+import { usePublicClient } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 import { encodeFunctionData } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'

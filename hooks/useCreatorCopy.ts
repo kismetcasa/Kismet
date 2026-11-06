@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAccount, usePublicClient } from 'wagmi'
+import { usePublicClient } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 import { parseAbi, type Address, type Hex } from 'viem'
 import { COLLECTION_ABI } from '@/lib/collections'

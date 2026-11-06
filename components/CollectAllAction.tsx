@@ -1,7 +1,7 @@
 'use client'
 
 import { formatEther, formatUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import { MAX_COLLECT_ALL_BATCH } from '@/lib/zoraMint'
 import { useCollectAll } from '@/hooks/useCollectAll'

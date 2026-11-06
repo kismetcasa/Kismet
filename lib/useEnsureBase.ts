@@ -1,4 +1,5 @@
-import { useAccount, useSwitchChain } from 'wagmi'
+import { useSwitchChain } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { base } from 'wagmi/chains'
 
 // Returns an async fn that resolves once the wallet is on Base.

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import { ArrowDownToLine, BookOpen, Eye, Link as LinkIcon } from 'lucide-react'
 import { ZINE_COPY, formatZinePages } from '@/lib/media/zineMedia'

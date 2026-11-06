@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { useEffect, useRef, useState } from 'react'
 import { Search, ChevronDown } from 'lucide-react'
 import { WalletButton } from './WalletButton'

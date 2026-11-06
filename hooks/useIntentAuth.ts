@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import {
   buildMintIntent,
   KISMET_INTENT_DOMAIN,

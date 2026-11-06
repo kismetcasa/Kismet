@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useAccount, usePublicClient, useReadContracts } from 'wagmi'
+import { usePublicClient, useReadContracts } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { toast } from 'sonner'
 import {
   ERC20_ABI,

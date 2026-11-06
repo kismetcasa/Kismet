@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount } from '@/hooks/useAccount'
 import { createSiweMessage } from 'viem/siwe'
 import { base } from 'wagmi/chains'
 import { useFarcaster } from '@/providers/FarcasterProvider'
