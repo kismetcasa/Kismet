@@ -2,10 +2,11 @@ import 'server-only'
 import type { Address, Hex } from 'viem'
 import { memoize, type Memoized } from './memoCache'
 import { redis } from './redis'
+import { acquireLock, type RedisLock } from './redisLock'
 import { isArkivConfigured } from './arkiv/client'
-import { getDrop, listClaims, listOpenDrops, listSettlingDrops } from './arkiv/drops'
+import { getDrop, getSettlements, listClaims, listClaimsOwnedBy, listOpenDrops, listSettlingDrops } from './arkiv/drops'
 import { LRUCache } from './lruCache'
-import type { ClaimView, DropRecord, DropView } from './drops'
+import { recordExpiresAt, type ClaimView, type DropRecord, type DropView, type SettlementView } from './drops'
 
 /**
  * The parts of claim drops that must NOT live on Arkiv: who uploaded which
@@ -43,37 +44,92 @@ export async function wasUploaded(ref: string): Promise<boolean> {
 // ── Claim reservations ───────────────────────────────────────────────────
 
 const claimsKey = (dropKey: Hex) => `kismetart:drops:claims:${dropKey.toLowerCase()}`
+const fidsKey = (dropKey: Hex) => `kismetart:drops:fids:${dropKey.toLowerCase()}`
 
-// SADD + cap check in one script: returns the new count, -1 when this
-// wallet already holds a slot, -2 when the drop is full (and undoes the add).
-// EXPIREAT at the drop's close: once claims are closed the set has no use.
+// One claim per wallet AND, when the claim comes with a Farcaster identity
+// (Quick Auth in the Mini App), one per Farcaster account — a person with
+// several wallets on one account gets one claim. Checked and written in one
+// script: returns the new count, -1 when the wallet already holds a slot, -3
+// when the Farcaster account does (through another wallet), -2 when the drop
+// is full — nothing is written then. EXPIREAT at the drop's close: once
+// claims are closed the sets have no use.
 const RESERVE_LUA = `
-local added = redis.call('SADD', KEYS[1], ARGV[1])
-if added == 0 then return -1 end
-local n = redis.call('SCARD', KEYS[1])
-if n > tonumber(ARGV[2]) then
-  redis.call('SREM', KEYS[1], ARGV[1])
-  return -2
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then return -1 end
+if ARGV[2] ~= '' and redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 1 then return -3 end
+if redis.call('SCARD', KEYS[1]) >= tonumber(ARGV[3]) then return -2 end
+redis.call('SADD', KEYS[1], ARGV[1])
+redis.call('EXPIREAT', KEYS[1], ARGV[4])
+if ARGV[2] ~= '' then
+  redis.call('SADD', KEYS[2], ARGV[2])
+  redis.call('EXPIREAT', KEYS[2], ARGV[4])
 end
-redis.call('EXPIREAT', KEYS[1], ARGV[3])
-return n
+return redis.call('SCARD', KEYS[1])
 `
 
 export async function reserveClaim(
   dropKey: Hex,
   collector: Address,
+  fid: number | null,
   maxClaims: number,
   closesAt: number,
-): Promise<'reserved' | 'duplicate' | 'full'> {
-  const n = Number(await redis.eval(RESERVE_LUA, [claimsKey(dropKey)], [collector.toLowerCase(), maxClaims, closesAt]))
+): Promise<'reserved' | 'duplicate' | 'account-claimed' | 'full'> {
+  const n = Number(
+    await redis.eval(RESERVE_LUA, [claimsKey(dropKey), fidsKey(dropKey)], [collector.toLowerCase(), fid ? String(fid) : '', maxClaims, closesAt]),
+  )
   if (n === -1) return 'duplicate'
+  if (n === -3) return 'account-claimed'
   if (n === -2) return 'full'
   return 'reserved'
 }
 
 /** Give a slot back — the Arkiv write behind it failed, so the wallet can retry. */
-export async function releaseClaim(dropKey: Hex, collector: Address): Promise<void> {
+export async function releaseClaim(dropKey: Hex, collector: Address, fid: number | null): Promise<void> {
   await redis.srem(claimsKey(dropKey), collector.toLowerCase())
+  if (fid) await redis.srem(fidsKey(dropKey), String(fid))
+}
+
+// ── Settlement progress ──────────────────────────────────────────────────
+//
+// Settling is two signatures (mint the edition, then airdrop it), and the
+// artist can leave in between. What happened so far is kept per drop until
+// the drop's records expire, so they resume rather than re-upload or mint a
+// second edition: `body` is the prepared mint (its artwork already on
+// Arweave), `recipients` the snapshot it was sized to, and `minted` the new
+// token once the relay answered.
+
+export interface SettleProgress {
+  body: Record<string, unknown>
+  recipients: string[]
+  /** `fromBlock`: Base's head just before the mint was sent — the airdrop
+   *  can only land after it (where …/settle looks for it on resume). */
+  minted?: { collection: string; tokenId: string; fromBlock: string }
+}
+
+const settleKey = (dropKey: Hex) => `kismetart:drops:settle:${dropKey.toLowerCase()}`
+
+export async function getSettleProgress(dropKey: Hex): Promise<SettleProgress | null> {
+  const v = await redis.get<SettleProgress | string | null>(settleKey(dropKey))
+  if (!v) return null
+  return typeof v === 'string' ? (JSON.parse(v) as SettleProgress) : v
+}
+
+export async function setSettleProgress(dropKey: Hex, closesAt: number, progress: SettleProgress): Promise<void> {
+  await redis.set(settleKey(dropKey), JSON.stringify(progress), { exat: recordExpiresAt(closesAt) })
+}
+
+export async function clearSettleProgress(dropKey: Hex): Promise<void> {
+  await redis.del(settleKey(dropKey))
+}
+
+// One settle step at a time per drop: a double click must not mint two
+// editions or record two settlements. The relay can take a while (an
+// auto-deploy plus the mint); the lock outlives any realistic answer, frees
+// itself if the process dies mid-step, and is released by token (lib/redisLock)
+// so a step that outlived it can't free a successor's.
+const SETTLE_LOCK_SECONDS = 180
+
+export function lockSettle(dropKey: Hex): Promise<RedisLock> {
+  return acquireLock(`kismetart:drops:settle-lock:${dropKey.toLowerCase()}`, SETTLE_LOCK_SECONDS)
 }
 
 // ── Arkiv read caches ────────────────────────────────────────────────────
@@ -102,7 +158,8 @@ export async function getDropRecord(dropKey: Hex): Promise<DropRecord | null> {
 const feed = memoize(async () => {
   const nowSec = Math.floor(Date.now() / 1000)
   const [open, settling] = await Promise.all([listOpenDrops(nowSec), listSettlingDrops(nowSec)])
-  return { open, settling }
+  const settled = await getSettlements(settling.map((d) => d.key))
+  return { open, settling: settling.map((d) => ({ ...d, delivered: settled.has(d.key) })) }
 }, CACHE_MS)
 
 export function getDropsFeed(): Promise<{ open: DropView[]; settling: DropView[] }> {
@@ -112,6 +169,7 @@ export function getDropsFeed(): Promise<{ open: DropView[]; settling: DropView[]
 export interface DropDetail {
   drop: DropRecord
   claims: ClaimView[]
+  settlement: SettlementView | null
 }
 
 const details = new LRUCache<string, Memoized<DropDetail | null>>(500)
@@ -121,16 +179,63 @@ export function getDropDetail(dropKey: Hex): Promise<DropDetail | null> {
   if (!memo) {
     memo = memoize(async () => {
       const drop = await getDropRecord(dropKey)
-      return drop ? { drop, claims: await listClaims(dropKey) } : null
+      if (!drop) return null
+      const [claims, settlements] = await Promise.all([listClaims(dropKey), getSettlements([dropKey])])
+      return { drop, claims, settlement: settlements.get(dropKey) ?? null }
     }, CACHE_MS)
     details.set(dropKey, memo)
   }
   return memo()
 }
 
+/** A wallet's claims with where each drop stands — the collector's view
+ *  (GET /api/drops/claims). Claims are entities the wallet OWNS (`ownedBy`),
+ *  so a claim handed to it counts and one handed away doesn't; each drop's
+ *  terms come from the record cache. A drop whose records expired has taken
+ *  its claims with it, so nothing dangles. */
+export interface OwnedClaim {
+  claimKey: string
+  dropKey: string
+  title: string
+  artist: string
+  closesAt: number
+  claimedAt: number
+  settlement: SettlementView | null
+}
+
+const owned = new LRUCache<string, Memoized<OwnedClaim[]>>(500)
+
+export function getClaimsOf(owner: Address): Promise<OwnedClaim[]> {
+  const k = owner.toLowerCase()
+  let memo = owned.get(k)
+  if (!memo) {
+    memo = memoize(async () => {
+      const claims = await listClaimsOwnedBy(owner)
+      const drops = await Promise.all(claims.map((c) => getDropRecord(c.drop).catch(() => null)))
+      const settled = await getSettlements([...new Set(claims.map((c) => c.drop))])
+      return claims.flatMap((c, i) => {
+        const d = drops[i]
+        if (!d) return []
+        return [{
+          claimKey: c.key,
+          dropKey: d.key,
+          title: d.title,
+          artist: d.artist,
+          closesAt: d.closesAt,
+          claimedAt: c.claimedAt,
+          settlement: settled.get(d.key) ?? null,
+        }]
+      })
+    }, CACHE_MS)
+    owned.set(k, memo)
+  }
+  return memo()
+}
+
 /** After a claim lands, the next read must show it — the claimer's page
  *  reloads right away and would otherwise offer "Claim" again. */
-export function invalidateDropReads(dropKey: Hex): void {
+export function invalidateDropReads(dropKey: Hex, claimer?: Address): void {
   details.get(dropKey)?.invalidate()
   feed.invalidate()
+  if (claimer) owned.get(claimer.toLowerCase())?.invalidate()
 }

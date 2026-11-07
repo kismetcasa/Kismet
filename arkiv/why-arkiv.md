@@ -10,11 +10,11 @@ Redis set per drop. Here is what users would lose if they were.
    see. On Arkiv it is an entity **the collector owns**, carrying the
    collector's own EIP-712 signature, created by Kismet's writer (so
    `$creator` attests Kismet admitted it). A collector can show it to anyone,
-   and hand it to another wallet before the drop settles, without asking us.
-2. **The airdrop would be Kismet's word.** The artist's airdrop list is read
-   from Arkiv, and so can anyone's: the recipients of the settlement airdrop
-   on Base can be checked against the public claim set. In Redis we could
-   add or drop a name with one command and nobody could tell.
+   and hand it to another wallet before the drop is delivered, without asking us.
+2. **The airdrop would be Kismet's word.** The delivery's recipient list is
+   read from Arkiv, and so can anyone's: the airdrop on Base — named in the
+   drop's settlement entity — can be checked against the public claim set. In
+   Redis we could add or drop a name with one command and nobody could tell.
 3. **The terms could move.** A drop entity is `readonly`: its cap, close time
    and artwork cannot change after people claim — not even by Kismet. In
    Redis, changing them is one admin write.
@@ -46,6 +46,6 @@ On a free edition, Zora's protocol fee is the collector's entire price.
 |---|---|---|
 | Collector pays | 0.000111 ETH per edition (≈ $0.30 at the $2,688 ETH of 6 Nov 2026) + Base gas, and needs ETH on Base | **Nothing** — one signature, no ETH needed |
 | Collector receives | An ERC-1155 on Base | The same ERC-1155 on Base, by airdrop |
-| Artist pays | Nothing (Kismet sponsors the mint) | Nothing to open; the airdrop's Base gas at settlement (≈ $0.001–0.01 per recipient, [`hooks/useAirdrop.ts`](../hooks/useAirdrop.ts)) |
+| Artist pays | Nothing (Kismet sponsors the mint) | Nothing to open or mint; the airdrop's Base gas at delivery (≈ $0.001–0.01 per recipient, [`hooks/useAirdrop.ts`](../hooks/useAirdrop.ts)) |
 | Kismet pays | Arweave storage (~$32.56/GiB) for every artwork, sold or not | A share of one Swarm batch while the drop is open; Arweave only for drops that got claimed; Arkiv writes (faucet tGLM on testnet; on mainnet GLM, and "a shorter lifetime costs less") |
 | Gives up | — | Zora's free-mint rewards (the artist's creator reward and Kismet's referral) on these editions — the artist chooses per drop |

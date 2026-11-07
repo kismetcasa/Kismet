@@ -8,8 +8,10 @@ import {
 import { rabdi } from '@arkiv-network/sdk/chains'
 import type { Schema } from '@arkiv-network/sdk/schema'
 import type { CreationFlags, Expiry } from '@arkiv-network/sdk/entity'
-import { http, isHex, type Address, type Hex } from 'viem'
+import { formatEther, http, isHex, type Address, type Hex } from 'viem'
+import { getGasPrice } from 'viem/actions'
 import { privateKeyToAccount } from 'viem/accounts'
+import { memoize } from '../memoCache'
 
 /**
  * Arkiv connection for Kismet's server (Rabdi, Arkiv's current testnet).
@@ -61,6 +63,42 @@ function arkivWalletClient(): WalletArkivClient {
     _wallet = createWalletClient({ chain: chain(), transport: http(), account: privateKeyToAccount(key) }) as WalletArkivClient
   }
   return _wallet
+}
+
+// ── Writer funds ─────────────────────────────────────────────────────────
+//
+// An unfunded writer fails every write with an opaque "Execution error
+// without revert data" (seen on Rabdi with an empty key). So writes check the
+// balance first and refuse with a clear message — and log loudly — when it
+// can't cover WRITES_HEADROOM more claims at 271,151 gas each: measured on
+// Rabdi for a claim and its hand-off carrying a 1 KB smart-wallet signature
+// (173,158 with a 65-byte EOA one), so the bound holds for every signer.
+// Read at most once a minute (memoize); a failed read fails open, since the
+// write itself still fails safely.
+const CLAIM_GAS = 271_151n
+const WRITES_HEADROOM = 20n
+
+const funded = memoize(async () => {
+  const writer = arkivWriterAddress()
+  if (!writer) return false
+  const pub = arkivPublicClient()
+  // The Arkiv client exposes no getGasPrice; viem's action works on any client.
+  const [balance, gasPrice] = await Promise.all([pub.getBalance({ address: writer }), getGasPrice(pub)])
+  const needed = CLAIM_GAS * gasPrice * WRITES_HEADROOM
+  if (balance < needed) {
+    console.error(
+      `[drops] Arkiv writer ${writer} is low on tGLM: ${formatEther(balance)} < ${formatEther(needed)} — top it up at hub.arkiv.network/faucet`,
+    )
+  }
+  return balance >= needed
+}, 60_000)
+
+export async function writerIsFunded(): Promise<boolean> {
+  try {
+    return await funded()
+  } catch {
+    return true
+  }
 }
 
 // ── Serialized, batching writer ──────────────────────────────────────────

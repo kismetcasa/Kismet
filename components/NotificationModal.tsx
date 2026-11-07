@@ -49,6 +49,7 @@ const PUSH_TYPE_LABELS: Record<NotificationType, string> = {
   experience_win: 'Artworks you win from a machine',
   experience_status: 'Your machines: curator decisions, running empty',
   experience_featured: 'Your work featured in a machine',
+  drop_status: 'Your drops: closed, ready to deliver',
 }
 
 type ModalTab = 'feed' | 'settings'

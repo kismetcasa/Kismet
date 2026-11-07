@@ -24,11 +24,13 @@ still costs 0.000111 ETH per edition (≈ $0.30 at the $2,688 ETH of
 6 Nov 2026) plus gas. For a new collector that's a bridge-and-buy detour, for
 anyone else a fee on something called free. A claim is **one signature**: no
 ETH, no gas, no fee. They still get the real ERC-1155 on Base, by airdrop, when the
-drop settles.
+artist delivers the drop.
 
-For artists it is the same Pass, the same mint, one extra airdrop at the end
-(a few cents of Base gas for the whole list), and a reason to share: a drop
-has a deadline and a live claim counter.
+For artists it is the same Pass and the same sponsored mint, plus one airdrop
+at the end — a Deliver button on the drop page that mints the edition and
+airdrops it to the whole list (a few cents of Base gas) — and a reason to
+share: a drop has a deadline, a live claim counter, and a cast card with a
+Claim button.
 
 For Kismet it means paying permanent Arweave storage only for artwork people
 claimed, instead of for every mint.
@@ -47,11 +49,11 @@ claimed, instead of for every mint.
      event's gift batch lives on a laptop node);
   2. a funded Arkiv writer key, set runtime-only;
   3. a plan for Arkiv mainnet. Records are short-lived by design (at most
-     30 days open + 7 settling), so a migration means draining open drops,
+     30 days open + 7 to deliver), so a migration means draining open drops,
      not moving history.
 - **What we'll measure:** claims per drop against free Zora mints of
   comparable artists, the share of claimers who had no ETH on Base, and how
-  long artists take to settle.
+  long artists take to deliver.
 
 ## Who else can use the data
 

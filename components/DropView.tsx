@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useAccount } from 'wagmi'
 import { toast } from 'sonner'
@@ -12,16 +12,21 @@ import {
   swarmGatewayUrl,
   type ClaimView,
   type DropView as DropData,
+  type SettlementView,
 } from '@/lib/drops'
+import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
 import { DropCountdown } from '@/components/DropCountdown'
+import { DropSettle } from '@/components/DropSettle'
 import { useDropIntents } from '@/hooks/useDropIntents'
 import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useProfileNames } from '@/hooks/useProfileNames'
+import { useFarcaster } from '@/providers/FarcasterProvider'
 import { toastError } from '@/lib/toast'
 
 interface DropResponse {
   drop: DropData
   claims: ClaimView[]
+  settlement: SettlementView | null
   viewerClaimed: boolean
 }
 
@@ -31,13 +36,15 @@ function short(addr: string): string {
 
 /**
  * One claim drop. Everything on this page is read from Arkiv through
- * /api/drops/{key}: the drop entity (its terms are readonly), the claim count
- * and the list of claims. The artwork streams from Swarm. After the window
- * closes, the artist sees what to do next: mint once, then airdrop to the
- * claim list (prefilled from Arkiv on the airdrop tab).
+ * /api/drops/{key}: the drop entity (its terms are readonly), the claims,
+ * and — once the artist has delivered — the settlement linking the drop to
+ * its Base token. The artwork streams from Swarm. After the window closes,
+ * the artist delivers from here (components/DropSettle); every claimer then
+ * sees where their copy is.
  */
 export function DropView({ dropKey }: { dropKey: string }) {
   const { address } = useAccount()
+  const { isInMiniApp } = useFarcaster()
   const ensureConnected = useEnsureConnected()
   const { signClaimDrop } = useDropIntents()
 
@@ -66,19 +73,28 @@ export function DropView({ dropKey }: { dropKey: string }) {
     void load()
   }, [load])
 
-  // Keep the count fresh while the drop is open.
-  const open = data ? isDropOpen(data.drop.closesAt, now) : false
+  // While open: refresh the count every 15s (reads are cached server-side),
+  // and flip to closed at the closing second itself — a Claim button must not
+  // outlive the window by a poll interval.
+  const closesAt = data?.drop.closesAt
+  const open = closesAt !== undefined && isDropOpen(closesAt, now)
   useEffect(() => {
-    if (!open) return
-    const id = setInterval(() => {
-      setNow(Math.floor(Date.now() / 1000))
-      void load()
-    }, 15_000)
-    return () => clearInterval(id)
-  }, [open, load])
+    if (!open || closesAt === undefined) return
+    const poll = setInterval(() => void load(), 15_000)
+    const close = setTimeout(
+      () => {
+        setNow(Math.floor(Date.now() / 1000))
+        void load()
+      },
+      Math.max(0, closesAt * 1000 - Date.now()) + 250,
+    )
+    return () => {
+      clearInterval(poll)
+      clearTimeout(close)
+    }
+  }, [open, closesAt, load])
 
   const names = useProfileNames(data ? [data.drop.artist, ...data.claims.map((c) => c.owner)] : [])
-  const recipients = useMemo(() => (data ? settlementRecipients(data.claims) : []), [data])
 
   async function claim() {
     if (!data || claiming) return
@@ -94,13 +110,41 @@ export function DropView({ dropKey }: { dropKey: string }) {
       })
       const json = (await res.json().catch(() => ({}))) as { already?: boolean; error?: string }
       if (!res.ok) throw new Error(json.error ?? 'Claim failed')
-      toast.success(json.already ? 'You already claimed this drop' : 'Claimed — your copy arrives when the drop settles')
+      toast.success(json.already ? 'You already claimed this drop' : 'Claimed — your copy arrives when the artist delivers')
       await load()
     } catch (err) {
       toastError('Claim', err, { id: 'claim-drop' })
     } finally {
       setClaiming(false)
     }
+  }
+
+  // Mini App → the cast composer (the drop page renders as a card with a
+  // Claim button); share-capable browsers → the native sheet; else copy.
+  async function share() {
+    if (!data) return
+    const url = `${window.location.origin}/drops/${data.drop.key}`
+    const mine = address?.toLowerCase() === data.drop.artist
+    const text = mine
+      ? `My drop "${data.drop.title}" is open on @kismet — claim it free`
+      : `Claim "${data.drop.title}" free on @kismet`
+    if (isInMiniApp) {
+      try {
+        const { sdk } = await import('@farcaster/miniapp-sdk')
+        await sdk.actions.composeCast({ text, embeds: [url], channelKey: KISMET_CHANNEL_KEY })
+        return
+      } catch {}
+    }
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({ title: data.drop.title, text, url })
+      } catch {}
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      toast.success('Link copied', { id: 'drop-share' })
+    } catch {}
   }
 
   if (error && !data) {
@@ -115,11 +159,12 @@ export function DropView({ dropKey }: { dropKey: string }) {
     return <div className="py-20 text-center text-xs font-mono text-muted">Loading drop from Arkiv…</div>
   }
 
-  const { drop, claims, viewerClaimed } = data
+  const { drop, claims, settlement, viewerClaimed } = data
   const viewer = address?.toLowerCase() ?? null
   const isArtist = viewer === drop.artist
   const full = drop.claimCount >= drop.maxClaims
   const expiresOn = new Date(recordExpiresAt(drop.closesAt) * 1000).toLocaleDateString()
+  const artworkHref = settlement ? `/artwork/${settlement.collection.toLowerCase()}/${settlement.tokenId}` : null
 
   return (
     <div className="flex flex-col gap-8">
@@ -141,17 +186,28 @@ export function DropView({ dropKey }: { dropKey: string }) {
         {drop.description && <p className="text-sm text-muted whitespace-pre-line">{drop.description}</p>}
       </div>
 
-      <div className="flex items-center justify-between border-y border-line py-3 text-xs font-mono">
+      <div className="flex items-center justify-between gap-3 border-y border-line py-3 text-xs font-mono">
         <span className="text-ink">
           {drop.claimCount} / {drop.maxClaims} claimed
         </span>
-        <DropCountdown closesAt={drop.closesAt} className={open ? 'text-accent' : 'text-muted'} />
+        <span className="flex items-center gap-3">
+          {settlement ? (
+            <span className="text-ink">delivered ✓</span>
+          ) : (
+            <DropCountdown closesAt={drop.closesAt} className={open ? 'text-accent' : 'text-muted'} />
+          )}
+          {open && (
+            <button type="button" onClick={() => void share()} className="underline text-muted hover:text-ink">
+              share
+            </button>
+          )}
+        </span>
       </div>
 
       {open && !isArtist && (
         viewerClaimed ? (
           <p className="text-center text-xs font-mono text-ink border border-line py-3">
-            Claimed ✓ — your copy is airdropped when the drop settles
+            Claimed ✓ — your copy is airdropped when the artist delivers
           </p>
         ) : full ? (
           <p className="text-center text-xs font-mono text-muted border border-line py-3">All claims are taken</p>
@@ -174,37 +230,54 @@ export function DropView({ dropKey }: { dropKey: string }) {
 
       {open && isArtist && (
         <p className="text-xs font-mono text-muted border border-line p-3">
-          This is your drop. Share this page — when it closes you&apos;ll mint it and airdrop to every claim.
+          This is your drop. Share it — when it closes you&apos;ll deliver it to every claimer from this page.
         </p>
       )}
 
-      {!open && !isArtist && (
-        <p className="text-center text-xs font-mono text-muted border border-line py-3">
-          {viewerClaimed ? 'Claims closed — your copy is on its way when the artist settles' : 'Claims closed'}
-        </p>
-      )}
-
-      {!open && isArtist && (
-        <div className="border border-accent/40 bg-accent/5 p-4 flex flex-col gap-3">
-          <h2 className="text-xs font-mono uppercase tracking-widest text-ink">Settle this drop</h2>
-          <p className="text-xs text-muted">
-            {recipients.length} {recipients.length === 1 ? 'claim' : 'claims'} to deliver. The drop and its claims stay on
-            Arkiv until {expiresOn}.
+      {settlement && artworkHref && (
+        <div className="border border-line p-3 flex flex-col gap-1 text-xs font-mono">
+          <p className="text-ink">
+            {viewerClaimed
+              ? 'Delivered ✓ — your copy is in your wallet.'
+              : isArtist
+                ? `Delivered ✓ — airdropped to ${settlement.recipients} ${settlement.recipients === 1 ? 'wallet' : 'wallets'}.`
+                : `Delivered to ${settlement.recipients} ${settlement.recipients === 1 ? 'wallet' : 'wallets'}.`}
           </p>
-          <ol className="text-xs text-muted list-decimal pl-4 flex flex-col gap-2">
-            <li>
-              <Link href="/mint" className="underline text-ink">Mint the artwork</Link> as usual.{' '}
-              <a href={`/api/drops/${drop.key}/media`} download className="underline">Download the image</a> if you
-              need it again.
-            </li>
-            <li>
-              <Link href={`/mint?tab=airdrop&drop=${drop.key}`} className="underline text-ink">
-                Airdrop it to the {recipients.length} {recipients.length === 1 ? 'claimer' : 'claimers'}
-              </Link>{' '}
-              — the list is filled in from Arkiv. An airdrop carries no mint fee, only a little Base gas.
-            </li>
-          </ol>
+          <p className="text-muted">
+            <Link href={artworkHref} className="underline hover:text-ink">View the artwork</Link>
+            {' · '}
+            <a
+              href={`https://basescan.org/tx/${settlement.airdropTx}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-ink"
+            >
+              airdrop on Base
+            </a>
+          </p>
         </div>
+      )}
+
+      {!open && !settlement && !isArtist && (
+        <p className="text-center text-xs font-mono text-muted border border-line py-3">
+          {viewerClaimed ? 'Claims closed — your copy arrives when the artist delivers' : 'Claims closed'}
+        </p>
+      )}
+
+      {!open && !settlement && isArtist && (
+        claims.length > 0 ? (
+          <DropSettle
+            dropKey={drop.key}
+            artist={drop.artist}
+            claimCount={claims.length}
+            editionSize={settlementRecipients(claims, drop.artist).length}
+            onDelivered={() => void load()}
+          />
+        ) : (
+          <p className="text-xs font-mono text-muted border border-line p-3">
+            Nobody claimed this drop, so there is nothing to deliver.
+          </p>
+        )
       )}
 
       <details className="text-xs font-mono text-muted border border-line p-3">
@@ -228,6 +301,15 @@ export function DropView({ dropKey }: { dropKey: string }) {
               {drop.swarmRef}
             </a>
           </p>
+          {settlement && (
+            <p>
+              Settlement entity:{' '}
+              <a href={arkivEntityUrl(settlement.key)} target="_blank" rel="noopener noreferrer" className="underline">
+                {short(settlement.key)}
+              </a>{' '}
+              — links this drop to its token on Base.
+            </p>
+          )}
           {claims.length > 0 && (
             <div>
               <p className="mb-1">Claims ({claims.length}), each owned by its collector:</p>

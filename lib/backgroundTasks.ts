@@ -28,8 +28,11 @@ import { runStatsPipeline } from './statsPipeline'
  *    crons, driven the same way: each tick reads when the job last ran —
  *    the cron route records its runs too — and runs it once that is older
  *    than its interval.
+ * 4. Claim-drop notices (lib/dropNotices): a closed drop's artist is told to
+ *    deliver it, and told again before its claims expire. Every tick; each
+ *    notice is once-only, and the job is a no-op unless drops are enabled.
  *
- * 2 and 3 are production only (cronsInProcess): never on Vercel, where the
+ * 2, 3 and 4 are production only (cronsInProcess): never on Vercel, where the
  * crons are scheduled and a timer inside a serverless instance can be frozen
  * mid-run holding the locks; never outside production, where a laptop must
  * not rebuild the shared snapshots or pay rewards from branch code; and off
@@ -64,6 +67,7 @@ export function startBackgroundTasks(): void {
     const tick = () => {
       void runStatsFallback()
       for (const job of MACHINE_JOBS) void runMachineJob(job)
+      void runDropNotices()
     }
     setTimeout(tick, STATS_FIRST_CHECK_MS)
     setInterval(tick, TICK_MS)
@@ -131,4 +135,10 @@ async function runMachineJob(job: MachineJob): Promise<void> {
     console.log(`[bg:${job}] not run within its interval — running it`)
     await (job === 'experience-seeds' ? jobs.commitMachineSeeds() : jobs.payReferralRewards())
   })
+}
+
+async function runDropNotices(): Promise<void> {
+  // Loaded on the first tick, not at boot, like the machine jobs.
+  const { sendDropNotices } = await import('./dropNotices')
+  await guarded('drop-notices', LOCK_TTL_SEC, sendDropNotices)
 }

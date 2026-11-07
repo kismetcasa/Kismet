@@ -233,7 +233,7 @@ export function DropForm() {
           disabled={busy}
         />
         <span className="text-[11px] text-muted">
-          Up to {DROP_MAX_CLAIMS} — one airdrop delivers them all when the drop settles.
+          Up to {DROP_MAX_CLAIMS} — when it closes, one airdrop delivers every claim, plus your own copy.
         </span>
       </div>
 

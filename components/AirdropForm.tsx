@@ -23,25 +23,9 @@ import { notifyAirdropWithBackoff } from '@/lib/notifyAirdrop'
 interface AirdropFormProps {
   moments: Moment[]
   loadingMoments: boolean
-  /** Recipients to start with — a settling claim drop's claim list, read
-   *  from Arkiv (app/mint/page.tsx ?drop=<key>). Sanitized here: valid
-   *  addresses only, lowercased, deduplicated, capped like manual entry. */
-  initialRecipients?: string[]
 }
 
-function sanitizeRecipients(list: string[] | undefined): string[] {
-  if (!list) return []
-  const out: string[] = []
-  for (const a of list) {
-    const lower = typeof a === 'string' ? a.trim().toLowerCase() : ''
-    if (!isAddress(lower) || out.includes(lower)) continue
-    out.push(lower)
-    if (out.length >= MAX_AIRDROP_RECIPIENTS) break
-  }
-  return out
-}
-
-export function AirdropForm({ moments, loadingMoments, initialRecipients }: AirdropFormProps) {
+export function AirdropForm({ moments, loadingMoments }: AirdropFormProps) {
   const { address, isConnected } = useAccount()
   const { openConnectModal } = useConnectModal()
   // Client-side airdrop — the user's EOA calls Zora's adminMint
@@ -68,7 +52,7 @@ export function AirdropForm({ moments, loadingMoments, initialRecipients }: Aird
   const [pickerOpen, setPickerOpen] = useState(false)
   const [recipientInput, setRecipientInput] = useState('')
   const [delegateInput, setDelegateInput] = useState('')
-  const [recipients, setRecipients] = useState<string[]>(() => sanitizeRecipients(initialRecipients))
+  const [recipients, setRecipients] = useState<string[]>([])
   const [sending, setSending] = useState(false)
   const [resultHash, setResultHash] = useState<string | null>(null)
 

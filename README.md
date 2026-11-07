@@ -5,9 +5,11 @@ marketplace for artists and collectors built on inprocess
 
 Free, time-boxed drops. An artist opens a drop; collectors claim it with one
 signature (**no gas, no fee, no ETH**); when the window closes, the artist
-mints the artwork once on Base and airdrops a copy to every claim. The drop
-and its claims are **Arkiv** entities; the artwork is on **Swarm** until the
-drop is minted.
+delivers it from the drop page — one free signature mints the edition on
+Base, one transaction airdrops it to every claim — and once Base confirms the
+airdrop, the delivery is recorded on Arkiv. The drop, its claims and its
+settlement are **Arkiv** entities; the artwork is on **Swarm** until the drop
+is minted.
 
 | | |
 |---|---|
@@ -27,23 +29,28 @@ Arkiv or Swarm code.
 
 Added at ETHGlobal Mumbai (judge only this):
 
-- `lib/drops.ts` — rules, EIP-712 `OpenDrop` / `ClaimDrop` intents, settlement list
-- `lib/arkiv/` — schemas, the serialized batch writer, every query
+- `lib/drops.ts` — rules, EIP-712 `OpenDrop` / `ClaimDrop` intents, the delivery's recipient list, notice copy
+- `lib/arkiv/` — schemas, the serialized batch writer (with its funds check), every query
 - `lib/swarm.ts` — Bee upload / read / batch status
-- `lib/dropsStore.ts` — claim cap and upload marker (Redis), short caches of Arkiv reads
-- `app/api/drops/**` — open, claim, list, media
-- `app/drops/**`, `components/Drop*.tsx`, `hooks/useDropIntents.ts` — the pages
+- `lib/dropsStore.ts` — claim reservation (per wallet and per Farcaster account), upload marker, delivery progress and lock (Redis), short caches of Arkiv reads
+- `lib/dropSettlement.ts` — is a drop delivered? Answered from Base
+- `lib/dropNotices.ts` — the artist's reminders
+- `app/api/drops/**` — open, claim, list, media, your claims, and delivery (prepare → mint → verified record)
+- `app/drops/**`, `components/Drop*.tsx`, `hooks/useDropIntents.ts` — the pages, the Deliver panel, the share card
 - Small hooks into existing code: `verifyTypedIntent` in `lib/intentAuth.ts`
   (the existing `verifyIntent` now delegates to it, unchanged in behavior),
-  quota kinds in `lib/userQuota.ts`, the airdrop prefill in `app/mint/page.tsx`,
-  `components/MintTabs.tsx`, `components/AirdropForm.tsx`, and the
-  build-secret and route-SEO guards in `scripts/`
-- `scripts/verify-drops.ts` (in `npm run check`), `scripts/drops-smoke.ts`, `arkiv/*.md`
+  `getFarcasterFid` in `lib/session.ts`, quota kinds in `lib/userQuota.ts`,
+  a `drop_status` notification type (`lib/notifications.ts`, its bell row,
+  push copy and settings label), the reminder tick in `lib/backgroundTasks.ts`,
+  the "Drop" link in `components/MintTabs.tsx` (via `app/mint/page.tsx`), and
+  the build-secret and route-SEO guards in `scripts/`
+- `scripts/verify-drops.ts` (in `npm run check`), `scripts/drops-smoke.ts`,
+  `scripts/e2e/drops-*.ts`, `arkiv/*.md`
 
 ### Wallets that wrote our entities
 
-- Arkiv writer (`$creator` of every drop and claim): TODO(team): the address
-  of `ARKIV_WRITER_PRIVATE_KEY`, printed by `npm run drops:smoke`.
+- Arkiv writer (`$creator` of every drop, claim and settlement): TODO(team):
+  the address of `ARKIV_WRITER_PRIVATE_KEY`, printed by `npm run drops:smoke`.
 
 ### One query to run
 
@@ -71,7 +78,12 @@ SWARM_BEE_URL=http://127.0.0.1:1633
 SWARM_BATCH_ID=…
 ```
 
-Check Arkiv and Swarm end to end, then run the app and open `/drops`:
+Check the configuration without writing anything, then Arkiv and Swarm end
+to end, then run the app and open `/drops`:
+
+```bash
+npm run drops:smoke -- --check
+```
 
 ```bash
 npm run drops:smoke
@@ -84,6 +96,11 @@ npm run dev
 Opening a drop requires a Kismet Pass when the Pass gate is on. Production
 turns the feature on with the same `DROPS_ENABLED=1` (runtime environment);
 Kismet's existing platform pause stops uploads, opens and claims at once.
+Operating it: [OPS_RUNBOOK.md §7](OPS_RUNBOOK.md#7-claim-drops-arkiv--swarm).
+
+The end-to-end checks — the whole flow through the real routes, the live
+services without a funded key, and the pages in Chromium — are in
+[scripts/e2e/README.md](scripts/e2e/README.md#claim-drops).
 
 ### How we used AI
 

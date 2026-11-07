@@ -1,7 +1,7 @@
 import 'server-only'
 import { ExpirationTime, NoEntityFoundError, SchemaMismatchError } from '@arkiv-network/sdk'
-import { and, asc, desc, eq, gt, lte } from '@arkiv-network/sdk/query'
-import { addr, key as keyValue, u64 } from '@arkiv-network/sdk/schema'
+import { and, asc, between, desc, eq, gt, lte, or } from '@arkiv-network/sdk/query'
+import { addr, key as keyValue, u256, u64 } from '@arkiv-network/sdk/schema'
 import { hexToBytes, hexToString, stringToBytes, type Address, type Hex } from 'viem'
 import {
   DROP_MAX_CLAIMS,
@@ -11,9 +11,10 @@ import {
   type DropRecord,
   type DropView,
   type OpenDropFields,
+  type SettlementView,
 } from '../drops'
 import { arkivPublicClient, arkivWriterAddress, createAndHandOff, type ArkivCreateResult } from './client'
-import { ClaimSchema, DropSchema } from './schemas'
+import { ClaimSchema, DropSchema, SettlementSchema } from './schemas'
 
 /**
  * Every Kismet read of drops and claims goes through here, and every read is
@@ -145,7 +146,7 @@ export async function getDrop(dropKey: Hex): Promise<DropRecord | null> {
   return toDropRecord(row)
 }
 
-async function countClaims(dropKey: Hex): Promise<number> {
+export async function countClaims(dropKey: Hex): Promise<number> {
   const n = await arkivPublicClient()
     .count()
     .from(ClaimSchema)
@@ -227,6 +228,114 @@ export async function listClaims(dropKey: Hex): Promise<ClaimView[]> {
         claimedAt: Number(r.claimedAt.value),
       })),
     )
+    if (rows.length < 100) break
+    last = rows[rows.length - 1].$key
+  }
+  return out
+}
+
+/** Record a verified delivery. Same lifetime as the drop it settles, handed
+ *  to the artist, readonly. */
+export async function writeSettlement(input: {
+  dropKey: Hex
+  dropClosesAt: number
+  artist: Address
+  collection: Address
+  tokenId: bigint
+  airdropTx: Hex
+  recipients: number
+}): Promise<ArkivCreateResult> {
+  return createAndHandOff({
+    schema: SettlementSchema,
+    values: {
+      drop: keyValue(input.dropKey),
+      collection: addr(input.collection),
+      tokenId: u256(input.tokenId),
+      airdropTx: input.airdropTx,
+      recipients: u64(BigInt(input.recipients)),
+    },
+    expiration: recordExpiry(input.dropClosesAt),
+    flags: { readonly: true },
+    newOwner: input.artist,
+  })
+}
+
+type SettlementRow = {
+  $key: Hex
+  drop: { value: Hex }
+  collection: { value: Address }
+  tokenId: { value: bigint }
+  airdropTx: { value: string }
+  recipients: { value: bigint }
+}
+
+/** Settlements for a set of drops, in one query (`drop = a OR drop = b …`). */
+export async function getSettlements(dropKeys: Hex[]): Promise<Map<string, SettlementView>> {
+  const out = new Map<string, SettlementView>()
+  // One `or` query per batch; a drop has one settlement (the settle route
+  // writes it under a lock), so a batch's rows fit one page.
+  for (let i = 0; i < dropKeys.length; i += SETTLEMENT_BATCH) {
+    const conditions = dropKeys.slice(i, i + SETTLEMENT_BATCH).map((k) => eq('drop', keyValue(k)))
+    const page = await arkivPublicClient()
+      .select({ $key: true, drop: true, collection: true, tokenId: true, airdropTx: true, recipients: true })
+      .from(SettlementSchema)
+      .where(conditions.length === 1 ? conditions[0] : or(...conditions))
+      .createdBy(writer())
+      .limit(100)
+      .fetch()
+    for (const r of page.entities as unknown as SettlementRow[]) {
+      out.set(normalizeEntityKey(r.drop.value), {
+        key: normalizeEntityKey(r.$key),
+        collection: r.collection.value.toLowerCase(),
+        tokenId: r.tokenId.value.toString(),
+        airdropTx: r.airdropTx.value,
+        recipients: Number(r.recipients.value),
+      })
+    }
+  }
+  return out
+}
+
+const SETTLEMENT_BATCH = 50
+
+/** Claims a wallet currently OWNS — `ownedBy`, so a claim handed to this
+ *  wallet shows up and one handed away does not. Newest first. */
+export async function listClaimsOwnedBy(owner: Address): Promise<(ClaimView & { drop: Hex })[]> {
+  const page = await arkivPublicClient()
+    .select({ $key: true, $owner: true, drop: true, collector: true, claimedAt: true })
+    .from(ClaimSchema)
+    .ownedBy(owner)
+    .createdBy(writer())
+    .orderBy(desc('claimedAt'))
+    .limit(50)
+    .fetch()
+  return (page.entities as unknown as (ClaimRow & { drop: { value: Hex } })[]).map((r) => ({
+    key: normalizeEntityKey(r.$key),
+    collector: r.collector.value.toLowerCase(),
+    owner: r.$owner.toLowerCase(),
+    claimedAt: Number(r.claimedAt.value),
+    drop: normalizeEntityKey(r.drop.value),
+  }))
+}
+
+/** Drops whose window closed between two instants — the reminder job's scan
+ *  (lib/dropNotices), paged by `$key` like listClaims so every match is read
+ *  exactly once. Bounded at ten pages a scan. */
+export async function listDropsClosedBetween(fromSec: number, toSec: number): Promise<DropRecord[]> {
+  const out: DropRecord[] = []
+  const inWindow = between('closesAt', u64(BigInt(fromSec)), u64(BigInt(toSec)))
+  let last: Hex | null = null
+  for (let pageNo = 0; pageNo < 10; pageNo++) {
+    const page = await arkivPublicClient()
+      .select()
+      .from(DropSchema, { onMismatch: 'throw' })
+      .where(last ? and(inWindow, gt('$key', keyValue(last))) : inWindow)
+      .createdBy(writer())
+      .orderBy(asc('$key'))
+      .limit(100)
+      .fetch()
+    const rows = page.entities as unknown as DropRow[]
+    out.push(...rows.map(toDropRecord))
     if (rows.length < 100) break
     last = rows[rows.length - 1].$key
   }

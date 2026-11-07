@@ -1,14 +1,14 @@
-import { addr, bytes, defineSchema, key, str, u64 } from '@arkiv-network/sdk/schema'
+import { addr, bytes, defineSchema, key, str, u256, u64 } from '@arkiv-network/sdk/schema'
 
 /**
  * Kismet's Arkiv entities. arkiv/schema.md documents each one: what it
  * holds, which fields are indexed (filterable), who owns it and when it
  * expires.
  *
- * Both are written by Kismet's writer wallet (so `$creator` is Kismet — the
- * attestation that the signature, Pass gate and claim cap were checked) and
- * then handed to their user (`$owner`). Both are created `readonly`, so no
- * one — Kismet included — can change their terms afterwards.
+ * All are written by Kismet's writer wallet (so `$creator` is Kismet — the
+ * attestation that the signature, Pass gate, claim cap or delivery were
+ * checked) and then handed to their user (`$owner`). All are created
+ * `readonly`, so no one — Kismet included — can change them afterwards.
  *
  * Only what a query filters on is indexed: an attribute is "either indexed,
  * so queries can filter on it, or stored only, which costs less"
@@ -24,6 +24,7 @@ import { addr, bytes, defineSchema, key, str, u64 } from '@arkiv-network/sdk/sch
  *  can't be mistaken for this one. */
 export const DROP_SCHEMA_NAME = 'kismet.drop.v1'
 export const CLAIM_SCHEMA_NAME = 'kismet.claim.v1'
+export const SETTLEMENT_SCHEMA_NAME = 'kismet.settlement.v1'
 
 export const DropSchema = defineSchema(DROP_SCHEMA_NAME, {
   /** The artist who opened the drop (also its owner after the hand-off). */
@@ -55,4 +56,21 @@ export const ClaimSchema = defineSchema(CLAIM_SCHEMA_NAME, {
   intentNonce: str(),
   intentExpiresAt: u64(),
   intentSignature: bytes(),
+})
+
+/**
+ * The proof a drop was delivered: the Base artwork its claims were airdropped
+ * as. Written only after the airdrop transaction is checked on Base (every
+ * claim's owner received the token in it, minted by the artist), handed to
+ * the artist, readonly, and gone with the drop. Any app can read it to link a
+ * drop to its NFT.
+ */
+export const SettlementSchema = defineSchema(SETTLEMENT_SCHEMA_NAME, {
+  /** The drop this settles — looked up by drop, so indexed. */
+  drop: key().indexed(),
+  collection: addr(),
+  tokenId: u256(),
+  /** The Base transaction that airdropped the edition. */
+  airdropTx: str(),
+  recipients: u64(),
 })

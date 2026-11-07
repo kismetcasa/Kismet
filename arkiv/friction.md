@@ -104,7 +104,7 @@ something the docs already cover.
 - **What happened:** the SDK ships only the `rabdi` testnet chain, and the
   previous testnet (Braga) was shut down with an export deadline. We can't
   promise collectors anything permanent on Rabdi, so **the design keeps only
-  short-lived state on Arkiv** (an open drop, plus 7 days to settle). What
+  short-lived state on Arkiv** (an open drop, plus 7 days to deliver it). What
   collectors keep, the NFT, is on Base. A reset would lose pending claims,
   never art.
 - **Ask:** a mainnet date, and a written migration guarantee for testnet

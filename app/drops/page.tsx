@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic'
 
 export const metadata = {
   title: 'claim drops — Kismet',
-  description: 'Free-to-claim drops on Kismet: claim with one signature, receive the artwork when the drop settles.',
+  description: 'Free-to-claim drops on Kismet: claim with one signature, receive the artwork when the artist delivers it.',
   alternates: { canonical: `${SITE_URL}/drops` },
 }
 

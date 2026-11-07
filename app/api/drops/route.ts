@@ -9,19 +9,22 @@ import { verifyTypedIntent } from '@/lib/intentAuth'
 import type { IntentEnvelope } from '@/lib/intent'
 import { buildOpenDropMessage, OPEN_DROP_TYPES, validateOpenDrop } from '@/lib/drops'
 import { writeDrop } from '@/lib/arkiv/drops'
+import { writerIsFunded } from '@/lib/arkiv/client'
 import { getDropsFeed, invalidateDropReads, isDropsEnabled, wasUploaded } from '@/lib/dropsStore'
 
 export const runtime = 'nodejs'
 
 /**
  * GET  /api/drops — open drops (soonest-closing first) and drops waiting to
- *      settle, read from Arkiv (cached briefly, lib/dropsStore).
+ *      settle, read from Arkiv (cached briefly, lib/dropsStore). Reads are
+ *      served from that shared cache, so the per-IP limit is generous: a
+ *      venue's worth of viewers can share one address.
  * POST /api/drops — open a drop: verify the artist's OpenDrop intent, check
  *      the Pass gate, and write a read-only `kismet.drop.v1` entity that the
  *      artist owns.
  */
 export async function GET(req: NextRequest) {
-  if (!(await checkRateLimit(`drops-list:${getClientIp(req)}`, 120, 60))) return errorResponse(429, 'Too many requests')
+  if (!(await checkRateLimit(`drops-list:${getClientIp(req)}`, 600, 60))) return errorResponse(429, 'Too many requests')
   if (!isDropsEnabled()) return errorResponse(404, 'Not found')
   try {
     return NextResponse.json(await getDropsFeed(), { headers: { 'Cache-Control': 'no-store' } })
@@ -72,6 +75,8 @@ export async function POST(req: NextRequest) {
   if (paused) return errorResponse(503, 'Platform is temporarily paused')
   if (!hasPass) return errorResponse(403, 'A Kismet Pass is required to open a drop')
   if (!uploaded) return errorResponse(400, 'Upload the artwork again — that upload has expired')
+  // A drop that opens but can't record claims is worse than one that waits.
+  if (!(await writerIsFunded())) return errorResponse(503, 'Drops are paused for a moment — try again shortly')
 
   if (!(await consumeUserQuota('drop-open', account, 1))) {
     return errorResponse(429, 'Daily drop limit reached — try again tomorrow')

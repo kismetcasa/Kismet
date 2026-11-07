@@ -7,6 +7,10 @@
 //   npm run drops:smoke -- --keep            # a 7-day example drop to cite in
 //                                            # arkiv/swarm.md and the README
 //   npm run drops:smoke -- --image art.png   # upload your own image
+//   npm run drops:smoke -- --check           # configuration only: reach both
+//                                            # services, check the writer's
+//                                            # funds and the batch — writes
+//                                            # nothing (run it before enabling)
 //
 // Needs (in .env.local or the shell): ARKIV_WRITER_PRIVATE_KEY (funded with
 // tGLM from hub.arkiv.network/faucet), ARKIV_ACCESS_KEY (optional),
@@ -22,7 +26,7 @@ import { readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { formatEther } from 'viem'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
-import { arkivPublicClient, arkivWriterAddress, isArkivConfigured } from '@/lib/arkiv/client'
+import { arkivPublicClient, arkivWriterAddress, isArkivConfigured, writerIsFunded } from '@/lib/arkiv/client'
 import { getDrop, listClaims, listOpenDrops, writeClaim, writeDrop } from '@/lib/arkiv/drops'
 import { fetchFromSwarm, getStampStatus, isSwarmUploadConfigured, swarmPublicInfo, uploadToSwarm } from '@/lib/swarm'
 import {
@@ -46,6 +50,7 @@ const TINY_PNG = Buffer.from(
 
 const args = process.argv.slice(2)
 const keep = args.includes('--keep')
+const checkOnly = args.includes('--check')
 const imageArg = args.indexOf('--image')
 const imagePath = imageArg >= 0 ? args[imageArg + 1] : undefined
 
@@ -71,11 +76,19 @@ async function main(): Promise<void> {
   const [block, balance] = await Promise.all([pub.getBlockNumber(), pub.getBalance({ address: writer })])
   console.log(`Arkiv  Rabdi block ${block}, writer ${writer}, ${formatEther(balance)} tGLM`)
   check('the writer has tGLM for gas', balance > 0n)
+  check('the writer can pay for the next 20 claims (the routes refuse writes below this)', await writerIsFunded())
 
   const stamp = await getStampStatus()
   const { batchId, gateway } = swarmPublicInfo()
   console.log(`Swarm  batch ${batchId} — ${stamp ? `usable=${stamp.usable}, depth ${stamp.depth}, ~${Math.floor(stamp.batchTTL / 86400)} days left` : 'node did not report the batch'}`)
   check('the postage batch is usable', stamp?.usable === true)
+
+  if (checkOnly) {
+    const enabled = process.env.DROPS_ENABLED?.trim() === '1'
+    console.log(`Drops  DROPS_ENABLED=${enabled ? '1 — the routes are on' : 'unset — the routes stay off until it is 1'}`)
+    console.log(failures === 0 ? '\ndrops-smoke --check: OK' : `\ndrops-smoke --check: ${failures} FAILURE(S)`)
+    process.exit(failures === 0 ? 0 : 1)
+  }
 
   // ── Swarm: upload, then read back ──
   const bytes = imagePath ? new Uint8Array(readFileSync(imagePath)) : new Uint8Array(TINY_PNG)
@@ -159,7 +172,8 @@ async function main(): Promise<void> {
   const claims = await listClaims(opened.entityKey)
   check('listClaims returns the claim, owned by the collector (hand-off worked)',
     claims.length === 1 && claims[0].key === claimed.entityKey.toLowerCase() && claims[0].owner === collector.address.toLowerCase())
-  check('the airdrop list is the collector', settlementRecipients(claims).join() === collector.address.toLowerCase())
+  check('the airdrop list is the collector, then the artist',
+    settlementRecipients(claims, artist.address).join() === [collector.address, artist.address].join().toLowerCase())
 
   console.log(`\nFor arkiv/swarm.md: drop entity ${opened.entityKey} → Swarm reference ${reference}`)
   console.log(keep ? 'Kept: the drop is open for 7 days and stays on Arkiv 7 more.' : 'Throwaway: these entities expire about 20 minutes from now.')

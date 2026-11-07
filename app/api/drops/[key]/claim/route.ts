@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAddress, isAddress } from 'viem'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
+import { getFarcasterFid } from '@/lib/session'
 import { errorResponse, upstreamError } from '@/lib/apiResponse'
 import { consumeUserQuota } from '@/lib/userQuota'
 import { isBlacklisted } from '@/lib/blacklist'
@@ -9,6 +10,7 @@ import { verifyTypedIntent } from '@/lib/intentAuth'
 import type { IntentEnvelope } from '@/lib/intent'
 import { buildClaimDropMessage, CLAIM_DROP_TYPES, isDropOpen, isEntityKey, normalizeEntityKey } from '@/lib/drops'
 import { writeClaim } from '@/lib/arkiv/drops'
+import { writerIsFunded } from '@/lib/arkiv/client'
 import { getDropRecord, invalidateDropReads, isDropsEnabled, releaseClaim, reserveClaim } from '@/lib/dropsStore'
 
 export const runtime = 'nodejs'
@@ -20,12 +22,17 @@ export const runtime = 'nodejs'
  *
  * Order matters: the signature is checked first (it proves who is asking),
  * then the drop is read from Arkiv and must still be open, then Redis
- * atomically reserves one slot per wallet under the cap (Arkiv has no
- * conditional write), then the quota, then the Arkiv write. Any failure after
- * the reservation gives the slot back, so the wallet can simply retry.
+ * atomically reserves one slot per wallet — and per Farcaster account when
+ * the claim comes from the Mini App with a Quick Auth token — under the cap
+ * (Arkiv has no conditional write), then the quota, then the Arkiv write. Any
+ * failure after the reservation gives the slot back, so the wallet can simply
+ * retry.
+ *
+ * 60 a minute per IP, the same as /api/auth/intent-nonce (every claim spends
+ * one nonce): a room on one network can claim as fast as it can sign.
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ key: string }> }) {
-  if (!(await checkRateLimit(`drops-claim:${getClientIp(req)}`, 20, 60))) return errorResponse(429, 'Too many requests')
+  if (!(await checkRateLimit(`drops-claim:${getClientIp(req)}`, 60, 60))) return errorResponse(429, 'Too many requests')
   if (!isDropsEnabled()) return errorResponse(404, 'Not found')
 
   const { key: raw } = await params
@@ -69,19 +76,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ key
   const nowSec = Math.floor(Date.now() / 1000)
   if (!isDropOpen(drop.closesAt, nowSec)) return errorResponse(409, 'This drop has closed')
   if (drop.artist === account) return errorResponse(400, 'You opened this drop — your copy comes with the mint')
+  if (!(await writerIsFunded())) return errorResponse(503, 'Claims are paused for a moment — try again shortly')
 
   const collector = getAddress(account)
+  const fid = await getFarcasterFid(req)
   let reserved
   try {
-    reserved = await reserveClaim(dropKey, collector, drop.maxClaims, drop.closesAt)
+    reserved = await reserveClaim(dropKey, collector, fid, drop.maxClaims, drop.closesAt)
   } catch (err) {
     return upstreamError(503, 'Temporarily unavailable — please retry', err, 'drops-claim')
   }
   if (reserved === 'duplicate') return NextResponse.json({ already: true })
+  if (reserved === 'account-claimed') return errorResponse(409, 'Your Farcaster account already claimed this drop')
   if (reserved === 'full') return errorResponse(409, 'All claims are taken')
 
   if (!(await consumeUserQuota('drop-claim', account, 1))) {
-    await releaseClaim(dropKey, collector).catch(() => {})
+    await releaseClaim(dropKey, collector, fid).catch(() => {})
     return errorResponse(429, 'Daily claim limit reached — try again tomorrow')
   }
 
@@ -93,10 +103,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ key
       claimedAt: nowSec,
       intent: { signature: envelope!.signature as `0x${string}`, nonce: envelope!.nonce, expiresAt: envelope!.expiresAt },
     })
-    invalidateDropReads(dropKey)
+    invalidateDropReads(dropKey, collector)
     return NextResponse.json({ claimKey: entityKey.toLowerCase(), txHash })
   } catch (err) {
-    await releaseClaim(dropKey, collector).catch(() => {})
+    await releaseClaim(dropKey, collector, fid).catch(() => {})
     return upstreamError(503, 'Could not record the claim on Arkiv — try again', err, 'drops-claim')
   }
 }

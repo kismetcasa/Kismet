@@ -62,7 +62,14 @@ import {
   type ClaimView,
   type OpenDropFields,
 } from '../lib/drops.ts'
-import { CLAIM_SCHEMA_NAME, ClaimSchema, DROP_SCHEMA_NAME, DropSchema } from '../lib/arkiv/schemas.ts'
+import {
+  CLAIM_SCHEMA_NAME,
+  ClaimSchema,
+  DROP_SCHEMA_NAME,
+  DropSchema,
+  SETTLEMENT_SCHEMA_NAME,
+  SettlementSchema,
+} from '../lib/arkiv/schemas.ts'
 
 let failures = 0
 const check = (name: string, cond: boolean): void => {
@@ -87,7 +94,8 @@ const base = {
 
 // ── 1. caps in lockstep ──────────────────────────────────────────────────
 console.log('caps')
-check('DROP_MAX_CLAIMS equals MAX_AIRDROP_RECIPIENTS (one airdrop settles a full drop)', DROP_MAX_CLAIMS === MAX_AIRDROP_RECIPIENTS)
+check('DROP_MAX_CLAIMS + 1 equals MAX_AIRDROP_RECIPIENTS (one airdrop delivers a full drop and the artist\'s copy)',
+  DROP_MAX_CLAIMS + 1 === MAX_AIRDROP_RECIPIENTS)
 check('ARKIV_STR_MAX_BYTES matches the SDK MAX_STRING_BYTES', ARKIV_STR_MAX_BYTES === MAX_STRING_BYTES)
 
 // ── 3. validateOpenDrop ──────────────────────────────────────────────────
@@ -233,17 +241,21 @@ const claim = (k: string, collector: string, owner: string, claimedAt: number): 
   owner,
   claimedAt,
 })
+const ARTIST = '0x' + 'd'.repeat(40)
 const list = settlementRecipients([
   claim('3', C, C, 30),
   claim('1', A, A, 10),
   claim('2', B, A, 20), // B handed their claim to A
-])
-check('airdrops to each claim\'s current owner, deduplicated, in claim order', list.join() === [A, C].join())
-check('owners are lowercased', settlementRecipients([claim('1', A, A.toUpperCase().replace('0X', '0x'), 1)])[0] === A)
-check('invalid owners are skipped', settlementRecipients([claim('1', A, '0x1234', 1)]).length === 0)
+], ARTIST)
+check('each claim\'s current owner, deduplicated, in claim order, then the artist', list.join() === [A, C, ARTIST].join())
+check('owners are lowercased', settlementRecipients([claim('1', A, A.toUpperCase().replace('0X', '0x'), 1)], ARTIST)[0] === A)
+check('invalid owners are skipped', settlementRecipients([claim('1', A, '0x1234', 1)], ARTIST).join() === ARTIST)
+check('the artist is listed once when a claim was handed to them',
+  settlementRecipients([claim('1', A, ARTIST, 1), claim('2', B, B, 2)], ARTIST.toUpperCase().replace('0X', '0x')).join() === [ARTIST, B].join())
 const many = Array.from({ length: DROP_MAX_CLAIMS + 25 }, (_, i) =>
   claim(((i % 9) + 1).toString(), A, '0x' + i.toString(16).padStart(40, '0'), i))
-check(`the list is capped at ${DROP_MAX_CLAIMS}`, settlementRecipients(many).length === DROP_MAX_CLAIMS)
+check(`a full drop is ${DROP_MAX_CLAIMS} claims plus the artist — one airdrop's worth`,
+  settlementRecipients(many, ARTIST).length === MAX_AIRDROP_RECIPIENTS)
 
 // ── 7. schemas ───────────────────────────────────────────────────────────
 console.log('schemas')
@@ -251,7 +263,9 @@ const indexed = (cols: Record<string, { isIndexed: boolean }>) =>
   Object.entries(cols).filter(([, c]) => c.isIndexed).map(([n]) => n).sort().join(',')
 check('drop schema indexes exactly closesAt', indexed(DropSchema.columns as Record<string, { isIndexed: boolean }>) === 'closesAt')
 check('claim schema indexes exactly drop', indexed(ClaimSchema.columns as Record<string, { isIndexed: boolean }>) === 'drop')
-check('schema names are versioned', DROP_SCHEMA_NAME === 'kismet.drop.v1' && CLAIM_SCHEMA_NAME === 'kismet.claim.v1')
+check('settlement schema indexes exactly drop', indexed(SettlementSchema.columns as Record<string, { isIndexed: boolean }>) === 'drop')
+check('schema names are versioned',
+  DROP_SCHEMA_NAME === 'kismet.drop.v1' && CLAIM_SCHEMA_NAME === 'kismet.claim.v1' && SETTLEMENT_SCHEMA_NAME === 'kismet.settlement.v1')
 check('description is a bytes column (a str would cap at 128 bytes)',
   (DropSchema.columns as Record<string, { type: string }>).description.type === 'bytes')
 

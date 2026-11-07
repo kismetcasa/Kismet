@@ -46,7 +46,10 @@
     "verify:experience": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-experience.ts && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-experience-flow.ts",
     "verify:upload": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-upload-policy.ts",
     "verify:drops": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/verify-drops.ts",
-    "drops:smoke": "node --env-file-if-exists=.env.local --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/drops-smoke.ts"
+    "drops:smoke": "node --env-file-if-exists=.env.local --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/drops-smoke.ts",
+    "e2e:drops:flow": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/e2e/register-drops-flow.mjs scripts/e2e/drops-flow.ts",
+    "e2e:drops:live": "node --env-file-if-exists=.env.local --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/e2e/drops-live.ts",
+    "e2e:drops:ui": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/e2e/drops-ui.ts"
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.44.1",

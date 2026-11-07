@@ -31,12 +31,12 @@ export const ARKIV_STR_MAX_BYTES = 128
 export const DROP_DESCRIPTION_MAX_CHARS = 1000
 
 /**
- * One drop settles in ONE airdrop, and an airdrop caps at
- * MAX_AIRDROP_RECIPIENTS (lib/config.ts) — so a drop never takes more claims
- * than a single airdrop can deliver. scripts/verify-drops.ts pins the two
- * equal so they cannot drift.
+ * One drop settles in ONE airdrop: every claim plus the artist's own copy.
+ * An airdrop caps at MAX_AIRDROP_RECIPIENTS (lib/config.ts, 200), so a drop
+ * takes at most 199 claims. scripts/verify-drops.ts pins
+ * DROP_MAX_CLAIMS + 1 === MAX_AIRDROP_RECIPIENTS so they cannot drift.
  */
-export const DROP_MAX_CLAIMS = 200
+export const DROP_MAX_CLAIMS = 199
 
 /** Shortest and longest claim window. Ten minutes keeps a live demo short;
  *  thirty days keeps the whole record (window + grace) far inside Arkiv's
@@ -308,9 +308,20 @@ export interface DropRecord {
   maxClaims: number
 }
 
-/** A drop with its live claim count, as pages show it. */
+/** A drop with its live claim count, as pages show it. `delivered` is set
+ *  once its settlement is recorded on Arkiv. */
 export interface DropView extends DropRecord {
   claimCount: number
+  delivered?: boolean
+}
+
+/** The drop's settlement: the Base artwork its claims were airdropped as. */
+export interface SettlementView {
+  key: `0x${string}`
+  collection: string
+  tokenId: string
+  airdropTx: string
+  recipients: number
 }
 
 export interface ClaimView {
@@ -321,13 +332,14 @@ export interface ClaimView {
 }
 
 /**
- * The airdrop list for settlement: each claim's CURRENT owner (a claim is an
- * Arkiv entity its collector owns, and "only the owner can change, hand over
- * or delete it" — so a collector with an EOA can hand it to another wallet
- * before the drop settles), deduplicated, capped at DROP_MAX_CLAIMS, in
- * claim order.
+ * Who receives the edition at settlement: each claim's CURRENT owner (a
+ * claim is an Arkiv entity its collector owns, and "only the owner can
+ * change, hand over or delete it" — so a collector with an EOA can hand it to
+ * another wallet before the drop settles), deduplicated, in claim order, then
+ * the artist's own copy. The edition is minted at exactly this size with its
+ * sale closed, so nobody else can mint it and no claimer can be crowded out.
  */
-export function settlementRecipients(claims: ClaimView[]): string[] {
+export function settlementRecipients(claims: ClaimView[], artist: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   const ordered = [...claims].sort((a, b) => a.claimedAt - b.claimedAt || (a.key < b.key ? -1 : 1))
@@ -338,7 +350,40 @@ export function settlementRecipients(claims: ClaimView[]): string[] {
     out.push(a)
     if (out.length >= DROP_MAX_CLAIMS) break
   }
+  const me = artist.toLowerCase()
+  if (!seen.has(me)) out.push(me)
   return out
+}
+
+// ── Notices ──────────────────────────────────────────────────────────────
+
+/** Two days before a drop's records expire, its artist is told it is the last
+ *  chance to deliver (lib/dropNotices): after that the claims are gone. */
+export const EXPIRY_WARNING_SECONDS = 2 * 24 * 60 * 60
+
+/**
+ * What a `drop_status` notice says (Notification.note): a headline, a line of
+ * detail, and the push title. One table for the bell row and the Farcaster
+ * push, so they cannot drift.
+ */
+export function dropStatusCopy(
+  note: string | undefined,
+  name: string,
+  claims: number,
+): { headline: string; detail: string; title: string } {
+  const n = `${claims} ${claims === 1 ? 'claim' : 'claims'}`
+  if (note === 'expiring') {
+    return {
+      headline: `Deliver ${name} before its claims expire`,
+      detail: `${n} expire in 2 days — after that the drop can't be delivered.`,
+      title: 'Last chance to deliver',
+    }
+  }
+  return {
+    headline: `${name} closed with ${n}`,
+    detail: 'Deliver it: one free signature to mint, one airdrop.',
+    title: 'Your drop closed',
+  }
 }
 
 // ── Public links ─────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import { shortAddress, formatRelativeTime, formatPrice, isPlatformCollectComment
 import { isPatronCollection } from '@/lib/patronCollection'
 import type { Notification } from '@/lib/notifications'
 import { experienceStatusCopy } from '@/lib/experience/format'
+import { dropStatusCopy } from '@/lib/drops'
 
 interface NotificationRowProps {
   notification: Notification
@@ -61,6 +62,9 @@ function notificationHref(n: Notification): string {
       // The artwork, not the machine: its page lists every machine the piece
       // is in and holds the switch that takes it out of them.
       return n.tokenAddress && n.tokenId ? `/artwork/${n.tokenAddress}/${n.tokenId}` : '/'
+    case 'drop_status':
+      // The drop page is where its artist delivers it.
+      return n.dropKey ? `/drops/${n.dropKey}` : '/drops'
   }
 }
 
@@ -326,6 +330,17 @@ function NotificationContent({ n, actorName }: { n: Notification; actorName?: st
           </p>
         </>
       )
+    case 'drop_status': {
+      const { headline, detail } = dropStatusCopy(n.note, n.tokenName ? `"${n.tokenName}"` : 'Your drop', n.amount ?? 0)
+      return (
+        <>
+          <p className={`text-xs font-mono truncate ${n.note === 'expiring' ? 'text-accent' : 'text-ink'}`}>{headline}</p>
+          <p className="text-[10px] font-mono text-muted mt-0.5 truncate">
+            {detail} · {time}
+          </p>
+        </>
+      )
+    }
     default: {
       // Exhaustiveness: if a new NotificationType is added without a case
       // above, TS will fail to assign `n.type` to `never` here.
