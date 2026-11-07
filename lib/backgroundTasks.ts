@@ -138,6 +138,8 @@ async function runMachineJob(job: MachineJob): Promise<void> {
 }
 
 async function runDropNotices(): Promise<void> {
+  // Off means off: no Arkiv SDK loaded, no leader lock taken every tick.
+  if (process.env.DROPS_ENABLED?.trim() !== '1') return
   // Loaded on the first tick, not at boot, like the machine jobs.
   const { sendDropNotices } = await import('./dropNotices')
   await guarded('drop-notices', LOCK_TTL_SEC, sendDropNotices)

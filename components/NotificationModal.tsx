@@ -26,6 +26,7 @@ const TYPE_LABELS: Record<string, string> = {
   // raffle_win is non-muteable (never listed here); only the closure notice is.
   raffle_ended: 'Raffle results',
   file_update: 'Download updates',
+  drop_status: 'Your drops: closed, ready to deliver',
 }
 
 // Labels used in the FC push section. We surface every type here (the
