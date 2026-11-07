@@ -45,12 +45,43 @@ type IntentVerifyResult =
   | { ok: true }
   | { ok: false; error: string; status: number }
 
-export async function verifyIntent(
+/**
+ * Verify a mint/write intent: the MintIntent typed data rebuilt from the body,
+ * through the one implementation below. Any tampered body field flips one of
+ * the typed slots and the signature fails.
+ */
+export function verifyIntent(
   envelope: IntentEnvelope | undefined,
   action: IntentAction,
   account: string,
   body: MintBody,
 ): Promise<IntentVerifyResult> {
+  return verifyTypedIntent({
+    envelope,
+    account,
+    types: MINT_INTENT_TYPES,
+    primaryType: 'MintIntent',
+    buildMessage: (nonce, expiresAt) =>
+      buildMintIntent(body, action, nonce, expiresAt) as unknown as Record<string, unknown>,
+  })
+}
+
+/**
+ * Envelope checks, signature verification and single-use nonce consumption
+ * for any Kismet intent: MintIntent (verifyIntent above) and claim drops'
+ * OpenDrop / ClaimDrop (lib/drops.ts). Same domain, same nonce namespace — a
+ * nonce is consumed once whichever intent spends it — and the distinct
+ * primaryType + `action` slot keep one kind of signature from ever verifying
+ * as another.
+ */
+export async function verifyTypedIntent(params: {
+  envelope: IntentEnvelope | undefined
+  account: string
+  types: Record<string, readonly { name: string; type: string }[]>
+  primaryType: string
+  buildMessage: (nonce: string, expiresAt: number) => Record<string, unknown>
+}): Promise<IntentVerifyResult> {
+  const { envelope, account, types, primaryType, buildMessage } = params
   if (
     !envelope ||
     typeof envelope.signature !== 'string' ||
@@ -71,22 +102,23 @@ export async function verifyIntent(
     return { ok: false, error: 'Intent expired or expiry out of range', status: 401 }
   }
 
-  // Rebuild the exact typed-data message the client signed. Any tampered
-  // body field flips one of the typed slots and the signature fails.
-  const message = buildMintIntent(body, action, envelope.nonce, envelope.expiresAt)
-
   // verifyTypedData handles both EOA recovery and ERC-1271 smart-wallet
-  // signatures (via the same verifyHash path verifyMessage uses).
+  // signatures (via the same verifyHash path verifyMessage uses). The types
+  // table is the caller's, which viem's compile-time inference can't follow;
+  // viem still checks the message against it at runtime when it hashes.
+  const client = serverBaseClient()
+  const args = {
+    address: account as `0x${string}`,
+    domain: KISMET_INTENT_DOMAIN,
+    types,
+    primaryType,
+    message: buildMessage(envelope.nonce, envelope.expiresAt),
+    signature: envelope.signature as `0x${string}`,
+  } as unknown as Parameters<typeof client.verifyTypedData>[0]
+
   let valid = false
   try {
-    valid = await serverBaseClient().verifyTypedData({
-      address: account as `0x${string}`,
-      domain: KISMET_INTENT_DOMAIN,
-      types: MINT_INTENT_TYPES,
-      primaryType: 'MintIntent',
-      message: message as unknown as Record<string, unknown>,
-      signature: envelope.signature as `0x${string}`,
-    })
+    valid = await client.verifyTypedData(args)
   } catch {
     return { ok: false, error: 'Signature verification failed', status: 401 }
   }
@@ -102,6 +134,5 @@ export async function verifyIntent(
   if (consumed !== 1) {
     return { ok: false, error: 'Nonce already used or expired', status: 401 }
   }
-
   return { ok: true }
 }

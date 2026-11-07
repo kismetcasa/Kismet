@@ -33,6 +33,10 @@ export type QuotaKind =
   | 'cfile-bytes'
   | 'cfile-download'
   | 'cfile-view'
+  | 'drop-media'
+  | 'drop-bytes'
+  | 'drop-open'
+  | 'drop-claim'
 
 interface QuotaWindow {
   /** Cap per UTC calendar day. */
@@ -91,6 +95,14 @@ const QUOTAS: Record<QuotaKind, QuotaWindow> = {
   // bandwidth shape, so it is still metered — just at a viewing cadence,
   // and the view route's response caching absorbs most repeats.
   'cfile-view':     { day: 400,                week: 1500                },
+  // Claim drops (lib/drops.ts). Image uploads spend the platform's Swarm
+  // postage batch — counted and byte-metered like collector files, so an
+  // artist iterating on a cover can't fill the batch. Opening a drop and
+  // claiming one each spend Arkiv gas from the platform writer wallet.
+  'drop-media':     { day: 20,                 week: 80                  },
+  'drop-bytes':     { day: 100 * 1024 * 1024,  week: 400 * 1024 * 1024   },
+  'drop-open':      { day: 10,                 week: 40                  },
+  'drop-claim':     { day: 50,                 week: 200                 },
 }
 
 const TTL_DAY_SECONDS = 25 * 60 * 60       // 25h: covers boundary requests

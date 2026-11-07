@@ -11,6 +11,7 @@ import {
 } from './notifications'
 import { SITE_URL } from './siteUrl'
 import { experienceStatusCopy } from './experience/format'
+import { dropStatusCopy } from './drops'
 import { isSafePublicHttpsUrl } from './safeUrl'
 
 // Farcaster native push notifications, layered on top of the in-app bell.
@@ -609,6 +610,16 @@ async function compose(n: Notification): Promise<ComposedPush | null> {
         title: truncate('You won an artwork', TITLE_MAX),
         body: truncate(`${subject}${more} ${more ? 'are' : 'is'} yours${actorName ? ` — by ${actorName}` : ''}`, BODY_MAX),
         targetUrl: momentUrl,
+      }
+    }
+    case 'drop_status': {
+      // The artist's own drop waiting to be delivered. Same words and same
+      // destination as the bell row.
+      const { headline, detail, title } = dropStatusCopy(n.note, tokenName ? `"${tokenName}"` : 'Your drop', n.amount ?? 0)
+      return {
+        title: truncate(title, TITLE_MAX),
+        body: truncate(`${headline}. ${detail}`, BODY_MAX),
+        targetUrl: n.dropKey ? `${SITE_URL}/drops/${n.dropKey}` : `${SITE_URL}/drops`,
       }
     }
     default: {
