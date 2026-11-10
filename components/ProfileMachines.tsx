@@ -971,7 +971,7 @@ function ActionsMenu({ label, actions, buttonRef }: { label: string; actions: Me
                 setOpen(false)
                 a.run()
               }}
-              className={`px-3 py-2 text-left text-xs font-mono tracking-wider uppercase hover:bg-[#1e1e1e] focus:bg-[#1e1e1e] focus:outline-none transition-colors ${
+              className={`px-3 py-2 text-left text-xs font-mono tracking-wider uppercase whitespace-nowrap hover:bg-[#1e1e1e] focus:bg-[#1e1e1e] focus:outline-none transition-colors ${
                 a.danger ? 'text-[#ff7c80]' : 'text-dim hover:text-ink focus:text-ink'
               }`}
             >
