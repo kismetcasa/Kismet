@@ -2841,6 +2841,8 @@ try {
       undefined,
       '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
       '/opt/pw-browsers/chromium/chrome-linux/chrome',
+      // The cloud image's own Chromium, whichever revision it is.
+      '/opt/pw-browsers/chromium',
     ]
     let browser = null
     let launchErr = null
