@@ -51,6 +51,11 @@ export const ALL_NOTIFICATION_TYPES = [
   // can turn machines off for the piece from its page; this is how they find
   // out there is anything to turn off.
   'experience_featured',
+  // A claim drop of the recipient's closed with claims to deliver (note
+  // 'closed'), or its Arkiv records expire in two days and it still hasn't
+  // been delivered (note 'expiring' — after that the claims are gone).
+  // `dropKey` links the drop, `amount` is the claim count (lib/dropNotices).
+  'drop_status',
 ] as const
 
 export type NotificationType = (typeof ALL_NOTIFICATION_TYPES)[number]
@@ -114,6 +119,8 @@ export interface Notification {
   note?: string
   /** experience_status / experience_featured: the machine the notice is about. */
   machineId?: string
+  /** drop_status: the claim drop (its Arkiv entity key). */
+  dropKey?: string
 }
 
 type NotificationInput = Omit<Notification, 'id' | 'timestamp' | 'priority' | 'read'> & {
@@ -247,6 +254,8 @@ async function isPriority(
   // the actor test below could never badge it), and their work put in front
   // of collectors. Each is rare and about the recipient's own money or work.
   if (type === 'experience_win' || type === 'experience_status' || type === 'experience_featured') return true
+  // The artist's own drop waiting on them — collectors are owed the artwork.
+  if (type === 'drop_status') return true
   // listing_created stays non-priority — active sellers shouldn't dominate
   // the priority bell. The "all" tab still surfaces it for engaged followers.
   if (!actor) return false

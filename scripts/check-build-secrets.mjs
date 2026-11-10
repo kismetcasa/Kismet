@@ -32,6 +32,9 @@ const SERVER_SECRETS = [
   'SCOUT_SPENDER_PRIVATE_KEY',
   // Bearer that authorizes the stats-rebuild cron.
   'CRON_SECRET',
+  // Claim drops' Arkiv writer (lib/arkiv/client.ts): writes every drop and
+  // claim; a leak lets anyone forge Kismet-attested entities ($creator).
+  'ARKIV_WRITER_PRIVATE_KEY',
 ]
 
 const present = SERVER_SECRETS.filter((k) => {
