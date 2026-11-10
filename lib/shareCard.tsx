@@ -1,5 +1,5 @@
-// Shared OG share-card frame for /collection and /artwork opengraph routes.
-// Edit the layout here once instead of in both files.
+// Shared OG share-card frame for the /artwork, /collection, /play and /drops
+// opengraph routes. Edit the layout here once instead of in each file.
 
 // 1200x800 = 3:2, matching Farcaster's Mini App embed spec. Twitter /
 // Discord / iMessage render any sane aspect ratio fine — they were
@@ -7,6 +7,21 @@
 // FC costs nothing on those surfaces.
 export const SHARE_CARD_SIZE = { width: 1200, height: 800 }
 export const SHARE_CARD_CONTENT_TYPE = 'image/png'
+
+// Farcaster's image cache keeps the card a URL first returned (next/og sends
+// every card with a one-year immutable header), so a fix to what the cards
+// draw reaches cards already shared only under a new URL: each Farcaster
+// embed of a card carries ?v=<this>. Bump it on such a fix. History: 2 =
+// JPEG XL covers draw (each was a text card before).
+export const SHARE_CARD_VERSION = 2
+
+// For the same reason, a text card standing in for a cover the render missed
+// (see lib/media/shareImage missedCover) — a failure that can pass — goes
+// out cached for a minute instead of a year, so the next fetch can draw the
+// art. Spread into the route's ImageResponse options.
+export function missedCoverHeaders(missed: boolean): { headers?: Record<string, string> } {
+  return missed ? { headers: { 'Cache-Control': 'public, max-age=60' } } : {}
+}
 
 interface ShareCardProps {
   label: string

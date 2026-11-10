@@ -11,8 +11,11 @@
 //      slow, too big, redirected somewhere shareImageUrl would not go — is
 //      nothing, so the card falls back to its text layout;
 //   5. a JPEG XL cover, which sharp cannot read, is decoded by ffmpeg and
-//      inlined the same way — skipped, and said so, where no ffmpeg on PATH
-//      can decode one (the runtime image's can).
+//      inlined the same way, and gives a profile theme its palette — skipped,
+//      and said so, where no ffmpeg on PATH can decode one (the runtime
+//      image's can);
+//   6. and a card that came out without art is told a cover it missed (which
+//      the route caches briefly) from one it never had to draw.
 //
 // Run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \
 //        --import ./scripts/register-ts-alias.mjs scripts/verify-share-image.ts
@@ -27,8 +30,9 @@ import { brotliDecompressSync } from 'node:zlib'
 import { createElement } from 'react'
 import sharp from 'sharp'
 import { ImageResponse } from 'next/dist/compiled/@vercel/og/index.node.js'
-import { shareImageSource } from '../lib/media/shareImage.ts'
+import { missedCover, shareImageSource } from '../lib/media/shareImage.ts'
 import { jpegXlToPng } from '../lib/media/jpegXl.ts'
+import { paletteFromBuffer } from '../lib/colorExtract.ts'
 import { bucketWidth, variantFileName } from '../lib/media/imgVariantCache.ts'
 
 let failures = 0
@@ -280,8 +284,25 @@ try {
         const after = await jpegXlToPng(container, 1200).then(() => true, () => false)
         check('the slot is free again after all of that', after)
       }
+      {
+        // Same pixels as the PNG, give or take the decode's rounding (as the
+        // colour checks above allow): the same accent.
+        const [fromJxl, fromPng] = await Promise.all([paletteFromBuffer(wide), paletteFromBuffer(await pink('png'))])
+        const rgb = (hex: string | undefined) => [1, 3, 5].map((i) => parseInt(hex?.slice(i, i + 2) ?? '', 16))
+        const [a, b] = [rgb(fromJxl?.primary), rgb(fromPng?.primary)]
+        check('a profile theme takes the palette of one, as of the same image as a PNG',
+          a.every((v, k) => Math.abs(v - b[k]) <= 6), `${fromJxl?.primary} vs ${fromPng?.primary}`)
+      }
     }
   }
+
+  console.log('\n6. a card without art: a cover it missed, or none to draw')
+  check('a cover it could not draw is a miss', missedCover(undefined, COVER))
+  check('one it drew is not', !missedCover('data:image/jpeg;base64,/9j/', COVER))
+  check('no cover at all is not', !missedCover(undefined, undefined) && !missedCover(undefined, ''))
+  check('nor one shareImageUrl refuses to fetch',
+    !missedCover(undefined, 'data:image/svg+xml,<svg/>') && !missedCover(undefined, 'http://169.254.169.254/latest/meta-data'))
+  check('nor the moment\'s own video standing in as its image', !missedCover(undefined, COVER, COVER))
 } finally {
   rmSync(cacheDir, { recursive: true, force: true })
 }

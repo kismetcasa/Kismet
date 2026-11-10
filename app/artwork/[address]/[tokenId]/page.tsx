@@ -336,12 +336,16 @@ export default async function MomentPage({ params }: Props) {
   const canonicalUrl = `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}`
   const displayName = detail?.metadata?.name ?? fallbackMeta?.name ?? `#${tokenId}`
   const rawImage = detail?.metadata?.image ?? fallbackMeta?.image
+  // A JPEG XL is no image search engines read, so its artwork's card stands
+  // in, as it does for a moment with no image (encodingFormat below still
+  // names the original's format).
+  const searchableImage = rawImage && detail?.metadata?.content?.mime !== 'image/jxl'
   const activeListing = await getActiveListing(address, tokenId)
   const jsonLd = momentJsonLd({
     url: canonicalUrl,
     name: displayName,
     description: detail?.metadata?.description ?? fallbackMeta?.description,
-    image: rawImage ? resolveUri(rawImage) : `${canonicalUrl}/opengraph-image`,
+    image: searchableImage ? resolveUri(rawImage) : `${canonicalUrl}/opengraph-image`,
     creator: creator
       ? {
           name: detail?.creator?.username ?? shortAddress(creator),

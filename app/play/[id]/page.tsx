@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { SHARE_CARD_VERSION } from '@/lib/shareCard'
 import { getMachine } from '@/lib/experience/store'
 import { ExperienceMachine } from '@/components/ExperienceMachine'
 import { RevealMachine } from '@/components/RevealMachine'
@@ -27,8 +28,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       : `Play ${name} on Kismet. Published odds; every play returns a real artwork.`,
     alternates: { canonical: `${SITE_URL}/play/${id}` },
     other: buildFarcasterEmbed({
-      // Its own card (opengraph-image), led by its cover, as a collection's is.
-      imageUrl: `${SITE_URL}/play/${id}/opengraph-image`,
+      // Its own card (opengraph-image), led by its cover, as a collection's is;
+      // ?v= so a card fix reaches casts Farcaster already cached (lib/shareCard).
+      imageUrl: `${SITE_URL}/play/${id}/opengraph-image?v=${SHARE_CARD_VERSION}`,
       buttonTitle: reveal ? 'Pull' : 'See the odds',
       action: { url: `${SITE_URL}/play/${id}` },
     }),

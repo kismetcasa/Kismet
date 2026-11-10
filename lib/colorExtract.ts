@@ -1,6 +1,7 @@
 import sharp from 'sharp'
 import { isSafePublicHttpsUrl } from './safeUrl'
 import { readBodyBounded } from './boundedBody'
+import { isJpegXl, jpegXlToPng } from './media/jpegXl'
 
 // Content-derived profile palette. Extracts the dominant colors from a moment's
 // image (server-side, set-time — never per view) and synthesizes a structured,
@@ -153,10 +154,17 @@ function synthesize(pixels: RGB[]): Palette {
 // ── public API ───────────────────────────────────────────────────────────────
 const MAX_BYTES = 16 * 1024 * 1024
 
+// sharp cannot read JPEG XL, so ffmpeg decodes one first (lib/media/jpegXl),
+// small: the palette samples a 48px square. An owner picking a theme waits for
+// the decoder like the image proxy does, though not as long.
+const JXL_EDGE = 256
+const JXL_DECODE_WAIT_MS = 10_000
+
 /** Synthesize a palette from raw image bytes. Returns null on decode failure. */
 export async function paletteFromBuffer(buf: Buffer): Promise<Palette | null> {
   try {
-    const { data, info } = await sharp(buf).resize(48, 48, { fit: 'cover' }).raw().toBuffer({ resolveWithObject: true })
+    const source = isJpegXl(buf) ? await jpegXlToPng(buf, JXL_EDGE, { waitMs: JXL_DECODE_WAIT_MS }) : buf
+    const { data, info } = await sharp(source).resize(48, 48, { fit: 'cover' }).raw().toBuffer({ resolveWithObject: true })
     const ch = info.channels
     const px: RGB[] = []
     for (let i = 0; i + ch - 1 < data.length; i += ch) {

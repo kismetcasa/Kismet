@@ -3203,10 +3203,10 @@ try {
           let embed = null
           try { embed = JSON.parse(tag.replace(/&quot;/g, '"').replace(/&amp;/g, '&')) } catch { /* reported below */ }
           check('a machine\'s Farcaster embed shows its own card, led by its cover',
-            /\/play\/spring-season\/opengraph-image$/.test(embed?.imageUrl ?? ''), embed?.imageUrl ?? `no embed: ${tag.slice(0, 120)}`)
+            /\/play\/spring-season\/opengraph-image\?v=\d+$/.test(embed?.imageUrl ?? ''), embed?.imageUrl ?? `no embed: ${tag.slice(0, 120)}`)
           const png = async (id) => {
             const r = await fetch(`http://127.0.0.1:${PORT}/play/${id}/opengraph-image`, { signal: AbortSignal.timeout(30_000) })
-            return { status: r.status, type: r.headers.get('content-type'), bytes: Buffer.from(await r.arrayBuffer()) }
+            return { status: r.status, type: r.headers.get('content-type'), cache: r.headers.get('cache-control'), bytes: Buffer.from(await r.arrayBuffer()) }
           }
           const live = await png('spring-season')
           if (SHOTS) writeFileSync(shotName('share-card-spring-season'), live.bytes)
@@ -3222,6 +3222,8 @@ try {
           }
           check('and with its cover out of reach, draws its text rather than a blank card',
             drawn / (info.width * info.height) > 0.005, `${drawn} of ${info.width * info.height} pixels drawn`)
+          check('cached for a minute, not a year, so the next fetch can draw the art',
+            live.cache === 'public, max-age=60', live.cache)
           // One waiting for review is not public: its card must be the bare one,
           // byte for byte the card of a machine that does not exist.
           strings.delete(`kismetart:rl:xp-publish:${CURATOR.toLowerCase()}`)
@@ -3231,6 +3233,8 @@ try {
           const [hidden, none] = [await png('share-queued'), await png('no-such-machine')]
           check('a machine waiting for review shares the bare card — never its name or art',
             queued.json?.machine?.state === 'review' && hidden.status === 200 && hidden.bytes.equals(none.bytes), `${queued.json?.machine?.state} ${hidden.bytes.length} vs ${none.bytes.length}`)
+          check('which has no cover to miss, so it keeps the year-long cache',
+            /max-age=31536000/.test(hidden.cache ?? ''), hidden.cache)
           await call('/api/experience/machines/share-queued', { method: 'POST', user: CURATOR_TOKEN, body: { action: 'withdraw' } })
         }
 

@@ -1,11 +1,12 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, shortAddress } from '@/lib/inprocess'
-import { shareImageSource } from '@/lib/media/shareImage'
+import { missedCover, shareImageSource } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import {
+  missedCoverHeaders,
   shareCard,
   SHARE_CARD_SIZE,
   SHARE_CARD_CONTENT_TYPE,
@@ -52,6 +53,7 @@ export default async function Image({ params }: Props) {
   let title = `Collection ${shortAddress(address)}`
   let creator = ''
   let imageUrl: string | undefined
+  let missed = false
 
   if (isAddress(address)) {
     // Fail CLOSED to the bare default card: isCollectionHidden deliberately
@@ -84,7 +86,9 @@ export default async function Image({ params }: Props) {
         // and serves the disk-cached downscaled variant inline when one
         // exists, so a heavy cover can't stall Satori's mid-render fetch.
         // No cover → shareCard renders the branded fallback below.
-        imageUrl = await shareImageSource(kv?.image ?? row?.metadata?.image)
+        const cover = kv?.image ?? row?.metadata?.image
+        imageUrl = await shareImageSource(cover)
+        missed = missedCover(imageUrl, cover)
       }
     } catch {
       // Bare card (shortAddress title, no cover) — never a leak, never a 500.
@@ -93,5 +97,6 @@ export default async function Image({ params }: Props) {
 
   return new ImageResponse(shareCard({ label: 'COLLECTION', title, creator, imageUrl }), {
     ...SHARE_CARD_SIZE,
+    ...missedCoverHeaders(missed),
   })
 }

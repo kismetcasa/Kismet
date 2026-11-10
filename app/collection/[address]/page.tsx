@@ -11,6 +11,7 @@ import { isCollectionHidden } from '@/lib/hiddenCollections'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { SHARE_CARD_VERSION } from '@/lib/shareCard'
 import { isPatronCollection } from '@/lib/patronCollection'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isMobileUA } from '@/lib/serverDevice'
@@ -152,7 +153,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // images >5MB and the next/image optimizer 413's on sources past its
   // 50MB body cap (see MomentImage proxy mode).
   const canonicalUrl = `${SITE_URL}/collection/${address}`
-  const embedImageUrl = `${canonicalUrl}/opengraph-image`
+  // ?v= so a card fix reaches casts Farcaster already cached (lib/shareCard).
+  const embedImageUrl = `${canonicalUrl}/opengraph-image?v=${SHARE_CARD_VERSION}`
   const fcEmbed = buildFarcasterEmbed({
     imageUrl: embedImageUrl,
     // The Patron Collection's shared card is a call to patronage, not a

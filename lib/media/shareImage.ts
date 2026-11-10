@@ -45,9 +45,28 @@ export function shareImageUrl(
   return isSafePublicHttpsUrl(resolved) ? resolved : undefined
 }
 
+/**
+ * Whether a card that came out without art (`drawn` unset) had a cover it
+ * should have drawn — a gateway still propagating or down, a source past the
+ * byte cap, the JPEG XL decoder busy or missing — rather than none to draw.
+ * Takes the same arguments shareImageSource did. The route answers a miss
+ * with lib/shareCard missedCoverHeaders.
+ */
+export function missedCover(
+  drawn: string | undefined,
+  imageUri: string | undefined,
+  guardAgainst?: string,
+): boolean {
+  return !drawn && shareImageUrl(imageUri, guardAgainst) !== undefined
+}
+
 // The card hero renders at 800×800 inside the 1200×800 canvas; 1200 wide
 // covers it with headroom while keeping the inlined jpeg small (~100-500KB).
 const SHARE_SOURCE_MAX_WIDTH = 1200
+// How long a card waits for the one JPEG XL decoder when /api/img is using
+// it: the first share of a new cover tends to land while its page converts the
+// same image. Short, because a crawler gives up within seconds.
+const JXL_DECODE_WAIT_MS = 2_000
 
 /**
  * Like shareImageUrl, but when the cover's downscaled variant is already in
@@ -114,7 +133,9 @@ export async function shareImageSource(
 async function jpegDataUri(bytes: Buffer): Promise<string> {
   // sharp cannot read a JPEG XL cover at all — every one was a text card — so
   // ffmpeg decodes it first (lib/media/jpegXl), already fit to the card.
-  const source = isJpegXl(bytes) ? await jpegXlToPng(bytes, SHARE_SOURCE_MAX_WIDTH) : bytes
+  const source = isJpegXl(bytes)
+    ? await jpegXlToPng(bytes, SHARE_SOURCE_MAX_WIDTH, { waitMs: JXL_DECODE_WAIT_MS })
+    : bytes
   const jpeg = await sharp(source)
     .resize({ width: SHARE_SOURCE_MAX_WIDTH, height: SHARE_SOURCE_MAX_WIDTH, fit: 'inside', withoutEnlargement: true })
     .jpeg({ quality: 85 })

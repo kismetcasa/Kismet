@@ -149,7 +149,10 @@ export async function POST(
       : resolved.kind === 'model' || resolved.kind === 'pdf'
         ? resolved.src
         : resolved.poster
-  const stillUrl = stillRaw ? resolveUri(stillRaw) : ''
+  // Kept as its ar:// / ipfs:// URI, not a gateway URL: MomentImage can fall
+  // back to /api/img only for those, and /api/img is the one place a still
+  // most browsers cannot show (a JPEG XL) is converted for them.
+  const stillUrl = stillRaw ?? ''
 
   let palette = extractUrl ? await extractPalette(extractUrl) : null
   if (!palette && md.kismet_thumbhash) {

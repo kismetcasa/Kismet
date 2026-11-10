@@ -33,10 +33,10 @@ const FFMPEG_TIMEOUT_MS = 5_000
 // Each decode is its own process, outside the libuv pool that bounds how many
 // sharp jobs run at once, so one runs at a time. The same image asked for at
 // once (each crawler of a fresh share) joins the decode already running. A
-// different one waits its turn for up to the caller's `waitMs` — the image
-// proxy waits, since its output is cached forever — or, by default, fails
-// fast: a share card, which a crawler gives up on within seconds, falls back
-// to its text layout instead.
+// different one waits its turn for up to the caller's `waitMs` (none by
+// default): the image proxy waits out its compute budget, since its output is
+// cached forever, and a share card only briefly, since a crawler gives up
+// within seconds.
 const MAX_CONCURRENT_DECODES = 1
 const decodes = new SingleFlight<Buffer>()
 let running = 0

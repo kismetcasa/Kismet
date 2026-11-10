@@ -4,6 +4,7 @@ import { DropView } from '@/components/DropView'
 import { isDropOpen, isEntityKey, normalizeEntityKey } from '@/lib/drops'
 import { getDropRecord, isDropsEnabled } from '@/lib/dropsStore'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
+import { SHARE_CARD_VERSION } from '@/lib/shareCard'
 import { SITE_URL } from '@/lib/siteUrl'
 
 // DROPS_ENABLED is read per request: a page prerendered at build time would
@@ -31,7 +32,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     robots: { index: false },
     ...(drop && {
       other: buildFarcasterEmbed({
-        imageUrl: `${url}/opengraph-image`,
+        // ?v= so a card fix reaches casts Farcaster already cached (lib/shareCard).
+        imageUrl: `${url}/opengraph-image?v=${SHARE_CARD_VERSION}`,
         buttonTitle: isDropOpen(drop.closesAt, Math.floor(Date.now() / 1000)) ? 'Claim — free' : 'See the drop',
         action: { url },
       }),

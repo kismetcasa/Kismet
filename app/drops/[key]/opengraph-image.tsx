@@ -1,9 +1,9 @@
 import { ImageResponse } from 'next/og'
 import { displayNameFor } from '@/lib/displayName'
-import { shareImageSource } from '@/lib/media/shareImage'
+import { missedCover, shareImageSource } from '@/lib/media/shareImage'
 import { isEntityKey, normalizeEntityKey, swarmGatewayUrl } from '@/lib/drops'
 import { getDropRecord, isDropsEnabled } from '@/lib/dropsStore'
-import { shareCard, SHARE_CARD_SIZE, SHARE_CARD_CONTENT_TYPE } from '@/lib/shareCard'
+import { missedCoverHeaders, shareCard, SHARE_CARD_SIZE, SHARE_CARD_CONTENT_TYPE } from '@/lib/shareCard'
 
 export const size = SHARE_CARD_SIZE
 export const contentType = SHARE_CARD_CONTENT_TYPE
@@ -20,14 +20,20 @@ export default async function Image({ params }: { params: Promise<{ key: string 
   let title = 'Kismet'
   let creator = ''
   let imageUrl: string | undefined
+  let missed = false
   try {
     const drop = isEntityKey(key) && isDropsEnabled() ? await getDropRecord(normalizeEntityKey(key)) : null
     if (drop) {
       title = drop.title
-      ;[creator, imageUrl] = await Promise.all([displayNameFor(drop.artist), shareImageSource(swarmGatewayUrl(drop.swarmRef))])
+      const artwork = swarmGatewayUrl(drop.swarmRef)
+      ;[creator, imageUrl] = await Promise.all([displayNameFor(drop.artist), shareImageSource(artwork)])
+      missed = missedCover(imageUrl, artwork)
     }
   } catch {
     // The bare card.
   }
-  return new ImageResponse(shareCard({ label: 'FREE CLAIM DROP', title, creator, imageUrl }), { ...SHARE_CARD_SIZE })
+  return new ImageResponse(shareCard({ label: 'FREE CLAIM DROP', title, creator, imageUrl }), {
+    ...SHARE_CARD_SIZE,
+    ...missedCoverHeaders(missed),
+  })
 }
