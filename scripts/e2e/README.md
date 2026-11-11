@@ -507,3 +507,31 @@ photographs it (no assertions): `E2E_ZINE_PDF=… E2E_ZINE_COVER=…
 E2E_ZINE_TITLE=… E2E_ZINE_PAGES=… node scripts/e2e/zine-showcase.mjs`.
 It also runs the optimizer on the file and reports the before/after timings
 on a phone-sized viewport.
+
+## Claim drops
+
+Three checks, none in `npm run check` (they need `redis-server`, the network,
+or a build). Together they cover the feature end to end without a funded
+Arkiv key; with one, `npm run drops:smoke` adds the real Arkiv transactions.
+
+| | What runs for real | What stands in |
+|---|---|---|
+| `npm run e2e:drops:flow` (`drops-flow.ts`) | Every drops route handler in-process, on a **real `redis-server`** behind an Upstash-REST front (`_upstash-redis.ts`): signatures from real keys, nonces, sessions, quotas, rate limits, the claim reservation's Lua, the delivery lock and progress, the mint proxy and its post-mint work, the on-chain delivery checks | Bee, the In Process relay and Base as local HTTP mocks; Arkiv and Arweave as module-boundary doubles (`drops-flow-hooks.mjs`, `_arkiv-memory.ts`, `_arweave-memory.ts`); the clock moved to close windows and reach reminders |
+| `npm run e2e:drops:live` (`drops-live.ts`) | The real `lib/arkiv` against **Rabdi**: every query, every write simulated by the SDK on the node and stopped before sending (plus a negative control), the funds guard on a real balance; `lib/dropSettlement` on **Base mainnet** receipts and Zora's `getTokenInfo` | Nothing — but a fresh unfunded writer, so reads are empty and writes never land. The resume path's log lookup needs a `BASE_RPC_URL` that serves `eth_getLogs` (Base's public one doesn't; it is reported as SKIP) |
+| `npm run e2e:drops:ui` (`drops-ui.ts`) | The **built app** (`next start`) in Chromium with a stub wallet whose signatures come from real keys: claiming, the feed and "your claims", the window closing on screen, the four-step delivery, the delivered states, the share card | The drops APIs, answered by a stateful fake that verifies every signature against the messages the real routes rebuild; Base RPC from the browser |
+
+```bash
+npm run e2e:drops:flow
+```
+
+```bash
+NODE_USE_ENV_PROXY=1 npm run e2e:drops:live
+```
+
+```bash
+npm run build && npm run e2e:drops:ui
+```
+
+`drops-ui.ts` loads `playwright` the way the other browser checks do (not a
+repo dependency). `NODE_USE_ENV_PROXY=1` is only for a sandbox whose outbound
+traffic goes through a proxy.

@@ -1,5 +1,6 @@
 import { MintTabs } from '@/components/MintTabs'
 import { SITE_URL } from '@/lib/siteUrl'
+import { isDropsEnabled } from '@/lib/dropsStore'
 
 export const metadata = {
   title: 'mint — Kismet',
@@ -21,6 +22,7 @@ export default async function MintPage({ searchParams }: Props) {
         initialCollection={collection}
         initialCollectionName={name}
         initialTab={tab}
+        dropsEnabled={isDropsEnabled()}
       />
     </div>
   )

@@ -377,3 +377,55 @@ so a drift between `OPERATOR_SMART_WALLET` and its `NEXT_PUBLIC_` mirror is loud
 so. If the wallet prompt reverts instead, the connected wallet genuinely lacks ADMIN|METADATA
 on that token — read `permissions(<tokenId>, <wallet>)` and `permissions(0, <wallet>)` on
 BaseScan (`node scripts/check-collection-perms.mjs <collection> <wallet>` reads row 0).
+
+## 7. Claim drops (Arkiv + Swarm)
+
+Design: `arkiv/*.md`. Off unless `DROPS_ENABLED=1` and an Arkiv writer is set
+(`.env.example` → "Claim drops"). The platform pause stops uploads, opens and
+claims at once; no flag of its own.
+
+### One-time / deploy
+
+- **Preflight before turning it on:** `npm run drops:smoke -- --check` (with
+  the deploy's env). It reaches Arkiv and the Bee node, checks the writer can
+  pay for the next 20 claims and the postage batch is usable, and writes
+  nothing. A full `npm run drops:smoke` then writes a throwaway drop and claim
+  (gone in ~20 min).
+- **Bee node: a container next to the app, never public.** Its API can spend
+  the node's xBZZ and the batch; only the app talks to it (`SWARM_BEE_URL` on
+  the internal network). A batch is usable only by the node that holds the
+  keys and stamperstore it was bought with — persist the node's data
+  directory, or a redeploy loses the batch. Buy it immutable (the default): a
+  full immutable batch refuses uploads instead of overwriting old artwork.
+  Bee's dev mode was removed in v2.8.1, so development uses a real node too
+  (Nook locally).
+- **One writer key per deployment.** Arkiv writes are serialized in-process
+  (`lib/arkiv/client.ts`); a second process writing with the same key makes
+  key predictions miss and those writes fail (safely — nothing is handed to
+  the wrong wallet).
+- **Delivering a drop** reuses minting's own setup: `ARWEAVE_JWK` (the artwork
+  is copied from Swarm to Arweave), `INPROCESS_API_KEY` (the sponsored mint)
+  and `BASE_RPC_URL` (the airdrop is verified from Base). Resuming a delivery
+  that was interrupted after its airdrop landed reads `eth_getLogs`, which
+  Base's public endpoint refuses — the paid `BASE_RPC_URL` serves it.
+
+### Incidents
+
+**"Drops are paused for a moment" / "Claims are paused for a moment" (503).**
+The Arkiv writer can't pay for 20 more claims; the log says
+`[drops] Arkiv writer 0x… is low on tGLM: <balance> < <needed>`. Top it up at
+hub.arkiv.network/faucet (testnet). The check is cached for a minute.
+
+**"Swarm did not return the artwork" (502)** on a drop's image or when
+delivering. The Bee node is down or no longer has the chunks; reads fall back
+to the public gateway (`SWARM_GATEWAY_URL`). Check the node and the batch
+(`--check` prints usable / depth / days left).
+
+**An artist says "Delivered on Base, but recording it on Arkiv failed".**
+The airdrop is on chain; only the Arkiv record is missing. Pressing Deliver
+again finds the airdrop on Base and records it (it is never airdropped twice:
+the edition's supply is exactly the recipients and its sale closed at mint).
+
+**Reminders** (`drop_status` notices: a drop closed with claims, and two days
+before its records expire) run in the production background tick
+(`lib/backgroundTasks.ts`, `CRON_INPROCESS` not `off`), once per drop each.

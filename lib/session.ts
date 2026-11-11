@@ -57,13 +57,23 @@ interface SessionSource {
  * header by FarcasterProvider's fetch wrapper, bypasses cookie policy
  * entirely.
  */
-async function getFarcasterAddressFromBearer(req: SessionSource): Promise<string | null> {
+async function getFarcasterAuthFromBearer(req: SessionSource) {
   const auth = req.headers.get('authorization')
   if (!auth || !auth.startsWith('Bearer ')) return null
   const token = auth.slice('Bearer '.length).trim()
   if (!token) return null
-  const result = await verifyFarcasterJwt(token)
-  return result?.address ?? null
+  return verifyFarcasterJwt(token)
+}
+
+async function getFarcasterAddressFromBearer(req: SessionSource): Promise<string | null> {
+  return (await getFarcasterAuthFromBearer(req))?.address ?? null
+}
+
+/** The Farcaster account (FID) behind a Mini App request's Quick Auth JWT,
+ *  or null for a web request. For per-person limits that a wallet alone
+ *  can't give (one person, many wallets — one FID). */
+export async function getFarcasterFid(req: NextRequest): Promise<number | null> {
+  return (await getFarcasterAuthFromBearer(req))?.fid ?? null
 }
 
 /**
