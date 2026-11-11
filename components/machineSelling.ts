@@ -29,7 +29,7 @@ export function cardSelling(selling: Selling, kind: 'capsule' | 'reveal'): CardS
   const not = (label: CardSelling['label'], quiet: boolean, why: string): CardSelling => ({ label, open: false, quiet, why })
   switch (selling.reason) {
     case 'season closed':
-      return not('closed', true, kind === 'capsule' ? 'capsule · season over' : 'reveal machine')
+      return not('closed', true, kind === 'capsule' ? 'season over' : 'no more pulls')
     case 'sale ended':
       return not('closed', true, saleDate('ended', selling.at) ?? 'sale ended')
     case 'not for sale':

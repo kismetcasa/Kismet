@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { MomentImage } from './MomentImage'
 
 /**
- * A cover image that can change in place — a cover picked on a card or a row
+ * A cover image that can change in place — a cover picked in its owner's row
  * previewing where it will go, then the one saved. It remembers which image
  * failed, not a flag, so a new one is tried while the one that failed is not
  * fetched again. Each image also gets its own MomentImage (keyed by src): one
@@ -53,9 +53,7 @@ export function CoverImage({
 /**
  * A card led by a square cover: a collection in the featured row's phone
  * scroller, a machine in the play list and on its creator's profile. The
- * cover links to `href` — or sits plain, for something with no page of its
- * own yet (a machine waiting for a curator); what sits under it is the
- * caller's.
+ * cover links to `href`; what sits under it is the caller's.
  */
 export function CoverCard({
   href,
@@ -68,7 +66,7 @@ export function CoverCard({
   muted,
   children,
 }: {
-  href?: string
+  href: string
   image: string | null | undefined
   thumbhash?: string
   alt: string
@@ -80,34 +78,27 @@ export function CoverCard({
   muted?: boolean
   children: ReactNode
 }) {
-  const coverClass = `relative aspect-square w-full block overflow-hidden bg-surface${muted ? ' grayscale opacity-60' : ''}`
-  const cover = (
-    <>
-      {overlay}
-      <CoverImage
-        image={image}
-        thumbhash={thumbhash}
-        alt={alt}
-        sizes={sizes}
-        priority={priority}
-        className="object-contain transition-transform duration-500 group-hover/img:scale-105"
-        fallback={
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="text-line font-mono text-xs">no preview</span>
-          </div>
-        }
-      />
-    </>
-  )
   return (
     <article className="flex flex-col bg-[#161616] border border-line overflow-hidden h-full">
-      {href ? (
-        <Link href={href} className={`${coverClass} group/img`}>
-          {cover}
-        </Link>
-      ) : (
-        <div className={coverClass}>{cover}</div>
-      )}
+      <Link
+        href={href}
+        className={`relative aspect-square w-full block overflow-hidden bg-surface group/img${muted ? ' grayscale opacity-60' : ''}`}
+      >
+        {overlay}
+        <CoverImage
+          image={image}
+          thumbhash={thumbhash}
+          alt={alt}
+          sizes={sizes}
+          priority={priority}
+          className="object-contain transition-transform duration-500 group-hover/img:scale-105"
+          fallback={
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="text-line font-mono text-xs">no preview</span>
+            </div>
+          }
+        />
+      </Link>
       <div className="flex flex-col gap-2 p-3 flex-1">{children}</div>
     </article>
   )

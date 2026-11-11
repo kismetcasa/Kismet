@@ -8,9 +8,9 @@ import { useEnsureConnected } from '@/hooks/useEnsureConnected'
 import { useEthUsd } from '@/hooks/useEthUsd'
 import { useProfileNames } from '@/hooks/useProfileNames'
 import { ethUsdApprox } from '@/lib/usdApprox'
-import { formatPrice, formatSaleWindowLabel } from '@/lib/inprocess'
+import { formatPrice, formatSaleWindowLabel, getSaleWindow } from '@/lib/inprocess'
 import { MAX_UNITS_PER_CAPSULE } from '@/lib/experience/draw'
-import { capsuleSelling } from '@/lib/experience/selling'
+import { capsuleSelling, pullLimit } from '@/lib/experience/selling'
 import { MomentImage } from './MomentImage'
 import { MachineAction } from './MachineAction'
 import { CollectedLine, MachineStage, motionAllowed, revealAfterOpen, type Stage } from './MachineStage'
@@ -487,13 +487,10 @@ export function ExperienceMachine({ id }: { id: string }) {
     drawable: data.odds.some((o) => o.probability > 0),
     prizesRemaining: data.coverage.prizesRemaining,
   })
-  const saleWindow = selling.window
-  const left =
-    data.coverage.prizesRemaining === null
-      ? data.coverage.capsulesOutstanding
-      : data.coverage.capsulesOutstanding === null
-        ? data.coverage.prizesRemaining
-        : Math.min(data.coverage.prizesRemaining, data.coverage.capsulesOutstanding)
+  const saleWindow = getSaleWindow(
+    sale ? { saleStart: String(sale.saleStart), saleEnd: String(sale.saleEnd) } : null,
+  )
+  const left = pullLimit(data.coverage.prizesRemaining, data.coverage.capsulesOutstanding)
   const sizes = pullSizes(left)
   const pullSize = effectivePull(left, pull)
   const playable = selling.open

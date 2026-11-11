@@ -46,7 +46,7 @@ export function MachineAction({
   const router = useRouter()
   const { ensureSession } = useUploadSession()
   const { endNow } = useUpdateMomentSale()
-  const [confirming, setConfirming] = useState(confirmOnly)
+  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const panel = useRef<HTMLDivElement>(null)
   // Opened from someone else's control, the confirmation takes focus so a

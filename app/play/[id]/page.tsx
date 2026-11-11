@@ -1,9 +1,10 @@
 import type { Metadata } from 'next'
+import { cookies, headers } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { SITE_URL } from '@/lib/siteUrl'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { getMachine } from '@/lib/experience/store'
-import { getPageViewerAddress } from '@/lib/pageViewer'
+import { getSessionAddress } from '@/lib/session'
 import { ExperienceMachine } from '@/components/ExperienceMachine'
 import { RevealMachine } from '@/components/RevealMachine'
 import { isReveal } from '@/lib/experience/types'
@@ -52,7 +53,10 @@ export default async function MachinePage({ params }: Props) {
   // a queued machine); everyone else is told there is no such machine.
   if (!machine || machine.state === 'draft') notFound()
   if (machine.state === 'review') {
-    const viewer = await getPageViewerAddress().catch(() => null)
+    // Signed in by the session cookie or — inside a Farcaster Mini App, whose
+    // iframe drops that cookie — the Quick Auth token the app's fetch wrapper
+    // adds to the router's requests too (providers/FarcasterProvider).
+    const viewer = await getSessionAddress({ cookies: await cookies(), headers: await headers() }).catch(() => null)
     if (!viewer || viewer.toLowerCase() !== machine.creator.toLowerCase()) notFound()
   }
 

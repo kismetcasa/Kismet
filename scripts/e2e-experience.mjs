@@ -855,7 +855,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  *  closed — each group in the API's order. */
 const STUCK = ['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now']
 const ownerOrder = (machines, turnedDown = []) => {
-  const stuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason)
+  const stuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason) && !m.selling.waiting
   const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 3 : m.state === 'review' ? 4 : m.state === 'live' ? 5 : 6)
   return [...machines.map((m) => [rank(m), m.name]), ...turnedDown.map((t) => [2, t.name])]
     .sort((a, b) => a[0] - b[0])

@@ -41,6 +41,13 @@ export async function revokeSession(token: string): Promise<void> {
   await redis.del(key(token))
 }
 
+/** What a session is read from: an API route's request, or a server-rendered
+ *  page's own cookies() and headers() (app/play/[id]). */
+interface SessionSource {
+  cookies: { get(name: string): { value: string } | undefined }
+  headers: { get(name: string): string | null }
+}
+
 /**
  * Read a Farcaster Quick Auth JWT from the Authorization header, if
  * present. Used as a parallel auth path to the session cookie because
@@ -50,7 +57,7 @@ export async function revokeSession(token: string): Promise<void> {
  * header by FarcasterProvider's fetch wrapper, bypasses cookie policy
  * entirely.
  */
-async function getFarcasterAddressFromBearer(req: NextRequest): Promise<string | null> {
+async function getFarcasterAddressFromBearer(req: SessionSource): Promise<string | null> {
   const auth = req.headers.get('authorization')
   if (!auth || !auth.startsWith('Bearer ')) return null
   const token = auth.slice('Bearer '.length).trim()
@@ -69,7 +76,7 @@ async function getFarcasterAddressFromBearer(req: NextRequest): Promise<string |
  * present, so Mini App users (whose cookies are blocked by SameSite=Lax
  * inside an iframe) authenticate transparently through the same call.
  */
-export async function getSessionAddress(req: NextRequest): Promise<string | null> {
+export async function getSessionAddress(req: SessionSource): Promise<string | null> {
   const token = req.cookies.get(SESSION_COOKIE)?.value
   if (token) {
     const fromCookie = await verifySession(token)

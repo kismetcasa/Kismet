@@ -58,7 +58,6 @@ export function CoverField({
   current,
   saved,
   disabled,
-  thumbnail = true,
 }: {
   pick: ReturnType<typeof useCoverPick>
   /** The machine's cover now, when it has one. */
@@ -67,25 +66,20 @@ export function CoverField({
    *  `current`, whose upload a gateway may not serve yet. */
   saved?: string | null
   disabled?: boolean
-  /** Off where the caller shows the cover itself (a machine's card), leaving
-   *  the button alone here. */
-  thumbnail?: boolean
 }) {
   const src = pick.preview ?? saved ?? (current ? proxyUrl(current, 256) : null)
   return (
     <div className="flex items-center gap-3">
-      {thumbnail && (
-        <div className="relative w-16 h-16 flex-shrink-0 bg-raised border border-line overflow-hidden">
-          {src ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={src} alt="cover" className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <span className="text-line font-mono text-[9px]">none</span>
-            </div>
-          )}
-        </div>
-      )}
+      <div className="relative w-16 h-16 flex-shrink-0 bg-raised border border-line overflow-hidden">
+        {src ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={src} alt="cover" className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <span className="text-line font-mono text-[9px]">none</span>
+          </div>
+        )}
+      </div>
       <button
         type="button"
         onClick={() => pick.inputRef.current?.click()}
@@ -149,9 +143,9 @@ export function CoverEditor({
   current: string | null
   creator?: string
   onDone?: () => void
-  /** Given, the picked file previews through the caller — a machine's card
-   *  shows it as its cover, where it will go — instead of in a thumbnail
-   *  here; once saved, the image saved, as below; null once dropped. */
+  /** Given, the picked cover is also handed to the caller, to show where it
+   *  will go (a row's thumbnail) — then, once saved, the image saved, as
+   *  below; null once dropped. */
   onPick?: (preview: string | null) => void
   className?: string
   variant?: 'field' | 'menu'
@@ -218,7 +212,7 @@ export function CoverEditor({
     return (
       <>
         <input ref={pick.inputRef} type="file" accept="image/*" onChange={pick.onChange} className="hidden" aria-label="cover image" />
-        {pick.file && pick.preview && (
+        {pick.preview && (
           <div className={className} role="group" aria-label="New cover">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={pick.preview} alt="new cover" className="w-16 h-16 flex-shrink-0 object-cover border border-line bg-raised" />
@@ -247,7 +241,7 @@ export function CoverEditor({
 
   return (
     <div className={className}>
-      <CoverField pick={pick} current={current} saved={saved} disabled={busy} thumbnail={!onPick} />
+      <CoverField pick={pick} current={current} saved={saved} disabled={busy} />
       {pick.file && (
         <button
           onClick={() => void save()}

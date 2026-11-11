@@ -335,6 +335,12 @@ export async function readArtistControl(
   }
 }
 
+/** A capsule's supply as its token info gives it, for one capsule or many. */
+const supplyOf = (info: { maxSupply: bigint; totalMinted: bigint }): { maxSupply: number | null; minted: number } => ({
+  maxSupply: isOpenEdition(info.maxSupply) ? null : Number(info.maxSupply),
+  minted: Number(info.totalMinted),
+})
+
 /** Capsule supply state, read at publish to fix the machine's liability ceiling
  *  and again for the public coverage figure. `maxSupply: null` means open. */
 export async function readCapsuleSupply(
@@ -348,20 +354,16 @@ export async function readCapsuleSupply(
       functionName: 'getTokenInfo',
       args: [BigInt(tokenId)],
     })) as { maxSupply: bigint; totalMinted: bigint }
-    return {
-      maxSupply: isOpenEdition(info.maxSupply) ? null : Number(info.maxSupply),
-      minted: Number(info.totalMinted),
-    }
+    return supplyOf(info)
   } catch {
     return null
   }
 }
 
 /**
- * Many capsules' supplies in one multicall, keyed `collection:tokenId`
- * (lowercased collection): a list of machines costs one chain read, not one
- * per capsule. A capsule whose read failed is absent, as readCapsuleSupply's
- * null.
+ * Many capsules' supplies in one multicall, keyed as a pool entry is
+ * (entryKey): a list of machines costs one chain read, not one per capsule.
+ * A capsule whose read failed is absent, as readCapsuleSupply's null.
  */
 export async function readCapsuleSupplies(
   items: { collection: string; tokenId: string }[],
@@ -385,11 +387,7 @@ export async function readCapsuleSupplies(
   items.forEach((it, i) => {
     const r = results[i]
     if (r?.status !== 'success') return
-    const { maxSupply, totalMinted } = r.result as { maxSupply: bigint; totalMinted: bigint }
-    out.set(`${it.collection.toLowerCase()}:${it.tokenId}`, {
-      maxSupply: isOpenEdition(maxSupply) ? null : Number(maxSupply),
-      minted: Number(totalMinted),
-    })
+    out.set(entryKey(it), supplyOf(r.result as { maxSupply: bigint; totalMinted: bigint }))
   })
   return out
 }

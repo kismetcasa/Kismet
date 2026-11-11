@@ -16,6 +16,7 @@ import { MAX_PINS_PER_CATEGORY } from '@/lib/showcaseOrder'
 import { toastError } from '@/lib/toast'
 import { ethUsdApprox } from '@/lib/usdApprox'
 import type { MachineCardData } from '@/lib/experience/cards'
+import type { TurnedDown } from '@/lib/experience/store'
 import type { Selling } from '@/lib/experience/selling'
 import { CoverCard, CoverImage } from './CoverCard'
 import { MachineAction } from './MachineAction'
@@ -40,11 +41,6 @@ const CoverEditor = dynamic(() => import('./CoverField').then((m) => m.CoverEdit
  * lists their sales and airdrops: what needs them first, the state in plain
  * words, what sold and what it took in, and the rare actions (change the
  * cover, end a season or close a machine, withdraw) in a menu.
- *
- * Before this, publishing was the end of the trail: a machine sent to review
- * showed a confirmation and was never seen again — its page 404s until
- * approved, nothing listed it, and nothing told its creator whether it was
- * approved or turned down.
  */
 
 interface CreatorMachineCommon {
@@ -95,27 +91,16 @@ export interface FeaturedIn {
   curator: string
   /** This person's pieces in it, for the artist to reach each one's switch. */
   pieces: { collection: string; tokenId: string }[]
-  kind: 'reveal'
   /** The artworks it draws from, everyone's. */
   size: number
   art: MachineCardData['cover']
   selling: Selling
 }
 
-/** A machine of theirs a curator turned down, which withdrawing took off the
- *  list (lib/experience/store TurnedDown); its creator's view only. */
-export interface TurnedDown {
-  id: string
-  name: string
-  kind: 'capsule' | 'reveal'
-  cover: string | null
-  reason: string
-  at: number
-}
-
-/** Loaded once by the profile, which shows the section only when there is
- *  something in it. `owner` is the SERVER's verdict — true only when the
- *  signed-in session is this creator, which is what gates non-public states. */
+/** Loaded once by the profile: its owner always gets the section, a visitor
+ *  only when there is something in it. `owner` is the SERVER's verdict — true
+ *  only when the signed-in session is this creator, which is what gates
+ *  non-public states. */
 export function useCreatorMachines(address: string) {
   const [machines, setMachines] = useState<CreatorMachine[]>([])
   const [owner, setOwner] = useState(false)
@@ -174,14 +159,10 @@ export function publicMachines(machines: CreatorMachine[]): CreatorMachine[] {
 
 type Machine = CreatorMachine
 
-/** A machine has a page once it has been on the shelves: /play/[id] 404s a
- *  draft and one waiting for a curator. */
-const pageOf = (m: Machine) => (m.state === 'draft' || m.state === 'review' ? undefined : `/play/${m.id}`)
-
 const artworks = (n: number) => `${n} ${n === 1 ? 'artwork' : 'artworks'}`
 
-/** What a machine took in, in each currency it was paid in; null for none. */
-function takenIn(stats: Machine['stats']): string | null {
+/** What was taken in, in each currency it was paid in; null for none. */
+function takenIn(stats: { ethWei: string; usdcMicro: string } | null | undefined): string | null {
   if (!stats) return null
   const paid = [
     BigInt(stats.ethWei) > 0n ? formatPrice(stats.ethWei, 'eth') : null,
@@ -363,7 +344,7 @@ function MachineCard({
   byline?: ReactNode
 }) {
   const t = DENSITY[density]
-  const href = pageOf(m)
+  const href = `/play/${m.id}`
   const supply = availability(m, cs, density === 'full')
   return (
     <CoverCard href={href} image={m.art?.image} thumbhash={m.art?.thumbhash} alt={m.name} sizes={t.sizes} muted={cs.quiet}>
@@ -378,14 +359,12 @@ function MachineCard({
         <CostLine machine={m} cs={cs} full={density === 'full'} ethUsd={ethUsd} />
       </p>
       {supply && <p className={`${t.line} font-mono text-muted tabular-nums`}>{supply}</p>}
-      {href && (
-        <Link
-          href={href}
-          className={`mt-auto w-full px-3 ${t.button} text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors`}
-        >
-          {!cs.open ? 'view' : m.kind === 'reveal' ? 'pull' : 'play'}
-        </Link>
-      )}
+      <Link
+        href={href}
+        className={`mt-auto w-full px-3 ${t.button} text-center font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors`}
+      >
+        {!cs.open ? 'view' : m.kind === 'reveal' ? 'pull' : 'play'}
+      </Link>
     </CoverCard>
   )
 }
@@ -401,7 +380,7 @@ function CostLine({ machine: m, cs, full, ethUsd }: { machine: Machine; cs: Card
     return cs.label === 'soon' && price ? <>{price} per play · {cs.why}</> : <>{cs.why}</>
   }
   if (m.kind === 'reveal') return <>free to pull</>
-  if (!m.price || !price) return <>capsule machine</>
+  if (!m.price) return <>capsule machine</>
   const usd = full && m.price.currency === 'eth' ? ethUsdApprox(m.price.pricePerToken, ethUsd) : null
   return (
     <>
@@ -419,7 +398,7 @@ function availability(m: Machine, cs: CardSelling, full: boolean): string | null
   const c = m.capsules
   if (!c) return null
   if (c.maxSupply === null) return c.minted > 0 ? `${c.minted} sold` : null
-  if (c.minted >= c.maxSupply) return cs.why === 'every capsule sold' ? null : 'sold out'
+  if (c.minted >= c.maxSupply) return !m.selling.open && m.selling.reason === 'sold out' ? null : 'sold out'
   return cs.quiet ? `${c.minted} of ${c.maxSupply} sold` : `${c.maxSupply - c.minted} of ${c.maxSupply} left`
 }
 
@@ -429,7 +408,7 @@ function availability(m: Machine, cs: CardSelling, full: boolean): string | null
  *  can put right — by ending it, or fixing its sale or its lineup. Not a
  *  sale that opens later, nor a read that failed just now. */
 const STUCK = new Set(['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now'])
-const stuck = (m: Machine) => m.state === 'live' && !m.selling.open && STUCK.has(m.selling.reason)
+const stuck = (m: Machine) => m.state === 'live' && !m.selling.open && STUCK.has(m.selling.reason) && !m.selling.waiting
 
 /** The order an owner reads them in: what needs them first (a draft, a
  *  delisted machine, one a curator turned down, a live one that has stopped
@@ -523,9 +502,7 @@ function OwnerMachines({
   // pay their artists, so they are not the owner's to count here.
   const wei = machines.reduce((n, m) => (m.kind === 'capsule' && m.stats ? n + BigInt(m.stats.ethWei) : n), 0n)
   const usdc = machines.reduce((n, m) => (m.kind === 'capsule' && m.stats ? n + BigInt(m.stats.usdcMicro) : n), 0n)
-  const money = [wei > 0n ? formatPrice(wei.toString(), 'eth') : null, usdc > 0n ? formatPrice(usdc.toString(), 'usdc') : null]
-    .filter(Boolean)
-    .join(' + ')
+  const money = takenIn({ ethWei: wei.toString(), usdcMicro: usdc.toString() })
   const summary = SUMMARY.flatMap(([group, is, say]) => {
     const n = machines.filter(is).length
     const said = n ? [say(n)] : []
@@ -599,7 +576,10 @@ function OwnerMachines({
  */
 function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signedIn: boolean; onChange: () => void }) {
   const { isInMiniApp } = useFarcaster()
-  const href = pageOf(m)
+  // Its page once it has been on the shelves; while it waits for a curator,
+  // its creator's preview of it (/play/[id] 404s it for anyone else); a draft
+  // has neither.
+  const href = m.state === 'draft' ? undefined : `/play/${m.id}`
   // A cover picked but not yet saved shows in the row's thumbnail too.
   const [picked, setPicked] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<'end' | 'withdraw' | null>(null)
@@ -624,14 +604,12 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
     if (m.withdrawable) actions.push({ label: 'Withdraw', run: () => setConfirm('withdraw'), danger: true })
   }
   const attention = attentionOf(m)
-  // One waiting for a curator has no public page yet; its creator previews it.
-  const preview = m.state === 'review' ? `/play/${m.id}` : undefined
   const figures = ownerFigures(m)
   const since = sinceLine(m)
   return (
     <li className="px-3 py-2.5">
       <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] sm:grid-cols-[2.5rem_minmax(0,1fr)_minmax(0,18rem)_auto] items-center gap-x-3 gap-y-1">
-        <MachineThumb href={href ?? preview} image={picked ?? m.art?.image} thumbhash={picked ? undefined : m.art?.thumbhash} />
+        <MachineThumb href={href} image={picked ?? m.art?.image} thumbhash={picked ? undefined : m.art?.thumbhash} />
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="min-w-0 truncate text-xs font-mono text-ink">{m.name}</span>
@@ -649,12 +627,12 @@ function OwnerRow({ machine: m, signedIn, onChange }: { machine: Machine; signed
           </div>
         )}
         <div className="col-start-3 row-start-1 sm:col-start-4 flex items-center justify-end gap-2">
-          {(href ?? preview) && (
+          {href && (
             <Link
-              href={(href ?? preview)!}
+              href={href}
               className="px-2.5 py-1 text-[10px] font-mono border border-line text-dim hover:border-muted hover:text-ink transition-colors"
             >
-              {href ? 'view' : 'preview'}
+              {m.state === 'review' ? 'preview' : 'view'}
             </Link>
           )}
           {actions.length > 0 && <ActionsMenu label={`More actions for ${m.name}`} actions={actions} buttonRef={menuButton} />}

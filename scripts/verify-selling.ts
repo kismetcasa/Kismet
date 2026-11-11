@@ -15,7 +15,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-ts-alias.mjs scripts/verify-selling.ts
 
-import { capsuleSelling, revealSelling } from '../lib/experience/selling.ts'
+import { capsuleSelling, pullLimit, revealSelling } from '../lib/experience/selling.ts'
 import { CARD_ORDER, cardSelling } from '../components/machineSelling.ts'
 
 let failures = 0
@@ -43,11 +43,11 @@ const selling = {
 }
 const verdict = (over: Partial<typeof selling>) => {
   const v = capsuleSelling({ ...selling, ...over })
-  return v.open ? `open:${v.maxPull}` : `${v.reason}${'at' in v && v.at !== undefined ? `@${v.at}` : ''}`
+  return v.open ? 'open' : `${v.reason}${v.at !== undefined ? `@${v.at}` : ''}`
 }
 
 // ── 1. each gate, and its words ─────────────────────────────────────────────
-check('a live machine with an open, priced sale and artworks left sells', verdict({}) === 'open:7', verdict({}))
+check('a live machine with an open, priced sale and artworks left sells', verdict({}) === 'open', verdict({}))
 check('one waiting for a curator is a preview', verdict({ state: 'review' as never }) === 'in review')
 check('ended, delisted and draft are closed seasons',
   ['ended', 'delisted', 'draft'].every((state) => verdict({ state: state as never }) === 'season closed'))
@@ -58,8 +58,8 @@ check('a sale that opens later says when',
   verdict({ sale: { ...SALE, saleStart: NOW + 3600 } }) === `not open yet@${NOW + 3600}`, verdict({ sale: { ...SALE, saleStart: NOW + 3600 } }))
 check('a sale whose end has passed has ended, and says when',
   verdict({ sale: { ...SALE, saleEnd: NOW - 60 } }) === `sale ended@${NOW - 60}`)
-check('a sale ending later still sells', verdict({ sale: { ...SALE, saleEnd: NOW + 60 } }) === 'open:7')
-check('a "0" end is no end at all', verdict({ sale: { ...SALE, saleEnd: '0' } }) === 'open:7')
+check('a sale ending later still sells', verdict({ sale: { ...SALE, saleEnd: NOW + 60 } }) === 'open')
+check('a "0" end is no end at all', verdict({ sale: { ...SALE, saleEnd: '0' } }) === 'open')
 check('every capsule minted is sold out, even with artworks left', verdict({ capsulesOutstanding: 0 }) === 'sold out')
 check('an unconfirmed table waits rather than sells', verdict({ standingReadable: false }) === 'checking what’s left')
 check('nothing drawable is nothing left to win', verdict({ drawable: false }) === 'nothing left to win')
@@ -73,10 +73,10 @@ check('a sold-out capsule outranks an unconfirmed table', verdict({ capsulesOuts
 check('an unconfirmed table outranks an empty one', verdict({ standingReadable: false, drawable: false }) === 'checking what’s left')
 
 // ── 2. the largest pull it can honour ──────────────────────────────────────
-check('no more than the artworks left', verdict({ prizesRemaining: 3, capsulesOutstanding: 10 }) === 'open:3')
-check('no more than the capsules left', verdict({ prizesRemaining: 9, capsulesOutstanding: 2 }) === 'open:2')
-check('an unlimited lineup is bounded by the capsules', verdict({ prizesRemaining: null, capsulesOutstanding: 4 }) === 'open:4')
-check('an open edition with a floor piece has no limit', verdict({ prizesRemaining: null, capsulesOutstanding: null }) === 'open:null')
+check('no more than the artworks left', pullLimit(3, 10) === 3)
+check('no more than the capsules left', pullLimit(9, 2) === 2)
+check('an unlimited lineup is bounded by the capsules', pullLimit(null, 4) === 4)
+check('an open edition with a floor piece has no limit', pullLimit(null, null) === null)
 
 // ── 3. reveal machines ──────────────────────────────────────────────────────
 const r = (over: Partial<{ state: string; onSale: number; waiting: number }>) =>
@@ -99,7 +99,8 @@ check('one about to open reads soon, not quiet, with its date', soon.label === '
 const ended = card({ sale: { ...SALE, saleEnd: NOW - 86_400 } })
 check('one whose sale ended reads closed, with its date', ended.label === 'closed' && ended.quiet && /^ended /.test(ended.why ?? ''), JSON.stringify(ended))
 check('a read that failed reads unavailable, not quiet', card({ saleReadable: false }).label === 'unavailable' && !card({ saleReadable: false }).quiet)
-check('a closed season keeps the old words', card({ state: 'ended' as never }).why === 'capsule · season over' && card({ state: 'ended' as never }, 'reveal').why === 'reveal machine')
+check('a closed season says it is over in its kind\'s words, which repeat no kind a card already names',
+  card({ state: 'ended' as never }).why === 'season over' && card({ state: 'ended' as never }, 'reveal').why === 'no more pulls')
 check('a reveal machine waiting on sales reads soon; one with none coming reads sold out',
   cardSelling(revealSelling({ state: 'live', onSale: 0, waiting: 1 }), 'reveal').label === 'soon' &&
     cardSelling(revealSelling({ state: 'live', onSale: 0, waiting: 0 }), 'reveal').label === 'sold out')

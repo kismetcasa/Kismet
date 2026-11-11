@@ -149,7 +149,6 @@ async function creatorMachines(req: NextRequest, raw: string): Promise<NextRespo
     state: m.state,
     curator: m.creator,
     pieces,
-    kind: 'reveal' as const,
     size,
     art: art.get(m.id) ?? null,
     selling: market.selling.get(m.id),

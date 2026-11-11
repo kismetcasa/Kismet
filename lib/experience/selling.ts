@@ -1,4 +1,4 @@
-import { getSaleWindow, type SaleWindowInfo } from '../inprocess'
+import { getSaleWindow } from '../inprocess'
 import type { MachineState } from './types'
 
 /**
@@ -33,11 +33,7 @@ export type NotSelling =
   | 'nothing on sale right now'
 
 export type Selling =
-  | {
-      open: true
-      /** The largest pull it can honour; null for no limit. */
-      maxPull: number | null
-    }
+  | { open: true }
   | {
       open: false
       reason: NotSelling
@@ -49,7 +45,12 @@ export type Selling =
       waiting?: number
     }
 
-const lesser = (a: number | null, b: number | null): number | null => (a === null ? b : b === null ? a : Math.min(a, b))
+/** The largest pull a capsule machine can honour: the artworks left or the
+ *  capsules left to sell, whichever is fewer; null for no limit. */
+export function pullLimit(prizesRemaining: number | null, capsulesOutstanding: number | null): number | null {
+  if (prizesRemaining === null) return capsulesOutstanding
+  return capsulesOutstanding === null ? prizesRemaining : Math.min(prizesRemaining, capsulesOutstanding)
+}
 
 export function capsuleSelling(input: {
   state: MachineState
@@ -67,18 +68,12 @@ export function capsuleSelling(input: {
   /** Artworks left to give; null for no limit (a floor piece). */
   prizesRemaining: number | null
   nowSec?: number
-}): Selling & { window: SaleWindowInfo | null } {
+}): Selling {
   const window = getSaleWindow(
     input.sale ? { saleStart: String(input.sale.saleStart), saleEnd: String(input.sale.saleEnd) } : null,
     input.nowSec,
   )
-  const maxPull = lesser(input.prizesRemaining, input.capsulesOutstanding)
-  const closed = (reason: NotSelling, at?: number | null) => ({
-    open: false as const,
-    reason,
-    ...(at != null ? { at } : {}),
-    window,
-  })
+  const closed = (reason: NotSelling, at?: number | null): Selling => ({ open: false, reason, ...(at != null ? { at } : {}) })
   if (input.state === 'review') return closed('in review')
   if (input.state !== 'live') return closed('season closed')
   if (!input.saleReadable) return closed('price unavailable')
@@ -93,8 +88,9 @@ export function capsuleSelling(input: {
   if (window?.state === 'ended') return closed('sale ended', window.atSec)
   if (input.capsulesOutstanding === 0) return closed('sold out')
   if (!input.standingReadable) return closed('checking what’s left')
-  if (!input.drawable || (maxPull !== null && maxPull < 1)) return closed('nothing left to win')
-  return { open: true, maxPull, window }
+  const limit = pullLimit(input.prizesRemaining, input.capsulesOutstanding)
+  if (!input.drawable || (limit !== null && limit < 1)) return closed('nothing left to win')
+  return { open: true }
 }
 
 /** A reveal machine pulls while it is on the shelves and anything in it is on
@@ -103,5 +99,5 @@ export function revealSelling(input: { state: MachineState; onSale: number; wait
   if (input.state === 'review') return { open: false, reason: 'in review' }
   if (input.state !== 'live') return { open: false, reason: 'season closed' }
   if (input.onSale === 0) return { open: false, reason: 'nothing on sale right now', waiting: input.waiting }
-  return { open: true, maxPull: null }
+  return { open: true }
 }

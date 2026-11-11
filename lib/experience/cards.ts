@@ -76,8 +76,6 @@ export function poolReader(): (id: string) => Promise<PoolEntry[]> {
   }
 }
 
-const capsuleKey = (c: { collection: string; tokenId: string }) => `${c.collection.toLowerCase()}:${c.tokenId}`
-
 /**
  * What the cards say about selling, for every machine given, read the way the
  * machine's own page reads it (app/api/experience/machines/[id]) and judged by
@@ -94,7 +92,7 @@ const capsuleKey = (c: { collection: string; tokenId: string }) => `${c.collecti
  */
 export async function machineMarket(
   machines: Machine[],
-  readPool: (id: string) => Promise<PoolEntry[]> = getPool,
+  readPool: (id: string) => Promise<PoolEntry[]>,
 ): Promise<{
   prices: Map<string, NonNullable<MachineCardData['price']>>
   supplies: Map<string, { maxSupply: number | null; minted: number }>
@@ -143,7 +141,7 @@ export async function machineMarket(
   const prices = new Map<string, NonNullable<MachineCardData['price']>>()
   const selling = new Map<string, Selling>()
   liveCapsules.forEach((m, i) => {
-    const sale = sales.get(capsuleKey(m.capsule)) ?? null
+    const sale = sales.get(entryKey(m.capsule)) ?? null
     if (sale && BigInt(sale.saleEnd) > now) {
       prices.set(m.id, { pricePerToken: sale.pricePerToken, currency: sale.type === 'erc20Mint' ? 'usdc' : 'eth' })
     }
@@ -155,22 +153,24 @@ export async function machineMarket(
     const remainingPrizes = visible.some((e) => e.remaining === null)
       ? null
       : visible.reduce((sum, e) => sum + (e.remaining ?? 0), 0)
-    const supply = supplyByCapsule.get(capsuleKey(m.capsule))
+    const supply = supplyByCapsule.get(entryKey(m.capsule))
     const cover = coverage({
       capsuleMaxSupply: supply?.maxSupply ?? m.capsuleMaxSupply,
       capsuleMinted: supply?.minted ?? 0,
       remainingPrizes,
     })
-    const { window: _window, ...verdict } = capsuleSelling({
-      state: m.state,
-      sale: sale ? { pricePerToken: sale.pricePerToken, saleStart: sale.saleStart, saleEnd: sale.saleEnd } : null,
-      saleReadable: sale !== null,
-      capsulesOutstanding: cover.capsulesOutstanding,
-      standingReadable: readable,
-      drawable: visible.some(isDrawable),
-      prizesRemaining: cover.prizesRemaining,
-    })
-    selling.set(m.id, verdict)
+    selling.set(
+      m.id,
+      capsuleSelling({
+        state: m.state,
+        sale: sale ? { pricePerToken: sale.pricePerToken, saleStart: sale.saleStart, saleEnd: sale.saleEnd } : null,
+        saleReadable: sale !== null,
+        capsulesOutstanding: cover.capsulesOutstanding,
+        standingReadable: readable,
+        drawable: visible.some(isDrawable),
+        prizesRemaining: cover.prizesRemaining,
+      }),
+    )
   })
   liveReveals.forEach((m, i) => {
     const statuses = revealPools[i].map((e) => lineup.get(entryKey(e)))
@@ -198,7 +198,7 @@ export async function machineMarket(
   }
   const supplies = new Map<string, { maxSupply: number | null; minted: number }>()
   for (const m of capsules) {
-    const supply = supplyByCapsule.get(capsuleKey(m.capsule))
+    const supply = supplyByCapsule.get(entryKey(m.capsule))
     if (supply) supplies.set(m.id, supply)
   }
   return { prices, supplies, selling }

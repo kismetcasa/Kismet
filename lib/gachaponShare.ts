@@ -26,7 +26,7 @@ export interface GachaponShare {
 }
 
 export function gachaponShareEmbeds(s: GachaponShare): [string, string] {
-  return [`${SITE_URL}/artwork/${s.collection.toLowerCase()}/${s.tokenId}`, `${SITE_URL}/play/${s.machineId}`]
+  return [`${SITE_URL}/artwork/${s.collection.toLowerCase()}/${s.tokenId}`, machineShareUrl(s.machineId)]
 }
 
 /** A machine shared by its creator (their profile's list): its page as the
