@@ -156,14 +156,18 @@ const MAX_BYTES = 16 * 1024 * 1024
 
 // sharp cannot read JPEG XL, so ffmpeg decodes one first (lib/media/jpegXl),
 // small: the palette samples a 48px square. An owner picking a theme waits for
-// the decoder like the image proxy does, though not as long.
+// the decoder like the image proxy does, though not as long, and like it gets
+// longer than a crawler's 5s to decode.
 const JXL_EDGE = 256
 const JXL_DECODE_WAIT_MS = 10_000
+const JXL_DECODE_TIMEOUT_MS = 20_000
 
 /** Synthesize a palette from raw image bytes. Returns null on decode failure. */
 export async function paletteFromBuffer(buf: Buffer): Promise<Palette | null> {
   try {
-    const source = isJpegXl(buf) ? await jpegXlToPng(buf, JXL_EDGE, { waitMs: JXL_DECODE_WAIT_MS }) : buf
+    const source = isJpegXl(buf)
+      ? await jpegXlToPng(buf, JXL_EDGE, { waitMs: JXL_DECODE_WAIT_MS, timeoutMs: JXL_DECODE_TIMEOUT_MS })
+      : buf
     const { data, info } = await sharp(source).resize(48, 48, { fit: 'cover' }).raw().toBuffer({ resolveWithObject: true })
     const ch = info.channels
     const px: RGB[] = []

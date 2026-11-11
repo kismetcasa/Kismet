@@ -272,15 +272,22 @@ try {
       check('refused from its header, before a frame is allocated', refusal.includes('max pixel count'), refusal.slice(0, 80))
       check('a truncated one is nothing', (await card(codestream.subarray(0, 20))) === undefined)
       {
-        const [a, b] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(codestream, 1200)])
-        check('the same cover asked for twice at once is decoded once, for both',
-          a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value)
+        // The pink again, stored as Display P3 the way libjxl stores it (by
+        // name, no ICC profile): its P3 values read as sRGB were 17 levels
+        // off in red.
+        const p3 = await decoded(await card(Buffer.from('/wpPQEAmNwIIAgEAZABLGIsVANQfYzB+LxABACCBfgEAAffxfkoJ', 'base64')))
+        check('a Display P3 one in its own colours, converted to sRGB',
+          !!p3 && [255, 135, 206].every((v, k) => Math.abs(p3.mean[k] - v) <= 6), `${p3?.mean}`)
+      }
+      {
         const [c, d] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200)])
         check('another cover while one decodes is refused, not queued', c.status === 'fulfilled' && d.status === 'rejected')
         const [e, f] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200, { waitMs: 10_000 })])
         check('or, given a wait (the image proxy), decoded once the first is done', e.status === 'fulfilled' && f.status === 'fulfilled')
         const [g, h] = await Promise.allSettled([jpegXlToPng(codestream, 1200), jpegXlToPng(container, 1200, { waitMs: 1 })])
         check('and refused once its wait runs out', g.status === 'fulfilled' && h.status === 'rejected')
+        const killed = await jpegXlToPng(wide, 1200, { timeoutMs: 1 }).then(() => false, () => true)
+        check('a decode past its caller\'s timeout is killed', killed)
         const after = await jpegXlToPng(container, 1200).then(() => true, () => false)
         check('the slot is free again after all of that', after)
       }

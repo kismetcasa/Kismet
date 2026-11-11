@@ -336,9 +336,10 @@ export default async function MomentPage({ params }: Props) {
   const canonicalUrl = `${SITE_URL}/artwork/${address.toLowerCase()}/${tokenId}`
   const displayName = detail?.metadata?.name ?? fallbackMeta?.name ?? `#${tokenId}`
   const rawImage = detail?.metadata?.image ?? fallbackMeta?.image
-  // A JPEG XL is no image search engines read, so its artwork's card stands
-  // in, as it does for a moment with no image (encodingFormat below still
-  // names the original's format).
+  // Google's image search reads BMP, GIF, JPEG, PNG, WebP, SVG and AVIF, not
+  // JPEG XL, and robots.ts keeps crawlers off /api/img's converted copy, so a
+  // JPEG XL artwork's card (a PNG of it) stands in, as it does for a moment
+  // with no image. encodingFormat below still names the original's format.
   const searchableImage = rawImage && detail?.metadata?.content?.mime !== 'image/jxl'
   const activeListing = await getActiveListing(address, tokenId)
   const jsonLd = momentJsonLd({

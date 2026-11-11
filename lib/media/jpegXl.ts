@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { SingleFlight } from '@/lib/media/imgVariantCache'
+import { crc32, deflateSync } from 'node:zlib'
+import sharp from 'sharp'
 
 const execFileAsync = promisify(execFile)
 
@@ -28,17 +28,16 @@ export function isJpegXl(bytes: Buffer): boolean {
 // one decode at a time below.
 const MAX_PIXELS = 24_000_000
 // Kill a decode that outlives a crawler's patience rather than pin a CPU on
-// the shared box; the caller treats it as a normal failure.
+// the shared box; the caller treats it as a normal failure. A caller whose
+// result outlasts the request passes a longer `timeoutMs`: the largest image
+// allowed took 4.7s to decode on one core here.
 const FFMPEG_TIMEOUT_MS = 5_000
 // Each decode is its own process, outside the libuv pool that bounds how many
-// sharp jobs run at once, so one runs at a time. The same image asked for at
-// once (each crawler of a fresh share) joins the decode already running. A
-// different one waits its turn for up to the caller's `waitMs` (none by
-// default): the image proxy waits out its compute budget, since its output is
-// cached forever, and a share card only briefly, since a crawler gives up
-// within seconds.
+// sharp jobs run at once, so one runs at a time. Another waits its turn for
+// up to the caller's `waitMs` (none by default): the image proxy waits out its
+// compute budget, since its output is cached forever, and a share card only
+// briefly, since a crawler gives up within seconds.
 const MAX_CONCURRENT_DECODES = 1
-const decodes = new SingleFlight<Buffer>()
 let running = 0
 const queued: Array<() => void> = []
 
@@ -76,19 +75,20 @@ function release(): void {
  * Rejects on any failure: no decoder, too many pixels, corrupt, too slow, or
  * busy with another image past `waitMs`.
  */
-export function jpegXlToPng(bytes: Buffer, maxEdge: number, { waitMs = 0 } = {}): Promise<Buffer> {
-  const key = `${createHash('sha256').update(bytes).digest('hex')}:${maxEdge}`
-  return decodes.run(key, async () => {
-    if (!(await acquire(waitMs))) throw new Error('jpeg xl decode busy')
-    try {
-      return await decode(bytes, maxEdge)
-    } finally {
-      release()
-    }
-  })
+export async function jpegXlToPng(
+  bytes: Buffer,
+  maxEdge: number,
+  { waitMs = 0, timeoutMs = FFMPEG_TIMEOUT_MS } = {},
+): Promise<Buffer> {
+  if (!(await acquire(waitMs))) throw new Error('jpeg xl decode busy')
+  try {
+    return await withDisplayP3Profile(await decode(bytes, maxEdge, timeoutMs))
+  } finally {
+    release()
+  }
 }
 
-async function decode(bytes: Buffer, maxEdge: number): Promise<Buffer> {
+async function decode(bytes: Buffer, maxEdge: number, timeoutMs: number): Promise<Buffer> {
   const dir = await mkdtemp(join(tmpdir(), 'jxl-'))
   const inPath = join(dir, 'in.jxl')
   const outPath = join(dir, 'out.png')
@@ -105,7 +105,7 @@ async function decode(bytes: Buffer, maxEdge: number): Promise<Buffer> {
         '-vf', `scale=min(${maxEdge}\\,iw):min(${maxEdge}\\,ih):force_original_aspect_ratio=decrease`,
         '-pix_fmt', 'rgba', outPath,
       ],
-      { timeout: FFMPEG_TIMEOUT_MS, killSignal: 'SIGKILL' },
+      { timeout: timeoutMs, killSignal: 'SIGKILL' },
     )
     const png = await readFile(outPath)
     if (png.byteLength === 0) throw new Error('ffmpeg produced empty output')
@@ -113,4 +113,44 @@ async function decode(bytes: Buffer, maxEdge: number): Promise<Buffer> {
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
+}
+
+// A JPEG XL can name a standard colour space instead of carrying an ICC
+// profile. ffmpeg writes such a name into the PNG as a cICP chunk, which sharp
+// ignores, so a Display P3 image (the wide gamut Apple devices shoot in) would
+// be read as sRGB and come out washed out. A Display P3 decode therefore gets
+// that profile as an iCCP chunk, which sharp converts to sRGB from as it does
+// for any tagged image. One that carries an ICC profile already comes out
+// with it; any other named space passes as it came.
+const CICP_DISPLAY_P3 = [12, 13] // primaries P3-D65 (SMPTE EG 432-1), sRGB transfer
+let displayP3Profile: Promise<Buffer> | undefined
+
+async function withDisplayP3Profile(png: Buffer): Promise<Buffer> {
+  // The chunks after the 8-byte signature: length, type, data, CRC.
+  let cicp: Buffer | undefined
+  let at = 8
+  for (; at + 8 <= png.length; at += 12 + png.readUInt32BE(at)) {
+    const type = png.toString('latin1', at + 4, at + 8)
+    if (type === 'iCCP') return png
+    if (type === 'IDAT') break
+    if (type === 'cICP') cicp = png.subarray(at + 8, at + 12)
+  }
+  if (cicp?.[0] !== CICP_DISPLAY_P3[0] || cicp[1] !== CICP_DISPLAY_P3[1] || at + 8 > png.length) return png
+  displayP3Profile ??= sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })
+    .withIccProfile('p3')
+    .png()
+    .toBuffer()
+    .then(async (b) => (await sharp(b).metadata()).icc ?? Promise.reject(new Error('no p3 profile')))
+  // Without the profile, the colours shift but the image still converts.
+  const profile = await displayP3Profile.catch(() => null)
+  if (!profile) return png
+  // Name, its null, compression method 0 (deflate), then the profile.
+  const data = Buffer.concat([Buffer.from('Display P3\0\0', 'latin1'), deflateSync(profile)])
+  const chunk = Buffer.alloc(12 + data.length)
+  chunk.writeUInt32BE(data.length, 0)
+  chunk.write('iCCP', 4, 'latin1')
+  data.copy(chunk, 8)
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length)
+  // Before the first IDAT, where the PNG spec places it.
+  return Buffer.concat([png.subarray(0, at), chunk, png.subarray(at)])
 }

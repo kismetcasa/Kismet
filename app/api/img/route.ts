@@ -354,10 +354,14 @@ async function computeResizedVariantInner(u: string, width: number): Promise<Res
   try {
     // sharp cannot read JPEG XL (lib/media/jpegXl), and Chrome and Firefox
     // cannot show one either, so ffmpeg decodes it first, already fit to the
-    // variant. It waits out the rest of the budget for its turn: the result
-    // is cached forever, so finishing late beats failing.
+    // variant. It waits out the rest of the budget for its turn and gets
+    // longer than a crawler's 5s to decode: the result is cached forever, so
+    // finishing late beats failing, and failing would recur on every view.
     const source = isJpegXl(original)
-      ? await jpegXlToPng(original, width, { waitMs: RESIZE_COMPUTE_BUDGET_MS - (Date.now() - started) })
+      ? await jpegXlToPng(original, width, {
+          waitMs: RESIZE_COMPUTE_BUDGET_MS - (Date.now() - started),
+          timeoutMs: 20_000,
+        })
       : original
     const resized = await sharp(source, { failOn: 'none' })
       .rotate() // honour EXIF orientation (phone/scanner captures)
@@ -550,8 +554,8 @@ export async function GET(req: NextRequest) {
   const headers = new Headers({
     'Content-Type': contentType,
     // ar://<txid> / ipfs://<cid> are content-addressed — bytes never change.
-    // A JPEG XL that wanted a resize lands here only when the resizers were
-    // all busy (see JXL_RAW_CACHE_CONTROL).
+    // A JPEG XL that wanted a resize lands here when the resizers were all
+    // busy or it is past the resize cap (see JXL_RAW_CACHE_CONTROL).
     'Cache-Control':
       wantsResize && contentType.toLowerCase().startsWith('image/jxl')
         ? JXL_RAW_CACHE_CONTROL

@@ -2176,8 +2176,8 @@ export function MintForm({ collectionAddress, collectionName, onSwitchToCreate }
                   <video src={preview} className="block w-full h-auto" muted autoPlay loop playsInline />
                 ) : previewUnreadable ? (
                   <p className="px-6 py-12 text-center text-[11px] font-mono text-muted">
-                    {file?.type === 'image/jxl' || /\.jxl$/i.test(file?.name ?? '')
-                      ? 'this browser can’t preview a JPEG XL — it mints as it is, and Kismet converts it for browsers like this one'
+                    {file?.type === 'image/jxl'
+                      ?'this browser can’t preview a JPEG XL — it mints as it is, and Kismet converts it for browsers like this one'
                       : 'this browser can’t preview this image — collectors on browsers like this one may not see it either; PNG, JPEG, GIF and WebP show everywhere'}
                   </p>
                 ) : (

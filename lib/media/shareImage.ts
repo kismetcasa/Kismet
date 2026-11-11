@@ -63,9 +63,9 @@ export function missedCover(
 // The card hero renders at 800×800 inside the 1200×800 canvas; 1200 wide
 // covers it with headroom while keeping the inlined jpeg small (~100-500KB).
 const SHARE_SOURCE_MAX_WIDTH = 1200
-// How long a card waits for the one JPEG XL decoder when /api/img is using
-// it: the first share of a new cover tends to land while its page converts the
-// same image. Short, because a crawler gives up within seconds.
+// How long a card waits for the one JPEG XL decoder when another caller holds
+// it (/api/img converting the same cover for its page, say): a short wait beats
+// a text card, and it stays short because a crawler gives up within seconds.
 const JXL_DECODE_WAIT_MS = 2_000
 
 /**

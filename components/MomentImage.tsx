@@ -53,7 +53,7 @@ const PROXY_DISPLAY_MAX_WIDTH = 2048
 type DeliveryMode = 'optimized' | 'proxy' | 'direct'
 
 type NextImageProps = CommonProps & {
-  /** Content-type hint (`content.mime`). `image/gif` routes straight to the proxy. */
+  /** Content-type hint (`content.mime`). `image/gif` and `image/jxl` route straight to the proxy. */
   mime?: string
   /**
    * Skip the optimizer attempt and go straight to the proxy. For cover-style
@@ -85,7 +85,7 @@ type NextImageProps = CommonProps & {
  *   - 'optimized': next/image's optimizer (AVIF/WebP transcode + 31d edge cache)
  *   - 'proxy':     /api/img streams from the gateway pool with 1y immutable cache;
  *                  used for content the optimizer can't handle (animated GIFs,
- *                  sources past its 50MB body cap — images.maximumResponseBody)
+ *                  JPEG XL, sources past its 50MB body cap — images.maximumResponseBody)
  *   - 'direct':    raw gateway URL with unoptimized=true; defense-in-depth fallback
  *
  * Transitions: optimized → proxy (ar:/ipfs:) | direct (else)
