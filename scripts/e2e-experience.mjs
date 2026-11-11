@@ -854,9 +854,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  *  stopped selling, one waiting for a curator, what is on sale, what has
  *  closed — each group in the API's order. */
 const STUCK = ['nothing left to win', 'sold out', 'sale ended', 'not for sale', 'nothing on sale right now']
+/** A live machine stopped in a way only its owner can put right — not one
+ *  whose pieces are about to go on sale. */
+const ownerStuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason) && !m.selling.waiting
 const ownerOrder = (machines, turnedDown = []) => {
-  const stuck = (m) => m.state === 'live' && m.selling && !m.selling.open && STUCK.includes(m.selling.reason) && !m.selling.waiting
-  const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : stuck(m) ? 3 : m.state === 'review' ? 4 : m.state === 'live' ? 5 : 6)
+  const rank = (m) => (m.state === 'draft' ? 0 : m.state === 'delisted' ? 1 : ownerStuck(m) ? 3 : m.state === 'review' ? 4 : m.state === 'live' ? 5 : 6)
   return [...machines.map((m) => [rank(m), m.name]), ...turnedDown.map((t) => [2, t.name])]
     .sort((a, b) => a[0] - b[0])
     .map(([, name]) => name.toLowerCase())
@@ -874,7 +876,7 @@ async function screened(id, stages) {
   }
   return (await call(`/api/experience/machines/${id}`)).json?.machine
 }
-async function call(path, { method = 'GET', body, user, admin } = {}) {
+async function call(path, { method = 'GET', body, user, admin, bearer } = {}) {
   // A machine is published with a cover (the route requires one); a test of
   // that requirement sends `cover: undefined`, which JSON drops.
   if (method === 'POST' && path === '/api/experience/machines' && body && !('cover' in body)) body = { ...body, cover: TEST_COVER }
@@ -883,6 +885,7 @@ async function call(path, { method = 'GET', body, user, admin } = {}) {
   if (user) cookies.push(`${USER_COOKIE}=${user}`)
   if (admin) cookies.push(`${ADMIN_COOKIE}=${admin}`)
   if (cookies.length) headers.cookie = cookies.join('; ')
+  if (bearer) headers.authorization = `Bearer ${bearer}`
   const res = await fetch(`http://127.0.0.1:${PORT}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000) })
   const text = await res.text()
   let json = null
@@ -3145,6 +3148,14 @@ try {
               (await card('dry-season').getByRole('link', { name: 'play', exact: true }).count()) === 0, dryCard)
           const labels = await cards.evaluateAll((els) => els.map((el) => el.querySelector('span.uppercase')?.textContent?.trim()))
           check('and comes after every machine selling a play', labels.includes('live') && labels.lastIndexOf('live') < labels.indexOf('sold out'), labels.join(','))
+          // A closed machine's line says its season is over in its own kind's
+          // words, under the line that already names its kind.
+          const seasonClosed = shelved.filter((m) => m.selling?.open === false && m.selling.reason === 'season closed')
+          const closedCards = await Promise.all(seasonClosed.map(async (m) => ({ id: m.id, kind: m.kind, text: (await card(m.id).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase() })))
+          check('a closed machine says its season is over in its own words, naming its kind once',
+            seasonClosed.some((m) => m.kind === 'capsule') && seasonClosed.some((m) => m.kind === 'reveal') &&
+              closedCards.every((c) => c.text.includes(c.kind === 'capsule' ? 'season over' : 'no more pulls') && c.text.split(c.kind).length === 2),
+            JSON.stringify(closedCards))
           // Scrolled to first, as a visitor would: a card far down the list
           // renders its image only as it nears the viewport.
           const coverOf = async (id) => {
@@ -4342,6 +4353,20 @@ try {
           else chain.tokens.delete(capsuleKey)
           vs = await verdicts()
           check('and on sale again, it reads open again', vs.every((v) => v?.open === true), JSON.stringify(vs))
+          // A list sends each machine's verdict and nothing of the page's own:
+          // no sale window, no pull limit — on and off the shelves alike.
+          const listed = [
+            ...((await call('/api/experience/machines')).json?.machines ?? []),
+            ...(await Promise.all([[ADMIN, ADMIN_USER_TOKEN], [CURATOR, CURATOR_TOKEN], [CREATOR2, USER_TOKEN]].map(async ([who, user]) => {
+              const j = (await call(`/api/experience/machines?creator=${who}`, { user })).json ?? {}
+              return [...(j.machines ?? []), ...(j.featuredIn ?? [])]
+            }))).flat(),
+          ]
+          const odd = listed.filter((m) => !m.selling ||
+            (m.selling.open ? Object.keys(m.selling).join() !== 'open' : Object.keys(m.selling).some((k) => !['open', 'reason', 'at', 'waiting'].includes(k))))
+          check('every list sends each machine\'s verdict and nothing more: open, or why not, when, and what joins',
+            listed.some((m) => m.state === 'live') && listed.some((m) => m.state !== 'live') && odd.length === 0,
+            JSON.stringify(odd.slice(0, 3).map((m) => [m.id, m.selling])))
         }
 
         // ── the reveal studio ──
@@ -4616,6 +4641,52 @@ try {
           const usdcRow = (await ownRows.filter({ has: own.locator('a[href="/play/curator-usdc"]') }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
           check('a reveal machine\'s row counts collects, not the artists\' money', /\d+ collected/.test(usdcRow) && !usdcRow.includes('taken in'), usdcRow)
           await own.context().close()
+          // A reveal machine whose only piece is about to go on sale has nothing
+          // to pull yet, but nothing for its owner to put right: its row says
+          // when pieces join, and it is neither counted as not selling nor
+          // ranked above the machine waiting for a curator.
+          const soloSale = chain.sales.get(key(REVEAL, 1))
+          chain.sales.set(key(REVEAL, 1), { ...soloSale, saleStart: BigInt(Math.floor(Date.now() / 1000)) + 86_400n })
+          const wJson = (await call(`/api/experience/machines?creator=${CURATOR}`, { user: CURATOR_TOKEN })).json ?? {}
+          const wSolo = (wJson.machines ?? []).find((m) => m.id === 'curator-solo')
+          const wp = await open(`/profile/${CURATOR}`, { user: CURATOR_TOKEN, wallet: CURATOR })
+          const wRows = wp.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          await wRows.filter({ hasText: 'Curator Solo' }).getByText(/joins when/).waitFor({ timeout: 15_000 }).catch(() => {})
+          const wNames = await wRows.evaluateAll((els) => els.map((el) => el.querySelector('span.truncate')?.textContent?.trim().toLowerCase() ?? ''))
+          const wSoloText = (await wRows.filter({ hasText: 'Curator Solo' }).innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          const wNotSelling = (await text(wp)).match(/(\d+) not selling/)?.[1]
+          const wStuck = (wJson.machines ?? []).filter(ownerStuck).length
+          await wp.context().close()
+          chain.sales.set(key(REVEAL, 1), soloSale)
+          check('a reveal machine whose pieces are about to go on sale says when they join, and is not counted or ranked as not selling',
+            wSolo?.selling?.reason === 'nothing on sale right now' && wSolo.selling.waiting === 1 &&
+              wSoloText.includes('nothing on sale right now · 1 piece joins when its sale opens') &&
+              wNames.join('|') === ownerOrder(wJson.machines ?? [], wJson.turnedDown).join('|') &&
+              wNames.indexOf('curator solo') > wNames.indexOf('browser picks') &&
+              (wStuck === 0 ? wNotSelling === undefined : Number(wNotSelling) === wStuck),
+            `${JSON.stringify(wSolo?.selling)} | ${wNames.join('|')} | ${wNotSelling} vs ${wStuck} | ${wSoloText}`)
+          // A draft — a publish that did not finish — has no page and nothing on
+          // sale: its row comes first, says so, links nowhere, and offers only
+          // the withdrawal that frees it to be published again.
+          const picksKey = 'kismetart:xp:browser-picks:meta'
+          const picksMeta = strings.get(picksKey)
+          strings.set(picksKey, JSON.stringify({ ...JSON.parse(picksMeta), state: 'draft' }))
+          const dp = await open(`/profile/${CURATOR}`, { user: CURATOR_TOKEN, wallet: CURATOR })
+          const dRows = dp.getByRole('list', { name: 'Your machines' }).getByRole('listitem')
+          const draftRow = dRows.filter({ hasText: 'Browser Picks' })
+          await draftRow.getByText(/didn.t finish/).waitFor({ timeout: 15_000 }).catch(() => {})
+          const draftText = (await draftRow.innerText().catch(() => '')).replace(/\s+/g, ' ').toLowerCase()
+          const draftFirst = ((await dRows.first().innerText().catch(() => '')) ?? '').toLowerCase().includes('browser picks')
+          const draftLinks = await draftRow.getByRole('link').count()
+          await draftRow.getByRole('button', { name: 'More actions for Browser Picks' }).click().catch(() => {})
+          const draftActions = (await dp.getByRole('menu', { name: 'More actions for Browser Picks' }).getByRole('menuitem').allInnerTexts().catch(() => [])).map((t) => t.trim().toLowerCase())
+          const draftSummary = (await text(dp)).includes('1 not submitted')
+          await dp.context().close()
+          strings.set(picksKey, picksMeta)
+          check('a draft comes first, says its publish did not finish, links nowhere, and offers only its withdrawal',
+            draftFirst && draftText.includes('the publish didn’t finish · withdraw it to fix and publish again') && draftLinks === 0 &&
+              draftActions.join(',') === 'withdraw' && draftSummary,
+            `${draftFirst} ${draftLinks} ${draftActions.join(',')} ${draftSummary} | ${draftText}`)
           // Delisted, a machine's row says why a curator took it down — the
           // reason its notification carried, kept on the machine — and comes
           // first; relisted, the reason goes with it.
@@ -4668,6 +4739,15 @@ try {
             call('/play/browser-picks'),
           ])
           check('and so is its page: anyone else is told there is no such machine', pages.map((r) => r.status).join(',') === '200,404,404', pages.map((r) => r.status).join(','))
+          // The page reads its viewer as the API does — the session cookie, or in
+          // a Mini App the Quick Auth token — so a token that does not verify is
+          // no one, and stands in the way of no cookie.
+          const [bearerAlone, bearerAndCookie] = await Promise.all([
+            call('/play/browser-picks', { bearer: 'not-a-jwt' }),
+            call('/play/browser-picks', { user: CURATOR_TOKEN, bearer: 'not-a-jwt' }),
+          ])
+          check('a Quick Auth token that does not verify opens it for no one, and its creator\'s cookie still does',
+            bearerAlone.status === 404 && bearerAndCookie.status === 200, `${bearerAlone.status} ${bearerAndCookie.status}`)
           const pv = await open('/play/browser-picks', { user: CURATOR_TOKEN, wallet: CURATOR })
           await pv.getByText('Browser Picks').first().waitFor({ timeout: 15_000 }).catch(() => {})
           const pvBody = await text(pv)

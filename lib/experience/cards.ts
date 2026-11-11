@@ -183,6 +183,8 @@ export async function machineMarket(
       }),
     )
   })
+  // The rest are off the shelves, where a machine's state alone decides its
+  // verdict, ahead of every other gate: the inputs below are never reached.
   for (const m of machines) {
     if (!selling.has(m.id)) {
       selling.set(m.id, isReveal(m) ? revealSelling({ state: m.state, onSale: 0, waiting: 0 }) : capsuleSelling({

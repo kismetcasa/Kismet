@@ -330,7 +330,7 @@ video fixtures are WebM clips the suite records itself. `E2E_SHOTS=<dir>` saves
 a full-page screenshot of every page it opens, the stage mid-play, and the
 machine share card. About three minutes.
 
-## What it asserts (699)
+## What it asserts (704)
 
 - **Play** — a capsule is paid for in one signature; the draw, delivery,
   resume after each way delivery can fail, capsules minted elsewhere, and the
@@ -369,10 +369,13 @@ machine share card. About three minutes.
   machine's page will do, from the rule the page itself acts on: "live" with a
   play only while the page sells one, and otherwise why in the page's words —
   sold out (every capsule sold, or nothing left to win), opens on a date, the
-  sale ended, the price unreadable — with what can be played first. The page
-  stops at a sold-out capsule and never offers a pull larger than the capsules
-  left; each case is set up on the mock chain and undone. An owner sees a live
-  machine that has stopped selling at the top of their list, with what to do.
+  sale ended, the price unreadable, a closed season in its kind's own words —
+  with what can be played first. Every list sends the verdict and nothing of
+  the page's own (no sale window, no pull limit). The page stops at a sold-out
+  capsule and never offers a pull larger than the capsules left; each case is
+  set up on the mock chain and undone. An owner sees a live machine that has
+  stopped selling at the top of their list, with what to do — but not a reveal
+  machine whose pieces are about to go on sale, which says when they join.
 - **Owners** — why a curator delisted their machine, on its row and from the
   API to its creator alone, gone once it is relisted; one a curator turned
   down kept as a row of their list — why, and the studio to fix it in — until
@@ -381,13 +384,15 @@ machine share card. About three minutes.
   says so when the load fails, with a retry that brings the list back (not a
   sign-in, nor a count of none), and with no machine of their own shows the way
   to build one; rows dated (live since, closed); a menu that copies a machine's
-  link and shares it to Farcaster with its page as the embed; what "taken in"
-  counts; a cover just saved kept on screen from the browser while no gateway
-  serves its upload, in the row and on the machine's page; a machine waiting
-  for a curator opens for its creator as a preview that sells nothing (a
-  reveal machine and a capsule machine), from the screen that submitted it and
-  from their list, with no-store data, a page nothing indexes and no name in
-  its head, while anyone else is told there is no such machine.
+  link and shares it to Farcaster with its page as the embed; a draft first,
+  linking nowhere, with only its withdrawal; what "taken in" counts; a cover
+  just saved kept on screen from the browser while no gateway serves its
+  upload, in the row and on the machine's page; a machine waiting for a
+  curator opens for its creator as a preview that sells nothing (a reveal
+  machine and a capsule machine), from the screen that submitted it and from
+  their list, with no-store data, a page nothing indexes and no name in its
+  head, while anyone else — a Quick Auth token that does not verify included —
+  is told there is no such machine.
 - **Featured in** — another curator's machines holding an artist's work, as
   the play list's cards for visitors (each with who curated it), counted under
   a heading of their own — or naming the section, for an artist with no

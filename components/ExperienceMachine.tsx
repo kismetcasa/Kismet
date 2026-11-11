@@ -494,7 +494,6 @@ export function ExperienceMachine({ id }: { id: string }) {
   const sizes = pullSizes(left)
   const pullSize = effectivePull(left, pull)
   const playable = selling.open
-  const closedLabel = selling.open ? 'play' : selling.reason
   const unitPrice = sale ? formatPrice(sale.pricePerToken, sale.currency) : null
   const totalPrice =
     sale && pullSize > 1
@@ -714,7 +713,7 @@ export function ExperienceMachine({ id }: { id: string }) {
               sizes={sizes}
               setPull={setPull}
               onPlay={play}
-              label={playable ? 'play' : closedLabel}
+              label={selling.open ? 'play' : selling.reason}
               unitPrice={unitPrice}
               totalPrice={totalPrice}
               usdPrice={usdPrice}
