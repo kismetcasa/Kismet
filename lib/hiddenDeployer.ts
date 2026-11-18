@@ -37,8 +37,37 @@ function gate<I extends MaybeDeployer>(identity: I, closure: Set<string>): I {
   return identity
 }
 
+// In Process's live collection route returns `creator` as a bare address with
+// the handle hoisted to a top-level `creator_username` (lib/inprocessCollection
+// normalizes that away before any egress). A raw body handed here must still
+// not slip its handle past the gate, so that shape is gated too.
+type DeployerFields = {
+  creator?: MaybeDeployer | string
+  default_admin?: MaybeDeployer
+  creator_username?: string | null
+}
+
+/** Pure core of stripHiddenDeployerIdentity against an already-loaded closure. */
+export function stripHiddenDeployerIdentityWith<T>(data: T, closure: Set<string>): T {
+  const d = data as DeployerFields | null | undefined
+  if (!d || closure.size === 0) return data
+  const default_admin = gate(d.default_admin, closure)
+  if (typeof d.creator === 'string') {
+    const hideHoisted = d.creator_username != null && closure.has(d.creator.toLowerCase())
+    if (!hideHoisted && default_admin === d.default_admin) return data
+    return {
+      ...(data as object),
+      ...(hideHoisted ? { creator_username: null } : {}),
+      default_admin,
+    } as T
+  }
+  const creator = gate(d.creator, closure)
+  if (creator === d.creator && default_admin === d.default_admin) return data
+  return { ...(data as object), creator, default_admin } as T
+}
+
 export async function stripHiddenDeployerIdentity<T>(data: T): Promise<T> {
-  const d = data as { creator?: MaybeDeployer; default_admin?: MaybeDeployer } | null | undefined
+  const d = data as DeployerFields | null | undefined
   if (!d || (d.creator == null && d.default_admin == null)) return data
   let closure: Set<string>
   try {
@@ -46,9 +75,5 @@ export async function stripHiddenDeployerIdentity<T>(data: T): Promise<T> {
   } catch {
     return data
   }
-  if (closure.size === 0) return data
-  const creator = gate(d.creator, closure)
-  const default_admin = gate(d.default_admin, closure)
-  if (creator === d.creator && default_admin === d.default_admin) return data
-  return { ...(data as object), creator, default_admin } as T
+  return stripHiddenDeployerIdentityWith(data, closure)
 }

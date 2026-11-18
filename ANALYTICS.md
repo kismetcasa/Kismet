@@ -164,9 +164,19 @@ mint-time stored split** (`getStoredSplits` — the same source `/api/moment/spl
 serves the Patron page), preferred over the feed's speculative `fee_recipients`,
 so a pass credits its real artist(s) even when the feed omits the split. The
 excluded-payee set is the static platform wallets **unioned with the Patron
-collection's on-chain `default_admin`, `payout_recipient`, and `creator`**
-(resolved from inprocess `/collection`, 7-day TTL-cached at
-`kismetart:stats:pass-exclude`, best-effort → static-floor fallback) — a
+collection's treasury-side roles: the deployer In Process reports (`creator`,
+documented upstream as the creation-time default admin) plus the contract's
+live on-chain `owner` and `fundsRecipient` (the payout recipient)**. The
+deployer comes from In Process's collection detail
+(`GET /collections/eip155:8453/erc1155:<address>`, via
+`lib/inprocessCollection.ts`; the singular `/collection` route was removed
+upstream in 2026-11, and `payout_recipient` was dropped from its contract in
+2026-03). `owner`/`fundsRecipient` are read from the contract's `config()`
+(`lib/collectionRoles.ts`). The set is 7-day TTL-cached at
+`kismetart:stats:pass-exclude` when both sources answer. If one fails, the
+last complete set is unioned in and the cache is left alone. Best-effort →
+static-floor fallback. An In Process miss on this read is logged loudly, not
+absorbed (the Patron collection is known indexed). This is a
 **superset** of the Patron page's `deriveArtistsFromRecipients` set (it also
 excludes `OPERATOR` + `creator`, both platform-side, so it never drops a real
 artist). Completeness matters because a pass artist can be a **minority** holder

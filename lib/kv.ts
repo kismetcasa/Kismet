@@ -1,7 +1,7 @@
 import { redis, mgetChunked } from './redis'
 import type { ZineHint } from './media/zineHint'
 import { PLATFORM_COLLECTION } from './config'
-import { inprocessUrl } from './inprocess'
+import { fetchInprocessCollection, isKnownIndexed } from './inprocessCollection'
 import { getHiddenCollectionsSet } from './hiddenCollections'
 import { getHiddenUsersSet } from './hidden-users'
 import { memoize } from './memoCache'
@@ -409,22 +409,13 @@ export async function getCollectionsByArtist(
 
 // Cover-image fallback for KV entries registered before the cover flow
 // shipped. 5min upstream cache bounds the per-search fan-out.
-async function fetchInprocessCollectionImage(address: string): Promise<string | undefined> {
-  try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 300 },
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!res.ok) return undefined
-    const text = await res.text()
-    if (!text) return undefined
-    const data = JSON.parse(text) as { metadata?: { image?: string } }
-    return typeof data?.metadata?.image === 'string' ? data.metadata.image : undefined
-  } catch {
-    return undefined
-  }
+async function fetchInprocessCollectionImage(meta: CollectionMeta): Promise<string | undefined> {
+  const { detail } = await fetchInprocessCollection(meta.address, {
+    caller: 'collection-search',
+    revalidate: 300,
+    expectIndexed: isKnownIndexed(meta),
+  })
+  return detail?.metadata?.image
 }
 
 // Searches curated collections only; moments have their own search.
@@ -467,7 +458,7 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
   return Promise.all(
     results.map(async (meta) => {
       if (meta.image) return meta
-      const image = await fetchInprocessCollectionImage(meta.address)
+      const image = await fetchInprocessCollectionImage(meta)
       return image ? { ...meta, image } : meta
     }),
   )

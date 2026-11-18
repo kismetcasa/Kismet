@@ -1,6 +1,11 @@
 import { ImageResponse } from 'next/og'
 import { isAddress } from '@/lib/address'
-import { inprocessUrl, shortAddress } from '@/lib/inprocess'
+import { shortAddress } from '@/lib/inprocess'
+import {
+  fetchInprocessCollection,
+  isKnownIndexed,
+  type InprocessCollectionDetail,
+} from '@/lib/inprocessCollection'
 import { shareImageSource } from '@/lib/media/shareImage'
 import { getCollectionMeta as getKvCollectionMeta } from '@/lib/kv'
 import { isCollectionHidden } from '@/lib/hiddenCollections'
@@ -27,23 +32,22 @@ interface Props {
   params: Promise<{ address: string }>
 }
 
-interface CollectionRow {
-  metadata?: { name?: string; description?: string; image?: string }
-  creator?: { address: string; username?: string | null }
-}
-
-async function fetchCollection(address: string): Promise<CollectionRow | null> {
-  try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
+// In Process's collection detail, normalized (lib/inprocessCollection) so
+// `creator` is the {address, username} object this card renders. `kvMeta` is
+// the in-flight KV read, consulted only on a miss (see expectIndexed).
+async function fetchCollection(
+  address: string,
+  kvMeta: Promise<{ createdAt?: number } | null>,
+): Promise<InprocessCollectionDetail | null> {
+  const { detail } = await fetchInprocessCollection(address, {
+    caller: 'collection-og-image',
     // 24h cache — see opengraph-image.tsx in moment route for rationale.
     // Collection metadata is similarly long-lived; the extra freshness of
     // a 5min TTL isn't worth the inprocess fetch traffic.
-    const res = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return null
-    return (await res.json()) as CollectionRow
-  } catch {
-    return null
-  }
+    revalidate: 86400,
+    expectIndexed: () => kvMeta.then(isKnownIndexed),
+  })
+  return detail
 }
 
 export default async function Image({ params }: Props) {
@@ -64,9 +68,10 @@ export default async function Image({ params }: Props) {
       // at deploy time, fast, canonical for collections we deployed) wins,
       // inprocess is the fallback for collections we didn't. Keeps the card
       // in sync with what the page shows.
+      const kvP = getKvCollectionMeta(address)
       const [rowRaw, kv, hidden] = await Promise.all([
-        fetchCollection(address),
-        getKvCollectionMeta(address),
+        fetchCollection(address, kvP),
+        kvP,
         isCollectionHidden(address),
       ])
       // Creator-hidden collection → default card only (shortAddress title,

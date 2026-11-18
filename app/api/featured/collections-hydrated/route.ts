@@ -5,6 +5,7 @@ import { canonicalMediaId } from '@/lib/media/canonicalMediaId'
 import { redis, FEATURED_COLLECTIONS_KEY } from '@/lib/redis'
 import { serverBaseClient } from '@/lib/rpc'
 import { INPROCESS_API, type Moment } from '@/lib/inprocess'
+import { fetchInprocessCollection, isKnownIndexed } from '@/lib/inprocessCollection'
 import { fetchEligibleTokens } from '@/lib/saleConfig'
 import { getHiddenCollectionsSet } from '@/lib/hiddenCollections'
 import { getHiddenMomentsSet } from '@/lib/hiddenMoments'
@@ -48,7 +49,7 @@ interface HydratedFeaturedCollection {
   // persisted). The collection page itself never filters this — only
   // the featured row.
   coverTokenId?: string
-  default_admin?: { address?: string; username?: string }
+  default_admin?: { address?: string; username?: string | null }
   moments: Moment[]
   ethEligibleTokenIds: string[]
   ethEligibleTotalWei: string
@@ -124,12 +125,17 @@ export async function GET() {
         // timeout/error INDEPENDENTLY of the KV lookup, so a stalled gateway
         // degrades the row to its KV-stored name/cover instead of dropping it
         // (which is what a shared Promise.all rejection would do).
-        const [collRes, tlRes, kvMeta] = await Promise.all([
-          fetch(`${INPROCESS_API}/collection/${address}`, {
-            headers: { Accept: 'application/json' },
-            next: { revalidate: 60 },
-            signal: AbortSignal.timeout(8_000),
-          }).catch(() => null),
+        // The collection record comes from lib/inprocessCollection (never
+        // throws; a miss on a known-indexed collection is logged there). This
+        // used a hand-built `/collection/{address}` path that In Process no
+        // longer serves, so every row had been silently KV-stitched.
+        const kvMetaP = getCollectionMeta(ref.address)
+        const [collResult, tlRes, kvMeta] = await Promise.all([
+          fetchInprocessCollection(address, {
+            caller: 'featured-collections',
+            revalidate: 60,
+            expectIndexed: () => kvMetaP.then(isKnownIndexed),
+          }),
           fetch(
             `${INPROCESS_API}/timeline?collection=${address}&limit=${COLLECTION_PREVIEW_LIMIT}&chain_id=8453`,
             {
@@ -138,10 +144,14 @@ export async function GET() {
               signal: AbortSignal.timeout(8_000),
             },
           ).catch(() => null),
-          getCollectionMeta(ref.address),
+          kvMetaP,
         ])
 
-        const collection = collRes?.ok ? await collRes.json() : {}
+        const collection: {
+          name?: string
+          metadata?: HydratedFeaturedCollection['metadata']
+          default_admin?: { address?: string; username?: string | null }
+        } = collResult.detail ? { ...collResult.detail } : {}
         // Inprocess hasn't indexed every freshly-deployed collection — when
         // it returns nothing useful, stitch our KV-stored record (written at
         // create time by the mint-proxy) so the row renders the real name +

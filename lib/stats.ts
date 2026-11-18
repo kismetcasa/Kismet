@@ -12,7 +12,9 @@ import { getTrackedCollectionsStrict } from './kv'
 import { PATRON_COLLECTION_ADDRESS, isPatronCollection } from './patronCollection'
 import { CREATE_REFERRAL, RESIDENCIES_ADDRESS, OPERATOR_SMART_WALLET } from './config'
 import { PLATFORM_FEE_RECIPIENT } from './platformFee'
-import { fetchCollectionMoments, inprocessUrl } from './inprocess'
+import { fetchCollectionMoments } from './inprocess'
+import { fetchInprocessCollection } from './inprocessCollection'
+import { readCollectionRoles } from './collectionRoles'
 import { getAirdropsByMoment } from './airdrops'
 import { USDC_BASE } from './zoraMint'
 import {
@@ -113,46 +115,26 @@ const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
     .map((a) => a.toLowerCase()),
 )
 
-// Cached union of the static floor with the Patron collection's on-chain
-// non-artist roles (default_admin, payout_recipient, creator — all treasury-
-// side). This is a SUPERSET of the Patron page's exclude set: it also excludes
-// OPERATOR and creator, both platform-side, so it never drops a real artist
-// (only a hypothetical split naming one would disagree with the page — latent).
-// Sourced from the inprocess /collection detail, TTL-cached like splitaddr since
-// the roles are upstream-mutable. Best-effort: any failure falls back to the
-// static floor and self-heals next scan.
+// Cached union of the static floor with the Patron collection's non-artist
+// roles — all treasury-side: the deployer In Process reports (its `creator`,
+// documented as the creation-time default admin; normalized into both
+// `creator` and `default_admin` by lib/inprocessCollection) plus the
+// contract's live on-chain `owner` and `fundsRecipient` (the payout recipient;
+// In Process stopped returning `payout_recipient` in 2026-03, so it is read
+// from `config()` — lib/collectionRoles). This is a SUPERSET of the Patron
+// page's exclude set: it also excludes OPERATOR and creator, both
+// platform-side, so it never drops a real artist (only a hypothetical split
+// naming one would disagree with the page — latent). TTL-cached like splitaddr
+// since the roles are mutable. Best-effort: any failure falls back to the last
+// complete set, else the static floor, and self-heals next scan.
 const PASS_EXCLUDE_KEY = 'kismetart:stats:pass-exclude'
 const PASS_EXCLUDE_TTL_S = 7 * 24 * 60 * 60
 const HEX40 = /^0x[0-9a-f]{40}$/
 
-async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
-  const extra = new Set<string>()
-  let fetchedOk = false
+// The last complete role set (never throws; [] when absent/unreadable).
+async function readCachedPassExcludeRoles(): Promise<string[]> {
   try {
-    const res = await fetch(
-      inprocessUrl('/collection', { collectionAddress: PATRON_COLLECTION_ADDRESS, chainId: 8453 }),
-      { headers: { Accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(8_000) },
-    )
-    if (res.ok) {
-      fetchedOk = true
-      const d = (await res.json()) as {
-        creator?: { address?: string } | null
-        default_admin?: { address?: string } | null
-        payout_recipient?: string | null
-      }
-      for (const a of [d?.creator?.address, d?.default_admin?.address, d?.payout_recipient]) {
-        if (typeof a === 'string' && HEX40.test(a.toLowerCase())) extra.add(a.toLowerCase())
-      }
-    }
-  } catch {
-    // fall through to the cached value (below), else the static set
-  }
-  if (fetchedOk && extra.size > 0) {
-    await redis.set(PASS_EXCLUDE_KEY, JSON.stringify([...extra]), { ex: PASS_EXCLUDE_TTL_S }).catch(() => {})
-  } else if (!fetchedOk) {
-    // Transient inprocess failure — reuse the last-known roles so a pass artist's
-    // attribution stays STABLE across scans instead of flip-flopping.
-    const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY).catch(() => null)
+    const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY)
     let arr: unknown = cached
     if (typeof cached === 'string') {
       try {
@@ -161,9 +143,46 @@ async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
         arr = null
       }
     }
-    if (Array.isArray(arr)) {
-      for (const a of arr) if (typeof a === 'string' && HEX40.test(a)) extra.add(a)
+    return Array.isArray(arr) ? arr.filter((a): a is string => typeof a === 'string' && HEX40.test(a)) : []
+  } catch {
+    return []
+  }
+}
+
+async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
+  // expectIndexed: the Patron collection has been indexed since 2026-06, so any
+  // miss here is logged loudly (lib/inprocessCollection) instead of silently
+  // degrading this set to the cache/floor — the regression that hid the route
+  // removal for this exact read.
+  const [{ detail }, roles] = await Promise.all([
+    fetchInprocessCollection(PATRON_COLLECTION_ADDRESS, {
+      caller: 'stats-pass-exclude',
+      noStore: true,
+      expectIndexed: true,
+    }),
+    readCollectionRoles(PATRON_COLLECTION_ADDRESS, { skipCache: true }),
+  ])
+  const live = new Set<string>()
+  for (const a of [
+    detail?.creator?.address,
+    detail?.default_admin?.address,
+    detail?.payout_recipient,
+    roles?.owner,
+    roles?.fundsRecipient,
+  ]) {
+    if (typeof a === 'string' && HEX40.test(a.toLowerCase())) live.add(a.toLowerCase())
+  }
+  const extra = new Set(live)
+  if (detail && roles) {
+    // Both sources answered: this is the complete set — refresh the cache.
+    if (live.size > 0) {
+      await redis.set(PASS_EXCLUDE_KEY, JSON.stringify([...live]), { ex: PASS_EXCLUDE_TTL_S }).catch(() => {})
     }
+  } else {
+    // A source failed — union the last complete set so a pass artist's
+    // attribution stays STABLE across scans instead of flip-flopping (and a
+    // half-answer never overwrites the cache).
+    for (const a of await readCachedPassExcludeRoles()) extra.add(a)
   }
   return extra.size > 0 ? new Set([...PASS_PLATFORM_ADDRESSES, ...extra]) : PASS_PLATFORM_ADDRESSES
 }
@@ -178,24 +197,8 @@ async function resolvePassExcludeAddresses(): Promise<ReadonlySet<string>> {
 // that one fill doesn't self-heal (only the SET does, for future fills). Never
 // throws.
 async function getCachedPassExclude(): Promise<ReadonlySet<string>> {
-  try {
-    const cached = await redis.get<string | string[] | null>(PASS_EXCLUDE_KEY)
-    let arr: unknown = cached
-    if (typeof cached === 'string') {
-      try {
-        arr = JSON.parse(cached)
-      } catch {
-        arr = null
-      }
-    }
-    if (Array.isArray(arr)) {
-      const extra = arr.filter((a): a is string => typeof a === 'string' && HEX40.test(a))
-      if (extra.length) return new Set([...PASS_PLATFORM_ADDRESSES, ...extra])
-    }
-  } catch {
-    // fall through to the static floor
-  }
-  return PASS_PLATFORM_ADDRESSES
+  const extra = await readCachedPassExcludeRoles()
+  return extra.length ? new Set([...PASS_PLATFORM_ADDRESSES, ...extra]) : PASS_PLATFORM_ADDRESSES
 }
 
 // Resolve a Patron/pass token's AUTHORITATIVE mint-time split (getStoredSplits —

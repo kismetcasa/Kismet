@@ -3,6 +3,12 @@ import { cookies } from 'next/headers'
 import { notFound, redirect, unstable_rethrow } from 'next/navigation'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl, resolveUri, shortAddress } from '@/lib/inprocess'
+import {
+  fetchInprocessCollection,
+  isKnownIndexed,
+  type InprocessCollectionDetail,
+} from '@/lib/inprocessCollection'
+import { readCollectionRoles } from '@/lib/collectionRoles'
 import { CollectionView } from '@/components/CollectionView'
 import { JsonLd } from '@/components/JsonLd'
 import { collectionJsonLd } from '@/lib/structuredData'
@@ -20,44 +26,24 @@ interface Props {
   params: Promise<{ address: string }>
 }
 
-interface CollectionDetail {
-  // Inprocess's current /api/collection shape returns `creator` (name + the
-  // deployer's wallet). Older indexer rows / cached responses may still
-  // surface `default_admin` instead, so we accept both and prefer creator.
-  creator?: { address: string; username?: string | null }
-  default_admin?: { address: string; username?: string }
-  payout_recipient?: string
-  created_at?: string
-  // The same call also returns the parsed contract metadata. We thread
-  // these through to displayMeta below as a third fallback after KV and
-  // the plural-endpoint fetch — the singular endpoint is the one we know
-  // empirically returns image + description for newly indexed collections.
-  metadata?: {
-    name?: string
-    image?: string
-    description?: string
-    kismet_thumbhash?: string
-  }
-}
-
-async function fetchCollectionDetail(address: string): Promise<CollectionDetail | null> {
-  // GET /api/collection (singular) returns enriched data: default_admin
-  // (with username), payout_recipient, timestamps. We use this on the
-  // collection detail page; the plural endpoint already powers the
-  // lightweight metadata fetch below.
-  try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 120 },
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!res.ok) return null
-    const text = await res.text()
-    return text ? (JSON.parse(text) as CollectionDetail) : null
-  } catch {
-    return null
-  }
+// In Process's collection detail (lib/inprocessCollection): creator /
+// default_admin with username, created_at, and the parsed contract metadata —
+// threaded into displayMeta below as a third fallback after KV and the plural
+// fetch. Normalized there from the live shape (bare `creator` address +
+// `creator_username`), so the fields read here are stable. `payout_recipient`
+// is no longer part of it; the page reads it on-chain (readCollectionRoles).
+// `kvMeta` is the in-flight KV read, consulted only on a miss to tell indexer
+// lag (quiet) from a regression on a known-indexed collection (logged).
+async function fetchCollectionDetail(
+  address: string,
+  kvMeta: Promise<{ createdAt?: number } | null>,
+): Promise<InprocessCollectionDetail | null> {
+  const { detail } = await fetchInprocessCollection(address, {
+    caller: 'collection-page',
+    revalidate: 120,
+    expectIndexed: () => isPatronCollection(address) || kvMeta.then(isKnownIndexed),
+  })
+  return detail
 }
 
 async function fetchCollectionMeta(
@@ -242,12 +228,15 @@ export default async function CollectionPage({ params }: Props) {
   const viewer = sessionToken ? await verifySession(sessionToken) : null
 
   // Moments are fetched client-side in CollectionView so the header renders
-  // immediately from the fast KV + inprocess-detail fetches below.
-  const [meta, kvMeta, detailRaw, hidden] = await Promise.all([
+  // immediately from the fast KV + inprocess-detail fetches below. The
+  // on-chain roles read carries the payout recipient (bounded at 3s, cached).
+  const kvMetaP = getKvCollectionMeta(address)
+  const [meta, kvMeta, detailRaw, hidden, roles] = await Promise.all([
     fetchCollectionMeta(address),
-    getKvCollectionMeta(address),
-    fetchCollectionDetail(address),
+    kvMetaP,
+    fetchCollectionDetail(address, kvMetaP),
     isCollectionHidden(address),
+    readCollectionRoles(address),
   ])
   // Null a hidden-identity deployer's @handle (creator/default_admin username)
   // before it seeds the header: CollectionView keeps the SSR seed over the
@@ -294,11 +283,12 @@ export default async function CollectionPage({ params }: Props) {
   // Per-field merge across three sources, in priority order:
   //   1. KV (fast, written at deploy time — wins when present)
   //   2. Plural-endpoint meta (legacy fetchCollectionMeta path)
-  //   3. Singular-endpoint metadata (the one we know empirically carries
-  //      image + description for currently-indexed collections)
+  //   3. Collection-detail metadata (the source that carries image +
+  //      description for indexed collections; the plural rows have no
+  //      `metadata` as of 2026-11)
   // Used to be all-or-nothing on KV, which meant a partial KV row could
   // shadow inprocess data we already had — and we weren't even reading
-  // the singular endpoint's metadata, so image + description were lost
+  // the detail record's metadata, so image + description were lost
   // for collections where the plural-endpoint fetch didn't return a hit.
   const displayMeta = {
     name: kvMeta?.name ?? meta?.name ?? detail?.metadata?.name,
@@ -309,10 +299,13 @@ export default async function CollectionPage({ params }: Props) {
       kvMeta?.kismet_thumbhash ?? meta?.kismet_thumbhash ?? detail?.metadata?.kismet_thumbhash,
   }
 
+  // The contract's own fundsRecipient (In Process stopped returning
+  // payout_recipient; an upstream value is kept only as a fallback).
+  const payoutRecipient = roles?.fundsRecipient ?? detail?.payout_recipient
   const showPayout =
-    !!detail?.payout_recipient &&
+    !!payoutRecipient &&
     !!adminAddressRaw &&
-    detail.payout_recipient.toLowerCase() !== adminAddressRaw.toLowerCase()
+    payoutRecipient.toLowerCase() !== adminAddressRaw.toLowerCase()
 
   // UA → lazy-mount toggle: server bakes the decision into the prop so
   // CollectionView (a client component) hydrates with the right value.
@@ -349,7 +342,7 @@ export default async function CollectionPage({ params }: Props) {
         isTracked={!!kvMeta}
         defaultAdminUsername={adminUsername}
         defaultAdminAddress={adminAddressRaw}
-        payoutRecipient={showPayout ? detail!.payout_recipient! : undefined}
+        payoutRecipient={showPayout ? payoutRecipient : undefined}
         createdAt={
           detail?.created_at ??
           (kvMeta?.createdAt ? new Date(kvMeta.createdAt).toISOString() : undefined)

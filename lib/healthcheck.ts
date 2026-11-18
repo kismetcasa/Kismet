@@ -1,6 +1,8 @@
 import { type Address } from 'viem'
 import { isAddress } from '@/lib/address'
 import { ADMIN_ADDRESS, PLATFORM_COLLECTION } from '@/lib/config'
+import { fetchInprocessCollection } from '@/lib/inprocessCollection'
+import { PATRON_COLLECTION_ADDRESS } from '@/lib/patronCollection'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { resolveSmartWallet, type SmartWalletResult } from '@/lib/resolveSmartWallet'
 import { serverBaseClient } from '@/lib/rpc'
@@ -113,6 +115,50 @@ export async function assertSmartWalletResolves(): Promise<void> {
     return
   }
   console.log(`[healthcheck] OK: /smartwallet resolves (${ADMIN_ADDRESS} → ${result.address})`)
+}
+
+/**
+ * Boot-time drift detector for In Process's collection detail
+ * (lib/inprocessCollection). Resolves the Patron collection — indexed since
+ * 2026-06, so it must always resolve — through the same client every caller
+ * uses, and checks the parsed record still carries the fields Kismet reads.
+ * The singular route this replaced was removed upstream and went unnoticed
+ * because every caller read the 404 as "not indexed yet"; this turns a repeat
+ * into an error line at the next boot. The client itself already logs the
+ * classified miss; this adds the verdict. Non-fatal; never throws.
+ */
+export async function assertCollectionDetailResolves(): Promise<void> {
+  const result = await fetchInprocessCollection(PATRON_COLLECTION_ADDRESS, {
+    caller: 'boot-healthcheck',
+    noStore: true,
+    expectIndexed: true,
+  })
+  if (!result.detail) {
+    const { kind, status } = result.miss
+    console.error(
+      `[healthcheck] collection detail FAILED for the Patron collection ${PATRON_COLLECTION_ADDRESS} ` +
+        `(${kind}${status !== undefined ? `, HTTP ${status}` : ''}). Every collection lookup is falling back ` +
+        `to KV. Check lib/inprocessCollection.ts against the LIVE api.inprocess.world collection route.`,
+    )
+    return
+  }
+  const d = result.detail
+  const missing = [
+    !d.creator && 'creator',
+    !d.created_at && 'created_at',
+    !d.metadata?.name && 'metadata.name',
+  ].filter(Boolean)
+  if (missing.length > 0) {
+    console.error(
+      `[healthcheck] collection detail for ${PATRON_COLLECTION_ADDRESS} resolved but lacks ` +
+        `${missing.join(', ')} — the response shape drifted. Re-check normalizeCollectionDetail ` +
+        `(lib/inprocessCollection.ts) against the LIVE body.`,
+    )
+    return
+  }
+  console.log(
+    `[healthcheck] OK: collection detail resolves (${PATRON_COLLECTION_ADDRESS} → creator ${d.creator?.address}, created ${d.created_at})`,
+  )
 }
 
 /**

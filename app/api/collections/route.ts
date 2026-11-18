@@ -4,6 +4,7 @@ import { runDropCoordination } from '@/lib/agent/scout/dropCoordinator'
 import { SITE_URL } from '@/lib/siteUrl'
 import { isAddress } from '@/lib/address'
 import { inprocessUrl } from '@/lib/inprocess'
+import { fetchInprocessCollection, isKnownIndexed } from '@/lib/inprocessCollection'
 import { stripHiddenDeployerIdentity } from '@/lib/hiddenDeployer'
 import { hasAdminBit, readPermissions } from '@/lib/permissions'
 import { serverBaseClient } from '@/lib/rpc'
@@ -19,6 +20,7 @@ import {
   setCollectionCreatedAt,
   collectionFeedOrderTs,
   markCreatedMint,
+  type CollectionMeta,
   type CollectionSource,
 } from '@/lib/kv'
 import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
@@ -38,36 +40,21 @@ const FEED_ELIGIBLE_TOKEN_LIMIT = 20
 
 // Fetch the rich collection record from inprocess, falling back to local KV
 // when the indexer hasn't yet picked up a freshly-deployed collection.
-async function loadCollectionMeta(address: string): Promise<Record<string, unknown>> {
-  try {
-    const url = inprocessUrl('/collection', { collectionAddress: address, chainId: '8453' })
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (res.ok) {
-      const text = await res.text()
-      if (text) {
-        const data: unknown = JSON.parse(text)
-        // inprocess returns null pre-index; fall through to KV.
-        if (
-          data &&
-          typeof data === 'object' &&
-          !Array.isArray(data) &&
-          Object.keys(data).length > 0
-        ) {
-          // Feed rows carry the inprocess deployer (default_admin/creator);
-          // null a hidden identity's @handle before it seeds a CollectionCard.
-          return stripHiddenDeployerIdentity({
-            ...(data as Record<string, unknown>),
-            contractAddress: address,
-          })
-        }
-      }
-    }
-  } catch {
-    // fall through to KV fallback below
+// `knownMeta` is the caller's batch-read KV row, used only to judge whether a
+// miss is indexer lag (quiet) or a regression (logged — lib/inprocessCollection).
+async function loadCollectionMeta(
+  address: string,
+  knownMeta?: CollectionMeta | null,
+): Promise<Record<string, unknown>> {
+  const { detail } = await fetchInprocessCollection(address, {
+    caller: 'collections-feed',
+    revalidate: 60,
+    expectIndexed: isKnownIndexed(knownMeta),
+  })
+  if (detail) {
+    // Feed rows carry the inprocess deployer (default_admin/creator);
+    // null a hidden identity's @handle before it seeds a CollectionCard.
+    return stripHiddenDeployerIdentity({ ...detail, contractAddress: address })
   }
   const kv = await getCollectionMeta(address)
   return {
@@ -175,28 +162,21 @@ export async function GET(req: NextRequest) {
     if (!userCreated.some((a) => a.toLowerCase() === lowerAddr) || hiddenSet.has(lowerAddr)) {
       return NextResponse.json({ contractAddress: singleAddress })
     }
-    try {
-      const url = inprocessUrl('/collection', { collectionAddress: singleAddress, chainId: '8453' })
-      const res = await fetch(url, {
-        headers: { Accept: 'application/json' },
-        next: { revalidate: 120 },
-        signal: AbortSignal.timeout(8_000),
-      })
-      if (res.ok) {
-        const text = await res.text()
-        if (text) {
-          const data = JSON.parse(text) as Record<string, unknown>
-          if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-            return NextResponse.json(
-              await stripHiddenDeployerIdentity({ contractAddress: singleAddress, ...data }),
-            )
-          }
-        }
-      }
-    } catch {
-      // fall through to KV
+    // One KV read, shared by the miss classifier and the fallback below, and
+    // only issued on a miss.
+    let kvMetaP: Promise<CollectionMeta | null> | undefined
+    const kvMeta = () => (kvMetaP ??= getCollectionMeta(singleAddress))
+    const { detail } = await fetchInprocessCollection(singleAddress, {
+      caller: 'collections-chip',
+      revalidate: 120,
+      expectIndexed: () => kvMeta().then(isKnownIndexed),
+    })
+    if (detail) {
+      return NextResponse.json(
+        await stripHiddenDeployerIdentity({ contractAddress: singleAddress, ...detail }),
+      )
     }
-    const kv = await getCollectionMeta(singleAddress)
+    const kv = await kvMeta()
     return NextResponse.json({
       contractAddress: singleAddress,
       name: kv?.name,
@@ -204,8 +184,8 @@ export async function GET(req: NextRequest) {
     })
   }
 
-  // Discovery feed: hydrate each curated address from inprocess
-  // /api/collection (KV fallback on indexer lag), sort by `created_at`
+  // Discovery feed: hydrate each curated address from inprocess's collection
+  // detail (lib/inprocessCollection; KV fallback on indexer lag), sort by `created_at`
   // desc. Same membership-then-sort split as the Mints feed in
   // app/api/timeline/route.ts. Proxying inprocess's global collections
   // endpoint instead would surface collections we didn't deploy.
@@ -247,7 +227,7 @@ export async function GET(req: NextRequest) {
     const loadMetaOnce = (address: string): Promise<Record<string, unknown>> => {
       let p = metaFetch.get(address)
       if (!p) {
-        p = loadCollectionMeta(address)
+        p = loadCollectionMeta(address, metaByAddr.get(address.toLowerCase()))
         metaFetch.set(address, p)
       }
       return p

@@ -57,6 +57,18 @@ function startBootTasks(): void {
     }
   })()
 
+  // Drift detector for In Process's collection detail (the record behind the
+  // collection header, OG card, feed creator chips and the Patron pass-exclude
+  // roles). Fire-and-forget; it only logs. See assertCollectionDetailResolves.
+  void (async () => {
+    try {
+      const { assertCollectionDetailResolves } = await import('@/lib/healthcheck')
+      await assertCollectionDetailResolves()
+    } catch (err) {
+      console.error('[instrumentation] collection-detail healthcheck failed (non-fatal):', err)
+    }
+  })()
+
   // Operator-wallet env-mirror invariant (pure env read, no I/O). A drift
   // between OPERATOR_SMART_WALLET and its NEXT_PUBLIC_ mirror makes every
   // form deploy grant ADMIN to a wallet inprocess never executes as — the

@@ -11,15 +11,16 @@ import { CollectAllAction } from './CollectAllAction'
 
 /**
  * Shape we render — compatible with both inprocess `/api/collections` plural
- * (lightweight rows from `data.collections[]`) and `/api/collection` singular
- * (rich object with default_admin + timestamps). The optional fields fall
- * back gracefully when absent.
+ * (lightweight rows from `data.collections[]`) and inprocess's collection
+ * detail as normalized by lib/inprocessCollection (rich object with
+ * default_admin + timestamps). The optional fields fall back gracefully when
+ * absent.
  */
 export interface CollectionDisplay {
   contractAddress: string
   name?: string
   metadata?: { name?: string; image?: string; description?: string; kismet_thumbhash?: string }
-  // inprocess `/api/collection` (singular) extras — used when present
+  // collection-detail extras (lib/inprocessCollection) — used when present
   default_admin?: { address?: string; username?: string }
   created_at?: string
   // Bulk-collect hydration from /api/collections?feed=1. When ETH and/or

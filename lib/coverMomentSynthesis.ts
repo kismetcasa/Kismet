@@ -1,4 +1,5 @@
 import { inprocessUrl, type Moment, type MomentDetail } from './inprocess'
+import { fetchInprocessCollection, isKnownIndexed } from './inprocessCollection'
 import { getCollectionMeta, type CollectionMeta } from './kv'
 import { getMomentMeta } from './notifications'
 
@@ -15,7 +16,7 @@ import { getMomentMeta } from './notifications'
  * is blind to cover-mints.
  *
  * This helper patches the gap: when the per-collection /timeline response
- * doesn't include the cover token, fetch /moment + /collection + KV
+ * doesn't include the cover token, fetch /moment + collection detail + KV
  * moment-meta in parallel and build a properly-shaped Moment to merge in.
  *
  * Gated by `coverTokenId` on collection-meta KV, which /api/collections
@@ -52,7 +53,7 @@ export async function synthesizeMissingCoverMoment(
 
   const [detail, collInfo, momentMeta] = await Promise.all([
     fetchMomentDetail(collectionAddress, coverTokenId),
-    fetchCollectionCreatedAt(collectionAddress),
+    fetchCollectionCreatedAt(collectionAddress, collMeta),
     getMomentMeta(collectionAddress, coverTokenId).catch(() => null),
   ])
 
@@ -77,7 +78,7 @@ export async function synthesizeMissingCoverMoment(
     // The cover-mint shares its block with the collection deploy. Use the
     // collection's created_at as the moment's created_at so newest-first
     // sorts place it correctly (epoch 0 fallback parks the moment at the
-    // bottom if inprocess /collection is unreachable, which is a safer
+    // bottom if the collection detail is unreachable, which is a safer
     // failure mode than pinning to "now" and jumping to the top).
     created_at: collInfo?.created_at ?? new Date(0).toISOString(),
     metadata: detail.metadata,
@@ -107,18 +108,14 @@ async function fetchMomentDetail(
 
 async function fetchCollectionCreatedAt(
   address: string,
+  collMeta: CollectionMeta,
 ): Promise<{ created_at?: string } | null> {
-  try {
-    const url = inprocessUrl('/collection', {
-      collectionAddress: address,
-      chainId: '8453',
-    })
-    // Per-call timeout — see fetchMomentDetail; runs inside the timeline fan-out.
-    const res = await fetch(url, { next: { revalidate: 60 }, signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return null
-    const text = await res.text()
-    return text ? (JSON.parse(text) as { created_at?: string }) : null
-  } catch {
-    return null
-  }
+  // Per-call timeout (the client's 8s default) — see fetchMomentDetail; runs
+  // inside the timeline fan-out. Never throws; null on any miss.
+  const { detail } = await fetchInprocessCollection(address, {
+    caller: 'cover-moment-synthesis',
+    revalidate: 60,
+    expectIndexed: isKnownIndexed(collMeta),
+  })
+  return detail
 }
