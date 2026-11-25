@@ -43,11 +43,11 @@ export async function POST(req: NextRequest) {
   // mint-proxy writes { creator, name } on every successful Kismet mint).
   // Fall back to the inprocess timeline endpoint for older mints (pre
   // moment-meta KV) or moments minted outside Kismet. We read `creator`
-  // from the timeline shape — NOT momentAdmins[0] — because inprocess's
-  // /moment exposes momentAdmins as an unordered list (platform smart
-  // wallets, factory grants, the actual minter), and position [0] is
-  // often a platform admin rather than the creator. /timeline has a
-  // dedicated creator field for exactly this lookup.
+  // from the timeline shape — never /moment's admin list, which is the
+  // COLLECTION's tokenId-0 admins sorted by address (platform wallets, a
+  // curated collection's curator and every artist in it), so no entry of it
+  // identifies this token's creator. /timeline has a dedicated creator field
+  // for exactly this lookup.
   const meta = await getMomentMeta(collectionAddress, tokenId)
   let creatorLower = meta?.creator?.toLowerCase()
 

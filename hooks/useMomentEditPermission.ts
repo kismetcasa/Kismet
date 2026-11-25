@@ -13,11 +13,14 @@ import { canEditMomentMetadata, canEditMomentSale, hasAdminBit } from '@/lib/per
  * `_hasAnyPermission` does — so an affordance shows for EVERY address the
  * on-chain gate will actually authorize, not just the resolved creator.
  *
- * Why an on-chain read (not inprocess `momentAdmins`): that list is
- * indexer-derived and carries smart-wallet addresses, while the edit writes
- * are signed by — and authorized against — the connected EOA. Reading the
- * same `permissions(tokenId, caller)` the contract reads is the only source
- * that can't disagree with the authorization gate.
+ * Why an on-chain read (not In Process's /moment admin list): that list is
+ * indexer-derived, collection-wide only (tokenId-0 ADMIN holders — no
+ * token-level grants, no METADATA/SALES roles), and carries smart-wallet
+ * addresses, while the edit writes are signed by — and authorized against —
+ * the connected EOA. Reading the same `permissions(tokenId, caller)` the
+ * contract reads is the only source that can't disagree with the
+ * authorization gate. The server's admin checks (lib/momentAuthz) read the
+ * same two rows.
  *
  * Pass `skip` (e.g. the caller is already the resolved creator, whose
  * affordance shows regardless) to avoid the multicall entirely — co-admin

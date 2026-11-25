@@ -1,6 +1,6 @@
 import { cache } from 'react'
 import type { Address } from 'viem'
-import { inprocessUrl, type MomentDetail } from './inprocess'
+import { inprocessUrl, normalizeMomentDetail, type MomentDetail } from './inprocess'
 import { isMomentHidden } from './hiddenMoments'
 import { getMomentMeta } from './notifications'
 import { isProfileIdentityHidden, resolveCanonicalProfile } from './addressUnion'
@@ -9,11 +9,10 @@ import { serverBaseClient } from './rpc'
 
 /**
  * Look up a token's creator via the inprocess timeline endpoint, which
- * has a dedicated `creator` field. Necessary because /moment only
- * exposes momentAdmins (an unordered list of platform admins, smart
- * wallets, and the actual creator) — position [0] is NOT reliably the
- * minter. Exported so the /api/moment route and the OG-image route
- * share one implementation.
+ * has a dedicated `creator` field. Necessary because /moment has no
+ * per-token creator: its `admins` list and `owner` are both
+ * collection-level (lib/inprocess InProcessMomentBody). Exported so the
+ * /api/moment route and the OG-image route share one implementation.
  */
 export async function fetchCreatorFromTimeline(
   collectionAddress: string,
@@ -61,7 +60,8 @@ export async function fetchCreatorFromTimeline(
  * shape /api/moment returns. Creator prefers the KV minter EOA (the real
  * artist) over inprocess's timeline attribution, with the artist's username
  * resolved server-side so page metadata + the OG share card read the real
- * name (no momentAdmins[0] guessing, no operator mis-attribution).
+ * name (no guessing from /moment's collection-wide admin list, no operator
+ * mis-attribution).
  */
 export const fetchMomentDetail = cache(async (
   address: string,
@@ -76,11 +76,12 @@ export const fetchMomentDetail = cache(async (
       getKvCreatorAddress(address, tokenId),
     ])
     if (!res.ok) return null
-    const data = (await res.json()) as MomentDetail
-    // Fill the price from chain when the feed omits saleConfig (writing moments /
-    // fresh mints during an indexer gap) so the SSR'd detail badge isn't blank on
-    // first paint — same authoritative source the collect action + /api/moment(s)
-    // read.
+    const data = normalizeMomentDetail(await res.json())
+    if (!data) return null
+    // Fill the price from chain when the feed has no usable sale (writing
+    // moments / fresh mints during an indexer gap) so the SSR'd detail badge
+    // isn't blank on first paint — same authoritative source the collect
+    // action + /api/moment(s) read.
     if (!data.saleConfig) {
       const sale = await onchainSaleConfigFallback(
         serverBaseClient(),

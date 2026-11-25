@@ -212,7 +212,12 @@ async function diagnoseMoment({ address, tokenId }, ctx) {
     detailOk ? YES : detail.status === 404 ? NO : UNK,
     detailOk ? undefined : `status ${fmt(detail.status ?? detail.error)}`,
   )
-  const saleConfig = detailOk ? detail.data.saleConfig : undefined
+  // `sale` since In Process's 2026-06-19 rename, `saleConfig` before — same
+  // precedence as lib/inprocess normalizeMomentDetail (this plain .mjs can't
+  // import it). pricePerToken is a decimal string in both generations.
+  const saleConfig = detailOk
+    ? (detail.data.sale !== undefined ? detail.data.sale : detail.data.saleConfig) ?? undefined
+    : undefined
   let free = null // null = unknown (mirror lib/inprocess.isZeroPrice)
   if (saleConfig?.pricePerToken != null && saleConfig.pricePerToken !== '') {
     try {

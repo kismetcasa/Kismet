@@ -33,8 +33,7 @@ const PAGES = Number(process.env.E2E_ZINE_PAGES || 0)
 const META = {
   uri: 'ar://meta',
   owner: '0x000000000000000000000000000000000000dEaD',
-  momentAdmins: [],
-  saleConfig: null,
+  collectionAdmins: [],
   metadata: {
     name: TITLE,
     description: 'Showcase.',

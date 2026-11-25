@@ -2,9 +2,9 @@ import 'server-only'
 import { isAddress } from './address'
 import { consumeNonce } from './profile'
 import { getMomentMeta } from './notifications'
-import { inprocessUrl } from './inprocess'
 import { ADMIN_ADDRESS } from './config'
 import { serverBaseClient } from './rpc'
+import { isOnchainMomentAdmin } from './momentAuthz'
 import {
   buildRaffleManageMessage,
   type RaffleManageFields,
@@ -18,7 +18,8 @@ import {
  *      (verified here, ERC-1271-aware so smart wallets work).
  *   2. The nonce is consumed (single-use replay protection).
  *   3. The caller must be the moment's creator (KV mint-meta), a moment admin
- *      (inprocess /moment), or the platform admin.
+ *      (ADMIN on the token or collection-wide, read from chain —
+ *      lib/momentAuthz), or the platform admin.
  *
  * Returns { ok: true, caller } or { ok: false, status, error } so the route can
  * short-circuit with one check.
@@ -66,33 +67,28 @@ export async function authorizeRaffleManager(
     return { ok: true, caller: callerLower }
   }
 
-  // KV moment-meta creator — the EOA the mint-proxy recorded at mint. Preferred
-  // over inprocess's momentAdmins, which often lists the platform smart wallet
-  // rather than the creator's EOA.
+  // KV moment-meta creator — the EOA the mint-proxy recorded at mint. The
+  // creator's own wallet often holds no ADMIN bit (delegated mints run through
+  // the platform smart wallet), so this is what lets them in.
   const meta = await getMomentMeta(collection, tokenId)
   if (meta?.creator?.toLowerCase() === callerLower) {
     return { ok: true, caller: callerLower }
   }
 
-  // Fall back to inprocess's momentAdmins (creator or delegated admin) only when
-  // the cheap signals didn't already authorize — saves an upstream round-trip.
+  // Moment admin: ADMIN on this token or collection-wide, read from chain
+  // (lib/momentAuthz), only when the cheap signals didn't already authorize.
+  // On a curated collection that includes every collection admin — the same
+  // wallets that can already rewrite this token's sale and metadata on chain.
   try {
-    const url = inprocessUrl('/moment', {
-      collectionAddress: collection,
-      tokenId,
-      chainId: '8453',
-    })
-    const r = await fetch(url, { headers: { Accept: 'application/json' } })
-    if (!r.ok) return { ok: false, status: 403, error: 'Could not verify artwork creator' }
-    const d = (await r.json()) as { momentAdmins?: unknown }
-    const admins = Array.isArray(d.momentAdmins)
-      ? d.momentAdmins
-          .filter((a): a is string => typeof a === 'string')
-          .map((a) => a.toLowerCase())
-      : []
-    if (admins.includes(callerLower)) return { ok: true, caller: callerLower }
+    const isAdmin = await isOnchainMomentAdmin(
+      serverBaseClient(),
+      collection as `0x${string}`,
+      BigInt(tokenId),
+      callerLower as `0x${string}`,
+    )
+    if (isAdmin) return { ok: true, caller: callerLower }
   } catch {
-    return { ok: false, status: 502, error: 'Could not verify artwork creator' }
+    return { ok: false, status: 502, error: 'Could not verify artwork admin' }
   }
 
   return {

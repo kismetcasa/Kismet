@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { inprocessUrl, type MomentSaleConfig } from '@/lib/inprocess'
+import { inprocessUrl, normalizeMomentDetail, type MomentSaleConfig } from '@/lib/inprocess'
 import { resolveOnchainSalesBatch } from '@/lib/saleConfig'
 import { serverBaseClient } from '@/lib/rpc'
 import { recordSaleEnds } from '@/lib/saleEnds'
@@ -82,8 +82,11 @@ export async function GET(req: NextRequest) {
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
           })
           if (!r.ok) return { key, address, tokenId, config: null }
-          const data = (await r.json()) as { saleConfig?: MomentSaleConfig }
-          return { key, address, tokenId, config: data.saleConfig ?? null }
+          // Through the shared normalizer (lib/inprocess) — the raw body calls
+          // this `sale` since 2026-06-19, and reading `saleConfig` straight off
+          // it priced nothing here for months (every id fell to Phase 2).
+          const config = normalizeMomentDetail(await r.json())?.saleConfig ?? null
+          return { key, address, tokenId, config }
         } catch {
           // Upstream error / timeout / malformed JSON — degrade this one id to
           // null; Phase 2 (or a later mount) can still fill it.

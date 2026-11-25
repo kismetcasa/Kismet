@@ -43,8 +43,7 @@ const ART = `${BASE}/artwork/${COLLECTION}/1`
 const META = {
   uri: 'ar://meta',
   owner: '0x000000000000000000000000000000000000dEaD',
-  momentAdmins: [],
-  saleConfig: null,
+  collectionAdmins: [],
   metadata: {
     name: 'E2E Activity',
     description: 'A moment used to validate the activity panel end to end.',

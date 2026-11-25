@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Classifies a list of addresses on Base as contract vs EOA. Useful for
-// diagnosing entries in inprocess's `momentAdmins[]` that link to empty
-// profile pages.
+// diagnosing entries in inprocess's /moment `admins[]` (the collection's
+// tokenId-0 ADMIN holders; `momentAdmins[]` before 2026-06-19) that link to
+// empty profile pages.
 //
 // Usage: node scripts/check-admins.mjs 0x... [0x... ...]
 import { createPublicClient, http } from 'viem'

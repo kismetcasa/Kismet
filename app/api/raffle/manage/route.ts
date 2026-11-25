@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
       // Both creator-exclusion gates (enter route + the draw filter) key off
       // the KV creator record — without one, the artwork's creator could
       // enter and win their own raffle. Refuse instead of running unguarded.
-      // Only the platform-admin / momentAdmins auth paths can even get here
+      // Only the platform-admin / on-chain-admin auth paths can even get here
       // without the record (creator auth reads the same key), and the
       // mint-time enable writes it in the same post-mint batch.
       const meta = await getMomentMeta(collection, tokenId)

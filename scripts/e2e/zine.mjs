@@ -49,8 +49,7 @@ const check = (name, cond, detail = '') => {
 const ZINE_META = {
   uri: 'ar://meta',
   owner: '0x000000000000000000000000000000000000dEaD',
-  momentAdmins: [],
-  saleConfig: null,
+  collectionAdmins: [],
   metadata: {
     name: 'E2E Zine',
     description: 'A zine used to validate the reader end to end.',

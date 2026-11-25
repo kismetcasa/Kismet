@@ -100,7 +100,7 @@ Their unit tests (`validateUpdateSaleBody.test.ts`) pin gate 2 explicitly — 40
 | 2 | `saleStart`/`saleEnd` are `z.number()` on **update** but `bigIntString` on **create** | The documented open-ended sentinel `18446744073709551615` (maxUint64 — what Kismet writes at mint) **cannot round-trip JSON**: it parses to 2^64, `BigInt(2^64)` overflows uint64, viem's encode throws → 500. **"Never expires" is inexpressible via their API today.** Any large-but-representable stand-in (e.g. 2^53) would render in Kismet as a real "Sale ends year 285,616" deadline, because `parseRealSaleEnd` (lib/inprocess.ts:363) only treats ≥ maxUint64 as open-ended. |
 | 3 | When a moment has **no** sale row at all, the merge base is all-zeros fixedPrice | An update against a sale-less token would write `fundsRecipient = 0x0` unless explicitly provided. |
 | 4 | Their DB stores `price_per_token` as a JS `Number` | Wei prices with >15–16 significant digits can drift in *their* mirror. Chain and Kismet's own reads are unaffected. |
-| 5 | `GET /moment` (current deploy + docs) returns `sale` / `admins` keys with **numeric** `saleStart`/`saleEnd` | Kismet's `MomentDetail` types expect `saleConfig` / `momentAdmins` with strings — see §3.4. |
+| 5 | `GET /moment` (current deploy + docs) returns `sale` / `admins` keys with **numeric** `saleStart`/`saleEnd` | **Resolved** — every `/moment` read goes through `normalizeMomentDetail` (lib/inprocess.ts), which accepts both generations, restores the rounded maxUint64 sentinel exactly, and treats `saleEnd` 0 as no sale. `admins` turned out to be the *collection's* tokenId-0 ADMIN list, so it now feeds neither attribution nor authz (lib/momentAuthz reads chain). Pinned by scripts/verify-moment-wire.ts. |
 
 ---
 
@@ -231,7 +231,7 @@ so nobody can ever mint outside the *true* window. The work is display/index fre
 | Redis sale indexes `kismetart:sale-ends` / `kismetart:sale-free` | Add a small server route (e.g. `POST /api/moment/sale-refresh {collection, tokenId}`) that re-reads the sale **on-chain server-side** (`onchainSaleConfigFallback`) and calls `recordSaleEnds` — trustless (no client-supplied values, can't be abused to write fiction), idempotent, rate-limited; the client calls it after the receipt. This is the one-line fix for the Ending-Soon + free feeds. |
 | Client detail state | Mirror the metadata edit: build the merged `saleConfig`, `setCachedDetail(...)` + local `setDetail` (MomentDetailView.tsx:1240-1241) — required because the client detail LRU has **no TTL** and the refetch effect early-returns on a cache hit (lib/momentCache.ts:12-24, MomentDetailView.tsx:496-497). |
 | react-query price cache | `invalidateQueries({ queryKey: ['moment-sale', key] })` (hooks/useMomentSale.ts:92-99; nothing invalidates it today). |
-| Other viewers / feeds | Accept bounded staleness: In Process mirror ~1–2 min + our 60 s fetch-cache on `/moment` + `/api/moments` 30 s s-maxage. Practically ≤ ~3 min. Note the upstream `sale` key rename (§1.5 #5) means our `data.saleConfig` check misses, so the on-chain fallback fires per request (app/api/moment/route.ts:68-75, lib/momentDetail.ts:84-91) — detail reads are effectively chain-fresh already. If tighter feed freshness is ever wanted, that's `next: { tags }` + `revalidateTag`, machinery the repo doesn't have today. |
+| Other viewers / feeds | Accept bounded staleness: In Process mirror ~1–2 min + our 60 s fetch-cache on `/moment` + `/api/moments` 30 s s-maxage. Practically ≤ ~3 min. Detail reads (`/api/moment`, `fetchMomentDetail`) serve the same mirror and fall back to chain only when it has no sale. (While the §1.5 #5 rename was unhandled, every detail read fell back to chain and was chain-fresh by accident; normalizing it restored the mirror-first design, which matched chain on all 171 sales sampled on 2026-11-25.) If tighter feed freshness is ever wanted, that's `next: { tags }` + `revalidateTag`, machinery the repo doesn't have today. |
 | Seaport listing rows | `mintPrice`/`mintPriceCurrency` are frozen at listing time and drive the `below=1` filter (app/api/listings/route.ts:706-734, lib/listings.ts:375-377) — **not self-healing**. Sidestep in v1 by scoping to **window edits only** (no price edits); a price-edit v2 must refresh open listing rows for the token. |
 
 Pre-existing UI gaps an edit feature will make visible (fine to ship with, worth noting):
@@ -262,8 +262,9 @@ is browsed (lib/saleEnds.ts:62-63 — by design).
 2. **Upstream asks** (nice-to-have, none blocking): accept string `saleStart`/`saleEnd` on
    update like create (sentinel round-trip); align the sale endpoint's authz with update-uri's
    for platform keys; mount the already-written GET sale handler.
-3. **Verify the `sale`/`admins` rename against the live API** and update `lib/inprocess.ts`'s
-   wire-contract comment + `MomentDetail` consumers (`momentAdmins` fallback in
-   MomentDetailView degrades silently to the other creator sources if the rename is live).
+3. ~~**Verify the `sale`/`admins` rename against the live API**~~ — done 2026-11-25: live,
+   normalized in `normalizeMomentDetail`, and pinned by scripts/verify-moment-wire.ts
+   (fixture captured from the live endpoint). The `momentAdmins` creator fallback was
+   removed rather than renamed: the list is collection-wide, so it names no token's creator.
 4. `lib/collections.ts:5` cites the stale docs repo — repoint to `sweetmantech/docs` /
    docs.inprocess.world when next touched.

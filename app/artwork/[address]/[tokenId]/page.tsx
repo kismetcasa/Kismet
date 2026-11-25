@@ -13,7 +13,6 @@ import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { isWebKitOnlyUA } from '@/lib/serverDevice'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
 import { getCfileRecordForSSR, toPublicDescriptor } from '@/lib/collectorFile'
-import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { buildFarcasterEmbed } from '@/lib/farcasterEmbed'
 import { entriesOpen, isRaffleEnabled } from '@/lib/raffle'
 import { resolveEmbedImageUrl } from '@/lib/media/animatedPreview'
@@ -279,13 +278,15 @@ export default async function MomentPage({ params }: Props) {
   // often returns the platform smart wallet as creator.address for
   // mint-proxy moments — without this priority the viewer's EOA would
   // never match `creator` and the creator would be locked out of their
-  // own hidden moment. detail.creator.address is the fallback for
-  // moments minted outside the Kismet flow (no KV entry); momentAdmins
-  // is the last-resort signal when neither is populated.
+  // own hidden moment. detail.creator.address (the timeline's creator) is
+  // the fallback for moments minted outside the Kismet flow (no KV entry).
+  // There is no third source: In Process's /moment admin list is
+  // collection-wide (detail.collectionAdmins) and would hand this gate to
+  // whichever collection admin sorts first — another artist, on a curated
+  // collection.
   const creator =
     kvCreatorAddress?.toLowerCase() ??
-    detail?.creator?.address?.toLowerCase() ??
-    pickFirstNonOperatorAdmin(detail?.momentAdmins)?.toLowerCase()
+    detail?.creator?.address?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server'
 import type { Address } from 'viem'
 import { isAddress, isValidTokenId } from '@/lib/address'
-import { inprocessUrl } from '@/lib/inprocess'
+import { inprocessUrl, normalizeMomentDetail } from '@/lib/inprocess'
 import { recordSaleEnds } from '@/lib/saleEnds'
 import { bestEffort } from '@/lib/bestEffort'
 import { isMomentHidden } from '@/lib/hiddenMoments'
@@ -55,27 +55,41 @@ export async function GET(req: NextRequest) {
     return errorResponse(502, 'upstream unreachable')
   }
   const text = await upstream.text()
-  let data: Record<string, unknown>
+  let raw: unknown
   try {
-    data = JSON.parse(text) as Record<string, unknown>
+    raw = JSON.parse(text)
   } catch {
     return NextResponse.json({ error: 'upstream error', status: upstream.status }, { status: 502 })
   }
-  // Fill the price from chain when the feed omits saleConfig (writing moments /
-  // fresh mints during an indexer gap) — the same authoritative source the
-  // collect action reads (and /api/moments), so the detail badge isn't blank
-  // while the sale is live.
-  if (!data.saleConfig) {
+  // A non-2xx keeps its status (404 = no such token). Its body is an error
+  // envelope, not a moment, so there's nothing to normalize or to price.
+  if (!upstream.ok) {
+    return NextResponse.json({ error: 'upstream error', status: upstream.status }, { status: upstream.status })
+  }
+  // The wire body → Kismet's MomentDetail (lib/inprocess) — the only shape
+  // this route serves, whichever generation of field names upstream sent.
+  const detail = normalizeMomentDetail(raw)
+  if (!detail) {
+    return NextResponse.json({ error: 'upstream error', status: upstream.status }, { status: 502 })
+  }
+  // Fill the price from chain when the feed has no usable sale (writing
+  // moments / fresh mints during an indexer gap) — the same authoritative
+  // source the collect action reads (and /api/moments), so the detail badge
+  // isn't blank while the sale is live. With a sale, the feed's mirror is
+  // served as-is: it trails a sale edit by a minute or two (the editor updates
+  // its own view from the receipt) and matched chain on every sampled field.
+  if (!detail.saleConfig) {
     const sale = await onchainSaleConfigFallback(
       serverBaseClient(),
       collectionAddress as Address,
       BigInt(tokenId),
     )
-    if (sale) data.saleConfig = sale
+    if (sale) detail.saleConfig = sale
   }
   // Inject the hidden flag so the client can render a creator-only
-  // hidden-state UI without an extra round-trip. Inject `creator` from
-  // the timeline lookup so detail page can stop reading momentAdmins[0].
+  // hidden-state UI without an extra round-trip. Inject `creator` because
+  // the /moment body has no per-token creator (its admin list and owner are
+  // collection-level).
   //
   // Cascade: a moment in a hidden collection is treated the same as an
   // individually-hidden moment. The existing MomentDetailView gate
@@ -103,21 +117,18 @@ export async function GET(req: NextRequest) {
   // for the detail-view price path — widens coverage to moments reached by
   // direct link (shared URLs, notifications) that may never render in a feed
   // batch. Only on a successfully priced response: an upstream error returned
-  // above never reaches this line, so a blip can't erase a live entry.
-  if (upstream.ok) {
-    const saleConfig = data.saleConfig as
-      | { saleStart?: string; saleEnd?: string; pricePerToken?: string }
-      | null
-      | undefined
-    after(() =>
-      recordSaleEnds([
-        {
-          key: `${collectionAddress.toLowerCase()}:${BigInt(tokenId).toString()}`,
-          config: saleConfig ?? null,
-        },
-      ]).catch(bestEffort('moment.recordSaleEnds')),
-    )
-  }
+  // above never reaches this line, and a null config (no sale from the feed
+  // or the chain, e.g. an RPC blip) is skipped, so a blip can't erase a live
+  // entry.
+  const saleConfig = detail.saleConfig ?? null
+  after(() =>
+    recordSaleEnds([
+      {
+        key: `${collectionAddress.toLowerCase()}:${BigInt(tokenId).toString()}`,
+        config: saleConfig,
+      },
+    ]).catch(bestEffort('moment.recordSaleEnds')),
+  )
 
-  return NextResponse.json({ ...data, hidden, creator }, { status: upstream.status })
+  return NextResponse.json({ ...detail, hidden, creator }, { status: upstream.status })
 }

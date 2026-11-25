@@ -16,11 +16,15 @@ import { SALE_CLOSED_AT_CREATE } from './creatorCopy'
 //     (comment READS moved off the moment namespace entirely: In Process's
 //      2026-07 comments-contract migration removed /moment/comments and
 //      serves GET /comments instead — same params and envelope)
-//   • response keys:   `moments` (timeline array), `momentAdmins`
+//   • response keys:   `moments` (timeline array); GET /moment's `admins` +
+//     `sale` (renamed from `momentAdmins` + `saleConfig` on 2026-06-19 — see
+//     InProcessMomentBody)
 //   • request key:     the `moment: {…}` wrapper in the PATCH /moment body
-//   • the `Moment` / `MomentDetail` interfaces below mirror In Process's JSON
+//   • the `Moment` interface below mirrors In Process's timeline JSON
 //     field-for-field (token_id, created_at, admins, …) with NO remap layer,
 //     so those field names are load-bearing wherever a response is consumed.
+//     GET /moment is the exception: its body crosses into Kismet ONLY through
+//     normalizeMomentDetail, the one place its wire names appear.
 // The type/component NAMES (`Moment`, `MomentCard`, …) are Kismet-side labels,
 // intentionally left as-is: renaming them buys no user-visible change and In
 // Process can't observe them either way. When editing here, keep every wire
@@ -393,24 +397,113 @@ export function resolveUri(uri: string): string {
   return uri
 }
 
-// No `maxSupply` field — /api/moment doesn't return one. Read on-chain
-// via getTokenInfo(tokenId) instead.
-export interface MomentDetail {
-  uri: string
-  owner: string
-  // Optional: the upstream /moment payload can omit saleConfig for a moment
-  // with no active sale (or during an indexer gap). /api/moments already
-  // coalesces it to null and MomentDetailView guards every read; typed
-  // honestly here so a new consumer is forced to handle the absent case
-  // rather than crashing on an unchecked `detail.saleConfig.*`.
+// ─── GET /moment: wire body → MomentDetail ──────────────────────────────────
+
+/**
+ * The `sale` object GET /moment serves. Documented, not trusted:
+ * normalizeMomentDetail validates every field before Kismet reads it.
+ */
+export interface InProcessMomentSale {
+  type: 'fixedPrice' | 'erc20Mint'
+  /** Base units as a decimal string (wei for ETH, 6-dp for USDC). */
+  pricePerToken: string
+  /** Unix seconds as a JSON NUMBER — so the max-uint64 open-ended sentinel
+   *  arrives rounded to its nearest double, 2^64 (18446744073709552000). */
+  saleStart: number
+  saleEnd: number
+  maxTokensPerAddress: number
+  fundsRecipient: string
+}
+
+/**
+ * GET /moment's raw body. Current shape — In Process's docs change of
+ * 2026-06-19 ("update GET /moment response schema"), checked live on
+ * 2026-11-25 against 177 moments in 20 collections, four of them pinned
+ * verbatim in scripts/fixtures/inprocess-moment/ (scripts/verify-moment-wire.ts):
+ *
+ *   { id, uri, contentUri, owner, sale, soldOut, protocol, admins, metadata, video }
+ *
+ *   • admins — the COLLECTION's admins: every address holding ADMIN on
+ *     tokenId 0 (each one checked against permissions(0, …) on chain). The
+ *     same list for every token in the collection, sorted by address, [] when
+ *     In Process hasn't indexed the collection. It is not per-token: on a
+ *     curated collection it holds the curator and every artist, so it names
+ *     neither a token's creator nor that token's own admins.
+ *   • owner — the contract's owner(): collection-level too.
+ *   • sale — the token's primary sale, or null when it has none. Matched the
+ *     on-chain sale() row on every field for all 171 sampled sales (In Process
+ *     mirrors SaleSet events, so it trails a sale edit by a minute or two).
+ *     Carries no currency: `type` is the only currency signal.
+ *
+ * Until 2026-06-19 the same data came as `momentAdmins` and `saleConfig`
+ * (decimal-string saleStart/saleEnd, optional currency). Both generations are
+ * declared so normalizeMomentDetail can accept either — a cached body, a test
+ * stub, or an upstream rollback keeps working.
+ */
+export interface InProcessMomentBody {
+  id?: string
+  uri?: string
+  contentUri?: string | null
+  owner?: string
+  sale?: InProcessMomentSale | null
+  soldOut?: boolean
+  protocol?: string
+  admins?: string[]
+  metadata?: MomentDetail['metadata']
+  video?: unknown
+  /** @deprecated Pre-2026-06-19 name of `admins`. */
+  momentAdmins?: string[]
+  /** @deprecated Pre-2026-06-19 name of `sale`: decimal-string window, optional currency. */
   saleConfig?: {
     type?: 'fixedPrice' | 'erc20Mint'
     pricePerToken: string
     saleStart: string
     saleEnd: string
     currency?: string
-  }
-  momentAdmins: string[]
+  } | null
+}
+
+/**
+ * A moment's primary sale as every Kismet surface reads it, whichever source
+ * answered: normalizeMomentDetail produces it from the In Process feed, and
+ * lib/saleConfig's on-chain fallback (OnchainSaleConfig) is assignable to it,
+ * so no consumer branches on the source. Every amount is a base-10 integer
+ * string; an open-ended sale carries OPEN_ENDED_SALE_SENTINEL exactly.
+ */
+export interface MomentDetailSaleConfig {
+  /** fixedPrice = ETH (FixedPriceSaleStrategy), erc20Mint = USDC
+   *  (ERC20Minter). Absent only on a legacy body that omitted it, where
+   *  inferCollectCurrency falls back to `currency`, then ETH. */
+  type?: 'fixedPrice' | 'erc20Mint'
+  pricePerToken: string
+  saleStart: string
+  saleEnd: string
+  /** ERC20 currency address. Set by the on-chain fallback (always USDC, which
+   *  it verifies) and by legacy bodies; the current feed sends none. */
+  currency?: string
+}
+
+// What GET /moment means to Kismet: normalizeMomentDetail's output plus the
+// fields Kismet's own routes stitch on (hidden, creator). No `maxSupply` —
+// read it on-chain via getTokenInfo(tokenId) instead.
+export interface MomentDetail {
+  uri: string
+  /** The collection contract's owner(): the same for every token in the
+   *  collection, so never the token's creator. */
+  owner?: string
+  // Optional: a moment with no sale (upstream `sale: null`), or an indexer
+  // gap. /api/moment and fetchMomentDetail backfill it from chain when they
+  // can, and every reader guards the absent case — an unchecked
+  // `detail.saleConfig.*` crashes the detail view.
+  saleConfig?: MomentDetailSaleConfig
+  /**
+   * The collection's tokenId-0 ADMIN holders from In Process's index,
+   * lowercased (see InProcessMomentBody). Always an array, [] when absent.
+   * Deliberately read for neither attribution (it doesn't identify a token's
+   * creator) nor authorization (it omits token-level admins and trails
+   * on-chain grants and revocations) — lib/momentAuthz reads the chain.
+   */
+  collectionAdmins: string[]
   metadata: {
     name?: string
     description?: string
@@ -429,12 +522,128 @@ export interface MomentDetail {
   // creator has hidden the moment from public feeds. Detail page renders
   // an unhide affordance for the creator and a hidden placeholder otherwise.
   hidden?: boolean
-  // Set by /api/moment via a parallel lookup against the timeline endpoint,
-  // which has a dedicated `creator` field. Inprocess's own /api/moment
-  // shape only exposes momentAdmins (an unordered list of every admin
-  // including platform/smart-wallet keys), so position [0] is not reliably
-  // the minter. Prefer this when displaying "creator".
+  // Set by Kismet (/api/moment, fetchMomentDetail): the KV minter EOA, else
+  // the timeline endpoint's dedicated `creator` field. In Process's /moment
+  // body has no per-token creator at all — `owner` and `collectionAdmins` are
+  // both collection-level — so this is the only creator a reader may use.
   creator?: { address: string; username: string | null } | null
+}
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
+// The double JSON.parse yields for uint64's max (the open-ended sentinel).
+const UINT64_MAX_AS_DOUBLE = 2 ** 64
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * A uint64 sale-window value (unix seconds) as a canonical decimal string, or
+ * undefined if it isn't one. Takes both wire encodings: decimal strings
+ * (legacy) and JSON numbers (current). A JSON number holds an integer exactly
+ * only up to 2^53, and the one window value the wire sends past that is
+ * uint64's max — the open-ended sentinel Kismet's and In Process's mints both
+ * write — which arrives as its nearest double, 2^64. That is restored to the
+ * exact sentinel: read back through BigInt it would be 2^64, which no uint64
+ * can hold (encoding it throws). Any other value past 2^53 can't be trusted
+ * to the second, so it is refused and the routes read the sale from chain.
+ */
+function toUint64String(v: unknown): string | undefined {
+  let n: bigint
+  if (typeof v === 'number') {
+    if (v === UINT64_MAX_AS_DOUBLE) return OPEN_ENDED_SALE_SENTINEL.toString()
+    if (!Number.isSafeInteger(v) || v < 0) return undefined
+    n = BigInt(v)
+  } else if (typeof v === 'string' && /^\d{1,20}$/.test(v)) {
+    // A stringified double ("18446744073709552000") is the same rounded sentinel.
+    if (Number(v) === UINT64_MAX_AS_DOUBLE) return OPEN_ENDED_SALE_SENTINEL.toString()
+    n = BigInt(v)
+  } else {
+    return undefined
+  }
+  return n <= OPEN_ENDED_SALE_SENTINEL ? n.toString() : undefined
+}
+
+/** A base-units price as a canonical decimal string. A number is accepted only
+ *  while exact — a price is never worth rounding. */
+function toPriceString(v: unknown): string | undefined {
+  if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? String(v) : undefined
+  if (typeof v === 'string' && /^\d{1,78}$/.test(v)) return BigInt(v).toString()
+  return undefined
+}
+
+/**
+ * One sale object (current `sale` or legacy `saleConfig`) → the Kismet shape,
+ * or undefined for "no usable sale": null or absent, a field that doesn't
+ * parse, a strategy Kismet can't price (an unknown `type`), or saleEnd 0. A
+ * zero saleEnd is the unset row every on-chain read already treats as no sale
+ * (lib/saleConfig's `saleEnd !== 0n`); passed through, it would read as a
+ * free, open-ended, already-live drop and land in the free-mint index.
+ * Undefined is never a guess — the routes backfill it from chain.
+ */
+function normalizeMomentSale(raw: unknown): MomentDetailSaleConfig | undefined {
+  if (!isRecord(raw)) return undefined
+  const { type } = raw
+  if (type != null && type !== 'fixedPrice' && type !== 'erc20Mint') return undefined
+  const pricePerToken = toPriceString(raw.pricePerToken)
+  const saleStart = toUint64String(raw.saleStart)
+  const saleEnd = toUint64String(raw.saleEnd)
+  if (pricePerToken === undefined || saleStart === undefined || saleEnd === undefined) return undefined
+  if (saleEnd === '0') return undefined
+  const currency =
+    typeof raw.currency === 'string' && ADDRESS_RE.test(raw.currency) ? raw.currency : undefined
+  return {
+    ...(type === 'fixedPrice' || type === 'erc20Mint' ? { type } : {}),
+    pricePerToken,
+    saleStart,
+    saleEnd,
+    ...(currency ? { currency } : {}),
+  }
+}
+
+/** An admin list (current `admins` or legacy `momentAdmins`) → lowercased,
+ *  de-duplicated addresses; any entry that isn't an address is dropped. */
+function normalizeAdminList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out = new Set<string>()
+  for (const a of raw) {
+    if (typeof a === 'string' && ADDRESS_RE.test(a)) out.add(a.toLowerCase())
+  }
+  return [...out]
+}
+
+/**
+ * THE one place an In Process GET /moment body becomes Kismet data. Every
+ * upstream /moment read goes through it — scripts/verify-moment-wire.ts fails
+ * the check suite if a reader appears that doesn't — so the next rename is
+ * one edit here instead of another reader that silently goes empty, the way
+ * `momentAdmins` and `saleConfig` did on 2026-06-19.
+ *
+ * Accepts both wire generations (InProcessMomentBody); where both names are
+ * present the current one wins, including an explicit `sale: null`. Returns
+ * null for anything that isn't a moment — the `{ error }` envelope a 404
+ * carries, an array, a scalar — so callers treat it as the failure it is.
+ * Upstream fields Kismet doesn't read (id, contentUri, soldOut, protocol,
+ * video, and any future addition) are dropped rather than passed through:
+ * /api/moment serves this type, not whatever upstream happened to send, and
+ * certainly not a `hidden` or `creator` of upstream's own, which only
+ * Kismet's routes may set.
+ */
+export function normalizeMomentDetail(raw: unknown): MomentDetail | null {
+  if (!isRecord(raw)) return null
+  const uri = typeof raw.uri === 'string' ? raw.uri : undefined
+  const metadata = isRecord(raw.metadata) ? (raw.metadata as MomentDetail['metadata']) : undefined
+  if (uri === undefined && metadata === undefined) return null
+  const owner =
+    typeof raw.owner === 'string' && ADDRESS_RE.test(raw.owner) ? raw.owner.toLowerCase() : undefined
+  const saleConfig = normalizeMomentSale(raw.sale !== undefined ? raw.sale : raw.saleConfig)
+  return {
+    uri: uri ?? '',
+    ...(owner ? { owner } : {}),
+    ...(saleConfig ? { saleConfig } : {}),
+    collectionAdmins: normalizeAdminList(raw.admins !== undefined ? raw.admins : raw.momentAdmins),
+    metadata: metadata ?? {},
+  }
 }
 
 /**

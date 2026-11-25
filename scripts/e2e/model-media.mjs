@@ -115,8 +115,7 @@ const TEXTURED_BYTES = await makeTexturedGlb(path.join(DIR, 'textured.glb'))
 const MODEL_META = {
   uri: 'ar://meta',
   owner: '0x000000000000000000000000000000000000dEaD',
-  momentAdmins: [],
-  saleConfig: null,
+  collectionAdmins: [],
   metadata: {
     name: 'E2E Cube',
     description: 'A 3D moment used to validate the viewer end to end.',

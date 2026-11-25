@@ -3,7 +3,6 @@ import { notFound } from 'next/navigation'
 import { EyeOff } from 'lucide-react'
 import { isAddress, isValidTokenId } from '@/lib/address'
 import { fetchMomentDetail, getKvCreatorAddress } from '@/lib/momentDetail'
-import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { SESSION_COOKIE, verifySession } from '@/lib/session'
 import { MomentDetailView } from '@/components/MomentDetailView'
 import { ModalOverlay } from '@/components/ModalOverlay'
@@ -54,11 +53,11 @@ export default async function ModalMomentPage({ params }: Props) {
   // KV wins because inprocess reports the platform smart wallet as
   // creator.address for Kismet-minted moments — looking up the
   // session's EOA against that would never match and the creator
-  // would be locked out of their own hidden moment.
+  // would be locked out of their own hidden moment. No admin-list fallback:
+  // the /moment admin list is collection-wide, not a creator signal.
   const creator =
     kvCreatorAddress?.toLowerCase() ??
-    detail?.creator?.address?.toLowerCase() ??
-    pickFirstNonOperatorAdmin(detail?.momentAdmins)?.toLowerCase()
+    detail?.creator?.address?.toLowerCase()
   const isCreator =
     !!viewer && !!creator && viewer.toLowerCase() === creator
 

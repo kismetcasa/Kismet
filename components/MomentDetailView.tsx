@@ -40,7 +40,11 @@ import { ModelPoseBar } from './ModelPoseBar'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useMomentSplits } from '@/hooks/useMomentSplits'
-import { useMomentEditPermission, useMomentSaleEditPermission } from '@/hooks/useMomentEditPermission'
+import {
+  useMomentAdminPermission,
+  useMomentEditPermission,
+  useMomentSaleEditPermission,
+} from '@/hooks/useMomentEditPermission'
 import { ExperienceAllowance, MachineCallout } from './ExperienceAllowance'
 import { useUpdateMomentSale } from '@/hooks/useUpdateMomentSale'
 import { useUpdateMomentUri } from '@/hooks/useUpdateMomentUri'
@@ -95,7 +99,6 @@ import { MomentActivity } from './MomentActivity'
 import { useAdmin } from '@/contexts/AdminContext'
 import { toastError, TERMINAL_TOAST_DURATION_MS } from '@/lib/toast'
 import { composeMomentShareCast } from '@/lib/collectShare'
-import { pickFirstNonOperatorAdmin } from '@/lib/momentAuthz'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface Props {
@@ -123,12 +126,12 @@ interface Props {
   // pre-loading from KV at SSR time keeps it on the first paint.
   initialCollectionMeta?: { name?: string; image?: string }
   // EOA creator address from KV moment-meta (mint-proxy writes this at
-  // mint time). Authoritative for Kismet-minted moments before the
-  // inprocess timeline indexes them. We prefer it over momentAdmins[0]
-  // because that fallback is typically the platform/smart-wallet admin
-  // — looking up a Kismet profile against a smart wallet finds nothing
-  // and the chip degrades to a raw address even when the user has a
-  // username set against their EOA.
+  // mint time). Authoritative for Kismet-minted moments, before the
+  // inprocess timeline indexes them and after: inprocess credits the
+  // platform smart wallet (or a curated collection's owner) as creator, and
+  // looking up a Kismet profile against that finds nothing, so the chip
+  // degrades to a raw address even when the user has a username set
+  // against their EOA.
   kvCreatorAddress?: string
   // Server-prefetched body for text moments — warms the module-level cache
   // so the writing panel renders on first paint without a client fetch.
@@ -223,9 +226,7 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
     const seedAddr =
       resolveMomentCreator({
         kvCreator: kvCreatorAddress,
-        feedCreator:
-          initialDetail?.creator?.address
-          ?? pickFirstNonOperatorAdmin(initialDetail?.momentAdmins),
+        feedCreator: initialDetail?.creator?.address,
       }).address ?? ''
     return initialDetail?.creator?.username || (seedAddr ? shortAddress(seedAddr) : '')
   })
@@ -519,14 +520,14 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   //           which has no Kismet profile and breaks the display-name /
   //           avatar / profile-link chain. KV is authoritative.
   //   feed  — detail.creator.address (inprocess timeline's dedicated creator
-  //           field), else the first non-operator momentAdmins entry as the
-  //           last-resort display fallback (unordered list; may contain the
-  //           operator smart wallet — filtered — or a 0xSplits contract).
+  //           field). Nothing after it: /moment's admin list is
+  //           collection-wide (detail.collectionAdmins), so on a curated
+  //           collection its first entry is just another artist — the same
+  //           rule the server-side hidden-artwork gate follows.
   const creatorAddress =
     resolveMomentCreator({
       kvCreator: kvCreatorAddress,
-      feedCreator:
-        detail?.creator?.address ?? pickFirstNonOperatorAdmin(detail?.momentAdmins),
+      feedCreator: detail?.creator?.address,
     }).address ?? ''
   const isHidden = detail?.hidden === true
   const [hidePending, setHidePending] = useState(false)
@@ -555,13 +556,13 @@ export function MomentDetailView({ address, tokenId, initialDetail, fallbackMeta
   const { update: updateMomentUri } = useUpdateMomentUri()
   const queryClient = useQueryClient()
 
-  // Moment admin per inprocess's momentAdmins (unordered; may include the
-  // operator smart wallet — harmless, the distribute API's signature gate is
-  // authoritative). One of the roles canDistribute admits.
-  const isMomentAdmin =
-    !!connectedAddress &&
-    Array.isArray(detail?.momentAdmins) &&
-    detail.momentAdmins.some((a) => a.toLowerCase() === connectedAddress.toLowerCase())
+  // Moment admin: ADMIN on this token or collection-wide, read from chain —
+  // the exact check /api/distribute and the raffle-manage gate run
+  // (lib/momentAuthz), so the distribute controls and the raffle panel show
+  // for precisely the wallets those routes will accept. Shares its two
+  // permission reads with canEditMeta/canEditSale above (same contracts, one
+  // cached query), so it costs no extra RPC.
+  const isMomentAdmin = useMomentAdminPermission(address, tokenId)
   // saleConfig can be absent on the upstream /moment payload (a moment with no
   // active sale, or an indexer gap). Derive every sale-dependent value from
   // this one guarded read so a missing saleConfig degrades to "no price / not

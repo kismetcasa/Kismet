@@ -402,8 +402,10 @@ indeterminate-timeout handling (502, never auto-retry) shipped with the subsyste
 validation → quota → field sanitization + `createReferral` overwrite → smart-wallet
 preflight → forward →
 `after()` side effects); durable two-layer smart-wallet cache; KV creator override
-preferred over inprocess `momentAdmins` (which credit the platform SW for delegated
-mints).
+preferred over inprocess's attribution (which credits the platform SW for delegated
+mints). GET `/moment` crosses into Kismet only through `normalizeMomentDetail`
+(`lib/inprocess.ts`), which accepts both its field generations (`admins`/`sale`
+since 2026-06-19, `momentAdmins`/`saleConfig` before).
 
 **Risks.** Hard SPOF for all content + the mint relay (no public SLA, gated docs);
 shared API key spends platform gas so a leaked write endpoint costs the platform;
@@ -897,8 +899,8 @@ KV data, priced from chain, hidden/permissioned, and cached.
 
 **Why.** Kismet needs one trustworthy "who made this, what is it, what does it cost,
 who can see it" — but inprocess is lossy and mis-attributing for Kismet's own mint
-flows (`momentAdmins[0]` is not reliably the minter; delegated mints credit the
-platform SW) and subject to indexing lag. This is the correction/enrichment/caching
+flows (`/moment`'s `admins` is the whole collection's tokenId-0 admin list, not the
+minter; delegated mints credit the platform SW) and subject to indexing lag. This is the correction/enrichment/caching
 layer so every UI surface agrees. History: `9e505eb` (recover-landed-deploy),
 `80eae06` (fan-out bounds), `3a97179` (15-min memo TTLs), `c9649bb`→`6ad4e9b` (Patron
 Collection moving from a hardcoded "turro" credit to on-chain-split attribution).

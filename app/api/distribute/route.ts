@@ -16,13 +16,15 @@ import { invalidatePendingCache } from '@/lib/pending'
 import { serverBaseClient } from '@/lib/rpc'
 import { ADMIN_ADDRESS } from '@/lib/config'
 import { isPlatformPausedFor } from '@/lib/gate'
+import { isOnchainMomentAdmin } from '@/lib/momentAuthz'
 
 /**
  * Triggers the inprocess split distribution for a token's accumulated proceeds.
  * Inprocess submits the on-chain tx and pays gas via its relay smart wallet —
  * meaning a leaked endpoint costs the platform, not the caller. Three gates:
  *   1. Signed message tying caller to the specific (collection, tokenId, split)
- *   2. Caller is creator OR admin of that moment (verified via inprocess)
+ *   2. Caller is creator OR admin of that moment (ADMIN on the token or
+ *      collection-wide, read from chain — lib/momentAuthz)
  *   3. `splitAddress` is one of the token's own on-chain payout targets
  *      (creator-reward recipient or a sale strategy's fundsRecipient) — so an
  *      authorized caller can't have us sponsor an unrelated contract's payout
@@ -133,33 +135,30 @@ export async function POST(req: NextRequest) {
   // signature gate above already proved the caller holds this key.
   const isPlatformAdmin = !!ADMIN_ADDRESS && callerLower === ADMIN_ADDRESS
 
-  // KV moment-meta creator — the EOA mint-proxy recorded at mint. Preferred
-  // over inprocess's momentAdmins, which often lists the platform smart
-  // wallet rather than the creator's EOA, locking the creator out otherwise.
+  // KV moment-meta creator — the EOA mint-proxy recorded at mint. The
+  // creator's own wallet often holds no ADMIN bit (delegated mints run through
+  // the platform smart wallet), so this, not the chain check below, is what
+  // lets them in.
   const meta = await getMomentMeta(collectionAddress, tokenId)
   const isKvCreator = meta?.creator?.toLowerCase() === callerLower
 
   let authorized = isRecipient || isKvCreator || isPlatformAdmin
-  // Only consult inprocess's momentAdmins when the cheap KV/recipient signals
-  // didn't already authorize — saves an upstream round-trip in the common case.
-  // /moment returns `momentAdmins: string[]`, an unordered list; .includes()
-  // accepts any entry (creator or delegated admin), so ordering doesn't matter.
+  // Moment admin: ADMIN on this token or collection-wide, read from chain
+  // (lib/momentAuthz — why not In Process's /moment admin list is there).
+  // Only when the cheap KV/recipient signals didn't already authorize, so the
+  // common case costs no RPC read.
   if (!authorized) {
     try {
-      const momentUrl = inprocessUrl('/moment', { collectionAddress, tokenId, chainId: '8453' })
-      const momentRes = await fetch(momentUrl, { headers: { Accept: 'application/json' } })
-      if (!momentRes.ok) {
-        return errorResponse(403, 'Could not verify artwork creator')
-      }
-      const momentData = (await momentRes.json()) as { momentAdmins?: unknown }
-      const adminsLower = Array.isArray(momentData.momentAdmins)
-        ? momentData.momentAdmins
-            .filter((a): a is string => typeof a === 'string')
-            .map((a) => a.toLowerCase())
-        : []
-      authorized = adminsLower.includes(callerLower)
+      // Lowercased: validation here is case-insensitive, but viem's encoder
+      // rejects a mixed-case address whose EIP-55 checksum doesn't hold.
+      authorized = await isOnchainMomentAdmin(
+        serverBaseClient(),
+        collectionAddress.toLowerCase() as `0x${string}`,
+        BigInt(tokenId),
+        callerLower as `0x${string}`,
+      )
     } catch {
-      return errorResponse(502, 'Could not verify artwork creator')
+      return errorResponse(502, 'Could not verify artwork admin')
     }
   }
   if (!authorized) {

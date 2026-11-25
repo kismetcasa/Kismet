@@ -1,4 +1,4 @@
-import { inprocessUrl, type Moment, type MomentDetail } from './inprocess'
+import { inprocessUrl, normalizeMomentDetail, type Moment, type MomentDetail } from './inprocess'
 import { getCollectionMeta, type CollectionMeta } from './kv'
 import { getMomentMeta } from './notifications'
 
@@ -26,9 +26,14 @@ import { getMomentMeta } from './notifications'
  *
  * Returns the moment to merge into the existing list, or null when there's
  * nothing to add: no coverTokenId, cover already in the list, /moment
- * fetch failed, or attribution couldn't be resolved cleanly. Synthesis
- * never throws — any error short-circuits to null so callers can keep
- * serving whatever inprocess did return.
+ * fetch failed, or attribution couldn't be resolved cleanly.
+ *
+ * NEVER throws, by construction: the whole body runs inside one catch that
+ * answers null, so callers keep serving whatever inprocess did return. The
+ * old guarantee was only per-fetch, and In Process's 2026-06-19 rename of
+ * `momentAdmins` turned an unguarded `.map` on it into a TypeError whenever
+ * synthesis got that far — which in the timeline fan-out (a Promise.all) fails
+ * the entire feed request, not just this collection.
  */
 export async function synthesizeMissingCoverMoment(
   collectionAddress: string,
@@ -41,6 +46,25 @@ export async function synthesizeMissingCoverMoment(
    *  keeps the original self-reading behaviour for callers without a batch
    *  (lib/catalogCensus). */
   collMetaIn?: CollectionMeta | null,
+): Promise<Moment | null> {
+  try {
+    return await synthesize(collectionAddress, existingMoments, collMetaIn)
+  } catch (err) {
+    // Only an unexpected fault lands here (every expected failure — a fetch,
+    // a KV read — already resolves to null inside), so say so instead of
+    // hiding it: a silent null is how the rename went unnoticed.
+    console.error('[coverMomentSynthesis] synthesis failed; serving the timeline without the cover', {
+      collectionAddress,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return null
+  }
+}
+
+async function synthesize(
+  collectionAddress: string,
+  existingMoments: { token_id?: string | number }[],
+  collMetaIn: CollectionMeta | null | undefined,
 ): Promise<Moment | null> {
   const collMeta =
     collMetaIn === undefined
@@ -73,7 +97,10 @@ export async function synthesizeMissingCoverMoment(
     chain_id: 8453,
     uri: detail.uri,
     creator: { address: creatorAddress, hidden: false },
-    admins: detail.momentAdmins.map((a) => ({ address: a.toLowerCase(), hidden: false })),
+    // Collection-wide (tokenId-0 ADMIN holders) — the same list In Process's
+    // timeline now returns for every row of the collection. Always an array
+    // after normalization; already lowercased.
+    admins: detail.collectionAdmins.map((address) => ({ address, hidden: false })),
     // The cover-mint shares its block with the collection deploy. Use the
     // collection's created_at as the moment's created_at so newest-first
     // sorts place it correctly (epoch 0 fallback parks the moment at the
@@ -99,7 +126,7 @@ async function fetchMomentDetail(
     const res = await fetch(url, { next: { revalidate: 60 }, signal: AbortSignal.timeout(8_000) })
     if (!res.ok) return null
     const text = await res.text()
-    return text ? (JSON.parse(text) as MomentDetail) : null
+    return text ? normalizeMomentDetail(JSON.parse(text)) : null
   } catch {
     return null
   }

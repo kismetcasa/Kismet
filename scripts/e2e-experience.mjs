@@ -3838,7 +3838,7 @@ try {
         {
           chain.perms.delete(key(POOL, 99, OPERATOR))
           const moment = {
-            uri: 'ar://meta', owner: ADMIN, momentAdmins: [ADMIN], saleConfig: null,
+            uri: 'ar://meta', owner: ADMIN, collectionAdmins: [ADMIN],
             metadata: { name: 'Piece Ninety Nine', description: 'An artwork used to validate the allowance panel.', image: '' },
           }
           const visitor = await open(`/artwork/${POOL}/99`, { moment })
@@ -3901,7 +3901,7 @@ try {
         // ── an artist turns reveal machines off for a piece, and back on ──
         {
           const moment = {
-            uri: 'ar://meta', owner: CREATOR2, momentAdmins: [CREATOR2], saleConfig: null,
+            uri: 'ar://meta', owner: CREATOR2, collectionAdmins: [CREATOR2],
             metadata: { name: 'Piece Two', description: 'A reveal piece.', image: '' },
           }
           const page = await open(`/artwork/${REVEAL}/2`, { user: USER_TOKEN, wallet: CREATOR2, onChain: true, moment })

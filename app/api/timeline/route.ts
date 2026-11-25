@@ -140,11 +140,15 @@ async function fetchCollection(
   // with a cover mint, so case #1 (collection only) and case #3 (individual
   // MintForm mint via inprocess) are untouched. Failure short-circuits to
   // null so a synthesis error never poisons the inprocess passthrough.
+  // synthesizeMissingCoverMoment never throws by contract; the .catch is
+  // belt-and-braces because the stakes here are the whole response:
+  // mapWithConcurrency is a Promise.all, so one rejected leg fails EVERY
+  // collection's feed, not just this one's.
   const synthCover = await synthesizeMissingCoverMoment(
     collection,
     moments as { token_id?: string }[],
     (await collMetas).get(collection.toLowerCase()) ?? null,
-  )
+  ).catch(() => null)
   if (synthCover) moments.push(synthCover)
 
   return moments
