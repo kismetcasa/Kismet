@@ -28,6 +28,13 @@ const SET_CACHE_TTL_MS = 15 * 60_000
 // EOA → smart wallet, not back).
 const keyAuthorizedCreators = (collection: string) =>
   `kismetart:authorized-creators:${collection.toLowerCase()}`
+// Per-collection HASH of grants the panel started but hasn't recorded yet:
+// field = creator EOA, value = PendingAuthorizedCreator. Written BEFORE the
+// wallet prompt so a record that never arrives after the receipt (tab closed,
+// session lapsed, network) is finished by the next GET instead of being lost.
+// Its own prefix, so a scan of `authorized-creators:*` never mixes the two.
+const keyPendingAuthorizedCreators = (collection: string) =>
+  `kismetart:authorized-creators-pending:${collection.toLowerCase()}`
 
 // Master tracked set — every contract Kismet has registered. Drives
 // timeline fan-out for moment lookups across all scopes.
@@ -473,25 +480,48 @@ export async function searchCollections(query: string): Promise<CollectionMeta[]
   )
 }
 
+/**
+ * A grant the panel recorded. Every record names its creator: the panel only
+ * records grants it can map EOA → smart wallet. ADMIN holders with no record
+ * (granted on etherscan, or a save that never landed) are not stored here —
+ * GET /api/collection/authorized-creators finds them on chain and returns them
+ * as `unmapped` rows (lib/authorizedCreators).
+ */
 export interface AuthorizedCreator {
-  /** Lowercased EOA the admin authorized. Undefined for chain-only
-   *  entries — addresses that hold ADMIN on-chain but never came
-   *  through our panel (etherscan / foundry grants), discovered by
-   *  the GET endpoint's chain merge. UI renders those as "(unmapped)". */
-  eoa: string | undefined
-  /** Lowercased smart wallet — the on-chain ADMIN grantee. For
-   *  KV-tracked entries this is inprocess's resolution of `eoa`;
-   *  for chain-only entries it's the address from the log scan. */
+  /** Lowercased EOA the admin authorized. */
+  eoa: string
+  /** Lowercased smart wallet — the on-chain ADMIN grantee MintForm relays
+   *  through: inprocess's resolution of `eoa`, verified server-side. */
   smartWallet: string
   /** Optional ENS label captured at grant time (e.g. "vitalik.eth").
    *  Displayed instead of the address when present. */
   label?: string
-  /** EOA of the admin who authorized. Empty string for chain-only
-   *  entries — we don't have an audit trail for off-platform grants. */
+  /** EOA of the admin who authorized. */
   grantedBy: string
-  /** ms epoch — sort newest first when rendering. 0 for chain-only. */
+  /** ms epoch — sort newest first when rendering. */
   grantedAt: number
 }
+
+/**
+ * A grant the panel started: written before the wallet prompt, with the EOA →
+ * smart-wallet mapping already verified against inprocess. Removed when the
+ * record lands (POST), when the GET finds the smart wallet holding ADMIN and
+ * records it itself, on revoke, or — if it never lands — after
+ * PENDING_AUTHORIZED_CREATOR_TTL_MS. A pending grant is never shown and never
+ * recorded unless the chain confirms the smart wallet holds ADMIN, so one
+ * whose transaction was rejected or reverted is harmless until it expires.
+ */
+export interface PendingAuthorizedCreator {
+  eoa: string
+  smartWallet: string
+  label?: string
+  grantedBy: string
+  /** ms epoch — when the admin started the grant. */
+  createdAt: number
+}
+
+/** How long a started grant waits for its transaction before it is dropped. */
+export const PENDING_AUTHORIZED_CREATOR_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 // Upstash's REST SDK auto-deserializes JSON-shaped strings on read,
 // so a value written via `redis.sadd(key, JSON.stringify(obj))` comes
@@ -535,24 +565,24 @@ export async function addAuthorizedCreator(
   }
   // Best-effort dedupe — if it fails, the panel may briefly show two
   // rows for the same EOA (older + newer) until the next grant cleans
-  // them up. The new row above is already persisted at this point.
+  // them up; the GET collapses them to the newest in the meantime. The
+  // new row above is already persisted at this point.
   try {
     const eoaLower = entry.eoa.toLowerCase()
     const members = (await redis.smembers(
       keyAuthorizedCreators(collection),
     )) as unknown[]
+    // Drop only rows OLDER than this one. Two writers can record the same EOA
+    // at once (the post-receipt POST and a GET finishing the pending grant);
+    // if each dropped every row but its own, they could drop each other's and
+    // leave none. Newest-wins converges on one row either way.
     const stale = members.filter((raw) => {
       const parsed = parseEntry(raw)
       if (!parsed) return false
-      // Skip the row we just wrote — match by both EOA and grantedAt
-      // so concurrent grants for the same EOA don't drop each other.
-      if (
+      return (
         parsed.eoa?.toLowerCase() === eoaLower &&
-        parsed.grantedAt === entry.grantedAt
-      ) {
-        return false
-      }
-      return parsed.eoa?.toLowerCase() === eoaLower
+        parsed.grantedAt < entry.grantedAt
+      )
     })
     if (stale.length > 0) {
       await redis.srem(keyAuthorizedCreators(collection), ...stale)
@@ -591,22 +621,122 @@ export async function removeAuthorizedCreator(
   }
 }
 
-export async function getAuthorizedCreators(
+/**
+ * The recorded grants, newest first. THROWS when Redis is unreachable — the
+ * creators panel must not mistake "couldn't read the records" for "there are
+ * none", or every recorded creator would come back from the chain merge
+ * labelled (unmapped).
+ */
+export async function readAuthorizedCreators(
   collection: string,
 ): Promise<AuthorizedCreator[]> {
-  try {
-    const members = (await redis.smembers(
-      keyAuthorizedCreators(collection),
-    )) as unknown[]
-    const parsed: AuthorizedCreator[] = []
-    for (const raw of members) {
-      const entry = parseEntry(raw)
-      if (entry) parsed.push(entry)
+  const members = (await redis.smembers(
+    keyAuthorizedCreators(collection),
+  )) as unknown[]
+  const parsed: AuthorizedCreator[] = []
+  for (const raw of members) {
+    const entry = parseEntry(raw)
+    if (entry) parsed.push(entry)
+  }
+  // Newest first — admins usually want to see what they just
+  // authorized at the top of the list.
+  return parsed.sort((a, b) => b.grantedAt - a.grantedAt)
+}
+
+function parsePending(raw: unknown): PendingAuthorizedCreator | null {
+  let obj: unknown = raw
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw)
+    } catch {
+      return null
     }
-    // Newest first — admins usually want to see what they just
-    // authorized at the top of the list.
-    return parsed.sort((a, b) => b.grantedAt - a.grantedAt)
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+  const p = obj as Partial<PendingAuthorizedCreator>
+  if (typeof p.eoa !== 'string' || typeof p.smartWallet !== 'string') return null
+  return {
+    eoa: p.eoa.toLowerCase(),
+    smartWallet: p.smartWallet.toLowerCase(),
+    label: typeof p.label === 'string' && p.label ? p.label : undefined,
+    grantedBy: typeof p.grantedBy === 'string' ? p.grantedBy.toLowerCase() : '',
+    createdAt: typeof p.createdAt === 'number' ? p.createdAt : 0,
+  }
+}
+
+/** Record a started grant (one per EOA; a newer start replaces an older one).
+ *  The key's TTL is refreshed on every write so an abandoned hash expires. */
+export async function addPendingAuthorizedCreator(
+  collection: string,
+  pending: PendingAuthorizedCreator,
+): Promise<boolean> {
+  try {
+    const key = keyPendingAuthorizedCreators(collection)
+    // Object value: the Upstash SDK serializes on write and parses on read,
+    // the same round trip the authorized-creators set relies on above.
+    await redis.hset(key, { [pending.eoa.toLowerCase()]: pending })
+    await redis.expire(key, Math.ceil(PENDING_AUTHORIZED_CREATOR_TTL_MS / 1000))
+    return true
+  } catch (err) {
+    console.error('[kv] addPendingAuthorizedCreator failed', {
+      collection,
+      eoa: pending.eoa,
+      err: err instanceof Error ? err.message : String(err),
+    })
+    return false
+  }
+}
+
+/** The started grant for one EOA, or null (none, or Redis unreachable). */
+export async function getPendingAuthorizedCreator(
+  collection: string,
+  eoa: string,
+): Promise<PendingAuthorizedCreator | null> {
+  try {
+    const raw = await redis.hget(keyPendingAuthorizedCreators(collection), eoa.toLowerCase())
+    return parsePending(raw)
+  } catch {
+    return null
+  }
+}
+
+/** Every started grant on a collection ([] when none or Redis unreachable —
+ *  pending grants only ever add rows, so missing them is a safe degradation). */
+export async function getPendingAuthorizedCreators(
+  collection: string,
+): Promise<PendingAuthorizedCreator[]> {
+  try {
+    const all = await redis.hgetall<Record<string, unknown>>(
+      keyPendingAuthorizedCreators(collection),
+    )
+    if (!all) return []
+    const out: PendingAuthorizedCreator[] = []
+    for (const raw of Object.values(all)) {
+      const p = parsePending(raw)
+      if (p) out.push(p)
+    }
+    return out
   } catch {
     return []
+  }
+}
+
+/** Drop started grants by EOA. Best-effort: a leftover entry is harmless (it
+ *  can only ever be recorded once the chain shows its smart wallet as ADMIN). */
+export async function removePendingAuthorizedCreators(
+  collection: string,
+  eoas: string[],
+): Promise<void> {
+  if (eoas.length === 0) return
+  try {
+    await redis.hdel(
+      keyPendingAuthorizedCreators(collection),
+      ...eoas.map((e) => e.toLowerCase()),
+    )
+  } catch (err) {
+    console.error('[kv] removePendingAuthorizedCreators failed', {
+      collection,
+      err: err instanceof Error ? err.message : String(err),
+    })
   }
 }

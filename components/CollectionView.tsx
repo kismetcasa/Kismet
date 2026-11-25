@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { MomentImage } from './MomentImage'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -18,7 +18,11 @@ import { useAdmin } from '@/contexts/AdminContext'
 import { useUploadSession } from '@/hooks/useUploadSession'
 import { useInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { useGrantPermission, type PermissionOp } from '@/hooks/useGrantPermission'
-import { useAuthorizedCreators } from '@/hooks/useAuthorizedCreators'
+import {
+  useAuthorizedCreators,
+  type AuthorizedCreatorEntry,
+  type CreatorGrant,
+} from '@/hooks/useAuthorizedCreators'
 import { fetchInprocessSmartWallet } from '@/hooks/useInprocessSmartWallet'
 import { COLLECTION_ABI } from '@/lib/collections'
 import { hasAdminBit, hasMinterBit } from '@/lib/permissions'
@@ -249,26 +253,68 @@ export function CollectionView({
   const isCreatorBusy = creatorGranting || creatorTxPending
   const [creatorInput, setCreatorInput] = useState('')
   const [revokingCreatorEoa, setRevokingCreatorEoa] = useState<string | null>(null)
+  const [savingCreatorEoa, setSavingCreatorEoa] = useState<string | null>(null)
   // Captures the in-flight action so the receipt effect knows whether
-  // to POST or DELETE the KV mapping after the tx confirms. `eoa` is
-  // undefined for revokes of chain-only entries (no KV row to drop).
+  // to save or drop the grant's record after the tx confirms. A revoke
+  // only drops a record when the row had one (`recorded`): an unmapped
+  // row has none.
   const pendingCreatorRef = useRef<
-    | { kind: 'grant'; eoa: string; smartWallet: string; label?: string }
-    | { kind: 'revoke'; eoa: string | undefined }
+    | ({ kind: 'grant' } & CreatorGrant)
+    | { kind: 'revoke'; eoa: string | undefined; recorded: boolean }
     | null
   >(null)
   const {
     creators: authorizedCreators,
     loading: creatorsLoading,
     refetch: refetchCreators,
+    startGrant: startCreatorGrant,
+    saveGrant: saveCreatorGrant,
+    dropGrant: dropCreatorGrant,
   } = useAuthorizedCreators(
     canGrantHere ? (address as `0x${string}`) : undefined,
+  )
+  // The viewer's own wallets hold ADMIN from deploy. The server already
+  // leaves out the collection's owner and deployer; this also covers a
+  // viewer it can't name, so the panel never offers to revoke your own
+  // mint wallet as an "unmapped" creator.
+  const ownCreatorAddrs = new Set(
+    [connectedAddress, viewerSmartWallet]
+      .filter((a): a is string => !!a)
+      .map((a) => a.toLowerCase()),
+  )
+  const creatorRows = authorizedCreators.filter(
+    (c) =>
+      !c.unmapped ||
+      ![c.eoa, c.smartWallet].some((a) => !!a && ownCreatorAddrs.has(a.toLowerCase())),
   )
 
   // Mainnet client for client-side ENS resolution. Wagmi already
   // configures a mainnet transport for ENS (lib/wagmi.ts), so we reuse
   // it instead of standing up a duplicate viem client.
   const mainnetClient = usePublicClient({ chainId: mainnet.id })
+
+  // Save a grant that is on chain, then confirm it is listed. When the
+  // save fails even after its retries, the refetch usually lands it anyway:
+  // the GET records the started grant itself once the chain shows the smart
+  // wallet holding ADMIN. Only when both miss does the admin hear about it,
+  // and the next load of this panel retries.
+  const finishCreatorGrant = useCallback(
+    async (grant: CreatorGrant, successMessage: string) => {
+      const saved = await saveCreatorGrant(grant)
+      setCreatorInput('')
+      const rows = await refetchCreators()
+      const listed = !!rows?.some((r) => !r.unmapped && r.eoa?.toLowerCase() === grant.eoa)
+      if (saved.ok || listed) {
+        toast.success(successMessage, { id: 'authorize-creator' })
+      } else {
+        toast.warning('Authorized on chain — the record is still saving', {
+          id: 'authorize-creator',
+          description: 'It finishes automatically the next time this panel loads.',
+        })
+      }
+    },
+    [saveCreatorGrant, refetchCreators],
+  )
 
   // ─── Authorize creators (ADMIN to smart wallet) ─────────────────────
   async function handleAuthorizeCreator() {
@@ -305,6 +351,18 @@ export function CollectionView({
       }
       const swLower = swResult.address.toLowerCase() as `0x${string}`
       const label = raw.endsWith('.eth') ? raw : undefined
+      const grant: CreatorGrant = { eoa: eoa.toLowerCase(), smartWallet: swLower, label }
+      // Sign in before the wallet prompt (at most one signature): the grant
+      // is recorded before it is sent and saved after it confirms, and
+      // neither write may fail on a lapsed session once ADMIN is on chain.
+      await ensureSession()
+      // Record the grant as started. Every check the save makes (admin,
+      // wallet mapping) runs now, while nothing is on chain — a failure
+      // here costs a retry, not an unrecorded grant. And if the save after
+      // the receipt never arrives (tab closed, network), the next load of
+      // this panel finishes it from this record.
+      toast.loading('Preparing authorization…', { id: 'authorize-creator' })
+      await startCreatorGrant(grant)
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
       // Multicall: grant ADMIN to SW (MintForm relay) + grant ADMIN to
       // EOA (direct from-wallet calls) + clear any pre-existing MINTER
@@ -318,105 +376,104 @@ export function CollectionView({
         { direction: 'revoke', collection: address as `0x${string}`, grantee: eoa, tokenId: 0n, bit: 'minter' },
       ])
       if (outcome === 'submitted') {
-        pendingCreatorRef.current = { kind: 'grant', eoa, smartWallet: swLower, label }
+        pendingCreatorRef.current = { kind: 'grant', ...grant }
         toast.loading('Authorizing creator…', { id: 'authorize-creator' })
         return
       }
-      // Both bits were already set on chain. Persist the KV mapping
-      // anyway so the list shows the entry — without it, a re-grant
-      // under the same admin would never visibly land.
-      let kvOk = true
-      try {
-        const res = await fetch('/api/collection/authorized-creators', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            collection: address,
-            eoa,
-            smartWallet: swLower,
-            label,
-          }),
-        })
-        if (!res.ok) {
-          kvOk = false
-          const detail = await res.text().catch(() => '')
-          console.error('[authorize-creator] KV write rejected', {
-            status: res.status,
-            detail,
-          })
-        }
-      } catch (err) {
-        kvOk = false
-        console.error('[authorize-creator] KV write failed', err)
-      }
-      setCreatorInput('')
-      if (kvOk) {
-        toast.success('Already an authorized creator', { id: 'authorize-creator' })
-      } else {
-        // On-chain ADMIN exists; KV display row didn't land. The
-        // chain-merge in GET will still surface the entry as
-        // (unmapped) so the row at least appears.
-        toast.warning('Authorized on chain, but couldn’t save display label', {
-          id: 'authorize-creator',
-          description: 'Check the browser console for the server response.',
-        })
-      }
-      void refetchCreators()
+      // Both bits were already set on chain. Record the grant anyway so
+      // the list names the creator — without it, a re-grant under the
+      // same admin would never visibly land.
+      await finishCreatorGrant(grant, 'Already an authorized creator')
     } catch (err) {
+      // A rejected or failed wallet prompt leaves the started record in
+      // place on purpose: a request that errors AFTER broadcasting can
+      // still land, and the record is what finishes it. One that never
+      // lands is never shown and expires on its own.
       toastError('Authorize creator', err, { id: 'authorize-creator' })
     }
   }
 
-  async function handleRevokeCreator(eoa: string | undefined, smartWallet: string) {
+  async function handleRevokeCreator(c: AuthorizedCreatorEntry) {
     if (isCreatorBusy) return
-    const eoaLower = eoa?.toLowerCase()
-    setRevokingCreatorEoa(eoaLower ?? smartWallet.toLowerCase())
+    const eoaLower = c.eoa?.toLowerCase()
+    // A recorded row has a record to drop once the revoke lands; an
+    // unmapped row has none, so it needs no session either.
+    const recorded = !c.unmapped && !!eoaLower
+    setRevokingCreatorEoa(eoaLower ?? c.smartWallet.toLowerCase())
     try {
+      // Sign in before the wallet prompt, so dropping the record after the
+      // receipt can't fail on a lapsed session.
+      if (recorded) await ensureSession()
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
-      // Off-platform ADMIN grants (etherscan etc.) only ever hit one
-      // grantee, so we may not have an EOA to clear. Skip the EOA
-      // entry when it's unmapped — the chain only has the SW row.
+      // Revoke every address the row stands for: the smart wallet, plus
+      // the EOA when the row has one (the panel grants both). An unpaired
+      // unmapped row is a single address — revoke exactly that one.
       const ops: PermissionOp[] = [
         {
           direction: 'revoke',
           collection: address as `0x${string}`,
-          grantee: smartWallet as `0x${string}`,
+          grantee: c.smartWallet as `0x${string}`,
           tokenId: 0n,
           bit: 'admin',
         },
       ]
-      if (eoa) {
+      if (c.eoa) {
         ops.push({
           direction: 'revoke',
           collection: address as `0x${string}`,
-          grantee: eoa as `0x${string}`,
+          grantee: c.eoa as `0x${string}`,
           tokenId: 0n,
           bit: 'admin',
         })
       }
       const outcome = await batchCreator(ops)
       if (outcome === 'submitted') {
-        pendingCreatorRef.current = { kind: 'revoke', eoa }
+        pendingCreatorRef.current = { kind: 'revoke', eoa: eoaLower, recorded }
         toast.loading('Revoking creator…', { id: 'authorize-creator' })
         return
       }
-      // Already cleared on chain — drop the KV row directly so the UI
-      // doesn't keep showing a stale entry. Chain-only entries (no
-      // mapped EOA) have no KV row to drop.
-      if (eoa) {
-        try {
-          await fetch(
-            `/api/collection/authorized-creators?collection=${address}&eoa=${eoa}`,
-            { method: 'DELETE' },
-          )
-        } catch {}
-      }
+      // Already cleared on chain — drop the record directly so the row
+      // doesn't linger as stale.
+      const cleared = !recorded || (await dropCreatorGrant(eoaLower!))
       setRevokingCreatorEoa(null)
-      toast.success('Already not authorized', { id: 'authorize-creator' })
+      if (cleared) {
+        toast.success('Already not authorized', { id: 'authorize-creator' })
+      } else {
+        toast.warning('Not authorized on chain, but couldn’t clear the record', {
+          id: 'authorize-creator',
+          description: 'Check the browser console for the server response.',
+        })
+      }
       void refetchCreators()
     } catch (err) {
       setRevokingCreatorEoa(null)
       toastError('Revoke creator', err, { id: 'authorize-creator' })
+    }
+  }
+
+  // Record an unmapped row whose EOA and smart wallet both hold ADMIN — the
+  // shape the panel's own grant leaves when its save never landed (or the
+  // same pair granted elsewhere). No transaction: it's already on chain.
+  // The creator gets listed by name and receives the "authorized"
+  // notification they never got.
+  async function handleSaveCreator(c: AuthorizedCreatorEntry) {
+    if (isCreatorBusy || savingCreatorEoa || !c.eoa) return
+    const eoa = c.eoa.toLowerCase()
+    setSavingCreatorEoa(eoa)
+    try {
+      await ensureSession()
+      toast.loading('Saving creator…', { id: 'authorize-creator' })
+      const saved = await saveCreatorGrant({ eoa, smartWallet: c.smartWallet.toLowerCase() })
+      if (saved.ok) {
+        toast.success('Creator saved', { id: 'authorize-creator' })
+      } else {
+        toast.error('Couldn’t save creator', { id: 'authorize-creator', description: saved.error })
+      }
+      void refetchCreators()
+    } catch (err) {
+      toastError('Save creator', err, { id: 'authorize-creator' })
+    } finally {
+      setSavingCreatorEoa(null)
     }
   }
 
@@ -428,6 +485,8 @@ export function CollectionView({
     resetCreatorGrant()
     setRevokingCreatorEoa(null)
     if (creatorReceipt.status === 'reverted') {
+      // A reverted grant's started record can never be finished (its smart
+      // wallet didn't get ADMIN), so it is left to expire.
       toast.error(
         action.kind === 'revoke' ? 'Revoke failed' : 'Authorize failed',
         {
@@ -438,68 +497,26 @@ export function CollectionView({
       )
       return
     }
-    // On success, reconcile KV so the list reflects the new state.
     void (async () => {
-      let kvOk = true
-      try {
-        if (action.kind === 'grant') {
-          const res = await fetch('/api/collection/authorized-creators', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              collection: address,
-              eoa: action.eoa,
-              smartWallet: action.smartWallet,
-              label: action.label,
-            }),
-          })
-          if (!res.ok) {
-            kvOk = false
-            const detail = await res.text().catch(() => '')
-            console.error('[authorize-creator] KV write rejected', {
-              status: res.status,
-              detail,
-            })
-          }
-          setCreatorInput('')
-        } else if (action.eoa) {
-          const res = await fetch(
-            `/api/collection/authorized-creators?collection=${address}&eoa=${action.eoa}`,
-            { method: 'DELETE' },
-          )
-          if (!res.ok) {
-            kvOk = false
-            console.error('[authorize-creator] KV delete rejected', {
-              status: res.status,
-            })
-          }
-        }
-      } catch (err) {
-        kvOk = false
-        console.error('[authorize-creator] KV request failed', err)
-      } finally {
-        if (kvOk) {
-          toast.success(
-            action.kind === 'revoke' ? 'Creator revoked' : 'Creator authorized',
-            { id: 'authorize-creator' },
-          )
-        } else {
-          // Chain state is correct; the chain-merge in GET will still
-          // surface the entry as (unmapped) so it doesn't go ghost.
-          toast.warning(
-            action.kind === 'revoke'
-              ? 'Revoked on chain, but couldn’t clear display row'
-              : 'Authorized on chain, but couldn’t save display label',
-            {
-              id: 'authorize-creator',
-              description: 'Check the browser console for the server response.',
-            },
-          )
-        }
-        void refetchCreators()
+      if (action.kind === 'grant') {
+        const { kind: _kind, ...grant } = action
+        await finishCreatorGrant(grant, 'Creator authorized')
+        return
       }
+      const cleared = !action.recorded || !action.eoa || (await dropCreatorGrant(action.eoa))
+      if (cleared) {
+        toast.success('Creator revoked', { id: 'authorize-creator' })
+      } else {
+        // The chain is right; the record now reads as stale (its smart
+        // wallet lost ADMIN) until its trash button clears it.
+        toast.warning('Revoked on chain, but couldn’t clear the record', {
+          id: 'authorize-creator',
+          description: 'Check the browser console for the server response.',
+        })
+      }
+      void refetchCreators()
     })()
-  }, [creatorReceipt, resetCreatorGrant, refetchCreators, address])
+  }, [creatorReceipt, resetCreatorGrant, refetchCreators, finishCreatorGrant, dropCreatorGrant])
 
   // When the authorize tx confirms, refetch the permission read so the
   // banner hides itself without a manual reload.
@@ -591,7 +608,7 @@ export function CollectionView({
 
   // Hydrate profiles for the authorized-creators panel — same cache the
   // moment-creator avatars use, so admins recognize who they're managing.
-  // For chain-only entries (no EOA) we look up by smart wallet, which
+  // An unmapped row with no EOA is looked up by its one address, which
   // typically returns just a fallback shortAddress.
   useEffect(() => {
     let cancelled = false
@@ -1125,7 +1142,7 @@ export function CollectionView({
               {isCreatorBusy && !revokingCreatorEoa ? 'authorizing…' : 'authorize'}
             </button>
           </div>
-          {creatorsLoading && authorizedCreators.length === 0 ? (
+          {creatorsLoading && creatorRows.length === 0 ? (
             <ul className="mt-3 flex flex-col gap-1" aria-busy="true">
               {[0, 1].map((i) => (
                 <li
@@ -1138,14 +1155,15 @@ export function CollectionView({
               ))}
             </ul>
           ) : (
-            authorizedCreators.length > 0 && (
+            creatorRows.length > 0 && (
               <ul className="mt-3 flex flex-col gap-1">
-                {authorizedCreators.map((c) => {
-                  // Chain-only entries (off-platform addPermission, no
-                  // KV reverse-lookup) key by smart wallet — that's
-                  // the only stable identifier we have.
+                {creatorRows.map((c) => {
+                  // An unmapped address that couldn't be paired with an
+                  // EOA keys by that one address — the only stable
+                  // identifier it has.
                   const profileAddr = (c.eoa ?? c.smartWallet).toLowerCase()
                   const isRevoking = revokingCreatorEoa === profileAddr
+                  const isSaving = savingCreatorEoa === profileAddr
                   const otherTxBusy = isCreatorBusy && !isRevoking
                   const profile = profiles[profileAddr]
                   // Display priority: profile/username > ENS label > shortAddress.
@@ -1166,9 +1184,11 @@ export function CollectionView({
                       title={
                         !c.liveOnChain
                           ? 'Stale — ADMIN was revoked outside this UI'
-                          : c.eoa
-                            ? `${c.label ?? c.eoa} → ${c.smartWallet}`
-                            : `Off-platform grant — smart wallet ${c.smartWallet}`
+                          : c.unmapped
+                            ? `Holds ADMIN on chain, but Kismet has no record of this grant — made outside this panel, or its save never landed. ${
+                                c.eoa ? `${c.eoa} → ${c.smartWallet}` : c.smartWallet
+                              }`
+                            : `${c.label ?? c.eoa} → ${c.smartWallet}`
                       }
                     >
                       <Link
@@ -1182,7 +1202,7 @@ export function CollectionView({
                         />
                         <span className="text-xs font-mono text-dim truncate">
                           {display}
-                          {!c.eoa && c.liveOnChain && (
+                          {c.unmapped && (
                             <span className="ml-2 text-muted">(unmapped)</span>
                           )}
                           {!c.liveOnChain && (
@@ -1190,10 +1210,21 @@ export function CollectionView({
                           )}
                         </span>
                       </Link>
+                      {c.unmapped && c.eoa && (
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveCreator(c)}
+                          disabled={isCreatorBusy || !!savingCreatorEoa}
+                          title="Save this grant — lists the creator by name and sends them the authorized notification"
+                          className="ml-2 text-[10px] font-mono tracking-wider uppercase text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                        >
+                          {isSaving ? 'saving…' : 'save'}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => void handleRevokeCreator(c.eoa, c.smartWallet)}
-                        disabled={otherTxBusy || isRevoking}
+                        onClick={() => void handleRevokeCreator(c)}
+                        disabled={otherTxBusy || isRevoking || isSaving}
                         title="Revoke creator authorization"
                         className="ml-2 text-muted hover:text-ink disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                       >
