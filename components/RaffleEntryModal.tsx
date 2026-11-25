@@ -10,9 +10,11 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { shortAddress } from '@/lib/inprocess'
+import { isAddress } from '@/lib/address'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
 import { isPatronCollection } from '@/lib/patronCollection'
+import type { SplitRecipient } from '@/lib/splits'
 import {
   artworkShareUrl,
   fcFollowUrl,
@@ -33,9 +35,11 @@ import {
  * <artist>." with follow buttons for Kismet's Farcaster + X accounts and
  * share composers for both.
  *
- * Artist naming is two-tier (lib/raffleShare): Patron artworks use the curated
- * Turro identity (linked to his Kismet profile); every other raffle resolves
- * the artist from the creator's profile. The Farcaster share uses the native
+ * Artist naming is two-tier (lib/raffleShare): a Patron artwork credits the
+ * artist its token's stored split pays (Turro on token 1, Tornado Rodriguez on
+ * token 3, …), linked to that artist's Kismet profile, with curated handles
+ * where the profile has none; every other raffle resolves the artist from the
+ * creator's profile. The Farcaster share uses the native
  * composeCast inside a Mini App (posts to /kismet with the artwork embedded —
  * whose embed button reads "collect to enter" while entries are open) and the
  * farcaster.xyz web composer otherwise; X always goes through the tweet
@@ -56,24 +60,51 @@ export function RaffleEntryModal({
   useBodyScrollLock()
   const { isInMiniApp } = useFarcaster()
 
+  // First paint: the creator for an ordinary raffle; for a Patron token, its
+  // curated override (if any) until the split arrives.
   const [artist, setArtist] = useState<RaffleShareArtist>(() =>
-    raffleShareArtist({ collectionAddress, creatorAddress }),
+    raffleShareArtist({ collectionAddress, tokenId, creatorAddress }),
   )
 
-  // Non-Patron: resolve the artist's FC handle / display name from their
-  // profile (Patron is fully curated — no lookup). shortAddress placeholders
-  // don't count as a name, same rule as lib/collectShare.
+  // Patron: read the token's stored split first. The artist it pays is the
+  // credit, not the creator record (the treasury on some Patron tokens). Then
+  // resolve that artist's FC handle / display name from their profile, which
+  // for an ordinary raffle is the creator's. shortAddress placeholders don't
+  // count as a name, same rule as lib/collectShare.
   useEffect(() => {
-    if (isPatronCollection(collectionAddress) || !creatorAddress) return
     let cancelled = false
-    fetchCreatorProfile(creatorAddress)
-      .then((profile) => {
+    const patron = isPatronCollection(collectionAddress)
+    const readSplit: Promise<SplitRecipient[] | null> = patron
+      ? fetch(`/api/moment/splits?${new URLSearchParams({ collectionAddress, tokenId })}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d: { recipients?: unknown } | null) =>
+            Array.isArray(d?.recipients)
+              ? (d.recipients as SplitRecipient[]).filter((r) => isAddress(r?.address))
+              : null,
+          )
+          .catch(() => null)
+      : Promise.resolve(null)
+    readSplit
+      .then(async (recipients) => {
         if (cancelled) return
-        const placeholder = shortAddress(creatorAddress)
+        const credited = raffleShareArtist({
+          collectionAddress,
+          tokenId,
+          creatorAddress,
+          splitRecipients: recipients,
+        })
+        if (patron) setArtist(credited)
+        const who = credited.profileAddress
+        if (!who) return
+        const profile = await fetchCreatorProfile(who)
+        if (cancelled) return
+        const placeholder = shortAddress(who)
         setArtist(
           raffleShareArtist({
             collectionAddress,
+            tokenId,
             creatorAddress,
+            splitRecipients: recipients,
             resolvedFcUsername: profile.fcUsername ?? null,
             resolvedName: profile.name && profile.name !== placeholder ? profile.name : null,
           }),
@@ -83,7 +114,7 @@ export function RaffleEntryModal({
     return () => {
       cancelled = true
     }
-  }, [collectionAddress, creatorAddress])
+  }, [collectionAddress, tokenId, creatorAddress])
 
   const shareUrl = artworkShareUrl(collectionAddress, tokenId)
 

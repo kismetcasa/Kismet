@@ -33,9 +33,8 @@ import { PatronInfoModal } from './PatronInfoModal'
 import {
   isPatronCollection,
   deriveArtistsFromRecipients,
+  patronPlatformPayees,
 } from '@/lib/patronCollection'
-import { CREATE_REFERRAL, RESIDENCIES_ADDRESS } from '@/lib/config'
-import { PLATFORM_FEE_RECIPIENT } from '@/lib/platformFee'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 
 interface AvatarProfile {
@@ -617,23 +616,15 @@ export function CollectionView({
   // multi-artist drops. We drop the non-artist payees (treasury / residencies /
   // referral / collection owner+payout) and hydrate the survivors' profiles so
   // their chips render names + avatars. Empty result → no artist section.
+  // The exclude set is shared with the raffle share's per-token credit
+  // (patronPlatformPayees), so both name the same artist.
   useEffect(() => {
     if (!isPatronCollection(address)) return
     let cancelled = false
     setPatronArtists(null)
     if (moments === null) return // wait for the moments fetch
     const ms = moments
-    const exclude = new Set(
-      [
-        PLATFORM_FEE_RECIPIENT,
-        CREATE_REFERRAL,
-        RESIDENCIES_ADDRESS,
-        defaultAdminAddress,
-        payoutRecipient,
-      ]
-        .filter((a): a is string => !!a)
-        .map((a) => a.toLowerCase()),
-    )
+    const exclude = patronPlatformPayees(defaultAdminAddress, payoutRecipient)
     Promise.all(
       ms.map((m) =>
         fetch(`/api/moment/splits?collectionAddress=${m.address}&tokenId=${m.token_id}`)

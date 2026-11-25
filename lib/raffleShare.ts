@@ -2,15 +2,18 @@
 // (components/RaffleEntryModal). Pure and client-safe.
 //
 // Artist resolution is two-tier (per product direction):
-//   - Patron Collection → the curated PATRON_ARTIST (Turro): the moment
-//     records' creator resolves to the platform treasury, so the copy names
-//     Turro explicitly — "@turro" in casts, "Turro's (@MOTEMT3)" in tweets.
-//   - Every other raffle → the artist resolved from the creator's profile
-//     (FC @username preferred, display name otherwise, clause dropped when
-//     nothing better than a shortened address resolved — same ladder as
-//     lib/collectShare's resolveCreatorHandle).
+//   - Patron Collection → the artist the TOKEN's stored split pays
+//     (patronTokenArtist), not the creator record, which is the platform
+//     treasury on some Patron tokens. Each drop credits its own artist: token 1
+//     Turro, token 3 Tornado Rodriguez, and a new drop its split's artist with
+//     no code change. Curated handles from PATRON_ARTIST_OVERRIDES win where
+//     the profile lacks them: "@turro" in casts, "Turro's (@MOTEMT3)" in tweets.
+//   - Every other raffle → the artist resolved from the creator's profile.
+// Both tiers use the same name ladder: FC @username preferred, display name
+// otherwise, clause dropped when nothing better than a shortened address
+// resolved (same ladder as lib/collectShare's resolveCreatorHandle).
 
-import { isPatronCollection, PATRON_ARTIST } from './patronCollection'
+import { isPatronCollection, patronTokenArtist } from './patronCollection'
 import { SITE_URL } from './siteUrl'
 
 /** Kismet's own accounts — the follow targets in the post-entry modal. */
@@ -20,7 +23,8 @@ export const KISMET_FC_HANDLE = 'kismet'
 export interface RaffleShareArtist {
   /** "@handle" (FC-verified) or a display name; null drops the artist clause. */
   fcLabel: string | null
-  /** X copy label — "Turro's (@MOTEMT3)" for Patron, a plain name otherwise. */
+  /** X copy label — "Turro's (@MOTEMT3)" when a Patron override curates an X
+   *  handle, the plain "Name's" otherwise. */
   xLabel: string | null
   /** Kismet profile the modal links the artist name to. */
   profileAddress: string | null
@@ -28,32 +32,53 @@ export interface RaffleShareArtist {
   displayName: string | null
 }
 
+const NO_ARTIST: RaffleShareArtist = {
+  fcLabel: null,
+  xLabel: null,
+  profileAddress: null,
+  displayName: null,
+}
+
 /**
- * The artist identity the modal + share copy should use. `resolved*` come
- * from the caller's fetchCreatorProfile lookup (fcUsername raw, name already
- * fallback-laddered) and are ignored for Patron artworks.
+ * The artist identity the modal + share copy should use. `profileAddress` is
+ * whose profile to look up: the token's split artist for a Patron token, the
+ * creator otherwise. `resolved*` come from the caller's fetchCreatorProfile
+ * lookup of that address (fcUsername raw, name already fallback-laddered).
+ *
+ * Patron tokens need `splitRecipients`, the token's stored split as
+ * /api/moment/splits returns it. Until it arrives (undefined), or when it
+ * can't be read (null), the token's override alone carries the credit, so
+ * token 1 names Turro on first paint and a token without an override names no
+ * one rather than the wrong person.
  */
 export function raffleShareArtist(opts: {
   collectionAddress: string
+  tokenId: string
   creatorAddress?: string | null
+  splitRecipients?: readonly { address: string; percentAllocation?: number }[] | null
   resolvedFcUsername?: string | null
   resolvedName?: string | null
 }): RaffleShareArtist {
+  const resolvedName = opts.resolvedName?.trim() || null
+  const fc = opts.resolvedFcUsername?.trim() || null
   if (isPatronCollection(opts.collectionAddress)) {
+    const credited = patronTokenArtist(opts.tokenId, opts.splitRecipients)
+    if (!credited) return NO_ARTIST
+    const o = credited.override
+    const name = o?.name ?? resolvedName
+    const xHandle = o?.xHandle
     return {
-      fcLabel: `@${PATRON_ARTIST.fcHandle}`,
-      xLabel: `${PATRON_ARTIST.name}'s (@${PATRON_ARTIST.xHandle})`,
-      profileAddress: PATRON_ARTIST.address,
-      displayName: PATRON_ARTIST.name,
+      fcLabel: o?.fcHandle ? `@${o.fcHandle}` : fc ? `@${fc}` : name,
+      xLabel: xHandle ? (name ? `${name}'s (@${xHandle})` : `@${xHandle}'s`) : name ? `${name}'s` : null,
+      profileAddress: credited.address,
+      displayName: name,
     }
   }
-  const name = opts.resolvedName?.trim() || null
-  const fc = opts.resolvedFcUsername?.trim() || null
   return {
-    fcLabel: fc ? `@${fc}` : name,
-    xLabel: name ? `${name}'s` : null,
+    fcLabel: fc ? `@${fc}` : resolvedName,
+    xLabel: resolvedName ? `${resolvedName}'s` : null,
     profileAddress: opts.creatorAddress ?? null,
-    displayName: name,
+    displayName: resolvedName,
   }
 }
 
