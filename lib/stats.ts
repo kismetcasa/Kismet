@@ -120,7 +120,7 @@ const PASS_PLATFORM_ADDRESSES: ReadonlySet<string> = new Set(
 // documented as the creation-time default admin; normalized into both
 // `creator` and `default_admin` by lib/inprocessCollection) plus the
 // contract's live on-chain `owner` and `fundsRecipient` (the payout recipient;
-// In Process stopped returning `payout_recipient` in 2026-03, so it is read
+// In Process's current detail route has no `payout_recipient`, so it is read
 // from `config()` — lib/collectionRoles). This is a SUPERSET of the Patron
 // page's exclude set: it also excludes OPERATOR and creator, both
 // platform-side, so it never drops a real artist (only a hypothetical split

@@ -5,14 +5,18 @@ import { LRUCache } from '@/lib/lruCache'
 // ───────────────────────────────────────────────────────────────────────────
 // In Process COLLECTION DETAIL — the single client for one collection's record.
 //
-// WHY THIS MODULE EXISTS (2026-11-18): In Process removed the query-param route
+// WHY THIS MODULE EXISTS: In Process removed the query-param route
 // `GET /collection?collectionAddress=&chainId=` (and its path form
-// `/collection/{address}`). Both now 404 with Next's HTML "page not found"
-// (`x-matched-path: /404`) for EVERY collection, while every caller read that 404
-// as "indexer hasn't picked this collection up yet" and fell back to KV — so the
-// header username, OG creator, feed creator chips, and the Patron pass-exclude
-// roles all degraded with nothing in the logs. Nine call sites each built the URL
-// and parsed the body themselves; they now all come through here.
+// `/collection/{address}`). Its docs replaced it with the CAIP route on
+// 2026-05-22 (sweetmantech/docs 3ccb214), and Kismet first recorded the 404 on
+// 2026-06-29 (92ed9383), but only the created-date chip was patched then. Both
+// forms 404 with Next's HTML "page not found" (`x-matched-path: /404`) for EVERY
+// collection, and every caller read that 404 as "indexer hasn't picked this
+// collection up yet" and fell back to KV, so the header username, OG creator,
+// feed creator chips and the Patron pass-exclude roles (which shipped on
+// 2026-07-22, after the removal, and never resolved) degraded with nothing in
+// the logs until 2026-11-18. Nine call sites each built the URL and parsed the
+// body themselves; they now all come through here.
 //
 // The replacement is the CAIP route In Process documents as `getCollectionInfo`:
 //   GET /collections/{network}/{contract}  with  network=eip155:8453,
@@ -24,8 +28,10 @@ import { LRUCache } from '@/lib/lruCache'
 //     creator: "0x…"            ← a bare ADDRESS STRING, not {address, username}
 //     creator_username: "…"|null ← the handle, hoisted to the top level
 //     admins: ["0x…", …],  metadata: { name, image, description, … } }
-// and there is no `default_admin` and no `payout_recipient` any more (dropped
-// from the contract in March 2026). `normalizeCollectionDetail` maps every shape
+// and there is no `default_admin` and no `payout_recipient` any more
+// (`payout_recipient` left the documented schema on 2026-03-07; whether the old
+// route still returned it before its removal is unverified).
+// `normalizeCollectionDetail` maps every shape
 // seen so far — live, documented, and the legacy `default_admin` one — onto the
 // object form Kismet's consumers read. The upstream `creator` is documented as
 // the CollectionDefaultAdmin ("original admin set at collection creation"), so

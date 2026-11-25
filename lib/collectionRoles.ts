@@ -5,9 +5,9 @@ import { serverBaseClient } from '@/lib/rpc'
 
 // A collection's contract-level roles, read from the chain. This is where a
 // collection's `payout_recipient` comes from now: In Process documented that
-// field as "Address to receive sale proceeds" and dropped it from its collection
-// contract in March 2026 (its replacement detail route returns only `creator`;
-// see lib/inprocessCollection.ts). The authoritative source was always the
+// field as "Address to receive sale proceeds", dropped it from its documented
+// schema on 2026-03-07, and its replacement detail route returns only `creator`
+// (see lib/inprocessCollection.ts). The authoritative source was always the
 // contract itself: Zora 1155's public `config` struct, whose `fundsRecipient`
 // is the collection-wide proceeds address. `initialize` sets it to the default
 // admin and an admin can repoint it (setFundsRecipient), so the chain is the

@@ -169,9 +169,12 @@ documented upstream as the creation-time default admin) plus the contract's
 live on-chain `owner` and `fundsRecipient` (the payout recipient)**. The
 deployer comes from In Process's collection detail
 (`GET /collections/eip155:8453/erc1155:<address>`, via
-`lib/inprocessCollection.ts`; the singular `/collection` route was removed
-upstream in 2026-11, and `payout_recipient` was dropped from its contract in
-2026-03). `owner`/`fundsRecipient` are read from the contract's `config()`
+`lib/inprocessCollection.ts`). The singular `/collection` route these roles
+were first read from was already removed upstream when this set shipped
+(2026-07-22; Kismet first recorded the 404 on 2026-06-29), so before the move
+to the CAIP route the set held only the static floor, which in production
+includes the treasury via `NEXT_PUBLIC_PLATFORM_FEE_RECIPIENT`. The current detail route has no
+`payout_recipient`. `owner`/`fundsRecipient` are read from the contract's `config()`
 (`lib/collectionRoles.ts`). The set is 7-day TTL-cached at
 `kismetart:stats:pass-exclude` when both sources answer. If one fails, the
 last complete set is unioned in and the cache is left alone. Best-effort →

@@ -14,7 +14,7 @@ import { getCollectionMeta } from '@/lib/kv'
  * A single collection's enriched record, from In Process's collection detail
  * (lib/inprocessCollection — the CAIP `GET /collections/{network}/{contract}`
  * route; the singular `/collection` route this used to proxy was removed
- * upstream in 2026-11). Shape: creator + default_admin (with username),
+ * upstream, 404ing since at least 2026-06-29). Shape: creator + default_admin (with username),
  * payout_recipient (read on-chain from the contract's fundsRecipient — In
  * Process no longer returns it), timestamps, full resolved metadata.
  *
