@@ -10,9 +10,10 @@ import { PLATFORM_FEE_RECIPIENT } from './platformFee'
  * the moment creator can resolve to the platform treasury (token 1's does),
  * so the split is the real attribution.
  * The page credit shows each artist's own resolved profile (no hardcoded
- * label). The raffle share credits each token's split artist the same way,
- * with curated handles from PATRON_ARTIST_OVERRIDES where the profile lacks
- * them; FeaturedMoment keeps its own "turro" credit for the Mint Pass Display.
+ * label). The raffle share and the Mint Pass Display hero (FeaturedMoment, via
+ * lib/featuredCredit) credit each token's split artist the same way, with
+ * curated handles and names from PATRON_ARTIST_OVERRIDES where the profile
+ * lacks them.
  *
  * Address stored lowercased so callers can compare against
  * `address.toLowerCase()` directly.
@@ -41,8 +42,9 @@ export const PATRON_TREASURY = '0x099b9bbe0937428e145a3003ddf58e7e0cf69801'
  * and any collection roles the caller knows (the Patron page passes the
  * collection's default admin + payout recipient). One set behind every Patron
  * artist credit, the page's artist chips (CollectionView) and the per-token
- * raffle share (patronTokenArtist), so the two can't disagree about who the
- * artist is. Lowercased; empty entries dropped.
+ * credit (patronTokenArtist: the raffle share and the Mint Pass Display hero),
+ * so they can't disagree about who the artist is. Lowercased; empty entries
+ * dropped.
  */
 export function patronPlatformPayees(...roles: (string | null | undefined)[]): Set<string> {
   return new Set(
@@ -54,7 +56,8 @@ export function patronPlatformPayees(...roles: (string | null | undefined)[]): S
 
 /**
  * Curated identity for one Patron token's artist, covering what their Kismet
- * profile can't supply. The raffle share reads it ahead of the profile lookup.
+ * profile can't supply. The raffle share and the Mint Pass Display hero read
+ * it ahead of the profile lookup.
  *
  * A token needs NO entry to be credited correctly: its stored split names the
  * artist (patronTokenArtist) and their profile supplies the display name and

@@ -10,6 +10,9 @@ import { useTextContent } from '@/lib/textCache'
 import { resolveMomentMedia } from '@/lib/media/resolveMomentMedia'
 import { thumbhashToBlurDataURL, thumbhashToRatio } from '@/lib/media/thumbhash'
 import { isPatronCollection } from '@/lib/patronCollection'
+import { featuredByline, featuredCredit } from '@/lib/featuredCredit'
+import { fetchSplitRecipients } from '@/lib/splitsClient'
+import type { SplitRecipient } from '@/lib/splits'
 import { MomentImage } from './MomentImage'
 import { ModelBadge } from './ModelBadge'
 import { ZineBadge } from './ZineBadge'
@@ -79,26 +82,11 @@ const clampRatio = (r: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, r))
 // Box background — a soft light pink. Dark text clears ~14.5:1 on it. One knob.
 const DISPLAY_BG = '#ffd3e3'
 
-// Manual credit overrides for the featured mint pass display, keyed by creator
-// address (lowercase). Stopgap for artists whose minting wallet has no Kismet
-// username or primary ENS set yet — shown verbatim in place of the short
-// address. Graduate to an admin-set credit when the need generalizes.
-const CREDIT_OVERRIDES: Record<string, string> = {
-  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': 'turro',
-}
-
-// Where a credited override's profile link should point — the artist's real
-// Kismet profile, which differs from the on-chain creator (the platform
-// treasury). Keyed by the same creator address as CREDIT_OVERRIDES.
-const CREDIT_PROFILE_OVERRIDES: Record<string, string> = {
-  '0x099b9bbe0937428e145a3003ddf58e7e0cf69801': '0x6c1cbe8cfc32a74188a9d3bf364945ea53b01b04',
-}
-
 // Manual right-column overrides for the mint pass display, keyed by collection
 // address (lowercase). Rendered stacked (one span per line) in place of the
 // fetched collection name — a presenting-partner credit for a curated takeover.
-// Same stopgap tier as CREDIT_OVERRIDES: graduate to admin-set copy when the
-// need generalizes. The column still links to the collection page either way.
+// A stopgap: graduate to admin-set copy when the need generalizes. The column
+// still links to the collection page either way.
 const COLLECTION_LABEL_OVERRIDES: Record<string, string[]> = {
   // Dúo Dø — "Mi Amor por Ti": presented by Kismet Casa × FarCon Rome.
   '0xbc87bdbd5dbd9253f37237911c50717de4dec94f': ['Kismet Casa', 'FarCon Rome'],
@@ -124,6 +112,10 @@ const COLLECTION_LABEL_OVERRIDES: Record<string, string[]> = {
  * else on the left (or the artwork) opens the moment; the right text opens the
  * collection.
  *
+ * The hero credits the record's creator, except on a Patron token, where the
+ * token's stored split names the artist (lib/featuredCredit). The record is
+ * the platform treasury on some Patron tokens.
+ *
  * Self-contained: fetches the mint once by address/tokenId to enrich it, so it
  * renders whether or not the mint is a standalone featured-timeline entry. When
  * `initialMoment` is supplied the artwork paints from it immediately and the
@@ -138,7 +130,11 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   // whichever of the image/video branches exhausts its gateways) covers both.
   const [mediaError, setMediaError] = useState(false)
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null)
-  const [artist, setArtist] = useState<string | null>(null)
+  // Hero credit inputs (the byline below): a Patron token's stored split
+  // (undefined until read, null when unreadable) and the credited wallet's
+  // profile lookup, tagged with the wallet it was for.
+  const [splitRecipients, setSplitRecipients] = useState<SplitRecipient[] | null | undefined>(undefined)
+  const [creditProfile, setCreditProfile] = useState<{ address: string; name: string } | null>(null)
   const [collection, setCollection] = useState<string | null>(null)
 
   useEffect(() => {
@@ -151,27 +147,43 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
     return () => { cancelled = true }
   }, [address, tokenId])
 
-  // Artist label + profile link. /api/moment resolves creator to the real
-  // minter EOA (KV-corrected), so the address here is the artist, not the
-  // collection operator. Seed the label from the response, upgrade from the
-  // profile cache.
+  // /api/moment resolves creator to the real minter EOA (KV-corrected), not
+  // the collection operator.
   const creatorAddress = detail?.creator?.address
   const creatorUsername = detail?.creator?.username
-  // Manual credit override wins over username/ENS/short-address (stopgap).
-  const creditOverride = creatorAddress
-    ? CREDIT_OVERRIDES[creatorAddress.toLowerCase()]
-    : undefined
+
+  // Hero artist credit (lib/featuredCredit): the creator record, except on a
+  // Patron token, whose stored split names the artist. Never the record there:
+  // it is the platform treasury on some Patron tokens. Hero-only, like the
+  // collection label below: on mobile the hero never mounts, so neither the
+  // split nor the profile is fetched.
+  const patron = isPatronCollection(address)
   useEffect(() => {
-    if (!creatorAddress) return
-    if (creditOverride) { setArtist(creditOverride); return }
-    setArtist(creatorUsername ? `@${creatorUsername}` : shortAddress(creatorAddress))
-    fetchCreatorProfile(creatorAddress)
-      .then(({ name }) => {
-        const isUsername = !!name && name !== shortAddress(creatorAddress)
-        setArtist(isUsername ? `@${name}` : shortAddress(creatorAddress))
-      })
+    if (!patron || isMobile) return
+    let cancelled = false
+    fetchSplitRecipients(address, tokenId).then((r) => { if (!cancelled) setSplitRecipients(r) })
+    return () => { cancelled = true }
+  }, [patron, isMobile, address, tokenId])
+  const credit = useMemo(
+    () => featuredCredit({ collectionAddress: address, tokenId, creatorAddress, splitRecipients }),
+    [address, tokenId, creatorAddress, splitRecipients],
+  )
+  // The credited wallet's profile name upgrades the label, unless a curated
+  // name already labels it. The wallet tag keeps a lookup for an earlier
+  // credit (the split can correct a mis-keyed override) off the current one.
+  const creditAddress = credit?.address
+  const creditNamed = !!credit?.name
+  useEffect(() => {
+    if (isMobile || !creditAddress || creditNamed) return
+    let cancelled = false
+    fetchCreatorProfile(creditAddress)
+      .then(({ name }) => { if (!cancelled) setCreditProfile({ address: creditAddress, name }) })
       .catch(() => {})
-  }, [creatorAddress, creatorUsername, creditOverride])
+    return () => { cancelled = true }
+  }, [isMobile, creditAddress, creditNamed])
+  const byline = credit
+    ? featuredByline(credit, { creatorAddress, creatorUsername, profile: creditProfile })
+    : null
 
   // Curated right-column credit for this collection, when configured. Module
   // constant, so the reference is stable across renders (safe as an effect dep).
@@ -264,7 +276,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       address,
       token_id: tokenId,
       uri: detail.uri ?? '',
-      creator: { address: creatorAddress ?? '', username: creditOverride ?? creatorUsername ?? undefined, hidden: false },
+      creator: { address: creatorAddress ?? '', username: creatorUsername ?? undefined, hidden: false },
       admins: [],
       created_at: '',
       // Render the artwork from the TIMELINE metadata when we have it — it
@@ -278,7 +290,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       // refetch stalls and leaves the card a blank box, while the ordinary grid
       // cards — which never swap — render fine. This is what stopped the
       // featured card from "acting like a normal card" on mobile. `detail` still
-      // drives price (saleConfig) and the credit-corrected creator below. Falls
+      // drives price (saleConfig) and the KV-corrected creator above. Falls
       // back to detail.metadata only when there was no timeline seed (the mint
       // lives solely inside a featured collection, so it never had one).
       metadata: initialMoment?.metadata ?? detail.metadata,
@@ -292,7 +304,7 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
       // (mint only inside a featured collection), so the card fetches once then.
       kismetCollection: initialMoment?.kismetCollection,
     }
-  }, [detail, initialMoment, address, tokenId, creatorAddress, creatorUsername, creditOverride])
+  }, [detail, initialMoment, address, tokenId, creatorAddress, creatorUsername])
 
   // Whether this slot will paint. It returns null just below for a hidden or
   // failed mint; report that up so the feed shows its empty message instead of
@@ -320,8 +332,12 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
   //     fetch after hydration, pool free). MomentImage still force-eagers it in
   //     the miniapp via skipDirectWalk, so it loads eagerly — just without the
   //     counter-productive preload, identical to the others.
-  // showCreator follows the resolved artist so the chip drops exactly when the
-  // hero drops its @artist line — never a dead /profile/ link.
+  // showCreator waits on the KV-corrected creator, so the chip never links a
+  // dead /profile/ (no creator → an empty address). Like every other card of
+  // this token, the chip credits the record's creator, and its address also
+  // feeds the card's listing and raffle self-entry check. On a Patron token
+  // that can be the treasury, so the hero's byline (the split's artist) can
+  // differ from it.
   const card = cardMoment ? (
     <MomentCard
       moment={cardMoment}
@@ -337,9 +353,6 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
 
   const loading = !detail
   const momentHref = `/artwork/${address}/${tokenId}`
-  const profileHref = creatorAddress
-    ? `/profile/${CREDIT_PROFILE_OVERRIDES[creatorAddress.toLowerCase()] ?? creatorAddress}`
-    : undefined
   const title = meta.name ?? `#${tokenId}`
 
   return (
@@ -364,22 +377,17 @@ export function FeaturedMoment({ address, tokenId, priority, initialMoment, isMo
               <span className="font-mono text-[#0d0d0d] text-lg xl:text-xl leading-snug line-clamp-3">
                 {title}
               </span>
-              {artist && (
+              {byline && (
                 <>
                   <span className="font-mono text-black/60 text-xs">by</span>
-                  {profileHref ? (
-                    <Link
-                      href={profileHref}
-                      onClick={(e) => e.stopPropagation()}
-                      // a11y-ok: dark text on the light hero panel, not the #111 surface
-                      className="font-mono text-[#0d0d0d] text-sm truncate max-w-full hover:underline"
-                    >
-                      {artist}
-                    </Link>
-                  ) : (
+                  <Link
+                    href={byline.href}
+                    onClick={(e) => e.stopPropagation()}
                     // a11y-ok: dark text on the light hero panel, not the #111 surface
-                    <span className="font-mono text-[#0d0d0d] text-sm truncate max-w-full">{artist}</span>
-                  )}
+                    className="font-mono text-[#0d0d0d] text-sm truncate max-w-full hover:underline"
+                  >
+                    {byline.label}
+                  </Link>
                 </>
               )}
             </>

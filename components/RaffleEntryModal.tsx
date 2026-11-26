@@ -10,11 +10,11 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 import { useFarcaster } from '@/providers/FarcasterProvider'
 import { fetchCreatorProfile } from '@/lib/profileCache'
 import { shortAddress } from '@/lib/inprocess'
-import { isAddress } from '@/lib/address'
 import { hapticNotifySuccess } from '@/lib/farcasterHaptics'
 import { KISMET_CHANNEL_KEY } from '@/lib/collectShare'
 import { isPatronCollection } from '@/lib/patronCollection'
 import type { SplitRecipient } from '@/lib/splits'
+import { fetchSplitRecipients } from '@/lib/splitsClient'
 import {
   artworkShareUrl,
   fcFollowUrl,
@@ -75,14 +75,7 @@ export function RaffleEntryModal({
     let cancelled = false
     const patron = isPatronCollection(collectionAddress)
     const readSplit: Promise<SplitRecipient[] | null> = patron
-      ? fetch(`/api/moment/splits?${new URLSearchParams({ collectionAddress, tokenId })}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d: { recipients?: unknown } | null) =>
-            Array.isArray(d?.recipients)
-              ? (d.recipients as SplitRecipient[]).filter((r) => isAddress(r?.address))
-              : null,
-          )
-          .catch(() => null)
+      ? fetchSplitRecipients(collectionAddress, tokenId)
       : Promise.resolve(null)
     readSplit
       .then(async (recipients) => {
