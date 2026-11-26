@@ -161,6 +161,11 @@ const BURST_DEDUP_WINDOW_SECS = 60
 const BURST_DEDUP_TYPES: ReadonlySet<NotificationType> = new Set([
   'collect',
   'listing_created',
+  // One grant can be saved twice within seconds — the panel retries a failed
+  // save, and a GET can finish the same started grant while the post-receipt
+  // save is in flight (lib/authorizedCreators). The tuple (creator, admin,
+  // collection) is exactly one authorization, so collapsing it is lossless.
+  'authorized',
 ])
 const READ_IDS_TTL_SECS = 30 * 24 * 60 * 60  // 30 days
 const MUTED_TTL_SECS = 365 * 24 * 60 * 60     // 1 year

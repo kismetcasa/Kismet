@@ -1,37 +1,43 @@
-import { NextRequest, NextResponse, after } from 'next/server'
-import { type Address } from 'viem'
+import { NextRequest, NextResponse } from 'next/server'
 import { isAddress } from '@/lib/address'
 import { getSessionAddress } from '@/lib/session'
-import { hasAdminBit, readPermissions } from '@/lib/permissions'
-import { serverBaseClient } from '@/lib/rpc'
-import { resolveSmartWallet } from '@/lib/resolveSmartWallet'
+import { checkRateLimit, getClientIp } from '@/lib/ratelimit'
 import {
-  addAuthorizedCreator,
-  removeAuthorizedCreator,
-  getAuthorizedCreators,
-  getCollectionMeta,
-  type AuthorizedCreator,
-} from '@/lib/kv'
-import { writeNotification } from '@/lib/notifications'
-import { errorResponse } from '@/lib/apiResponse'
+  dropCreatorGrant,
+  listAuthorizedCreators,
+  saveCreatorGrant,
+  startCreatorGrant,
+} from '@/lib/authorizedCreators'
+import { errorResponse, upstreamError } from '@/lib/apiResponse'
 
-// GET /api/collection/authorized-creators?collection=0x… — returns the
-// EOA → smart-wallet mappings recorded by our panel at grant time. KV
-// is the source of truth for grants made through this UI; off-platform
-// addPermission writes (etherscan, foundry) won't surface here. That's
-// an accepted tradeoff: scanning every UpdatedPermissions log from
-// genesis hits eth_getLogs block-range caps on most non-paid RPCs, and
-// the off-platform case is a power-user edge that doesn't justify the
-// dependency. Admins who need to revoke an unmapped grant can do it
-// from etherscan directly.
+// GET /api/collection/authorized-creators?collection=0x… — the creators panel's
+// list: the grants the panel recorded (EOA → smart wallet, with the label the
+// admin typed), merged with the chain. Every other address holding ADMIN at
+// token 0 comes back as an `unmapped` row — a grant made on etherscan, or one
+// whose save never landed — so it can be seen and revoked. Started grants the
+// chain has confirmed are recorded on the way. See lib/authorizedCreators.ts.
+//
+// Public like before (who holds ADMIN is public on chain), but it now reads
+// the chain, inprocess and, once per cache window, the collection's
+// UpdatedPermissions logs, so it is rate limited per client.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const collection = searchParams.get('collection')
   if (!collection || !isAddress(collection)) {
     return errorResponse(400, 'Invalid collection address')
   }
-  const creators = await getAuthorizedCreators(collection)
-  return NextResponse.json({ creators })
+  if (!(await checkRateLimit(`authorized-creators:${getClientIp(req)}`, 60, 60))) {
+    return errorResponse(429, 'Too many requests — try again in a minute')
+  }
+  try {
+    const creators = await listAuthorizedCreators(collection)
+    return NextResponse.json({ creators })
+  } catch (err) {
+    // The records couldn't be read. Answering an empty or chain-only list
+    // would relabel every recorded creator as unmapped; the panel keeps what
+    // it last showed instead.
+    return upstreamError(503, 'Could not load authorized creators', err, 'authorized-creators')
+  }
 }
 
 interface PostBody {
@@ -44,12 +50,14 @@ interface PostBody {
   smartWallet?: string
   /** Optional ENS / display label captured at grant time. */
   label?: string
+  /** 'pending': the grant is about to be sent — record it as started (every
+   *  check runs now, while nothing is on chain). Absent: record the grant. */
+  stage?: string
 }
 
 // POST /api/collection/authorized-creators — record an EOA→smart-wallet
-// mapping. Auth required; caller must hold ADMIN on-chain (same gate
-// Zora enforces on addPermission). Server re-resolves the smart wallet
-// to defeat a malicious client supplying a bogus mapping.
+// mapping, or (stage: 'pending') a grant about to be sent. Auth required;
+// caller must hold ADMIN on-chain (same gate Zora enforces on addPermission).
 export async function POST(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
@@ -63,7 +71,7 @@ export async function POST(req: NextRequest) {
     return errorResponse(400, 'Invalid request body')
   }
 
-  const { collection, eoa, smartWallet, label } = body
+  const { collection, eoa, smartWallet, label, stage } = body
   if (!collection || !isAddress(collection)) {
     return errorResponse(400, 'Invalid collection address')
   }
@@ -73,75 +81,26 @@ export async function POST(req: NextRequest) {
   if (!smartWallet || !isAddress(smartWallet)) {
     return errorResponse(400, 'Invalid smartWallet')
   }
-
-  // 1. Caller must hold ADMIN on the collection.
-  try {
-    const client = serverBaseClient()
-    const perms = await readPermissions(
-      client,
-      collection as Address,
-      0n,
-      viewer as Address,
-    )
-    if (!hasAdminBit(perms)) {
-      return errorResponse(403, 'Only a collection admin can authorize creators')
-    }
-  } catch {
-    return errorResponse(502, 'Could not verify collection admin on-chain')
+  if (stage !== undefined && stage !== 'pending') {
+    return errorResponse(400, 'Invalid stage')
   }
 
-  // 2. Re-resolve the smart wallet for the supplied EOA — refuse if the
-  //    client supplied a different smartWallet than inprocess returns. Keep the
-  //    three failure modes distinct so the admin gets an accurate reason (a
-  //    transient outage is NOT a "mismatch", and "no account" is actionable).
-  const expected = await resolveSmartWallet(eoa)
-  if (!expected) {
-    // Transient upstream failure (network / 5xx / timeout) — not a client error.
-    return errorResponse(502, 'Could not reach inprocess to verify the smart wallet — try again')
+  const input = { collection, eoa, smartWallet, label }
+  if (stage === 'pending') {
+    const started = await startCreatorGrant(viewer, input)
+    if (!started.ok) return errorResponse(started.status, started.error)
+    return NextResponse.json({ ok: true, pending: started.value })
   }
-  if ('notFound' in expected) {
-    // The EOA has no inprocess account, so there's no smart wallet to authorize.
-    return errorResponse(400, 'This wallet has no inprocess account yet — it must mint once to set one up before it can be authorized')
-  }
-  if (expected.address.toLowerCase() !== smartWallet.toLowerCase()) {
-    return errorResponse(400, 'eoa / smartWallet mismatch — re-resolve and retry')
-  }
-
-  const entry: AuthorizedCreator = {
-    eoa: eoa.toLowerCase(),
-    smartWallet: smartWallet.toLowerCase(),
-    label: label?.trim() || undefined,
-    grantedBy: viewer,
-    grantedAt: Date.now(),
-  }
-  const ok = await addAuthorizedCreator(collection, entry)
-  if (!ok) {
-    return errorResponse(502, 'Failed to persist authorized-creator mapping; check server logs')
-  }
-
-  // Click-through routes to /collection/<addr>. On-chain addPermission is a
-  // separate admin tx, so the copy hedges ("added you as a creator").
-  after(async () => {
-    try {
-      const meta = await getCollectionMeta(collection)
-      await writeNotification({
-        type: 'authorized',
-        recipient: eoa,
-        actor: viewer,
-        tokenAddress: collection,
-        tokenName: meta?.name,
-      })
-    } catch {}
-  })
-
-  return NextResponse.json({ ok: true, creator: entry })
+  const saved = await saveCreatorGrant(viewer, input)
+  if (!saved.ok) return errorResponse(saved.status, saved.error)
+  return NextResponse.json({ ok: true, creator: saved.value })
 }
 
 // DELETE /api/collection/authorized-creators?collection=…&eoa=… — drop a
-// mapping. Same admin gate as POST; the on-chain revoke happens
-// separately on the client (the admin signs a `removePermission` tx).
-// We don't conflate the two: the chain is the source of truth for
-// permissions, KV only carries the EOA-display reverse lookup.
+// mapping (and any started grant for it). Same admin gate as POST; the
+// on-chain revoke happens separately on the client (the admin signs a
+// `removePermission` tx). We don't conflate the two: the chain is the source
+// of truth for permissions, KV only carries the EOA-display reverse lookup.
 export async function DELETE(req: NextRequest) {
   const viewer = await getSessionAddress(req)
   if (!viewer) {
@@ -156,20 +115,7 @@ export async function DELETE(req: NextRequest) {
   if (!eoa || !isAddress(eoa)) {
     return errorResponse(400, 'Invalid eoa')
   }
-  try {
-    const client = serverBaseClient()
-    const perms = await readPermissions(
-      client,
-      collection as Address,
-      0n,
-      viewer as Address,
-    )
-    if (!hasAdminBit(perms)) {
-      return errorResponse(403, 'Only a collection admin can revoke creators')
-    }
-  } catch {
-    return errorResponse(502, 'Could not verify collection admin on-chain')
-  }
-  await removeAuthorizedCreator(collection, eoa)
+  const dropped = await dropCreatorGrant(viewer, collection, eoa)
+  if (!dropped.ok) return errorResponse(dropped.status, dropped.error)
   return NextResponse.json({ ok: true })
 }

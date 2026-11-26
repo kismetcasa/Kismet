@@ -64,6 +64,7 @@ export function createMockUpstash(opts: { modelSets?: (key: string) => boolean }
       return 1
     }
     if (op === 'HGETALL') return [...(hashes.get(key)?.entries() ?? [])].flat()
+    if (op === 'HGET') return hashes.get(key)?.get(String(cmd[2])) ?? null
     if (op === 'HDEL') {
       const h = hashes.get(key)
       let n = 0
