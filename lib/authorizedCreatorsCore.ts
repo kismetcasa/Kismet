@@ -71,13 +71,17 @@ export interface PendingPlan {
 }
 
 /**
- * Decide what each started grant becomes. A grant whose smart wallet holds
- * ADMIN is recorded however old it is — the TTL exists to forget grants that
- * never landed, and a landed grant whose admin only returns after a week is
- * exactly the save this record is for. One that is neither promoted nor
- * dropped is left alone: its transaction may still be in flight. Promotion
- * keys on the smart wallet because that is the grant the panel exists to land
- * (MintForm relays through it); the EOA's own bit is secondary.
+ * Decide what each started grant becomes. A grant whose EOA AND smart wallet
+ * both hold ADMIN is recorded however old it is — the TTL exists to forget
+ * grants that never landed, and a landed grant whose admin only returns after
+ * a week is exactly the save this record is for. One that is neither promoted
+ * nor dropped is left alone: its transaction may still be in flight.
+ *
+ * Promotion needs BOTH bits because the panel's grant sets both in one
+ * transaction. Keying on the smart wallet alone recorded (and notified) a
+ * grant the admin had CANCELLED whenever that wallet already held ADMIN —
+ * the wallet prompt only asked for the EOA's bit, the admin rejected it, and
+ * the next GET saw the smart wallet as ADMIN anyway.
  */
 export function planPendingGrants(
   pending: readonly PendingAuthorizedCreator[],
@@ -89,7 +93,7 @@ export function planPendingGrants(
   const plan: PendingPlan = { promote: [], drop: [] }
   for (const p of pending) {
     if (recordedEoas.has(p.eoa.toLowerCase())) plan.drop.push(p)
-    else if (isAdmin(p.smartWallet) === true) plan.promote.push(p)
+    else if (isAdmin(p.smartWallet) === true && isAdmin(p.eoa) === true) plan.promote.push(p)
     else if (now - p.createdAt > ttlMs) plan.drop.push(p)
   }
   return plan

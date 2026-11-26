@@ -136,7 +136,11 @@ export function useAuthorizedCreators(collection: Address | undefined) {
   const startGrant = useCallback(
     async (grant: CreatorGrant): Promise<void> => {
       const res = await post({ ...grant, stage: 'pending' })
-      if (!res.ok) throw new Error(await errorText(res))
+      if (!res.ok) {
+        // Carries the status so the panel can tell an auth refusal (401/403)
+        // from a real failure.
+        throw Object.assign(new Error(await errorText(res)), { status: res.status })
+      }
     },
     [post],
   )

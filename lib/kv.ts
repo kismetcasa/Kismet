@@ -572,18 +572,21 @@ export async function addAuthorizedCreator(
     const members = (await redis.smembers(
       keyAuthorizedCreators(collection),
     )) as unknown[]
-    // Drop only rows OLDER than this one. Two writers can record the same EOA
-    // at once (the post-receipt POST and a GET finishing the pending grant);
-    // if each dropped every row but its own, they could drop each other's and
-    // leave none. Newest-wins converges on one row either way.
-    const stale = members.filter((raw) => {
-      const parsed = parseEntry(raw)
-      if (!parsed) return false
-      return (
-        parsed.eoa?.toLowerCase() === eoaLower &&
-        parsed.grantedAt < entry.grantedAt
-      )
-    })
+    // Keep only the NEWEST row for this EOA — including when that is a row
+    // another writer already stored and this one is the older. Two writers can
+    // record the same EOA at once (the post-receipt POST and a GET finishing
+    // the started grant, which stamps the older start time). If each dropped
+    // every row but its own they could drop each other's and leave none; if
+    // each dropped only rows older than its own, an older write landing second
+    // would never be cleaned up. Newest-wins, judged over the whole set by
+    // whoever runs last, converges on one row in either order.
+    const forEoa = members
+      .map((raw) => ({ raw, parsed: parseEntry(raw) }))
+      .filter((m) => m.parsed?.eoa?.toLowerCase() === eoaLower)
+    const newest = Math.max(entry.grantedAt, ...forEoa.map((m) => m.parsed!.grantedAt))
+    const stale = forEoa
+      .filter((m) => m.parsed!.grantedAt < newest)
+      .map((m) => m.raw)
     if (stale.length > 0) {
       await redis.srem(keyAuthorizedCreators(collection), ...stale)
     }

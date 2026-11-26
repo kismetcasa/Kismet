@@ -70,9 +70,18 @@ console.log('merge (pure)')
 {
   const now = 1_000_000
   const p = (b: string, createdAt = now - 10) => ({ eoa: addr(b), smartWallet: addr(b.replace(/^./, 'f')), grantedBy: addr('99'), createdAt })
-  const admin = new Map([[addr('f2'), true], [addr('f3'), false], [addr('f5'), true], [addr('f6'), false]])
+  // a7's smart wallet holds ADMIN but its EOA doesn't: the shape a CANCELLED
+  // panel grant leaves when that wallet already held ADMIN (the prompt only
+  // asked for the EOA's bit). It must wait, never be recorded.
+  const admin = new Map([
+    [addr('f2'), true], [addr('a2'), true],
+    [addr('f3'), false],
+    [addr('f5'), true], [addr('a5'), true],
+    [addr('f6'), false],
+    [addr('f7'), true], [addr('a7'), false],
+  ])
   const plan = planPendingGrants(
-    [p('a1'), p('a2'), p('a3'), p('a4'), p('a5', now - 5_000), p('a6', now - 5_000)],
+    [p('a1'), p('a2'), p('a3'), p('a4'), p('a5', now - 5_000), p('a6', now - 5_000), p('a7')],
     new Set([addr('a1')]),
     (a) => admin.get(a),
     now,
@@ -83,6 +92,7 @@ console.log('merge (pure)')
   check('pending: past the TTL and never landed → dropped', eoas(plan.drop) === [addr('a1'), addr('a6')].join(','))
   check('pending: wallet holds ADMIN → promoted, however old (a landed grant is never forgotten)', eoas(plan.promote) === [addr('a2'), addr('a5')].join(','))
   check('pending: wallet lacks ADMIN, or its read failed → left waiting', !eoas([...plan.drop, ...plan.promote]).includes(addr('a3')) && !eoas([...plan.drop, ...plan.promote]).includes(addr('a4')))
+  check('pending: smart wallet ADMIN without the EOA (a cancelled grant) → never promoted', !eoas([...plan.drop, ...plan.promote]).includes(addr('a7')))
 }
 {
   const loose = unmappedHolders([addr('C2'), addr('a2'), addr('b2'), addr('c2'), addr('d2')], new Set([addr('a2')]), new Set([addr('b2')]))
@@ -319,7 +329,7 @@ async function main() {
       [OWNER, 2n], [OWNER_SW, 2n], [ARTIST, 2n], [ARTIST_SW, 2n], [OPERATOR, 7n],
       [T_EOA, 2n], [T_SW, 2n], [N_EOA, 2n], [N_SW, 0n],
       [D_EOA, 2n], [D_SW, 2n], [X, 2n], [R, 0n], [M, 4n],
-      [P_EOA, 2n], [P_SW, 2n], [Q_EOA, 0n], [Q_SW, 0n], [E_SW, 2n], [O_SW, 0n],
+      [P_EOA, 2n], [P_SW, 2n], [Q_EOA, 0n], [Q_SW, 0n], [E_EOA, 2n], [E_SW, 2n], [O_SW, 0n],
     ])
     inprocess.admins.set(C, [OWNER, OWNER_SW, ARTIST, ARTIST_SW, OPERATOR, T_EOA, T_SW, N_EOA, D_EOA, D_SW, R, M])
     chain.logs.push({ address: C, user: X, perms: 2n })
@@ -454,6 +464,7 @@ async function main() {
     await kv.addAuthorizedCreator(C7, { eoa: T_EOA, smartWallet: T_SW, grantedBy: OWNER, grantedAt: 100 })
     const c7 = await kv.readAuthorizedCreators(C7)
     check('kv: an older write never removes a newer record', c7.some((r) => r.grantedAt === 200))
+    check('kv: an older write landing second cleans itself up (one row left)', c7.length === 1, c7.map((r) => r.grantedAt))
     await kv.addAuthorizedCreator(C7, { eoa: T_EOA, smartWallet: T_SW, grantedBy: OWNER, grantedAt: 300 })
     const c7b = await kv.readAuthorizedCreators(C7)
     check('kv: a newer write removes every older record', c7b.length === 1 && c7b[0].grantedAt === 300)

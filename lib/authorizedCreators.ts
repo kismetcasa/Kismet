@@ -66,8 +66,10 @@ import {
  *
  * The panel records a STARTED grant before the wallet prompt
  * (startCreatorGrant, with the EOA → smart wallet mapping verified then). When
- * the post-receipt save doesn't arrive, the next GET finds that grant's smart
- * wallet holding ADMIN and records it itself — notification included.
+ * the post-receipt save doesn't arrive, the next GET finds that grant's EOA and
+ * smart wallet both holding ADMIN and records it itself — notification
+ * included. Both, because the panel's transaction sets both: a cancelled
+ * prompt for a wallet that already held ADMIN must not count as a grant.
  */
 
 const COLLECTION_READ_ABI = parseAbi([

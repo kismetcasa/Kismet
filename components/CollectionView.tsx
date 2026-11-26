@@ -250,7 +250,14 @@ export function CollectionView({
     receipt: creatorReceipt,
   } = useGrantPermission()
   const creatorTxPending = !!creatorHash && !creatorReceipt
-  const isCreatorBusy = creatorGranting || creatorTxPending
+  // Covers the steps BEFORE the wallet prompt (address and mint-wallet
+  // lookups, the sign-in signature, recording the started grant), which
+  // batchCreator's own busy flag doesn't. Without it a second click while the
+  // sign-in prompt is open starts a second grant and a second wallet prompt.
+  // The ref closes the same-tick double-click gap the state can't.
+  const [startingCreator, setStartingCreator] = useState(false)
+  const startingCreatorRef = useRef(false)
+  const isCreatorBusy = creatorGranting || creatorTxPending || startingCreator
   const [creatorInput, setCreatorInput] = useState('')
   const [revokingCreatorEoa, setRevokingCreatorEoa] = useState<string | null>(null)
   const [savingCreatorEoa, setSavingCreatorEoa] = useState<string | null>(null)
@@ -276,7 +283,9 @@ export function CollectionView({
   // The viewer's own wallets hold ADMIN from deploy. The server already
   // leaves out the collection's owner and deployer; this also covers a
   // viewer it can't name, so the panel never offers to revoke your own
-  // mint wallet as an "unmapped" creator.
+  // mint wallet as an "unmapped" creator. Unmapped rows wait until the
+  // viewer's mint wallet has resolved: before that, the filter can't
+  // recognise it, and its row would carry a working revoke button.
   const ownCreatorAddrs = new Set(
     [connectedAddress, viewerSmartWallet]
       .filter((a): a is string => !!a)
@@ -285,7 +294,8 @@ export function CollectionView({
   const creatorRows = authorizedCreators.filter(
     (c) =>
       !c.unmapped ||
-      ![c.eoa, c.smartWallet].some((a) => !!a && ownCreatorAddrs.has(a.toLowerCase())),
+      (!viewerSwLoading &&
+        ![c.eoa, c.smartWallet].some((a) => !!a && ownCreatorAddrs.has(a.toLowerCase()))),
   )
 
   // Mainnet client for client-side ENS resolution. Wagmi already
@@ -306,6 +316,14 @@ export function CollectionView({
       const listed = !!rows?.some((r) => !r.unmapped && r.eoa?.toLowerCase() === grant.eoa)
       if (saved.ok || listed) {
         toast.success(successMessage, { id: 'authorize-creator' })
+      } else if (saved.status === 401 || saved.status === 403) {
+        // Refused, not lost: the request isn't signed in as a collection
+        // admin (in a Mini App it authenticates as the Farcaster account's
+        // Kismet wallet). The grant is on chain and lists as unmapped.
+        toast.warning('Authorized on chain, but not saved to this list', {
+          id: 'authorize-creator',
+          description: `${saved.error}. Open this page on kismet.art signed in as this wallet and use “save” on the row.`,
+        })
       } else {
         toast.warning('Authorized on chain — the record is still saving', {
           id: 'authorize-creator',
@@ -318,9 +336,11 @@ export function CollectionView({
 
   // ─── Authorize creators (ADMIN to smart wallet) ─────────────────────
   async function handleAuthorizeCreator() {
-    if (isCreatorBusy) return
+    if (isCreatorBusy || startingCreatorRef.current) return
     const raw = creatorInput.trim()
     if (!raw) return
+    startingCreatorRef.current = true
+    setStartingCreator(true)
     try {
       toast.loading('Resolving address…', { id: 'authorize-creator' })
       const eoa = await resolveAddressOrEns(mainnetClient, raw)
@@ -362,7 +382,17 @@ export function CollectionView({
       // the receipt never arrives (tab closed, network), the next load of
       // this panel finishes it from this record.
       toast.loading('Preparing authorization…', { id: 'authorize-creator' })
-      await startCreatorGrant(grant)
+      try {
+        await startCreatorGrant(grant)
+      } catch (err) {
+        // In a Mini App ensureSession() is a no-op and these requests
+        // authenticate as the Farcaster account's Kismet wallet, which need
+        // not be this connected admin wallet. Don't let that block the
+        // on-chain grant (it never used to): send it without a started
+        // record. It then lists as an unmapped row with a save button.
+        const status = (err as { status?: number }).status
+        if (!(isInMiniApp && (status === 401 || status === 403))) throw err
+      }
       toast.loading('Confirm in wallet…', { id: 'authorize-creator' })
       // Multicall: grant ADMIN to SW (MintForm relay) + grant ADMIN to
       // EOA (direct from-wallet calls) + clear any pre-existing MINTER
@@ -388,8 +418,14 @@ export function CollectionView({
       // A rejected or failed wallet prompt leaves the started record in
       // place on purpose: a request that errors AFTER broadcasting can
       // still land, and the record is what finishes it. One that never
-      // lands is never shown and expires on its own.
+      // lands is never recorded (promotion needs the EOA AND its smart
+      // wallet to hold ADMIN, which only the panel's grant sets together)
+      // and expires on its own.
       toastError('Authorize creator', err, { id: 'authorize-creator' })
+    } finally {
+      // Past this point a submitted grant is covered by creatorTxPending.
+      startingCreatorRef.current = false
+      setStartingCreator(false)
     }
   }
 
